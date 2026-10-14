@@ -396,21 +396,12 @@ async def _deliver_pending_worker_command(worker: "Worker", *, prepare=None):
 
 async def _join_delivery_send(task: asyncio.Task) -> None:
     """Keep the delivery owner alive until its socket operation returns."""
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-        except Exception:
-            break
-    if task.done() and not task.cancelled():
-        try:
-            task.result()
-        except Exception:
-            pass
-    if cancelled:
-        raise asyncio.CancelledError
+    try:
+        await db.run_to_completion(task)
+    except asyncio.CancelledError:
+        raise
+    except BaseException:
+        pass
 
 
 async def _run_v6_delivery(
@@ -556,36 +547,14 @@ async def drain_worker_deliveries() -> None:
 async def _join_worker_delivery_owners(owners: list[asyncio.Task]) -> None:
     if not owners:
         return
-
-    async def join() -> None:
-        await asyncio.gather(*(asyncio.shield(task) for task in owners),
-                             return_exceptions=True)
-        for task in owners:
-            try:
-                task.result()
-            except asyncio.CancelledError as error:
-                cause = error.__cause__
-                if cause is not None and not isinstance(cause, asyncio.CancelledError):
-                    raise cause
-
-    cleanup = asyncio.create_task(join())
-    cancelled = None
-    while not cleanup.done():
+    await db.run_to_completion(asyncio.gather(*owners, return_exceptions=True))
+    for task in owners:
         try:
-            await asyncio.shield(cleanup)
+            task.result()
         except asyncio.CancelledError as error:
-            if not cleanup.cancelled():
-                cancelled = error
-        except BaseException:
-            break
-    try:
-        cleanup.result()
-    except BaseException as error:
-        if cancelled is not None:
-            raise cancelled from error
-        raise
-    if cancelled is not None:
-        raise cancelled
+            cause = error.__cause__
+            if cause is not None and not isinstance(cause, asyncio.CancelledError):
+                raise cause
 
 
 async def close_fenced_worker(worker_id: str, incarnation: uuid.UUID) -> None:
@@ -604,9 +573,8 @@ async def close_fenced_worker(worker_id: str, incarnation: uuid.UUID) -> None:
         worker.delivery_close_task = task
         _worker_delivery_owners[task] = worker
     try:
-        await asyncio.shield(task)
+        await db.run_to_completion(task)
     except asyncio.CancelledError:
-        await _join_delivery_send(task)
         raise
     except Exception:
         logger.debug("fenced worker socket close failed for %s", worker.id, exc_info=True)
@@ -1520,14 +1488,23 @@ async def release(session: Session) -> None:
                 else:
                     from app import worker_authority
 
-                    try:
-                        await worker_authority.end_realtime_session(
-                            session.id, generation, worker_authority.TRANSPORT_OWNER_ID
-                        )
-                    except HTTPException as error:
-                        if error.status_code != 503:
-                            raise
-                        logger.warning("realtime session end refused for %s", session.id)
+                    end = worker_authority.end_realtime_session(
+                        session.id, generation, worker_authority.TRANSPORT_OWNER_ID
+                    )
+                    if not _worker_delivery_admission_open:
+                        await db.run_to_completion(end)
+                    else:
+                        end_task = asyncio.create_task(end)
+                        _worker_delivery_owners[end_task] = worker
+
+                        def end_finished(task: asyncio.Task) -> None:
+                            _worker_delivery_owners.pop(task, None)
+                            try:
+                                task.result()
+                            except BaseException:
+                                logger.warning("realtime session end failed for %s", session.id)
+
+                        end_task.add_done_callback(end_finished)
             else:
                 await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
                     {"type": "close_session", "session_id": str(session.id)},
@@ -1732,6 +1709,42 @@ async def close_durable_worker(worker: Worker) -> None:
         logger.warning("worker authority close timed out for %s", worker.id)
     except Exception:
         logger.warning("worker authority close failed for %s", worker.id)
+
+
+async def _finalize_worker(worker: Worker) -> None:
+    worker.delivery_admission_open = False
+    if workers.get(worker.id) is worker:
+        del workers[worker.id]
+    if worker.incarnation is not None:
+        _sent_command_sequences.pop((worker.id, worker.incarnation), None)
+
+    orphaned = [s for s in sessions.values() if s.worker is worker]
+    if orphaned:
+        logger.info("worker %s disconnected with %d sessions to reassign",
+                    worker.id, len(orphaned))
+    for session in orphaned:
+        if session.state == "assigning":
+            session.attempt_ok = False
+            session.ready.set()
+        elif session.state == "live":
+            schedule_reassign(session)
+
+    current_task = asyncio.current_task()
+    owned = [task for task, owner in list(_worker_delivery_owners.items())
+             if owner is worker and task is not current_task]
+    owner_results = await db.run_to_completion(
+        asyncio.gather(*owned, return_exceptions=True)
+    ) if owned else []
+    owner_errors = [result for result in owner_results if isinstance(result, BaseException)]
+
+    await close_durable_worker(worker)
+    for key, owner in list(closing_sessions.items()):
+        if owner[2] is worker:
+            closing_sessions.pop(key, None)
+    from app import jobs
+    jobs.on_worker_lost(worker)
+    for _ in owner_errors:
+        logger.warning("worker delivery owner failed during disconnect for %s", worker.id)
 
 
 @router.websocket("/api/v1/fleet")
@@ -2219,36 +2232,12 @@ async def fleet(ws: WebSocket) -> None:
                     await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break
     finally:
-        worker.delivery_admission_open = False
-        if workers.get(worker.id) is worker:
-            del workers[worker.id]
-        if worker.incarnation is not None:
-            _sent_command_sequences.pop((worker.id, worker.incarnation), None)
-        owned = [task for task, owner in list(_worker_delivery_owners.items())
-                 if owner is worker]
-        cancelled = None
+        finalizer = asyncio.create_task(_finalize_worker(worker))
+        _worker_delivery_owners[finalizer] = worker
         try:
-            await _join_worker_delivery_owners(owned)
-        except asyncio.CancelledError as error:
-            cancelled = error
-        await close_durable_worker(worker)
-        for key, owner in list(closing_sessions.items()):
-            if owner[2] is worker:
-                closing_sessions.pop(key, None)
-        from app import jobs
-        jobs.on_worker_lost(worker)
-        orphaned = [s for s in sessions.values() if s.worker is worker]
-        if orphaned:
-            logger.info("worker %s disconnected with %d sessions to reassign",
-                        worker.id, len(orphaned))
-        for session in orphaned:
-            if session.state == "assigning":
-                session.attempt_ok = False
-                session.ready.set()
-            elif session.state == "live":
-                schedule_reassign(session)
-        if cancelled is not None:
-            raise cancelled
+            await db.run_to_completion(finalizer)
+        finally:
+            _worker_delivery_owners.pop(finalizer, None)
 
 
 def session_seed(value: object) -> int | None:

@@ -49,6 +49,29 @@ DB_POOL_TIMEOUT = 10  # seconds waiting for a free pooled connection
 STARTUP_LOCK_TIMEOUT_SECONDS = 5
 
 
+async def run_to_completion(work):
+    """Await work to its real end, even when cancelled, then re-raise the
+    cancellation. Releasing ownership or disposing dependencies while work
+    still runs is the bug this prevents: a cancelled await stops neither a
+    thread nor a shielded close."""
+    task = asyncio.ensure_future(work)
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancelled = error
+        except BaseException:
+            pass
+    if cancelled is None:
+        return task.result()
+    try:
+        task.result()
+    except BaseException as error:
+        raise cancelled from error
+    raise cancelled
+
+
 class OwnedSession(AsyncSession):
     async def __aexit__(
         self,
@@ -58,17 +81,11 @@ class OwnedSession(AsyncSession):
     ) -> None:
         # The inherited exit detaches close; this override owns and joins it.
         cancelled = exc_value if isinstance(exc_value, asyncio.CancelledError) else None
-        close_task = asyncio.create_task(self.close())
-        while not close_task.done():
-            try:
-                await asyncio.shield(close_task)
-            except asyncio.CancelledError as error:
-                cancelled = error
-            except BaseException:
-                break
         try:
-            close_task.result()
-        except asyncio.CancelledError:
+            await run_to_completion(self.close())
+        except asyncio.CancelledError as error:
+            if cancelled is not None:
+                raise cancelled from error
             raise
         except BaseException as error:
             if cancelled is not None:
@@ -138,15 +155,8 @@ async def connect(serving: bool = True) -> bool:
         # Alembic's env.py runs its own event loop, so migrate off this one.
         migration = asyncio.create_task(asyncio.to_thread(_migrate, settings.database_url))
         try:
-            await asyncio.shield(migration)
+            await run_to_completion(migration)
         except asyncio.CancelledError as cancelled:
-            while not migration.done():
-                try:
-                    await asyncio.shield(migration)
-                except asyncio.CancelledError:
-                    continue
-                except BaseException:
-                    break
             try:
                 migration.result()
             except BaseException:
@@ -391,11 +401,10 @@ async def _finish_startup_lock_owner() -> None:
     cancelled = None
     if wait_for_borrowers:
         assert borrowers_done is not None
-        while not borrowers_done.done():
-            try:
-                await asyncio.shield(asyncio.wrap_future(borrowers_done))
-            except asyncio.CancelledError as error:
-                cancelled = error
+        try:
+            await run_to_completion(asyncio.wrap_future(borrowers_done))
+        except asyncio.CancelledError as error:
+            cancelled = error
     with _lock_guard:
         if _lock_holders != 1:
             raise RuntimeError("API startup lock borrower count is invalid")
@@ -417,21 +426,14 @@ async def _finish_startup_lock_owner() -> None:
 async def _close_startup_lock_connection(connection, owner_loop) -> None:
     if asyncio.get_running_loop() is not owner_loop:
         raise RuntimeError("startup lock connection must close on its owner loop")
-    close_task = asyncio.create_task(connection.close(timeout=STARTUP_LOCK_TIMEOUT_SECONDS))
     cancelled = None
     close_error = None
-    while not close_task.done():
-        try:
-            await asyncio.shield(close_task)
-        except asyncio.CancelledError as error:
-            cancelled = error
-        except BaseException as error:
-            close_error = error
-    if close_error is None:
-        try:
-            close_task.result()
-        except BaseException as error:
-            close_error = error
+    try:
+        await run_to_completion(connection.close(timeout=STARTUP_LOCK_TIMEOUT_SECONDS))
+    except asyncio.CancelledError as error:
+        cancelled = error
+    except BaseException as error:
+        close_error = error
     if close_error is not None:
         try:
             connection.terminate()

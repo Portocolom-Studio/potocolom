@@ -115,16 +115,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await jobs.recover()
 
         initialization = asyncio.create_task(initialize_database())
-        while not initialization.done():
-            try:
-                await asyncio.shield(initialization)
-            except asyncio.CancelledError as error:
-                if not initialization.cancelled():
-                    cancelled = error
-            except BaseException:
-                pass
         try:
-            initialization.result()
+            await db.run_to_completion(initialization)
+        except asyncio.CancelledError as error:
+            cancelled = error
+            try:
+                initialization.result()
+            except BaseException as failure:
+                raise cancelled from failure
+            raise cancelled
         except BaseException as error:
             if cancelled is not None:
                 raise cancelled from error
@@ -178,17 +177,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     finally:
                         await running.aclose()
 
-        cleanup = asyncio.create_task(shutdown())
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError as error:
-                if not cleanup.cancelled():
-                    cancelled = error
-            except BaseException:
-                break
         try:
-            cleanup.result()
+            await db.run_to_completion(shutdown())
+        except asyncio.CancelledError as error:
+            if cancelled is not None:
+                raise cancelled from error
+            raise
         except BaseException as error:
             if cancelled is not None:
                 raise cancelled from error
