@@ -6,6 +6,11 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
+      - "scripts/verify-mermaid.py"
+      - "Makefile"
+      - ".github/workflows/docs.yml"
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
         .github/workflows/docs.yml
   docs:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:

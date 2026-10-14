@@ -5,6 +5,10 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "worker/**"
+      - "Makefile"
+      - ".github/workflows/worker.yml"
 
 permissions:
   contents: read
@@ -20,7 +24,7 @@ jobs:
         .github/workflows/worker.yml
   inference-cpu:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     runs-on: [self-hosted, Linux, X64, potocolom]
     timeout-minutes: 30
     defaults:
@@ -41,7 +45,7 @@ jobs:
 
   worker:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
     runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:

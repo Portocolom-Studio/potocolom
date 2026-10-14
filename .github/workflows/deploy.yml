@@ -8,6 +8,17 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "deploy/**"
+      - "scripts/compose-smoke.sh"
+      - "scripts/smoke-*"
+      - "scripts/backup.sh"
+      - "scripts/restore.sh"
+      - "scripts/test-backup-restore.sh"
+      - "Makefile"
+      - ".github/workflows/deploy.yml"
 
 permissions:
   contents: read
@@ -30,7 +41,7 @@ jobs:
         .github/workflows/deploy.yml
   deploy:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:

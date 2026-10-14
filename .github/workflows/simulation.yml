@@ -7,6 +7,11 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "worker/**"
+      - "scripts/**"
+      - ".github/workflows/simulation.yml"
 
 permissions:
   contents: read
@@ -23,10 +28,11 @@ jobs:
         .github/workflows/simulation.yml
   simulation:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Job-level, so a pull request that skips this job does not queue here.
     concurrency:
       group: ${{ github.workflow }}-host-ports
+      queue: max
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     services:

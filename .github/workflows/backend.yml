@@ -6,6 +6,11 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "backend/**"
+      - "scripts/**"
+      - "Makefile"
+      - ".github/workflows/backend.yml"
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
         .github/workflows/backend.yml
   backend:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
     # Switch back to ubuntu-latest when hosted quota is available (docs/self-hosted-runner.md).
     runs-on: [self-hosted, Linux, X64, potocolom]

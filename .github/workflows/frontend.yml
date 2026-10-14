@@ -5,7 +5,13 @@ on:
   pull_request:
   push:
     branches: [main]
-
+    paths:
+      - "frontend/**"
+      - "Makefile"
+      - ".github/workflows/frontend.yml"
+      # The sign-in gate checks the cookies and the CSRF header the backend
+      # issues, so a backend change must also run it.
+      - "backend/app/**"
 permissions:
   contents: read
   pull-requests: read
@@ -21,7 +27,7 @@ jobs:
         backend/app/**
   frontend:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (system node 24, not setup-node).
     runs-on: [self-hosted, Linux, X64, potocolom]
     services:

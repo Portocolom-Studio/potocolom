@@ -1870,7 +1870,7 @@ Rejected alternatives:
 
 ## Every CI workflow reports on every pull request; main requires all of them
 
-Required status checks block a pull request forever when a path-filtered workflow never starts. Each workflow now starts a small `changes` job on every pull request and skips its component job when none of that job's files changed; GitHub reports the skipped job, which satisfies the required check. Component work still runs only when its files change (issue #13). Main's ruleset requires DCO, `secret-scan` and every component check.
+Required status checks block a pull request forever when a path-filtered workflow never starts. Each workflow starts a small `changes` job on every pull request. A component job is skipped only when selection succeeds and finds no matching change; it runs when selection fails. Push events keep their native path filters. Simulation jobs queue instead of replacing pending runs (issue #13). Main's ruleset requires DCO, `secret-scan` and every component check.
 
 Rejected alternatives:
 - Requiring only checks that always run. Component tests could fail while the pull request still merges.

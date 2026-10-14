@@ -28,54 +28,63 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPOSITORY: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_BEFORE: ${{ github.event.before }}
-          COMMIT_SHA: ${{ github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PATHS: ${{ inputs.paths }}
         run: |
           python3 - <<'PY'
-          import fnmatch
+          import json
           import os
+          import re
           import subprocess
 
           event = os.environ["EVENT_NAME"]
-          force_run = False
-          if event == "pull_request":
+          force_run = event != "pull_request"
+          files = []
+          capped = False
+          if not force_run:
               command = [
-                  "gh", "api", "--paginate",
-                  f"repos/{os.environ['GH_REPOSITORY']}/pulls/{os.environ['PR_NUMBER']}/files",
-                  "--jq", ".[].filename",
+                  "gh", "api", "--paginate", "--slurp",
+                  "repos/" + os.environ["GH_REPOSITORY"] + "/pulls/" + os.environ["PR_NUMBER"] + "/files?per_page=100",
               ]
               result = subprocess.run(command, check=True, text=True, capture_output=True)
-              files = result.stdout.splitlines()
-          elif event == "push":
-              before = os.environ["EVENT_BEFORE"]
-              if before and set(before) == {"0"}:
-                  files = []
-                  force_run = True
-              else:
-                  command = [
-                      "gh", "api",
-                      f"repos/{os.environ['GH_REPOSITORY']}/compare/{before}...{os.environ['COMMIT_SHA']}",
-                      "--jq", ".files[].filename",
-                  ]
-                  result = subprocess.run(command, check=True, text=True, capture_output=True)
-                  files = result.stdout.splitlines()
-          else:
-              files = []
-              force_run = True
+              entries = [entry for page in json.loads(result.stdout) for entry in page]
+              files = [name for entry in entries
+                       for name in (entry["filename"], entry.get("previous_filename")) if name]
+              capped = len(entries) >= 3000
+
+          def github_path_match(pattern, filename):
+              regex = []
+              i = 0
+              while i < len(pattern):
+                  if pattern.startswith("**/", i):
+                      regex.append("(?:.*/)?")
+                      i += 3
+                  elif pattern.startswith("**", i):
+                      regex.append(".*")
+                      i += 2
+                  elif pattern[i] == "*":
+                      regex.append("[^/]*")
+                      i += 1
+                  elif pattern[i] == "?":
+                      regex.append("[^/]")
+                      i += 1
+                  else:
+                      regex.append(re.escape(pattern[i]))
+                      i += 1
+              return re.fullmatch("".join(regex), filename) is not None
 
           patterns = [line.strip() for line in os.environ["PATHS"].splitlines() if line.strip()]
           matched = next((
               (filename, pattern)
               for filename in files
               for pattern in patterns
-              if fnmatch.fnmatchcase(filename, pattern)
-              or (pattern.startswith("**/") and fnmatch.fnmatchcase(filename, pattern[3:]))
+              if github_path_match(pattern, filename)
           ), None)
-          run = force_run or matched is not None
+          run = force_run or capped or matched is not None
           if matched is not None:
               print(f"Matched {matched[0]} with {matched[1]}")
+          elif capped:
+              print("Running because the pull request files API returned the 3000-file cap")
           elif force_run:
               print("Running because this event has no file filter")
           else:

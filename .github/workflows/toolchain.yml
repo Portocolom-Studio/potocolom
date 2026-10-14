@@ -7,6 +7,12 @@ on:
   pull_request:
   push:
     branches: [main]
+    paths:
+      - "Makefile"
+      - "**/pyproject.toml"
+      - "frontend/package.json"
+      - "frontend/.npmrc"
+      - ".github/workflows/toolchain.yml"
 
 permissions:
   contents: read
@@ -24,7 +30,7 @@ jobs:
         .github/workflows/toolchain.yml
   toolchain:
     needs: changes
-    if: needs.changes.outputs.run == 'true'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
