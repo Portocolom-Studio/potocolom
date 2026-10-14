@@ -298,6 +298,7 @@ def test_due_purge_waits_for_actual_command_preparation(oauth_accounts, monkeypa
         worker_ws, worker, _grant, _open, browser_ws, browser, fleet = (
             open_live_session(client, worker_id, model_id)
         )
+        purge = None
         try:
             monkeypatch.setattr(command_store, "prepare_command_subject", held_prepare)
             browser_ws.send_json({
@@ -334,7 +335,7 @@ def test_due_purge_waits_for_actual_command_preparation(oauth_accounts, monkeypa
                 raise AssertionError("purge did not wait behind the held preparation")
 
             client.portal.call(wait_for_purge_lock)
-            release.set()
+            client.portal.call(release.set)
             purge.result(timeout=20)
 
             async def inspect_purged_commands():
@@ -355,6 +356,10 @@ def test_due_purge_waits_for_actual_command_preparation(oauth_accounts, monkeypa
             assert all(row["state"] != "pending" or row["encrypted_body"] is None for row in rows)
             assert all(row["state"] == "erased" or row["encrypted_body"] is None for row in rows)
         finally:
-            release.set()
-            browser.__exit__(None, None, None)
-            fleet.__exit__(None, None, None)
+            client.portal.call(release.set)
+            try:
+                if purge is not None:
+                    purge.result(timeout=20)
+            finally:
+                browser.__exit__(None, None, None)
+                fleet.__exit__(None, None, None)

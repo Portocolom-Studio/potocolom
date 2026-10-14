@@ -1761,7 +1761,8 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
                                       realtime_slots=1)
         realtime.workers[replacement.id] = replacement
         session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=browser,
-                                   params={"prompt": "a red house", "seed": 77})
+                                   params={"prompt": "a red house", "seed": 77},
+                                   desired_params={"prompt": "a red house", "seed": 77})
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.reassign(session))

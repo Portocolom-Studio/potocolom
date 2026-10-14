@@ -269,7 +269,7 @@ async def revoke(session_id: uuid.UUID) -> None:
             owner = await session.scalar(select(Session.user_id).where(Session.id == session_id))
             if owner is None:
                 return
-            await hold_the_account(session, owner, wait=True)
+            await hold_the_account(session, owner)
             row = (await session.execute(
                 select(Session.user_id).where(Session.id == session_id).with_for_update()
             )).scalar_one_or_none()
