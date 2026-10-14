@@ -10,6 +10,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 exec python3 - "$1" <<'PY'
+import itertools
 import re
 import sys
 
@@ -67,14 +68,14 @@ except (OSError, UnicodeDecodeError) as error:
 
 problems = []
 for number, line in enumerate(lines, 1):
-    # Git folds an indented line into the trailer above it.
-    trailer = line
-    for following in lines[number:]:
-        if not following[:1].isspace():
-            break
-        trailer += " " + following.strip()
-    co_author = CO_AUTHOR.match(trailer)
-    if (co_author and AI_CO_AUTHOR.search(co_author.group(1).strip())) or GENERATED.search(SPACES.sub(" ", MARKDOWN.sub("", line))):
+    co_author = CO_AUTHOR.match(line)
+    if co_author:
+        # Git folds the indented lines below a trailer into its value.
+        value = co_author.group(1)
+        for following in itertools.takewhile(lambda next_line: next_line[:1].isspace(), lines[number:]):
+            value += " " + following.strip()
+        co_author = AI_CO_AUTHOR.search(value.strip())
+    if co_author or GENERATED.search(SPACES.sub(" ", MARKDOWN.sub("", line))):
         problems.append((number, "AI attribution", line))
     for char in line:
         if any(low <= ord(char) <= high for low, high in BANNED):
