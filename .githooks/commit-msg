@@ -1,5 +1,10 @@
 #!/bin/sh
 # Rejects AI attribution and decorative characters before the commit is made,
 # so CI does not have to reject it later. Enabled by `make dco-hook`.
+# Git drops the verbose diff below the scissors line and the # comment lines
+# after this hook runs, so they are removed first; CI checks stored text whole.
 root=$(git rev-parse --show-toplevel) || exit 1
-"$root/scripts/check-commit-msg.sh" "$1"
+message=$(mktemp) || exit 1
+trap 'rm -f "$message"' EXIT
+sed '/^# -\{24\} >8 -\{24\}$/,$d' "$1" | git stripspace --strip-comments >"$message"
+"$root/scripts/check-commit-msg.sh" "$message"

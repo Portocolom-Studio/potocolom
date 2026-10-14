@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for scripts/check-commit-msg.sh: each case writes a message to a
 # temp file and asserts the exit status, so the rules must reject what they
-# name and must still pass names with accents and git comment lines.
+# name and must still pass human names and ordinary prose.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -28,7 +28,18 @@ expect() {
 
 expect pass clean 'Fix the ruleset mirror\n\nExplain the change in plain words.\n\nSigned-off-by: Leon Fuller <l.elliottfuller@gmail.com>\n'
 expect pass accented-name 'Add the importer\n\nSigned-off-by: Jos\xc3\xa9 Garc\xc3\xada <jose@example.com>\n'
-expect pass git-comment-dash '# Please enter the commit message \xe2\x80\x94 lines starting with # are ignored.\nAdd the importer\n'
+expect pass human-co-author 'Add the importer\n\nCo-Authored-By: Jean-Claude Dupont <jean@example.org>\n'
+expect pass prose-generated-with 'Tests generated with cursor pagination.\n'
+expect pass revert-subject 'Revert "Tests generated with cursor pagination"\n'
+expect fail heading-dash '# Description \xe2\x80\x94 why\n'
+expect fail heading-generated '# Generated with Claude Code\n'
+expect fail spaced-trailer 'Add the importer\n\nCo-Authored-By : Claude <noreply@anthropic.com>\n'
+expect fail folded-trailer 'Add the importer\n\nCo-Authored-By:\n Claude <noreply@anthropic.com>\n'
+expect fail copilot-co-author 'Add the importer\n\nCo-authored-by: Copilot <175728472+Copilot@users.noreply.github.com>\n'
+expect fail generated-bold 'Generated with **Claude Code**\n'
+expect fail generated-gpt 'Generated with GPT-5\n'
+expect fail watch-emoji 'Ship it \xe2\x8c\x9a\n'
+expect fail keycap-emoji 'Step 1\xef\xb8\x8f\xe2\x83\xa3\n'
 expect fail claude-co-authored-by 'Add the importer\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\n'
 expect fail em-dash 'Fix the importer \xe2\x80\x94 quickly\n'
 expect fail arrow 'Map a -> b \xe2\x86\x92 c\n'
