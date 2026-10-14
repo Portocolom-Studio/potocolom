@@ -10,7 +10,6 @@ if [ "$#" -ne 1 ]; then
 fi
 
 exec python3 - "$1" <<'PY'
-import itertools
 import re
 import sys
 
@@ -26,7 +25,8 @@ AI_CO_AUTHOR = re.compile(
     r"|^(github\s+)?" + TOOL + PRODUCT + r"\s*(<|$)",
     re.IGNORECASE,
 )
-CO_AUTHOR = re.compile(r"^\s*co-authored-by\s*:(.*)", re.IGNORECASE)
+# An indented line continues the trailer above it, so only column 0 starts one.
+CO_AUTHOR = re.compile(r"^co-authored-by\s*:(.*)", re.IGNORECASE)
 MARKDOWN = re.compile(r"<[^>]*>|[*_`\[\]]")
 SPACES = re.compile(r"\s+")
 # A product word (Claude Code) is a credit whatever follows it; a bare tool
@@ -72,8 +72,10 @@ for number, line in enumerate(lines, 1):
     if co_author:
         # Git folds the indented lines below a trailer into its value.
         value = co_author.group(1)
-        for following in itertools.takewhile(lambda next_line: next_line[:1].isspace(), lines[number:]):
-            value += " " + following.strip()
+        index = number
+        while index < len(lines) and lines[index][:1].isspace():
+            value += " " + lines[index].strip()
+            index += 1
         co_author = AI_CO_AUTHOR.search(value.strip())
     if co_author or GENERATED.search(SPACES.sub(" ", MARKDOWN.sub("", line))):
         problems.append((number, "AI attribution", line))

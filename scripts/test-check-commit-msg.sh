@@ -73,7 +73,7 @@ expect fail generated-with 'Add the importer\n\nGenerated with [Claude Code](htt
 
 # Folding once per trailer keeps a long indented body linear; it took 30 s
 # when every line rescanned the lines below it.
-python3 -c 'print("Add it\n" + "  indented\n" * 16000)' >"$dir/long.txt"
+python3 -c 'print("Add it\n" + "  indented\n" * 16000 + "  Co-authored-by: A <a@example.org>\n" * 8000)' >"$dir/long.txt"
 if timeout 5 bash "$check" "$dir/long.txt"; then
 	echo "PASS: long-indented"
 else
