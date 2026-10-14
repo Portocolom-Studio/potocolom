@@ -1868,6 +1868,14 @@ Rejected alternatives:
 - Explicitly unlocking before closing the connection. A failed unlock can leak the lock, while connection closure releases it directly.
 - Wrapping selected startup session contexts. Other serving loops use the same factory and can otherwise return before their actual close finishes.
 
+## Commit messages and PR bodies are checked by a hook and by CI
+
+Adopted 2026-10-14. `scripts/check-commit-msg.sh` rejects a `Co-Authored-By` trailer naming an AI tool, a "Generated with" credit line, the robot emoji, and the decorative characters listed in the script (dashes and curly quotes, arrows, box drawing, symbols and emoji). Accented letters pass. The `commit-msg` hook in `.githooks/` runs it before a commit is made, and the `commit-hygiene` workflow runs it over every commit a pull request adds and over the PR body. The workflow runs the script's self-test first, as `secret-scan` does.
+
+Rejected alternatives:
+- Relying on agent instructions only. A harness can instruct the opposite, so the rule must hold without the agent's cooperation.
+- Banning all non-ASCII. It would reject contributor names such as accented surnames, which are legitimate in a sign-off.
+
 ## Every CI workflow reports on every pull request; main requires all of them
 
 Required status checks block a pull request forever when a path-filtered workflow never starts. Each workflow starts a small `changes` job on every pull request. A component job is skipped only when selection succeeds and finds no matching change; it runs when selection fails. Push events keep their native path filters. Simulation jobs queue instead of replacing pending runs (issue #13). Main's ruleset requires DCO, `secret-scan` and every component check.

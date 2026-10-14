@@ -12,7 +12,7 @@ Signed-off-by: Your Name <you@example.com>
 
 `git commit -s` adds it for you. The sign-off asserts the [Developer Certificate of Origin](https://developercertificate.org/): you wrote the change or otherwise have the right to submit it under the project license.
 
-To sign off automatically in your clone, run `make dco-hook` once. It points `core.hooksPath` at the versioned [`.githooks/`](.githooks/) directory, whose `prepare-commit-msg` appends the trailer from your `git config user.name` and `user.email` when a message does not already have one. Plain `git commit` is then enough. Undo it with `git config --unset core.hooksPath`.
+To sign off automatically in your clone, run `make dco-hook` once. It points `core.hooksPath` at the versioned [`.githooks/`](.githooks/) directory, whose `prepare-commit-msg` appends the trailer from your `git config user.name` and `user.email` when a message does not already have one. Plain `git commit` is then enough. Undo it with `git config --unset core.hooksPath`. The same hooks also reject AI attribution trailers and decorative characters in the message, and CI applies the same rules to every commit and the PR body.
 
 Hooks installed this way stay current when you pull, and they do not replace your author identity: set `user.name` and `user.email` correctly first, since the hook only adds the trailer.
 
