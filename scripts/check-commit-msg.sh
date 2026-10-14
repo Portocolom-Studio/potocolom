@@ -27,7 +27,7 @@ AI_CO_AUTHOR = re.compile(
 )
 # An indented line continues the trailer above it, so only column 0 starts one.
 CO_AUTHOR = re.compile(r"^co-authored-by\s*:(.*)", re.IGNORECASE)
-MARKDOWN = re.compile(r"<[^>]*>|[*_`\[\]]")
+MARKDOWN = re.compile(r"<[^<>]*>|[*_`\[\]]")
 SPACES = re.compile(r"\s+")
 # A product word (Claude Code) is a credit whatever follows it; a bare tool
 # name must end the credit, open its link or take a colon, so "generated with

@@ -71,9 +71,9 @@ expect fail arrow 'Map a -> b \xe2\x86\x92 c\n'
 expect fail emoji 'Ship it \xf0\x9f\xa4\x96\n'
 expect fail generated-with 'Add the importer\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n'
 
-# Folding once per trailer keeps a long indented body linear; it took 30 s
-# when every line rescanned the lines below it.
-python3 -c 'print("Add it\n" + "  indented\n" * 16000 + "  Co-authored-by: A <a@example.org>\n" * 8000)' >"$dir/long.txt"
+# Folding once per trailer and stopping a tag match at the next < keep long
+# input linear; each took over 5 s when it rescanned the text after it.
+python3 -c 'print("Add it\n" + "  indented\n" * 16000 + "  Co-authored-by: A <a@example.org>\n" * 8000 + "<" * 256000)' >"$dir/long.txt"
 if timeout 5 bash "$check" "$dir/long.txt"; then
 	echo "PASS: long-indented"
 else
