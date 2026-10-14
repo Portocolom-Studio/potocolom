@@ -1,6 +1,5 @@
 import asyncio
 import uuid
-from contextlib import suppress
 
 import pytest
 from sqlalchemy import text
@@ -31,11 +30,19 @@ async def _wait(event, seconds=8):
     await asyncio.wait_for(event.wait(), seconds)
 
 
-async def _settle(event, seconds=1):
-    # Unrepaired cleanup reaches the connection lock before the claim commits;
-    # repaired cleanup waits for the claim first, so this point never comes.
-    with suppress(TimeoutError):
-        await asyncio.wait_for(event.wait(), seconds)
+async def _wait_either(first, second, seconds=8):
+    events = (first, second)
+    tasks = [asyncio.create_task(event.wait()) for event in events]
+    try:
+        done, _pending = await asyncio.wait(
+            tasks, timeout=seconds, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert done, "disconnect reached neither its close nor owner-join barrier"
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _inspect(session_id, worker_id, incarnation):
@@ -87,6 +94,17 @@ def test_disconnect_erases_first_open_committed_after_selection(accounts, monkey
         request_work_grant(worker_ws, worker_id, incarnation)
         worker = realtime.workers[worker_id]
         original_send = worker.ws.send_text
+        owner_join_entered = asyncio.Event()
+        original_owner_join = getattr(realtime, "_join_worker_delivery_owners", None)
+
+        if original_owner_join is not None:
+            async def observed_owner_join(owners):
+                if any(realtime._worker_delivery_owners.get(task) is worker
+                       for task in owners):
+                    owner_join_entered.set()
+                return await original_owner_join(owners)
+
+            monkeypatch.setattr(realtime, "_join_worker_delivery_owners", observed_owner_join)
 
         async def observed_send(data):
             if disconnect_started.is_set():
@@ -121,25 +139,22 @@ def test_disconnect_erases_first_open_committed_after_selection(accounts, monkey
         monkeypatch.setattr(db.OwnedSession, "execute", held_execute)
         browser = client.websocket_connect("/api/v1/realtime")
         browser_ws = browser.__enter__()
-        browser_ws.send_json({
-            "type": "open", "model_id": model_id,
-            "params": {"prompt": "first"}, "frame_header": 2,
-        })
+        closing = None
         try:
+            browser_ws.send_json({
+                "type": "open", "model_id": model_id,
+                "params": {"prompt": "first"}, "frame_header": 2,
+            })
             client.portal.call(_wait, claim_paused)
-        except BaseException:
-            release_claim.set()
-            browser.__exit__(None, None, None)
-            fleet.__exit__(None, None, None)
-            raise
-        assert inserted["state"] == "pending"
-        assert inserted["encrypted_body"] is not None
-        assert inserted["key_version"] is not None
-
-        disconnect_started.set()
-        closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
-        try:
-            client.portal.call(_settle, close_waiting)
+            assert inserted["state"] == "pending"
+            assert inserted["encrypted_body"] is not None
+            assert inserted["key_version"] is not None
+            disconnect_started.set()
+            closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
+            if original_owner_join is None:
+                client.portal.call(_wait, close_waiting, 8)
+            else:
+                client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
             release_claim.set()
             client.portal.call(_join, closing)
             attempt, command, lifecycle = client.portal.call(
@@ -150,10 +165,17 @@ def test_disconnect_erases_first_open_committed_after_selection(accounts, monkey
                 command["key_version"], lifecycle, sent_after_disconnect,
             ) == ("ended", "erased", None, None, "ended", [])
         finally:
-            release_claim.set()
-            if not closing.done():
-                client.portal.call(_join, closing)
-            browser.__exit__(None, None, None)
+            try:
+                release_claim.set()
+            finally:
+                try:
+                    if closing is not None and not closing.done():
+                        client.portal.call(_join, closing)
+                finally:
+                    try:
+                        browser.__exit__(None, None, None)
+                    finally:
+                        fleet.__exit__(None, None, None)
 
 
 @pytest.mark.db
@@ -187,6 +209,17 @@ def test_disconnect_and_delivery_registration_do_not_deadlock_first_open(account
         request_work_grant(worker_ws, worker_id, incarnation)
         worker = realtime.workers[worker_id]
         original_send = worker.ws.send_text
+        owner_join_entered = asyncio.Event()
+        original_owner_join = getattr(realtime, "_join_worker_delivery_owners", None)
+
+        if original_owner_join is not None:
+            async def observed_owner_join(owners):
+                if any(realtime._worker_delivery_owners.get(task) is worker
+                       for task in owners):
+                    owner_join_entered.set()
+                return await original_owner_join(owners)
+
+            monkeypatch.setattr(realtime, "_join_worker_delivery_owners", observed_owner_join)
 
         async def observed_send(data):
             if disconnect_started.is_set():
@@ -226,22 +259,21 @@ def test_disconnect_and_delivery_registration_do_not_deadlock_first_open(account
         monkeypatch.setattr(db.OwnedSession, "execute", held_execute)
         browser = client.websocket_connect("/api/v1/realtime")
         browser_ws = browser.__enter__()
-        browser_ws.send_json({
-            "type": "open", "model_id": model_id,
-            "params": {"prompt": "first"}, "frame_header": 2,
-        })
-        try:
-            client.portal.call(_wait, claim_paused)
-        except BaseException:
-            release_claim.set()
-            browser.__exit__(None, None, None)
-            fleet.__exit__(None, None, None)
-            raise
-        disconnect_started.set()
-        closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
+        closing = None
         failure = None
         try:
-            client.portal.call(_settle, close_waiting)
+            browser_ws.send_json({
+                "type": "open", "model_id": model_id,
+                "params": {"prompt": "first"}, "frame_header": 2,
+            })
+            client.portal.call(_wait, claim_paused)
+            assert inserted.get("state") == "pending"
+            disconnect_started.set()
+            closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
+            if original_owner_join is None:
+                client.portal.call(_wait, close_waiting, 8)
+            else:
+                client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
             release_claim.set()
             client.portal.call(_wait, connection_locked)
             client.portal.call(_wait, registration_locked_attempt)
@@ -259,11 +291,20 @@ def test_disconnect_and_delivery_registration_do_not_deadlock_first_open(account
                 command["key_version"], lifecycle, sent_after_disconnect,
             ) == ("ended", "erased", None, None, "ended", [])
         finally:
-            release_claim.set()
-            release_close.set()
-            if not closing.done():
+            try:
+                release_claim.set()
+            finally:
                 try:
-                    client.portal.call(_join, closing)
-                except Exception:
-                    pass
-            browser.__exit__(None, None, None)
+                    release_close.set()
+                finally:
+                    try:
+                        if closing is not None and not closing.done():
+                            try:
+                                client.portal.call(_join, closing)
+                            except Exception:
+                                pass
+                    finally:
+                        try:
+                            browser.__exit__(None, None, None)
+                        finally:
+                            fleet.__exit__(None, None, None)

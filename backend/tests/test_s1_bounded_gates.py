@@ -6,9 +6,11 @@ import uuid
 
 import asyncpg
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import select, text
 
-from app import db, jobs, sessions as account_sessions, worker_authority
+from app import db, jobs, main as main_module, sessions as account_sessions, worker_authority
+from app import realtime
 from app.account_lock import budget_lock
 from app.settings import get_settings
 from app.tables import User
@@ -67,6 +69,24 @@ async def _wait_event(event, seconds):
 
 async def _wait_http(done, seconds):
     return await asyncio.wait_for(asyncio.to_thread(done.wait), seconds)
+
+
+async def _wait_ended(session_id, seconds=8):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        async with db.session_factory() as session:
+            state = await session.scalar(
+                text("SELECT state FROM realtime_sessions WHERE id = :id"),
+                {"id": session_id},
+            )
+            attempt = await session.scalar(
+                text("SELECT state FROM realtime_session_attempts WHERE session_id = :id"),
+                {"id": session_id},
+            )
+        if state == "ended" and attempt == "ended":
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("realtime session and attempt did not end")
 
 
 @pytest.mark.db
@@ -237,3 +257,177 @@ def test_revoked_realtime_cleanup_uses_bounded_account_gate(accounts, monkeypatc
         if "error" in outcome:
             raise outcome["error"]
         assert response.status_code == 204
+
+
+@pytest.mark.db
+def test_refused_realtime_end_completes_after_the_gate_frees(accounts, monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"s1-revoke-owned-end-{uuid.uuid4()}"
+    model_id = f"s1-revoke-owned-end-model-{uuid.uuid4()}"
+    with protocol6_client(worker_id) as client:
+        async def find_user():
+            async with db.session_factory() as session:
+                return (await session.execute(
+                    select(User).where(User.id == db.local_user_id)
+                )).scalar_one()
+
+        user = client.portal.call(find_user)
+        issued = client.portal.call(account_sessions.mint, user, False)
+        cookie, csrf = account_sessions.cookie_names(get_settings().public_url)
+        client.cookies.set(cookie, issued.token)
+        client.cookies.set(csrf, issued.csrf)
+        worker_ws, worker, _grant, open_command, browser_ws, browser, fleet = (
+            open_live_session(client, worker_id, model_id)
+        )
+        resolved = client.portal.call(account_sessions.resolve, issued.token)
+        auth_session_id = resolved.session.id
+        realtime_session_id = uuid.UUID(open_command["session_id"])
+        end_entered = asyncio.Event()
+        holders = []
+        end_finished = []
+        fence_calls = []
+        original_end = worker_authority.end_realtime_session
+        original_fence = realtime.close_fenced_worker
+
+        async def held_end(session_id, generation, browser_owner_id):
+            holder = await _hold_account(db.local_user_id)
+            holders.append(holder)
+            end_entered.set()
+            result = await original_end(session_id, generation, browser_owner_id)
+            end_finished.append(result)
+            return result
+
+        async def observed_fence(target_id, incarnation):
+            fence_calls.append((target_id, incarnation))
+            return await original_fence(target_id, incarnation)
+
+        monkeypatch.setattr(worker_authority, "end_realtime_session", held_end)
+        monkeypatch.setattr(realtime, "close_fenced_worker", observed_fence)
+        started = time.monotonic()
+        thread, done, outcome = _start_request(lambda: client.post(
+            "/api/v1/auth/logout",
+            headers={"origin": get_settings().public_url,
+                     "x-csrf-token": issued.csrf},
+        ))
+        try:
+            client.portal.call(_wait_event, end_entered, 8)
+            client.portal.call(_wait_http, done, 6)
+            assert outcome.get("response") is not None
+            assert outcome["response"].status_code == 204
+            assert time.monotonic() - started < 6
+            for holder in holders:
+                client.portal.call(_release_account, holder)
+            client.portal.call(_wait_ended, realtime_session_id, 8)
+            async def revoked_state():
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        text("SELECT revoked_at IS NOT NULL FROM sessions WHERE id = :id"),
+                        {"id": auth_session_id},
+                    )
+
+            assert client.portal.call(revoked_state) is True
+            assert fence_calls == [(worker_id, worker.incarnation)]
+            assert end_finished == [True]
+            assert worker_id not in realtime.workers
+        finally:
+            for holder in holders:
+                client.portal.call(_release_account, holder)
+            thread.join(8)
+            assert not thread.is_alive(), "logout request did not finish"
+            browser.__exit__(None, None, None)
+            fleet.__exit__(None, None, None)
+        if "error" in outcome:
+            raise outcome["error"]
+
+
+@pytest.mark.db
+def test_shutdown_joins_a_pending_realtime_end(accounts, monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"s1-revoke-shutdown-end-{uuid.uuid4()}"
+    model_id = f"s1-revoke-shutdown-end-model-{uuid.uuid4()}"
+    events = []
+    shutdown_drain_started = threading.Event()
+    with protocol6_client(worker_id) as client:
+        async def find_user():
+            async with db.session_factory() as session:
+                return (await session.execute(
+                    select(User).where(User.id == db.local_user_id)
+                )).scalar_one()
+
+        user = client.portal.call(find_user)
+        issued = client.portal.call(account_sessions.mint, user, False)
+        cookie, csrf = account_sessions.cookie_names(get_settings().public_url)
+        client.cookies.set(cookie, issued.token)
+        client.cookies.set(csrf, issued.csrf)
+        worker_ws, worker, _grant, open_command, browser_ws, browser, fleet = (
+            open_live_session(client, worker_id, model_id)
+        )
+        realtime_session_id = uuid.UUID(open_command["session_id"])
+        end_entered = asyncio.Event()
+        holders = []
+        original_end = worker_authority.end_realtime_session
+        original_dispose = db.dispose
+        original_drain = main_module.drain_worker_deliveries
+
+        async def held_end(session_id, generation, browser_owner_id):
+            assert session_id == realtime_session_id
+            holder = await _hold_account(db.local_user_id)
+            holders.append(holder)
+            end_entered.set()
+            try:
+                result = await original_end(session_id, generation, browser_owner_id)
+            except HTTPException:
+                events.append("end-refused")
+                raise
+            async with db.session_factory() as session:
+                state = await session.scalar(
+                    text("SELECT state FROM realtime_sessions WHERE id = :id"),
+                    {"id": session_id},
+                )
+            assert state == "ended"
+            events.append("end-returned")
+            return result
+
+        async def observed_dispose():
+            events.append("dispose")
+            return await original_dispose()
+
+        async def observed_drain():
+            shutdown_drain_started.set()
+            return await original_drain()
+
+        monkeypatch.setattr(worker_authority, "end_realtime_session", held_end)
+        monkeypatch.setattr(db, "dispose", observed_dispose)
+        monkeypatch.setattr(main_module, "drain_worker_deliveries", observed_drain)
+        thread, done, outcome = _start_request(lambda: client.post(
+            "/api/v1/auth/logout",
+            headers={"origin": get_settings().public_url,
+                     "x-csrf-token": issued.csrf},
+        ))
+        releaser = threading.Thread(target=lambda: (
+            shutdown_drain_started.wait(8),
+            time.sleep(0.1),
+            client.portal.call(_release_account, holders[0]) if holders else None,
+        ))
+        try:
+            client.portal.call(_wait_event, end_entered, 8)
+            client.portal.call(_wait_http, done, 6)
+            assert outcome["response"].status_code == 204
+            releaser.start()
+            thread.join(8)
+            assert not thread.is_alive()
+        finally:
+            if releaser.ident is None:
+                releaser.start()
+            if thread.is_alive():
+                thread.join(8)
+            try:
+                browser.__exit__(None, None, None)
+            finally:
+                fleet.__exit__(None, None, None)
+        if "error" in outcome:
+            raise outcome["error"]
+    releaser.join(8)
+    assert not releaser.is_alive()
+    assert "end-returned" in events
+    assert events.index("end-returned") < events.index("dispose")
