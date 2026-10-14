@@ -1,0 +1,5 @@
+#!/bin/sh
+# Rejects AI attribution and decorative characters before the commit is made,
+# so CI does not have to reject it later. Enabled by `make dco-hook`.
+root=$(git rev-parse --show-toplevel) || exit 1
+"$root/scripts/check-commit-msg.sh" "$1"

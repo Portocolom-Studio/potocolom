@@ -1,0 +1,44 @@
+# Rejects AI attribution and decorative characters in the commit messages and
+# the PR body, so the same rules the commit-msg hook applies also hold for
+# contributors who never enabled it (scripts/check-commit-msg.sh).
+name: commit-hygiene
+
+on:
+  pull_request:
+    # edited re-checks the body after a description change.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-hygiene:
+    # Self-hosted: docs/self-hosted-runner.md
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    steps:
+      # Full history so the base..head range below resolves every commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+        timeout-minutes: 5
+      - name: Self-test
+        run: bash scripts/test-check-commit-msg.sh
+        timeout-minutes: 5
+      - name: Check the commit messages the pull request adds
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for sha in $(git rev-list --reverse "$BASE_SHA..$HEAD_SHA"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/commit-message"
+            echo "commit $sha"
+            bash scripts/check-commit-msg.sh "$RUNNER_TEMP/commit-message"
+          done
+        timeout-minutes: 5
+      - name: Check the pull request body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body"
+          bash scripts/check-commit-msg.sh "$RUNNER_TEMP/pr-body"
+        timeout-minutes: 5

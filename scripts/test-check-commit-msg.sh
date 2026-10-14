@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Self-test for scripts/check-commit-msg.sh: each case writes a message to a
+# temp file and asserts the exit status, so the rules must reject what they
+# name and must still pass names with accents and git comment lines.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+check="$root/scripts/check-commit-msg.sh"
+dir=$(mktemp -d)
+trap 'rm -rf "$dir"' EXIT
+
+failures=0
+
+# expect <pass|fail> <case-name> <message printf %b text>
+expect() {
+	local want="$1" name="$2" file="$dir/$2.txt" code=0 err
+	printf '%b' "$3" >"$file"
+	err=$(bash "$check" "$file" 2>&1 >/dev/null) || code=$?
+	if [ "$want" = pass ] && [ "$code" -eq 0 ]; then
+		echo "PASS: $name"
+	elif [ "$want" = fail ] && [ "$code" -eq 1 ] && grep -q '^check-commit-msg: line ' <<<"$err"; then
+		echo "PASS: $name (rejected: $err)"
+	else
+		echo "FAIL: $name (want $want, exit $code): $err"
+		failures=$((failures + 1))
+	fi
+}
+
+expect pass clean 'Fix the ruleset mirror\n\nExplain the change in plain words.\n\nSigned-off-by: Leon Fuller <l.elliottfuller@gmail.com>\n'
+expect pass accented-name 'Add the importer\n\nSigned-off-by: Jos\xc3\xa9 Garc\xc3\xada <jose@example.com>\n'
+expect pass git-comment-dash '# Please enter the commit message \xe2\x80\x94 lines starting with # are ignored.\nAdd the importer\n'
+expect fail claude-co-authored-by 'Add the importer\n\nCo-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>\n'
+expect fail em-dash 'Fix the importer \xe2\x80\x94 quickly\n'
+expect fail arrow 'Map a -> b \xe2\x86\x92 c\n'
+expect fail emoji 'Ship it \xf0\x9f\xa4\x96\n'
+expect fail generated-with 'Add the importer\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n'
+
+if [ "$failures" -gt 0 ]; then
+	echo "commit message check self-test: ${failures} case(s) failed"
+	exit 1
+fi
+echo "commit message check self-test: all cases passed"
