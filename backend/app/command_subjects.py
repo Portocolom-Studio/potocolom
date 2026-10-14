@@ -789,36 +789,6 @@ async def read_committed_desired(session_id: uuid.UUID, account_user_id: uuid.UU
         return (dict(row["desired_params"]), int(row["desired_revision"])) if row else None
 
 
-async def lock_subject_commands(
-    session, account_user_id: uuid.UUID, kind: str, subject_id: uuid.UUID,
-    subject_sequence: int | None,
-):
-    commands = subject_command_kinds(kind)
-    if not isinstance(account_user_id, uuid.UUID) or not isinstance(subject_id, uuid.UUID):
-        raise CommandRefused("command erasure subject identity is invalid")
-    values: dict[str, object] = {
-        f"kind_{index}": item for index, item in enumerate(commands)
-    }
-    values.update(account_user_id=account_user_id, subject_id=subject_id)
-    kinds = ", ".join(f":kind_{index}" for index in range(len(commands)))
-    sequence_clause = ""
-    if subject_sequence is not None:
-        if (not isinstance(subject_sequence, int) or isinstance(subject_sequence, bool)
-                or not 1 <= subject_sequence <= MAX_SEQUENCE):
-            raise CommandRefused("command erasure subject sequence is invalid")
-        sequence_clause = " AND subject_sequence = :subject_sequence"
-        values["subject_sequence"] = subject_sequence
-    return (await session.execute(
-        text(
-            "SELECT worker_id, incarnation, command_sequence, state FROM worker_commands "
-            f"WHERE account_user_id = :account_user_id AND kind IN ({kinds}) "
-            "AND subject_id = :subject_id" + sequence_clause +
-            " ORDER BY worker_id, incarnation, command_sequence FOR UPDATE"
-        ),
-        values,
-    )).mappings().all()
-
-
 def subject_command_kinds(kind: str) -> tuple[str, ...]:
     commands = SUBJECT_COMMANDS.get(kind, (kind,))
     if any(command not in SUBJECT_FIELDS for command in commands):
@@ -937,10 +907,26 @@ async def subject_erasure_selection(
         kind="session" if all(item.endswith("_session") for item in kinds) else "job",
         subject_id=subject_id, subject_sequence=subject_sequence,
     )
-    rows = await lock_subject_commands(
-        session, account_user_id, kind, subject_id, subject_sequence
-    )
-    return statement, values, workers, rows
+    journal_values = dict(values)
+    worker_terms = []
+    for index, (worker_id, incarnation) in enumerate(sorted(workers)):
+        journal_values[f"worker_id_{index}"] = worker_id
+        journal_values[f"incarnation_{index}"] = incarnation
+        worker_terms.append(
+            f"(worker_id = :worker_id_{index} AND incarnation = :incarnation_{index})"
+        )
+    journal_selector = f"({statement})"
+    if worker_terms:
+        journal_selector += " OR " + " OR ".join(worker_terms)
+    rows = (await session.execute(
+        text(
+            "SELECT worker_id, incarnation, command_sequence, state, "
+            f"({statement}) AS selected FROM worker_commands WHERE {journal_selector} "
+            "ORDER BY worker_id, incarnation, command_sequence FOR UPDATE"
+        ),
+        journal_values,
+    )).mappings().all()
+    return statement, values, workers, [row for row in rows if row["selected"]]
 
 
 async def lock_subject_attempts(

@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app import db
 from app.account_lock import hold_the_account
+from app.command_subjects import lock_attempt_ranges, subject_erasure_selection
 from app.protocol6 import preflight_worker_control
 
 logger = logging.getLogger("potocolom.worker_authority")
@@ -372,7 +373,8 @@ async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
             attempts = list((await session.execute(
                 text(
                     "SELECT session.id AS session_id, session.user_id, "
-                    "attempt.control_generation FROM realtime_sessions session "
+                    "attempt.control_generation, attempt.worker_id, "
+                    "attempt.incarnation, attempt.range_id FROM realtime_sessions session "
                     "JOIN realtime_session_attempts attempt ON attempt.session_id = session.id "
                     "WHERE attempt.worker_id = :worker_id AND attempt.incarnation = :incarnation "
                     "AND attempt.state IN ('opening', 'running') "
@@ -381,6 +383,7 @@ async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
                 ),
                 {"worker_id": worker_id, "incarnation": incarnation},
             )).mappings().all())
+            await lock_attempt_ranges(session, attempts, owners)
             for attempt in attempts:
                 await command_store.erase_subject_commands(
                     session, attempt["user_id"], kind="session",
@@ -390,9 +393,9 @@ async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
             await session.execute(
                 text(
                     "UPDATE worker_connections SET lifecycle = 'ended', "
-                    "closed_at = clock_timestamp() "
+                    "closed_at = coalesce(closed_at, clock_timestamp()) "
                     "WHERE worker_id = :worker_id AND incarnation = :incarnation "
-                    "AND transport_owner_id = :owner_id AND closed_at IS NULL"
+                    "AND transport_owner_id = :owner_id"
                 ),
                 {
                     "worker_id": worker_id,
@@ -804,10 +807,9 @@ async def commit_worker_report(
                     worker_id=worker_id, incarnation=incarnation,
                 )
             elif terminal_job:
-                from app.command_subjects import lock_subject_commands
-
-                await lock_subject_commands(
-                    session, user_id, "job", subject_id, dispatch_sequence
+                await subject_erasure_selection(
+                    session, user_id, kind="job", subject_id=subject_id,
+                    subject_sequence=dispatch_sequence,
                 )
             lease = (await session.execute(
                 text(
