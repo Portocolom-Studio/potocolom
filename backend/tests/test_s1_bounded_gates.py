@@ -315,6 +315,9 @@ def test_refused_realtime_end_completes_after_the_gate_frees(accounts, monkeypat
             assert outcome.get("response") is not None
             assert outcome["response"].status_code == 204
             assert time.monotonic() - started < 6
+            # Hold past the 3 s HTTP gate bound: the owned end must keep waiting
+            # for the account, not give up the way an HTTP route does.
+            client.portal.call(asyncio.sleep, 3.5)
             for holder in holders:
                 client.portal.call(_release_account, holder)
             client.portal.call(_wait_ended, realtime_session_id, 8)
