@@ -1,0 +1,94 @@
+name: changes
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: Newline-separated changed-file glob patterns
+        required: true
+        type: string
+    outputs:
+      run:
+        description: Whether any changed file matches the patterns
+        value: ${{ jobs.changes.outputs.run }}
+
+jobs:
+  changes:
+    runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.match.outputs.run }}
+    steps:
+      - name: Match changed files
+        id: match
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PATHS: ${{ inputs.paths }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          event = os.environ["EVENT_NAME"]
+          force_run = event != "pull_request"
+          files = []
+          capped = False
+          if not force_run:
+              command = [
+                  "gh", "api", "--paginate", "--slurp",
+                  "repos/" + os.environ["GH_REPOSITORY"] + "/pulls/" + os.environ["PR_NUMBER"] + "/files?per_page=100",
+              ]
+              result = subprocess.run(command, check=True, text=True, capture_output=True)
+              entries = [entry for page in json.loads(result.stdout) for entry in page]
+              files = [name for entry in entries
+                       for name in (entry["filename"], entry.get("previous_filename")) if name]
+              capped = len(entries) >= 3000
+
+          def github_path_match(pattern, filename):
+              regex = []
+              i = 0
+              while i < len(pattern):
+                  if pattern.startswith("**/", i):
+                      regex.append("(?:.*/)?")
+                      i += 3
+                  elif pattern.startswith("**", i):
+                      regex.append(".*")
+                      i += 2
+                  elif pattern[i] == "*":
+                      regex.append("[^/]*")
+                      i += 1
+                  elif pattern[i] == "?":
+                      regex.append("[^/]")
+                      i += 1
+                  else:
+                      regex.append(re.escape(pattern[i]))
+                      i += 1
+              return re.fullmatch("".join(regex), filename, flags=re.DOTALL) is not None
+
+          patterns = [line.strip() for line in os.environ["PATHS"].splitlines() if line.strip()]
+          matched = next((
+              (filename, pattern)
+              for filename in files
+              for pattern in patterns
+              if github_path_match(pattern, filename)
+          ), None)
+          run = force_run or capped or matched is not None
+          if matched is not None:
+              print(f"A changed file matched {matched[1]}")
+          elif capped:
+              print("Running because the pull request files API returned the 3000-file cap")
+          elif force_run:
+              print("Running because this event has no file filter")
+          else:
+              print("No changed file matched")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run={str(run).lower()}\n")
+          PY

@@ -1875,3 +1875,12 @@ Adopted 2026-10-14. `scripts/check-commit-msg.sh` rejects a `Co-Authored-By` tra
 Rejected alternatives:
 - Relying on agent instructions only. A harness can instruct the opposite, so the rule must hold without the agent's cooperation.
 - Banning all non-ASCII. It would reject contributor names such as accented surnames, which are legitimate in a sign-off.
+
+## Every CI workflow reports on every pull request; main requires all of them
+
+Required status checks block a pull request forever when a path-filtered workflow never starts. Each workflow starts a small `changes` job on every pull request. A component job is skipped only when selection succeeds and finds no matching change; it runs when selection fails. Push events keep their native path filters. Simulation jobs queue instead of replacing pending runs (issue #13). Main's ruleset requires DCO, `secret-scan` and every component check.
+
+Rejected alternatives:
+- Requiring only checks that always run. Component tests could fail while the pull request still merges.
+- One gate workflow polling the others. It holds a runner while it waits, and four runners share this machine.
+- Removing path filters and always running every job. A docs change would run the full suite.
