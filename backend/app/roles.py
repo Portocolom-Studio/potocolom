@@ -75,6 +75,9 @@ async def change_role(
                 # offline, so nothing here may produce one.
                 raise HTTPException(status_code=403,
                                     detail="the last administrator cannot be demoted")
+            from app import command_store
+
+            await command_store.erase_realtime_commands(session, user_id)
             target.role = change.role
             # The mailed capabilities first, then the sessions, because that is
             # the order operator.collapse deletes them in and the other way

@@ -59,6 +59,15 @@ def command_ack_fields(command: dict) -> dict:
     }
 
 
+async def acknowledge_bound(message, worker_id, incarnation):
+    return await command_store.acknowledge(
+        message,
+        expected_worker_id=worker_id,
+        expected_incarnation=incarnation,
+        transport_owner_id=worker_authority.TRANSPORT_OWNER_ID,
+    )
+
+
 def job_done_from_dispatch(command: dict, grant_nonce: str) -> dict:
     message = {
         "type": "job_done",
@@ -166,7 +175,8 @@ def test_protocol6_command_ack_delivers_the_next_job(monkeypatch):
             assert first is True
             command = worker.receive_json()
             ack = {**command_ack_fields(command), "type": "command_ack", "status": "accepted"}
-            assert client.portal.call(command_store.acknowledge, ack) is True
+            recorded = client.portal.call(acknowledge_bound, ack, worker_id, incarnation)
+            assert recorded.recorded is True
             dispatched = client.portal.start_task_soon(jobs.dispatch, job_two)
             second = worker.receive_json()
             assert dispatched.result() is True
@@ -193,14 +203,60 @@ def test_protocol6_job_done_completes_the_job(monkeypatch):
             assert client.portal.call(jobs.dispatch, job_id) is True
             command = worker.receive_json()
             ack = {**command_ack_fields(command), "type": "command_ack", "status": "accepted"}
-            worker.send_json(ack)
 
             upload = command["upload"]
             put = put_upload(client, upload, png_bytes())
             assert put.status_code == 200
 
+            def missing_key_ring():
+                raise command_store.KeyRingError("key is unavailable")
+
+            monkeypatch.setattr(command_store, "get_key_ring", missing_key_ring)
             done = job_done_from_dispatch(command, grant["grant_nonce"])
             worker.send_json(done)
+            report_ack = worker.receive_json()
+            assert report_ack["type"] == "checkpoint_ack"
+            assert report_ack["status"] == "accepted"
+
+            async def retired_head():
+                async with db.session_factory() as session:
+                    row = (await session.execute(
+                        text(
+                            "SELECT state, encrypted_body FROM worker_commands "
+                            "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                            "AND command_sequence = :sequence"
+                        ),
+                        {"worker_id": worker_id, "incarnation": incarnation,
+                         "sequence": command["command_sequence"]},
+                    )).mappings().one()
+                    connection = (await session.execute(
+                        text(
+                            "SELECT closed_at FROM worker_connections "
+                            "WHERE worker_id = :worker_id AND incarnation = :incarnation"
+                        ),
+                        {"worker_id": worker_id, "incarnation": incarnation},
+                    )).scalar_one()
+                    return row["state"], row["encrypted_body"], connection
+
+            assert client.portal.call(retired_head) == ("erased", None, None)
+            worker.send_json(ack)
+
+            async def wait_consumed():
+                for _ in range(200):
+                    async with db.session_factory() as session:
+                        floor = await session.scalar(
+                            text(
+                                "SELECT acknowledged_floor FROM worker_connections "
+                                "WHERE worker_id = :worker_id AND incarnation = :incarnation"
+                            ),
+                            {"worker_id": worker_id, "incarnation": incarnation},
+                        )
+                    if floor >= command["command_sequence"]:
+                        return
+                    await asyncio.sleep(0.01)
+                raise AssertionError("late dispatch ACK did not consume the erased head")
+
+            client.portal.call(wait_consumed)
 
             async def wait_succeeded():
                 for _ in range(200):
@@ -237,12 +293,35 @@ def test_protocol6_cancel_job_is_durable(monkeypatch):
 
             cancelled = client.post(f"/api/v1/generations/{job_id}/cancel")
             assert cancelled.status_code == 204
-            cancel = worker.receive_json()
-            validate_message(cancel, expected_worker_id=worker_id,
-                             expected_incarnation=incarnation)
-            assert cancel["type"] == "cancel_job"
-            assert cancel["dispatch_sequence"] == command["dispatch_sequence"]
-            assert cancel["dispatch_token"] == command["dispatch_token"]
+
+            async def inspect_cancel_erasure():
+                async with db.session_factory() as session:
+                    row = (await session.execute(
+                        text(
+                            "SELECT state, encrypted_body, key_version, complete_bytes "
+                            "FROM worker_commands WHERE worker_id = :worker_id "
+                            "AND incarnation = :incarnation AND command_sequence = 1"
+                        ), {"worker_id": worker_id, "incarnation": incarnation},
+                    )).mappings().one()
+                    connection = (await session.execute(
+                        text(
+                            "SELECT acknowledged_floor, closed_at FROM worker_connections "
+                            "WHERE worker_id = :worker_id AND incarnation = :incarnation"
+                        ), {"worker_id": worker_id, "incarnation": incarnation},
+                    )).mappings().one()
+                    return row, connection
+
+            erased, connection = client.portal.call(inspect_cancel_erasure)
+            assert erased["state"] == "erased"
+            assert erased["encrypted_body"] is None
+            assert erased["key_version"] is None
+            assert erased["complete_bytes"] == 0
+            assert connection["acknowledged_floor"] == 0
+            assert connection["closed_at"] is not None
+            ack = {**command_ack_fields(command), "type": "command_ack", "status": "accepted"}
+            result = client.portal.call(acknowledge_bound, ack, worker_id, incarnation)
+            assert result.recorded is True
+            assert result.publication is None
 
 
 @pytest.mark.db
@@ -366,7 +445,7 @@ def test_protocol6_acknowledged_commands_compact(monkeypatch):
             assert pending is not None
             decoded = decode_control(pending.body)
             ack = {**command_ack_fields(decoded), "type": "command_ack", "status": "accepted"}
-            assert await command_store.acknowledge(ack)
+            assert (await acknowledge_bound(ack, worker_id, incarnation)).recorded
 
         async def run_compaction():
             for _ in range(5):
@@ -412,18 +491,21 @@ def test_protocol6_an_ack_that_does_not_match_its_command_is_ignored(monkeypatch
             wrong = {**ack, "job_id": str(uuid.uuid4())}
             validate_message(wrong)
 
-            assert client.portal.call(command_store.acknowledge, wrong) is False
+            assert not client.portal.call(
+                acknowledge_bound, wrong, worker_id, incarnation
+            ).recorded
             assert client.portal.call(
                 command_store.read_exact_pending, worker_id, incarnation) is not None
-            assert client.portal.call(command_store.acknowledge, ack) is True
+            assert client.portal.call(
+                acknowledge_bound, ack, worker_id, incarnation
+            ).recorded
             assert client.portal.call(
                 command_store.read_exact_pending, worker_id, incarnation) is None
 
 
 @pytest.mark.db
 def test_protocol6_a_cancel_landing_right_after_the_claim_reaches_the_worker(monkeypatch):
-    """The cancel commits after the claim but before dispatch resumes. It
-    must still find the in-flight entry and send cancel_job."""
+    """A cancel that wins before first delivery erases the undispatched body."""
     root_keys(monkeypatch)
     worker_id = f"job-gap-{uuid.uuid4()}"
     incarnation = uuid.uuid4()
@@ -433,7 +515,7 @@ def test_protocol6_a_cancel_landing_right_after_the_claim_reaches_the_worker(mon
     async def commit_then_cancel(*args, **kwargs):
         command = await real_commit(*args, **kwargs)
         if args[2] == "dispatch_job":
-            await jobs.cancel(uuid.UUID(decode_control(command.body)["job_id"]))
+            await jobs.cancel(command.subject_id)
         return command
 
     with protocol6_client(worker_id) as client:
@@ -445,14 +527,33 @@ def test_protocol6_a_cancel_landing_right_after_the_claim_reaches_the_worker(mon
 
             job_id = client.portal.call(seed_queued_job, model_id)
             monkeypatch.setattr(command_store, "commit_command", commit_then_cancel)
-            client.portal.start_task_soon(jobs.dispatch, job_id)
-            received = [worker.receive_json(), worker.receive_json()]
-            kinds = sorted(message["type"] for message in received)
-            assert kinds == ["cancel_job", "dispatch_job"]
-            dispatch = next(m for m in received if m["type"] == "dispatch_job")
-            cancel = next(m for m in received if m["type"] == "cancel_job")
-            assert cancel["dispatch_sequence"] == dispatch["dispatch_sequence"]
-            assert cancel["command_sequence"] == dispatch["command_sequence"] + 1
+            assert client.portal.call(jobs.dispatch, job_id) is True
+
+            async def inspect_cancelled_claim():
+                async with db.session_factory() as session:
+                    row = (await session.execute(
+                        text(
+                            "SELECT state, encrypted_body, complete_bytes FROM worker_commands "
+                            "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                            "AND command_sequence = 1"
+                        ), {"worker_id": worker_id, "incarnation": incarnation},
+                    )).mappings().one()
+                    connection = (await session.execute(
+                        text(
+                            "SELECT acknowledged_floor, closed_at FROM worker_connections "
+                            "WHERE worker_id = :worker_id AND incarnation = :incarnation"
+                        ), {"worker_id": worker_id, "incarnation": incarnation},
+                    )).mappings().one()
+                    return row, connection
+
+            erased, connection = client.portal.call(inspect_cancelled_claim)
+            assert erased["state"] == "erased"
+            assert erased["encrypted_body"] is None
+            assert erased["complete_bytes"] == 0
+            assert connection["acknowledged_floor"] == 0
+            assert connection["closed_at"] is not None
+            with pytest.raises(command_store.CommandRefused):
+                client.portal.call(command_store.read_exact_pending, worker_id, incarnation)
 
 
 @pytest.mark.db
@@ -480,6 +581,18 @@ def test_protocol6_a_pending_command_replays_after_the_grant_renews(monkeypatch)
                 command_store.read_exact_pending, worker_id, incarnation)
             assert pending is not None
             assert decode_control(pending.body) == command
+
+            async def register_replay():
+                return await command_store.register_delivery(
+                    pending,
+                    session_factory=db.session_factory,
+                    worker_id=worker_id,
+                    incarnation=incarnation,
+                    transport_owner_id=worker_authority.TRANSPORT_OWNER_ID,
+                    register=lambda: True,
+                )
+
+            assert client.portal.call(register_replay)
 
 
 @pytest.mark.db
@@ -577,41 +690,3 @@ def test_protocol6_a_claim_whose_outcome_cannot_be_read_keeps_its_entry(monkeypa
             assert job_id in jobs.inflight
             assert job_id not in jobs.lost_jobs
             jobs.inflight.pop(job_id)
-
-
-@pytest.mark.db
-def test_protocol6_a_pending_dispatch_for_a_cancelled_job_still_goes_out_in_order(monkeypatch):
-    """A cancel takes the row while the claim's error is surfacing. The
-    pending dispatch_job is still sent, then its cancel_job, so the worker's
-    sequence never stalls."""
-    root_keys(monkeypatch)
-    worker_id = f"job-order-{uuid.uuid4()}"
-    incarnation = uuid.uuid4()
-    model_id = f"job-order-model-{uuid.uuid4()}"
-    real_commit = command_store.commit_command
-
-    async def commit_cancel_then_fail(*args, **kwargs):
-        command = await real_commit(*args, **kwargs)
-        if args[2] == "dispatch_job":
-            job = uuid.UUID(decode_control(command.body)["job_id"])
-            async with db.session_factory() as session:
-                await session.execute(
-                    text("UPDATE jobs SET state = 'cancelled' WHERE id = :id"), {"id": job})
-                await session.commit()
-            raise RuntimeError("connection reset after COMMIT")
-        return command
-
-    with protocol6_client(worker_id) as client:
-        client.portal.call(worker_authority.acquire_scheduler_lease)
-        with client.websocket_connect("/api/v1/fleet") as worker:
-            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
-            worker.receive_json()
-            request_work_grant(worker, worker_id, incarnation)
-
-            job_id = client.portal.call(seed_queued_job, model_id)
-            client.portal.call(jobs.queues.pop, jobs.JOB_QUEUE)
-            monkeypatch.setattr(command_store, "commit_command", commit_cancel_then_fail)
-            assert client.portal.call(jobs.dispatch, job_id) is True
-            command = worker.receive_json()
-            assert command["type"] == "dispatch_job"
-            assert command["job_id"] == str(job_id)

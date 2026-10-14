@@ -289,23 +289,63 @@ async def send_v6_command(
             or worker.incarnation is None or worker.grant_nonce is None
             or workers.get(worker.id) is not worker):
         raise ProtocolError("worker has no current protocol6 work grant")
+    incarnation = worker.incarnation
+    grant_nonce = worker.grant_nonce
     from app import command_store
 
     try:
-        command = await command_store.commit_command(
-            worker.id,
-            worker.incarnation,
-            command_type,
-            fields,
-            grant_nonce=worker.grant_nonce,
-            account_user_id=account_user_id,
-            session_context=session_context,
-        )
+        desired_callback = None
+        if command_type == "update_session" and session_context is not None:
+            # The mirror may only ever apply what THIS command commits, so its
+            # guard reads the originating generation and attempt off the
+            # immutable fields: RAM has often moved on by the time the commit
+            # lands, and keying on it would let an old direct command write
+            # over the newer generation it no longer owns.
+            try:
+                session_key = uuid.UUID(fields["session_id"])
+                origin_generation = fields["control_generation"]
+                origin_attempt = uuid.UUID(fields["attempt_id"])
+            except (KeyError, TypeError, ValueError):
+                raise command_store.CommandRefused(
+                    "command subject identity is invalid") from None
+            if (isinstance(origin_generation, bool) or not isinstance(origin_generation, int)
+                    or not 1 <= origin_generation <= command_store.MAX_SEQUENCE):
+                raise command_store.CommandRefused(
+                    "command subject sequence is invalid") from None
+            subject = sessions.get(session_key)
+            if (subject is not None
+                    and subject.control_generation == origin_generation
+                    and subject.attempt_id == origin_attempt):
+                identity = (subject, origin_generation, origin_attempt,
+                            subject.desired_params)
+
+                def mirror_desired(params: dict, revision: int) -> None:
+                    current, generation, attempt_id, snapshot = identity
+                    if (sessions.get(current.id) is current
+                            and current.control_generation == generation
+                            and current.attempt_id == attempt_id
+                            and current.desired_params is snapshot):
+                        current.desired_params = params
+                        current.desired_revision = revision
+
+                desired_callback = mirror_desired
+
+        async def prepare():
+            return await command_store.commit_command(
+                worker.id,
+                incarnation,
+                command_type,
+                fields,
+                grant_nonce=grant_nonce,
+                transport_owner_id=worker.transport_owner_id,
+                account_user_id=account_user_id,
+                session_context=session_context,
+                desired_committed=desired_callback,
+            )
+
+        return await _deliver_pending_worker_command(worker, prepare=prepare)
     except command_store.CommandRefused:
         raise ProtocolError("worker command was refused") from None
-    await safe_send(worker.ws.send_text(command.body.decode("utf-8", "strict")))
-    note_command_sent(worker, command.sequence)
-    return command
 
 
 def note_command_sent(worker: "Worker", sequence: int) -> None:
@@ -315,44 +355,240 @@ def note_command_sent(worker: "Worker", sequence: int) -> None:
         )
 
 
-async def _deliver_pending_worker_command(worker: "Worker") -> None:
+def _reserve_worker_delivery(worker: "Worker", *, prepare=None):
     if (worker.protocol_version != 6 or worker.incarnation is None
-            or workers.get(worker.id) is not worker):
-        return
-    from app import command_store
+            or not _worker_delivery_admission_open):
+        return None, False
+    incarnation = worker.incarnation
+    task = worker.delivery_task
+    if task is not None and not task.done():
+        return task, False
+    if not worker.delivery_admission_open:
+        return None, False
+    task = asyncio.create_task(_run_v6_delivery(
+        worker, worker.ws, db.session_factory, incarnation, prepare=prepare,
+    ))
+    worker.delivery_task = task
+    _worker_delivery_owners[task] = worker
+    return task, True
 
-    try:
-        command = await command_store.read_exact_pending(worker.id, worker.incarnation)
-    except command_store.CommandRefused:
-        logger.warning("pending command for worker %s failed authority checks", worker.id)
-        return
-    if command is None:
-        return
-    key = (worker.id, worker.incarnation)
-    previous = _sent_command_sequences.get(key)
-    now = time.monotonic()
-    if previous is not None and previous[0] == command.sequence and now - previous[1] < 1:
-        return
-    message = json.loads(command.body)
-    if message["type"] == "dispatch_job":
-        from app import jobs
 
-        # Sent even when the claim is no longer current: commands apply in
-        # sequence, so a held-back head would stall every later command on
-        # this connection. A stale dispatch's reports fail its token check.
-        await jobs.track_dispatched_command(worker, command)
+def _kick_pending_worker_command(worker: "Worker") -> None:
+    _reserve_worker_delivery(worker)
+
+
+async def _deliver_pending_worker_command(worker: "Worker", *, prepare=None):
+    while True:
+        task, owns_task = _reserve_worker_delivery(worker, prepare=prepare)
+        if task is None:
+            return None
+        try:
+            result = await asyncio.shield(task)
+        except Exception:
+            if owns_task or prepare is None:
+                raise
+        else:
+            if owns_task or prepare is None:
+                return result
+        if not _worker_delivery_admission_open or not worker.delivery_admission_open:
+            return None
+
+
+async def _join_delivery_send(task: asyncio.Task) -> None:
+    """Keep the delivery owner alive until its socket operation returns."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            break
+    if task.done() and not task.cancelled():
+        try:
+            task.result()
+        except Exception:
+            pass
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def _run_v6_delivery(
+    worker: "Worker",
+    socket: WebSocket,
+    session_factory,
+    incarnation: uuid.UUID,
+    *,
+    prepare=None,
+):
+    current_task = asyncio.current_task()
+    preparing = False
     try:
-        await asyncio.wait_for(
-            worker.ws.send_text(command.body.decode("utf-8", "strict")), CLOSE_TIMEOUT
+        if (db.session_factory is not session_factory or workers.get(worker.id) is not worker
+                or worker.ws is not socket or worker.incarnation != incarnation):
+            return None
+        prepared_result = None
+        if prepare is not None:
+            preparing = True
+            prepared_result = await prepare()
+            preparing = False
+            if prepared_result is None:
+                return None
+        from app import command_store
+
+        try:
+            command = await command_store.read_exact_pending(
+                worker.id, incarnation,
+                transport_owner_id=worker.transport_owner_id,
+            )
+        except command_store.CommandRefused:
+            logger.warning("pending command for worker %s failed authority checks", worker.id)
+            return prepared_result
+        if command is None:
+            return prepared_result
+        previous = _sent_command_sequences.get((worker.id, incarnation))
+        if (previous is not None and previous[0] == command.sequence
+                and time.monotonic() - previous[1] < 1):
+            return prepared_result
+        message = json.loads(command.body)
+        if message["type"] == "dispatch_job":
+            from app import jobs
+
+            if not await jobs.track_dispatched_command(worker, command):
+                return prepared_result
+
+        def register() -> bool:
+            if (worker.delivery_task is not current_task
+                    or not worker.delivery_admission_open
+                    or not _worker_delivery_admission_open
+                    or db.session_factory is not session_factory
+                    or workers.get(worker.id) is not worker
+                    or worker.ws is not socket or worker.incarnation != incarnation):
+                return False
+            worker.delivery_registered = True
+            return True
+
+        try:
+            registered = await command_store.register_delivery(
+                command,
+                session_factory=session_factory,
+                worker_id=worker.id,
+                incarnation=incarnation,
+                transport_owner_id=(worker.transport_owner_id
+                                    or command_store.TRANSPORT_OWNER_ID),
+                register=register,
+            )
+        except command_store.CommandRefused:
+            return prepared_result
+        if not registered or not worker.delivery_registered:
+            return prepared_result
+        if (db.session_factory is not session_factory or workers.get(worker.id) is not worker
+                or worker.ws is not socket or worker.incarnation != incarnation):
+            return prepared_result
+
+        send_task = asyncio.create_task(
+            socket.send_text(command.body.decode("utf-8", "strict"))
         )
-    except Exception:
-        if workers.get(worker.id) is worker:
-            del workers[worker.id]
-        from app import jobs
+        worker.delivery_send_task = send_task
+        note_command_sent(worker, command.sequence)
+        try:
+            await asyncio.wait_for(asyncio.shield(send_task), CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("protocol6 send for worker %s did not return before timeout",
+                           worker.id)
+            if workers.get(worker.id) is worker:
+                del workers[worker.id]
+            from app import jobs
 
-        jobs.on_worker_lost(worker)
+            jobs.on_worker_lost(worker)
+            await _join_delivery_send(send_task)
+        except Exception:
+            if workers.get(worker.id) is worker:
+                del workers[worker.id]
+            from app import jobs
+
+            jobs.on_worker_lost(worker)
+            return prepared_result
+        except asyncio.CancelledError:
+            await _join_delivery_send(send_task)
+            raise
+        return prepared_result
+    except Exception as error:
+        if preparing:
+            raise
+        logger.warning("protocol6 delivery preparation failed for worker %s: %s",
+                       worker.id, type(error).__name__)
+    finally:
+        if worker.delivery_task is current_task and worker.delivery_send_task is not None:
+            try:
+                await _join_delivery_send(worker.delivery_send_task)
+            except asyncio.CancelledError:
+                pass
+        if worker.delivery_task is current_task:
+            worker.delivery_registered = False
+            worker.delivery_send_task = None
+            worker.delivery_task = None
+        if current_task is not None:
+            _worker_delivery_owners.pop(current_task, None)
+
+
+def start_worker_deliveries() -> None:
+    global _worker_delivery_admission_open
+    _worker_delivery_admission_open = True
+
+
+def stop_worker_deliveries() -> None:
+    global _worker_delivery_admission_open
+    _worker_delivery_admission_open = False
+    for worker in list(workers.values()):
+        worker.delivery_admission_open = False
+    owned = list(_worker_delivery_owners.items())
+    for _, worker in owned:
+        worker.delivery_admission_open = False
+
+
+async def drain_worker_deliveries() -> None:
+    stop_worker_deliveries()
+    owned = list(_worker_delivery_owners.items())
+    if owned:
+        await asyncio.gather(*(asyncio.shield(task) for task, _ in owned),
+                             return_exceptions=True)
+        for task, _ in owned:
+            try:
+                task.result()
+            except asyncio.CancelledError as error:
+                cause = error.__cause__
+                if cause is not None and not isinstance(cause, asyncio.CancelledError):
+                    raise cause
+
+
+async def close_fenced_worker(worker_id: str, incarnation: uuid.UUID) -> None:
+    worker = workers.get(worker_id)
+    if worker is None or worker.incarnation != incarnation:
         return
-    note_command_sent(worker, command.sequence)
+    worker.delivery_admission_open = False
+    if workers.get(worker_id) is worker:
+        del workers[worker_id]
+    from app import jobs
+
+    jobs.on_worker_lost(worker)
+    task = worker.delivery_close_task
+    if task is None or task.done():
+        task = asyncio.create_task(safe_send(worker.ws.close()))
+        worker.delivery_close_task = task
+        _worker_delivery_owners[task] = worker
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await _join_delivery_send(task)
+        raise
+    except Exception:
+        logger.debug("fenced worker socket close failed for %s", worker.id, exc_info=True)
+    finally:
+        if task.done():
+            if worker.delivery_close_task is task:
+                worker.delivery_close_task = None
+            _worker_delivery_owners.pop(task, None)
 
 
 async def refuse(ws: WebSocket, code: int, message: str) -> None:
@@ -573,6 +809,12 @@ class Worker:
     admission_batch_ms: dict[str, list[int]] | None = None
     admission_ready: bool = False
     grant_deadline: float | None = None
+    transport_owner_id: uuid.UUID | None = None
+    delivery_task: asyncio.Task | None = field(default=None, repr=False)
+    delivery_send_task: asyncio.Task | None = field(default=None, repr=False)
+    delivery_close_task: asyncio.Task | None = field(default=None, repr=False)
+    delivery_registered: bool = False
+    delivery_admission_open: bool = True
 
     @property
     def models(self) -> list[str]:
@@ -607,6 +849,8 @@ class Session:
     model_id: str
     browser: WebSocket
     params: dict = field(default_factory=dict)
+    desired_params: dict = field(default_factory=dict)
+    desired_revision: int = 1
     user_id: uuid.UUID | None = None
     # The account session this socket was opened under, so revoking that
     # session can find and close this one.
@@ -894,6 +1138,8 @@ def with_generation(payload: dict, generation: int) -> dict:
 
 workers: dict[str, Worker] = {}
 _sent_command_sequences: dict[tuple[str, uuid.UUID], tuple[int, float]] = {}
+_worker_delivery_owners: dict[asyncio.Task, Worker] = {}
+_worker_delivery_admission_open = True
 sessions: dict[uuid.UUID, Session] = {}
 gpu_requests: dict[str, asyncio.Future] = {}
 # Keyed per attempt, not per session: an idle release and a resume give one
@@ -1039,28 +1285,6 @@ def model_known(model_id: str) -> bool:
     return any(model_id in w.models and takes_sessions(w) for w in workers.values())
 
 
-async def _send_v6_close_session(worker: Worker, session: Session, generation: int,
-                                 attempt_id: uuid.UUID | None = None) -> None:
-    attempt_id = attempt_id or session.attempt_id
-    if worker.protocol_version != 6 or attempt_id is None:
-        return
-    if session.user_id is None:
-        return
-    try:
-        await send_v6_command(
-            worker,
-            "close_session",
-            {
-                "session_id": str(session.id),
-                "attempt_id": str(attempt_id),
-                "control_generation": generation,
-            },
-            account_user_id=session.user_id,
-        )
-    except ProtocolError:
-        return
-
-
 async def close_abandoned_session(worker: Worker, session: Session,
                                   generation: int | None = None) -> None:
     """Best-effort notice that the API has given up on an open.
@@ -1078,16 +1302,29 @@ async def close_abandoned_session(worker: Worker, session: Session,
     if worker.protocol_version == 6:
         from app import worker_authority
 
-        # close_session first: it needs the attempt still open, and once the
-        # attempt is abandoned the command is refused and the worker never
-        # learns to drop the runner.
         attempt_id = session.attempt_id
-        await _send_v6_close_session(worker, session, generation, attempt_id)
         if attempt_id is not None:
             await worker_authority.abandon_realtime_attempt(session.id, generation, attempt_id)
         return
     payload = {"type": "close_session", "session_id": str(session.id)}
     await safe_send(worker.ws.send_json(with_generation(payload, generation)))
+
+
+async def _send_v6_close_session(worker: Worker, session: Session, generation: int,
+                                 attempt_id: uuid.UUID | None) -> bool:
+    if worker.protocol_version != 6 or attempt_id is None or session.user_id is None:
+        return False
+    try:
+        await send_v6_command(
+            worker,
+            "close_session",
+            {"session_id": str(session.id), "attempt_id": str(attempt_id),
+             "control_generation": generation},
+            account_user_id=session.user_id,
+        )
+    except ProtocolError:
+        return False
+    return True
 
 
 async def assign(session: Session, worker: Worker) -> bool:
@@ -1121,7 +1358,7 @@ async def assign(session: Session, worker: Worker) -> bool:
                         "attempt_id": str(attempt_id),
                         "control_generation": sent_generation,
                         "model_id": session.model_id,
-                        "params": session.params,
+                        "params": session.desired_params,
                         "work_budget": {
                             "gpu_ms_limit": None,
                             "range_id": str(uuid.uuid4()),
@@ -1134,15 +1371,16 @@ async def assign(session: Session, worker: Worker) -> bool:
                         "auth_session_id": session.auth_session_id,
                         "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
                         "model_id": session.model_id,
-                        "params": session.params,
+                        "params": session.desired_params,
+                        "attempt_id": attempt_id,
+                        "control_generation": sent_generation,
+                        "desired_revision": session.desired_revision,
                     },
                 )
             except ProtocolError:
                 session.attempt_id = None
                 raise
             if session.worker is not worker or not session.is_live:
-                if workers.get(worker.id) is worker:
-                    await _send_v6_close_session(worker, session, sent_generation, attempt_id)
                 await worker_authority.abandon_realtime_attempt(
                     session.id, sent_generation, attempt_id
                 )
@@ -1209,6 +1447,9 @@ async def place_session(session: Session, *, exclude_ids: set[str] | None = None
         skipped.add(worker.id)
         if not ok and session.control_generation == started:
             session.control_generation += 1
+            session.params = dict(session.desired_params)
+            session.params_revision = 1
+            session.desired_revision = 1
     return session.state == "live"
 
 
@@ -1240,14 +1481,22 @@ async def release(session: Session) -> None:
         # including the revocation that has other sockets waiting behind it.
         with suppress(asyncio.TimeoutError):
             if worker.protocol_version == 6:
-                from app import worker_authority
+                if session.state == "idle":
+                    sent = await asyncio.wait_for(_send_v6_close_session(
+                        worker, session, generation, session.attempt_id
+                    ), CLOSE_TIMEOUT)
+                    if not sent and session.attempt_id is not None:
+                        from app import worker_authority
 
-                await worker_authority.end_realtime_session(
-                    session.id, generation, worker_authority.TRANSPORT_OWNER_ID
-                )
-                await asyncio.wait_for(
-                    _send_v6_close_session(worker, session, generation), CLOSE_TIMEOUT
-                )
+                        await worker_authority.abandon_realtime_attempt(
+                            session.id, generation, session.attempt_id
+                        )
+                else:
+                    from app import worker_authority
+
+                    await worker_authority.end_realtime_session(
+                        session.id, generation, worker_authority.TRANSPORT_OWNER_ID
+                    )
             else:
                 await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
                     {"type": "close_session", "session_id": str(session.id)},
@@ -1270,6 +1519,7 @@ async def reassign(session: Session) -> None:
         return
     worker = session.worker
     generation = session.control_generation
+    desired_snapshot = session.desired_params
     if worker is not None:
         if session.worker is worker:
             worker.slots_in_use -= 1
@@ -1281,7 +1531,18 @@ async def reassign(session: Session) -> None:
     if not session.is_live:
         return
     post(session, {"type": "interrupted"})
+    if db.session_factory is not None and session.user_id is not None:
+        from app import command_subjects
+
+        committed = await command_subjects.read_committed_desired(
+            session.id, session.user_id, generation
+        )
+        if committed is not None and session.desired_params is desired_snapshot:
+            session.desired_params, session.desired_revision = committed
     session.control_generation += 1
+    session.params = dict(session.desired_params)
+    session.params_revision = 1
+    session.desired_revision = 1
     exclude_ids = {worker.id} if worker is not None else set()
     if await place_session(session, exclude_ids=exclude_ids):
         if not session.is_live:
@@ -1360,6 +1621,9 @@ async def resume_idle(session: Session) -> None:
     if not session.is_live:
         return
     session.control_generation += 1
+    session.params = dict(session.desired_params)
+    session.params_revision = 1
+    session.desired_revision = 1
     if await place_session(session):
         if not session.is_live:
             await release(session)
@@ -1570,6 +1834,7 @@ async def fleet(ws: WebSocket) -> None:
     if version == 6:
         from app import worker_authority
 
+        worker.transport_owner_id = worker_authority.TRANSPORT_OWNER_ID
         incarnation = _require_worker_incarnation(worker)
         try:
             lease = await worker_authority.register_worker(
@@ -1736,14 +2001,36 @@ async def fleet(ws: WebSocket) -> None:
                             schedule_reassign(session)
                     elif control["type"] == "command_ack" and worker.protocol_version == 6:
                         from app import command_store
+                        from app import worker_authority
 
                         try:
-                            acknowledged = await command_store.acknowledge(control)
+                            result = await command_store.acknowledge(
+                                control,
+                                expected_worker_id=worker.id,
+                                expected_incarnation=_require_worker_incarnation(worker),
+                transport_owner_id=(worker.transport_owner_id
+                                    or worker_authority.TRANSPORT_OWNER_ID),
+                            )
                         except command_store.CommandRefused:
                             raise ProtocolError("command acknowledgement refused") from None
-                        if acknowledged and worker.incarnation is not None:
+                        if result.recorded and worker.incarnation is not None:
                             _sent_command_sequences.pop((worker.id, worker.incarnation), None)
-                            await _deliver_pending_worker_command(worker)
+                            publication = result.publication
+                            if publication is not None:
+                                session = sessions.get(publication["subject_id"])
+                                if (session is not None and session.worker is worker
+                                        and session.is_live
+                                        and session.state in {"assigning", "live"}
+                                        and session.user_id == publication["account_user_id"]
+                                        and session.control_generation == publication["subject_sequence"]
+                                        and str(session.attempt_id) == str(publication["attempt_id"])):
+                                    session.params = dict(publication["params"])
+                                    session.params_revision = publication["params_revision"]
+                                    post(session, {
+                                        "type": "params_updated",
+                                        "params": dict(publication["params"]),
+                                    })
+                            _kick_pending_worker_command(worker)
                     elif control["type"] == "grant_request" and worker.protocol_version == 6:
                         from app import worker_authority
 
@@ -1778,6 +2065,8 @@ async def fleet(ws: WebSocket) -> None:
                             "ready": grant.ready,
                             "remaining_ms": grant.remaining_ms,
                         }))
+                        if grant.ready:
+                            _kick_pending_worker_command(worker)
                     elif control["type"] == "checkpoint" and worker.protocol_version == 6:
                         from app import worker_authority
 
@@ -1895,7 +2184,8 @@ async def fleet(ws: WebSocket) -> None:
                     # are deliberately not written back.
             except (ProtocolError, KeyError, ValueError):
                 logger.warning("worker %s violated the protocol, closing", worker.id)
-                await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
+                if ws.application_state == WebSocketState.CONNECTED:
+                    await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
                 break
     finally:
         if workers.get(worker.id) is worker:
@@ -2081,6 +2371,7 @@ async def realtime(ws: WebSocket) -> None:
         return
     session = Session(
         id=uuid.uuid4(), model_id=model_id, browser=ws, params=params,
+        desired_params=dict(params),
         frame_header=frame_header,
         user_id=handshake.user_id, auth_session_id=handshake.auth_session_id)
     sessions[session.id] = session
@@ -2199,20 +2490,23 @@ async def realtime(ws: WebSocket) -> None:
                                     "message": invalid,
                                 })
                                 continue
-                        # Later keys win, so a second update of the same
-                        # parameter overwrites the first. The merged dict is
-                        # what the session holds from here on, what a worker
-                        # replaces its params with, and what the browser is
-                        # told. Not "what applied": this acknowledges even
-                        # while a reassignment leaves the session without a
-                        # worker, and a worker fills in manifest defaults for
-                        # keys nobody set, which never appear here.
-                        session.params.update(params)
+                        merged_params = {**session.desired_params, **params}
+                        if manifest is not None:
+                            invalid = validate_param_update(manifest, merged_params)
+                            if invalid is not None:
+                                post(session, {
+                                    "type": "error",
+                                    "code": CLOSE_PROTOCOL_VIOLATION,
+                                    "message": invalid,
+                                })
+                                continue
                         session.last_input = time.monotonic()
                         if session.worker is not None:
                             if session.worker.protocol_version == 6:
-                                session.params_revision += 1
+                                next_revision = session.desired_revision + 1
                                 try:
+                                    from app import worker_authority
+
                                     await send_v6_command(
                                         session.worker,
                                         "update_session",
@@ -2220,10 +2514,21 @@ async def realtime(ws: WebSocket) -> None:
                                             "session_id": str(session.id),
                                             "attempt_id": str(session.attempt_id),
                                             "control_generation": session.control_generation,
-                                            "params": session.params,
-                                            "params_revision": session.params_revision,
+                                            "model_id": session.model_id,
+                                            "params": merged_params,
+                                            "params_revision": next_revision,
                                         },
                                         account_user_id=session.user_id,
+                                        session_context={
+                                            "auth_session_id": session.auth_session_id,
+                                            "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
+                                            "attempt_id": session.attempt_id,
+                                            "control_generation": session.control_generation,
+                                            "model_id": session.model_id,
+                                            "base_desired_revision": session.desired_revision,
+                                            "desired_revision": next_revision,
+                                            "params": merged_params,
+                                        },
                                     )
                                 except ProtocolError:
                                     # The worker can no longer take commands (its grant
@@ -2231,15 +2536,24 @@ async def realtime(ws: WebSocket) -> None:
                                     # browser's session.
                                     schedule_reassign(session)
                             else:
+                                session.params = merged_params
+                                session.desired_params = merged_params
                                 await safe_send(session.worker.ws.send_json(with_generation({
                                     "type": "update_session",
                                     "session_id": str(session.id),
-                                    "params": session.params,
+                                    "params": merged_params,
                                 }, session.control_generation)))
-                        post(session, {
-                            "type": "params_updated",
-                            "params": session.params,
-                        })
+                                post(session, {
+                                    "type": "params_updated",
+                                    "params": merged_params,
+                                })
+                        else:
+                            session.params = merged_params
+                            session.desired_params = merged_params
+                            post(session, {
+                                "type": "params_updated",
+                                "params": merged_params,
+                            })
             except ProtocolError as error:
                 post_close(session, CLOSE_PROTOCOL_VIOLATION, str(error))
                 break

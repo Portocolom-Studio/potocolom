@@ -56,6 +56,9 @@ async def request(session: AsyncSession, user_id: uuid.UUID) -> bool:
     )).first()
     if changed is None:
         return False
+    from app import command_store
+
+    await command_store.erase_account_commands(session, {user_id})
     # The mailed capabilities before the sessions, because that is the order
     # operator.collapse deletes them in and the other way round deadlocks
     # against a collapse running while the API serves.
@@ -283,6 +286,10 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
                 .values(state="purging")
                 .returning(User.id)
             )).first()
+            if claimed is not None:
+                from app import command_store
+
+                await command_store.erase_account_commands(session, {user_id})
         if claimed is None:
             logger.info("account %s is no longer due to be purged", user_id)
             return
@@ -294,6 +301,9 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
     async with db.session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id)
+            from app import command_store
+
+            await command_store.erase_account_commands(session, {user_id})
             # Assets first, then jobs. An asset points at the job that made it
             # and a job at the asset it started from, so the second delete
             # depends on the first having happened.

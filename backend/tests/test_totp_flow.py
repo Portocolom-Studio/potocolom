@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -1143,7 +1144,7 @@ def _order_within(statements: list[str], tables: tuple[str, ...] = LOCK_PAIR) ->
         if not locking:
             continue
         for table in tables:
-            if table in lowered and table not in order:
+            if re.search(rf"\b{re.escape(table)}\b", lowered) and table not in order:
                 order.append(table)
     return order
 

@@ -170,6 +170,13 @@ async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved
     on the row, which is what keeps two requests holding the same cookie from
     both being answered.
     """
+    from app import command_store
+    from app.account_lock import hold_the_account
+
+    await hold_the_account(db_session, resolved.user.id, wait=True)
+    await command_store.erase_realtime_commands(
+        db_session, resolved.user.id, keep_auth_session_id=resolved.session.id
+    )
     if spend_capabilities:
         # Reset and recovery links go with them. Changing a credential after a
         # mailbox is compromised is meant to end what that mailbox can still
@@ -253,14 +260,28 @@ async def close_sockets(user_id: uuid.UUID, session_id: uuid.UUID | None = None,
 async def revoke(session_id: uuid.UUID) -> None:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
+    from app import command_store
+    from app.account_lock import hold_the_account
+
+    owner = None
     async with db.session_factory() as session:
-        owner = (await session.execute(
-            update(Session)
-            .where(Session.id == session_id, Session.revoked_at.is_(None))
-            .values(revoked_at=_now())
-            .returning(Session.user_id)
-        )).scalar_one_or_none()
-        await session.commit()
+        async with session.begin():
+            owner = await session.scalar(select(Session.user_id).where(Session.id == session_id))
+            if owner is None:
+                return
+            await hold_the_account(session, owner, wait=True)
+            row = (await session.execute(
+                select(Session.user_id).where(Session.id == session_id).with_for_update()
+            )).scalar_one_or_none()
+            if row == owner:
+                await command_store.erase_realtime_commands(
+                    session, owner, auth_session_ids={session_id}
+                )
+                await session.execute(
+                    update(Session)
+                    .where(Session.id == session_id, Session.revoked_at.is_(None))
+                    .values(revoked_at=_now())
+                )
     if owner is not None:
         await close_sockets(owner, session_id)
 
@@ -269,12 +290,17 @@ async def revoke_all(user_id: uuid.UUID) -> None:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
     async with db.session_factory() as session:
-        await session.execute(
-            update(Session)
-            .where(Session.user_id == user_id, Session.revoked_at.is_(None))
-            .values(revoked_at=_now())
-        )
-        await session.commit()
+        from app import command_store
+        from app.account_lock import hold_the_account
+
+        async with session.begin():
+            await hold_the_account(session, user_id, wait=True)
+            await command_store.erase_realtime_commands(session, user_id)
+            await session.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=_now())
+            )
     await close_sockets(user_id, None)
 
 
@@ -322,14 +348,28 @@ async def live_among(session_ids: set[uuid.UUID]) -> set[uuid.UUID]:
 async def rotate(session_id: uuid.UUID, user: User) -> Issued:
     if db.session_factory is None:
         raise RuntimeError("database unavailable")
+    from app import command_store
+    from app.account_lock import hold_the_account
+
     async with db.session_factory() as session:
-        remembered = (await session.execute(
-            update(Session)
-            .where(Session.id == session_id, Session.revoked_at.is_(None))
-            .values(revoked_at=_now())
-            .returning(Session.remember_me)
-        )).scalar_one_or_none()
-        await session.commit()
+        async with session.begin():
+            await hold_the_account(session, user.id, wait=True)
+            row = (await session.execute(
+                select(Session.user_id, Session.remember_me)
+                .where(Session.id == session_id, Session.revoked_at.is_(None)).with_for_update()
+            )).mappings().one_or_none()
+            if row is None or row["user_id"] != user.id:
+                remembered = None
+            else:
+                await command_store.erase_realtime_commands(
+                    session, user.id, auth_session_ids={session_id}
+                )
+                remembered = row["remember_me"]
+                await session.execute(
+                    update(Session)
+                    .where(Session.id == session_id, Session.revoked_at.is_(None))
+                    .values(revoked_at=_now())
+                )
     if remembered is None:
         # Nothing was revoked, so there was nothing to rotate. Minting here
         # would turn an unknown or already dead session into a live one.

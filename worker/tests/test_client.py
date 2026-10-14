@@ -2151,6 +2151,211 @@ def test_protocol6_command_sequence_replay_and_gap():
     assert gap_ack["expected_sequence"] == 2
 
 
+def _ledger_command(worker_id: str, incarnation: uuid.UUID, sequence: int,
+                    **overrides) -> dict:
+    return {
+        "type": "cancel_job",
+        "command_sequence": sequence,
+        "command_id": str(uuid.uuid4()),
+        "body_hash": hashlib.sha256(str(sequence).encode()).hexdigest(),
+        **_lease_fields(worker_id),
+        "incarnation": str(incarnation),
+        "job_id": str(uuid.uuid4()),
+        "dispatch_sequence": 1,
+        "dispatch_token": "tok-1",
+        **overrides,
+    }
+
+
+def test_protocol6_command_ledger_replays_only_exact_retained_command():
+    from worker.client import Protocol6CommandLedger
+
+    worker_id, incarnation = "w-p6-ledger", uuid.uuid4()
+
+    async def scenario():
+        ledger = Protocol6CommandLedger()
+        calls = []
+
+        async def apply(item):
+            calls.append(item)
+            return "refused", "unknown_command"
+
+        original = _ledger_command(worker_id, incarnation, 1)
+        saved = await ledger.handle(original, apply, worker_id=worker_id,
+                                    incarnation=incarnation)
+        exact_replay = await ledger.handle(dict(original), apply, worker_id=worker_id,
+                                           incarnation=incarnation)
+        changed_uuid = await ledger.handle(
+            _ledger_command(worker_id, incarnation, 1,
+                            body_hash=original["body_hash"]),
+            apply, worker_id=worker_id, incarnation=incarnation)
+        changed_hash = await ledger.handle(
+            _ledger_command(worker_id, incarnation, 1,
+                            command_id=original["command_id"],
+                            body_hash=hashlib.sha256(b"changed").hexdigest()),
+            apply, worker_id=worker_id, incarnation=incarnation)
+        ahead = await ledger.handle(
+            _ledger_command(worker_id, incarnation, 3), apply,
+            worker_id=worker_id, incarnation=incarnation)
+        next_command = _ledger_command(worker_id, incarnation, 2)
+        next_ack = await ledger.handle(next_command, apply, worker_id=worker_id,
+                                       incarnation=incarnation)
+        return saved, exact_replay, changed_uuid, changed_hash, ahead, next_ack, calls
+
+    saved, replay, changed_uuid, changed_hash, ahead, next_ack, calls = asyncio.run(scenario())
+    assert replay == saved
+    assert len(calls) == 2
+    for response in (changed_uuid, changed_hash):
+        ack = decode_control(response)
+        assert ack["status"] == "refused"
+        assert ack["code"] == "sequence_gap"
+        assert ack["expected_sequence"] == 2
+    gap_ack = decode_control(ahead)
+    assert gap_ack["code"] == "sequence_gap"
+    assert gap_ack["expected_sequence"] == 2
+    assert decode_control(next_ack)["status"] == "refused"
+
+
+def test_protocol6_command_ledger_apply_failure_does_not_advance():
+    from worker.client import Protocol6CommandLedger
+
+    worker_id = "w-p6-ledger-failure"
+    incarnation = uuid.uuid4()
+    command = _ledger_command(worker_id, incarnation, 1)
+
+    async def scenario():
+        ledger = Protocol6CommandLedger()
+        calls = 0
+
+        async def apply(_command):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("apply failed")
+            return "accepted", None
+
+        try:
+            await ledger.handle(command, apply, worker_id=worker_id,
+                               incarnation=incarnation)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("first apply must fail")
+        ack = await ledger.handle(command, apply, worker_id=worker_id,
+                                  incarnation=incarnation)
+        return ack, calls
+
+    ack, calls = asyncio.run(scenario())
+    assert decode_control(ack)["status"] == "accepted"
+    assert calls == 2
+
+
+def test_protocol6_command_ledger_max_sequence_keeps_ack_counter_valid():
+    from worker.client import Protocol6CommandLedger
+
+    worker_id, incarnation = "w-p6-ledger-max", uuid.uuid4()
+    ledger = Protocol6CommandLedger()
+    ledger._next_sequence = ledger._MAX_SEQUENCE
+    item = _ledger_command(worker_id, incarnation, ledger._MAX_SEQUENCE)
+
+    async def apply(_command):
+        return "accepted", None
+
+    async def scenario():
+        accepted = await ledger.handle(item, apply, worker_id=worker_id,
+                                       incarnation=incarnation)
+        conflicting = await ledger.handle(
+            _ledger_command(worker_id, incarnation, ledger._MAX_SEQUENCE), apply,
+            worker_id=worker_id, incarnation=incarnation)
+        return accepted, conflicting
+
+    accepted, conflicting = asyncio.run(scenario())
+    assert decode_control(accepted)["status"] == "accepted"
+    ack = decode_control(conflicting)
+    assert ack["code"] == "sequence_gap"
+    assert ack["expected_sequence"] == ledger._MAX_SEQUENCE
+
+
+def test_protocol6_command_ledger_bounds_replay_and_refuses_retired_sequences():
+    from worker.client import Protocol6CommandLedger
+
+    worker_id = "w-p6-ledger-bound"
+    incarnation = uuid.uuid4()
+
+    async def scenario():
+        ledger = Protocol6CommandLedger()
+        calls = []
+
+        async def apply(item):
+            calls.append(item["command_sequence"])
+            return "accepted", None
+
+        saved = {}
+        commands = {}
+        for sequence in range(1, 258):
+            item = _ledger_command(worker_id, incarnation, sequence)
+            commands[sequence] = item
+            saved[sequence] = await ledger.handle(
+                item, apply, worker_id=worker_id, incarnation=incarnation)
+        latest_replay = await ledger.handle(
+            commands[257], apply, worker_id=worker_id, incarnation=incarnation)
+        retired = await ledger.handle(
+            commands[1], apply, worker_id=worker_id, incarnation=incarnation)
+        changed_retired = await ledger.handle(
+            _ledger_command(worker_id, incarnation, 1), apply,
+            worker_id=worker_id, incarnation=incarnation)
+        retained = max(len(value) for value in vars(ledger).values()
+                       if isinstance(value, dict))
+        return saved, latest_replay, retired, changed_retired, calls, retained
+
+    saved, latest_replay, retired, changed_retired, calls, retained = asyncio.run(scenario())
+    assert latest_replay == saved[257]
+    for response in (retired, changed_retired):
+        ack = decode_control(response)
+        assert ack["status"] == "refused"
+        assert ack["code"] == "stale_sequence"
+        assert "expected_sequence" not in ack
+    assert calls == list(range(1, 258))
+    assert retained == 256
+
+
+def test_protocol6_command_ledger_replay_through_serve_connection_after_retention():
+    worker_id = "w-p6-ledger-serve"
+    lease = _lease_fields(worker_id)
+    commands = []
+    for sequence in range(1, 258):
+        commands.append({
+            "type": "cancel_job",
+            "command_sequence": sequence,
+            "command_id": str(uuid.uuid4()),
+            **lease,
+            "job_id": str(uuid.uuid4()),
+            "dispatch_sequence": 1,
+            "dispatch_token": "tok-1",
+        })
+    commands.extend((dict(commands[-1]), dict(commands[0])))
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, commands)
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        await asyncio.sleep(0.25)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    acks = [m for m in _worker_controls(socket) if m["type"] == "command_ack"]
+    assert len(acks) == 259
+    assert acks[256]["status"] == "accepted"
+    assert acks[257] == acks[256]
+    assert acks[258]["status"] == "refused"
+    assert acks[258]["code"] == "stale_sequence"
+    assert "expected_sequence" not in acks[258]
+
+
 def test_protocol6_dispatch_job_reports_job_done_with_receipt_fields(monkeypatch):
     monkeypatch.setattr("worker.client.httpx.AsyncClient", FakeUpload)
     worker_id = "w-p6-job"
