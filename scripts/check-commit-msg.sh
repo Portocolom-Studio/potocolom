@@ -21,10 +21,14 @@ PRODUCT = "(" + SUFFIX + ")*"
 # people, dependabot is not an AI author.
 AI_CO_AUTHOR = re.compile(
     r"noreply@anthropic\.com|noreply@openai\.com|cursoragent@cursor\.com"
-    r"|\+copilot@users\.noreply\.github\.com|" + TOOL + r"[\w-]*\[bot\]"
+    r"|\+copilot@users\.noreply\.github\.com"
     r"|^(github\s+)?" + TOOL + PRODUCT + r"\s*(<|$)",
     re.IGNORECASE,
 )
+# Bot names are found first and then searched for a tool word: one combined
+# pattern backtracked cubically on a long run of word characters.
+BOT = re.compile(r"(?<![\w-])[\w-]+\[bot\]")
+AI_WORD = re.compile(r"claude|chatgpt|copilot|codex|cursor|gemini|gpt", re.IGNORECASE)
 # An indented line continues the trailer above it, so only column 0 starts one.
 CO_AUTHOR = re.compile(r"^co-authored-by\s*:(.*)", re.IGNORECASE)
 MARKDOWN = re.compile(r"<[^<>]*>|[*_`\[\]]")
@@ -37,26 +41,11 @@ GENERATED = re.compile(
     re.IGNORECASE,
 )
 # Accented letters are not listed, so names such as Jose still pass.
-BANNED = [
-    (0x2010, 0x2027),
-    (0x00A0, 0x00A0),
-    (0x00D7, 0x00D7),
-    (0x203C, 0x203C),
-    (0x2049, 0x2049),
-    (0x20E3, 0x20E3),
-    (0x2190, 0x21FF),
-    (0x2264, 0x2265),
-    (0x2300, 0x23FF),
-    (0x2500, 0x257F),
-    (0x2600, 0x27BF),
-    (0x2B00, 0x2BFF),
-    (0x3030, 0x3030),
-    (0x303D, 0x303D),
-    (0x3297, 0x3297),
-    (0x3299, 0x3299),
-    (0xFE0F, 0xFE0F),
-    (0x1F000, 0x1FAFF),
-]
+BANNED = re.compile(
+    "[\u00a0\u00d7\u2010-\u2027\u203c\u2049\u20e3\u2190-\u21ff\u2264\u2265"
+    "\u2300-\u23ff\u2500-\u257f\u2600-\u27bf\u2b00-\u2bff\u3030\u303d\u3297"
+    "\u3299\ufe0f\U0001f000-\U0001faff]"
+)
 
 path = sys.argv[1]
 try:
@@ -71,18 +60,18 @@ for number, line in enumerate(lines, 1):
     co_author = CO_AUTHOR.match(line)
     if co_author:
         # Git folds the indented lines below a trailer into its value.
-        value = co_author.group(1)
+        parts = [co_author.group(1)]
         index = number
         while index < len(lines) and lines[index][:1].isspace():
-            value += " " + lines[index].strip()
+            parts.append(lines[index].strip())
             index += 1
-        co_author = AI_CO_AUTHOR.search(value.strip())
+        value = " ".join(parts).strip()
+        co_author = AI_CO_AUTHOR.search(value) or any(AI_WORD.search(bot) for bot in BOT.findall(value))
     if co_author or GENERATED.search(SPACES.sub(" ", MARKDOWN.sub("", line))):
         problems.append((number, "AI attribution", line))
-    for char in line:
-        if any(low <= ord(char) <= high for low, high in BANNED):
-            problems.append((number, f"banned character U+{ord(char):04X}", line))
-            break
+    banned = BANNED.search(line)
+    if banned:
+        problems.append((number, f"banned character U+{ord(banned.group()):04X}", line))
 
 for number, reason, line in problems:
     print(f"check-commit-msg: line {number}: {reason}: {line}", file=sys.stderr)

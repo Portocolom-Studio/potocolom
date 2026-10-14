@@ -71,9 +71,10 @@ expect fail arrow 'Map a -> b \xe2\x86\x92 c\n'
 expect fail emoji 'Ship it \xf0\x9f\xa4\x96\n'
 expect fail generated-with 'Add the importer\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n'
 
-# Folding once per trailer and stopping a tag match at the next < keep long
-# input linear; each took over 5 s when it rescanned the text after it.
-python3 -c 'print("Add it\n" + "  indented\n" * 16000 + "  Co-authored-by: A <a@example.org>\n" * 8000 + "<" * 256000)' >"$dir/long.txt"
+# Each block below once took over 5 s by rescanning or recopying the text
+# after it: indented lines under one trailer, indented co-author lines, a
+# long word run in a co-author value, and a line of < with no >.
+python3 -c 'print("Add it\n\nCo-authored-by: A <a@example.org>\n" + "  indented\n" * 256000 + "  Co-authored-by: A <a@example.org>\n" * 8000 + "Co-authored-by: " + "gpt5" * 20000 + "!\n" + "<" * 256000)' >"$dir/long.txt"
 if timeout 5 bash "$check" "$dir/long.txt"; then
 	echo "PASS: long-indented"
 else
