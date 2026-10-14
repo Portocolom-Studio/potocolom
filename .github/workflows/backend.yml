@@ -1,27 +1,28 @@
-# One workflow per component, triggered only when its files change (issue #13).
+# Every PR reports this check; the changes job skips backend unless its files changed (issue #13).
 # scripts/ is included because the backend job lints it (see the Makefile).
 name: backend
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "scripts/**"
-      - "Makefile"
-      - ".github/workflows/backend.yml"
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "scripts/**"
-      - "Makefile"
-      - ".github/workflows/backend.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        backend/**
+        scripts/**
+        Makefile
+        .github/workflows/backend.yml
   backend:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
     # Switch back to ubuntu-latest when hosted quota is available (docs/self-hosted-runner.md).
     runs-on: [self-hosted, Linux, X64, potocolom]

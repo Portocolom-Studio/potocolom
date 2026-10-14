@@ -1867,3 +1867,12 @@ Rejected alternatives:
 - Treating a cancelled migration await as a completed migration. The thread can continue after the await ends.
 - Explicitly unlocking before closing the connection. A failed unlock can leak the lock, while connection closure releases it directly.
 - Wrapping selected startup session contexts. Other serving loops use the same factory and can otherwise return before their actual close finishes.
+
+## Every CI workflow reports on every pull request; main requires all of them
+
+Required status checks block a pull request forever when a path-filtered workflow never starts. Each workflow now starts a small `changes` job on every pull request and skips its component job when none of that job's files changed; GitHub reports the skipped job, which satisfies the required check. Component work still runs only when its files change (issue #13). Main's ruleset requires DCO, `secret-scan` and every component check.
+
+Rejected alternatives:
+- Requiring only checks that always run. Component tests could fail while the pull request still merges.
+- One gate workflow polling the others. It holds a runner while it waits, and four runners share this machine.
+- Removing path filters and always running every job. A docs change would run the full suite.

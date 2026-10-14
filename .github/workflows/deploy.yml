@@ -1,41 +1,36 @@
 # The shipped API image contains backend/ and built frontend/ files, so both
-# path filters include them with deploy/. Otherwise route or static asset changes
+# changes patterns include them with deploy/. Otherwise route or static asset changes
 # could bypass the compose smoke test.
 # The simulated worker means no GPU is needed (issue #13 keeps one workflow per area).
 name: deploy
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "deploy/**"
-      - "scripts/compose-smoke.sh"
-      - "scripts/smoke-*"
-      - "scripts/backup.sh"
-      - "scripts/restore.sh"
-      - "scripts/test-backup-restore.sh"
-      - "Makefile"
-      - ".github/workflows/deploy.yml"
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - "deploy/**"
-      - "scripts/compose-smoke.sh"
-      - "scripts/smoke-*"
-      - "scripts/backup.sh"
-      - "scripts/restore.sh"
-      - "scripts/test-backup-restore.sh"
-      - "Makefile"
-      - ".github/workflows/deploy.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        backend/**
+        frontend/**
+        deploy/**
+        scripts/compose-smoke.sh
+        scripts/smoke-*
+        scripts/backup.sh
+        scripts/restore.sh
+        scripts/test-backup-restore.sh
+        Makefile
+        .github/workflows/deploy.yml
   deploy:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:

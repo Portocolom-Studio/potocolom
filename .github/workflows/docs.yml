@@ -4,24 +4,25 @@ name: docs
 
 on:
   pull_request:
-    paths:
-      - "docs/**"
-      - "scripts/verify-mermaid.py"
-      - "Makefile"
-      - ".github/workflows/docs.yml"
   push:
     branches: [main]
-    paths:
-      - "docs/**"
-      - "scripts/verify-mermaid.py"
-      - "Makefile"
-      - ".github/workflows/docs.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        docs/**
+        scripts/verify-mermaid.py
+        Makefile
+        .github/workflows/docs.yml
   docs:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:

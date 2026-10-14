@@ -1,31 +1,32 @@
 # The one test that exercises the whole stack over real TCP: API and two
 # workers as subprocesses, a simulated browser, a worker killed mid session.
-# Triggered by changes to anything it spans.
+# The changes job skips simulation unless something it spans changed.
 name: simulation
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "worker/**"
-      - "scripts/**"
-      - ".github/workflows/simulation.yml"
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "worker/**"
-      - "scripts/**"
-      - ".github/workflows/simulation.yml"
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-host-ports
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        backend/**
+        worker/**
+        scripts/**
+        .github/workflows/simulation.yml
   simulation:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    # Job-level, so a pull request that skips this job does not queue here.
+    concurrency:
+      group: ${{ github.workflow }}-host-ports
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     services:

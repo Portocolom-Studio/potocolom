@@ -1,24 +1,26 @@
-# One workflow per component, triggered only when its files change (issue #13).
+# Every PR reports both checks; the changes job skips worker work unless its files changed (issue #13).
 name: worker
 
 on:
   pull_request:
-    paths:
-      - "worker/**"
-      - "Makefile"
-      - ".github/workflows/worker.yml"
   push:
     branches: [main]
-    paths:
-      - "worker/**"
-      - "Makefile"
-      - ".github/workflows/worker.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        worker/**
+        Makefile
+        .github/workflows/worker.yml
   inference-cpu:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: [self-hosted, Linux, X64, potocolom]
     timeout-minutes: 30
     defaults:
@@ -38,6 +40,8 @@ jobs:
         working-directory: .
 
   worker:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
     runs-on: [self-hosted, Linux, X64, potocolom]
     defaults:

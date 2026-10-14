@@ -5,26 +5,26 @@ name: toolchain
 
 on:
   pull_request:
-    paths:
-      - "Makefile"
-      - "**/pyproject.toml"
-      - "frontend/package.json"
-      - "frontend/.npmrc"
-      - ".github/workflows/toolchain.yml"
   push:
     branches: [main]
-    paths:
-      - "Makefile"
-      - "**/pyproject.toml"
-      - "frontend/package.json"
-      - "frontend/.npmrc"
-      - ".github/workflows/toolchain.yml"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        Makefile
+        **/pyproject.toml
+        frontend/package.json
+        frontend/.npmrc
+        .github/workflows/toolchain.yml
   toolchain:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:

@@ -1,30 +1,27 @@
-# One workflow per component, triggered only when its files change (issue #13).
+# Every PR reports this check; changes to backend/app/ also run the sign-in gate (issue #13).
 name: frontend
 
 on:
   pull_request:
-    paths:
-      - "frontend/**"
-      - "Makefile"
-      - ".github/workflows/frontend.yml"
-      # The sign-in gate checks the cookies and the CSRF header the backend
-      # issues, so a backend change must also run it.
-      - "backend/app/**"
   push:
     branches: [main]
-    paths:
-      - "frontend/**"
-      - "Makefile"
-      - ".github/workflows/frontend.yml"
-      # The sign-in gate checks the cookies and the CSRF header the backend
-      # issues, so a backend change must also run it.
-      - "backend/app/**"
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    uses: ./.github/workflows/changes.yml
+    with:
+      paths: |
+        frontend/**
+        Makefile
+        .github/workflows/frontend.yml
+        backend/app/**
   frontend:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     # Self-hosted: docs/self-hosted-runner.md (system node 24, not setup-node).
     runs-on: [self-hosted, Linux, X64, potocolom]
     services:

@@ -10,6 +10,7 @@
 
 # Checklist
 
+- [ ] Required checks green; update stale tests/CI steps here; never skip, disable or loosen checks
 - [ ] `make verify` passes locally
 - [ ] Applicable checks in `docs/security-checklist.md` have evidence; remaining gaps stay linked to open issues
 - [ ] Public docs match the change, or it needs none: `docs/api.md` for endpoints, `docs/connection-handling.md` for the wire protocol, `docs/architecture.md` and `docs/blueprint.md` for components and config
