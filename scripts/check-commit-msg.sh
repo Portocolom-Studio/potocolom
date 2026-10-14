@@ -13,22 +13,23 @@ exec python3 - "$1" <<'PY'
 import re
 import sys
 
-TOOL = r"(claude|chatgpt|copilot|codex|gemini|gpt-?\d+(\.\d+)?)\b"
+TOOL = r"(claude|chatgpt|copilot|codex|gemini|gpt-?\d+(\.\d+)?o?)\b"
 # A co-author is judged by an exact AI identity, never by a substring of a
 # human name or a company domain: Jean-Claude Dupont and alice@openai.com are
 # people, dependabot is not an AI author.
 AI_CO_AUTHOR = re.compile(
     r"noreply@anthropic\.com|noreply@openai\.com|cursoragent@cursor\.com"
     r"|\+copilot@users\.noreply\.github\.com|gemini-code-assist"
-    r"|^(github\s+)?" + TOOL + r"(\s+(code|agent|code\s+assist))?\s*(<|$)",
+    r"|^(github\s+)?(" + TOOL + r"|cursor\b)(\s+(code|agent|code\s+assist))?\s*(<|$)",
     re.IGNORECASE,
 )
 CO_AUTHOR = re.compile(r"^\s*co-authored-by\s*:(.*)", re.IGNORECASE)
 MARKDOWN = re.compile(r"[*_`\[\]]")
+SPACES = re.compile(r"\s+")
 # Anchored at the line start so prose like "tests generated with cursor
 # pagination" passes; cursor counts only when it ends the credit or links.
 GENERATED = re.compile(
-    r"^\W*generated (with|by) (github )?(" + TOOL + r"|cursor(?=(\s+(agent|ide))?\s*(\(|$)))",
+    r"^\W*generated (with|by) (github )?(" + TOOL + r"|cursor(?=(\s+(agent|ide))?\s*(\(|[.!]?\s*$)))",
     re.IGNORECASE,
 )
 # Accented letters are not listed, so names such as Jose still pass.
@@ -70,7 +71,7 @@ for number, line in enumerate(lines, 1):
             break
         trailer += " " + following.strip()
     co_author = CO_AUTHOR.match(trailer)
-    if (co_author and AI_CO_AUTHOR.search(co_author.group(1).strip())) or GENERATED.search(MARKDOWN.sub("", line)):
+    if (co_author and AI_CO_AUTHOR.search(co_author.group(1).strip())) or GENERATED.search(SPACES.sub(" ", MARKDOWN.sub("", line))):
         problems.append((number, "AI attribution", line))
     for char in line:
         if any(low <= ord(char) <= high for low, high in BANNED):
