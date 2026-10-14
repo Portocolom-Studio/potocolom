@@ -95,16 +95,16 @@ def test_disconnect_erases_first_open_committed_after_selection(accounts, monkey
         worker = realtime.workers[worker_id]
         original_send = worker.ws.send_text
         owner_join_entered = asyncio.Event()
-        original_owner_join = getattr(realtime, "_join_worker_delivery_owners", None)
+        original_run_to_completion = getattr(db, "run_to_completion", None)
 
-        if original_owner_join is not None:
-            async def observed_owner_join(owners):
-                if any(realtime._worker_delivery_owners.get(task) is worker
-                       for task in owners):
-                    owner_join_entered.set()
-                return await original_owner_join(owners)
+        def observed_run_to_completion(work):
+            # The disconnect finalizer is registered as an owner of its worker;
+            # its first join is the wait for the held claim's delivery owner.
+            if realtime._worker_delivery_owners.get(asyncio.current_task()) is worker:
+                owner_join_entered.set()
+            return original_run_to_completion(work)
 
-            monkeypatch.setattr(realtime, "_join_worker_delivery_owners", observed_owner_join)
+        monkeypatch.setattr(db, "run_to_completion", observed_run_to_completion, raising=False)
 
         async def observed_send(data):
             if disconnect_started.is_set():
@@ -151,10 +151,7 @@ def test_disconnect_erases_first_open_committed_after_selection(accounts, monkey
             assert inserted["key_version"] is not None
             disconnect_started.set()
             closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
-            if original_owner_join is None:
-                client.portal.call(_wait, close_waiting, 8)
-            else:
-                client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
+            client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
             release_claim.set()
             client.portal.call(_join, closing)
             attempt, command, lifecycle = client.portal.call(
@@ -210,16 +207,16 @@ def test_disconnect_and_delivery_registration_do_not_deadlock_first_open(account
         worker = realtime.workers[worker_id]
         original_send = worker.ws.send_text
         owner_join_entered = asyncio.Event()
-        original_owner_join = getattr(realtime, "_join_worker_delivery_owners", None)
+        original_run_to_completion = getattr(db, "run_to_completion", None)
 
-        if original_owner_join is not None:
-            async def observed_owner_join(owners):
-                if any(realtime._worker_delivery_owners.get(task) is worker
-                       for task in owners):
-                    owner_join_entered.set()
-                return await original_owner_join(owners)
+        def observed_run_to_completion(work):
+            # The disconnect finalizer is registered as an owner of its worker;
+            # its first join is the wait for the held claim's delivery owner.
+            if realtime._worker_delivery_owners.get(asyncio.current_task()) is worker:
+                owner_join_entered.set()
+            return original_run_to_completion(work)
 
-            monkeypatch.setattr(realtime, "_join_worker_delivery_owners", observed_owner_join)
+        monkeypatch.setattr(db, "run_to_completion", observed_run_to_completion, raising=False)
 
         async def observed_send(data):
             if disconnect_started.is_set():
@@ -270,10 +267,7 @@ def test_disconnect_and_delivery_registration_do_not_deadlock_first_open(account
             assert inserted.get("state") == "pending"
             disconnect_started.set()
             closing = client.portal.call(_start, lambda: fleet.__exit__(None, None, None))
-            if original_owner_join is None:
-                client.portal.call(_wait, close_waiting, 8)
-            else:
-                client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
+            client.portal.call(_wait_either, close_waiting, owner_join_entered, 8)
             release_claim.set()
             client.portal.call(_wait, connection_locked)
             client.portal.call(_wait, registration_locked_attempt)

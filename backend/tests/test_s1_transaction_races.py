@@ -16,6 +16,7 @@ from test_fleet_protocol6 import (
     seed_queued_job,
 )
 from test_s1_authority_races import _bound_update_session, _mint_local_binding
+from test_s1_handoff_retry import _until
 from test_totp_flow import accounts
 from test_v6_sessions import command_ack
 
@@ -90,6 +91,15 @@ async def _acknowledge(worker, ack):
         expected_incarnation=worker.incarnation,
         transport_owner_id=worker.transport_owner_id,
     )
+
+
+async def _until_session_state(session_id: uuid.UUID, wanted: str, timeout: float) -> None:
+    # The revocation's durable session end runs in an owned task after commit.
+    deadline = time.monotonic() + timeout
+    while (await _realtime_state(session_id))["state"] != wanted:
+        if time.monotonic() > deadline:
+            raise AssertionError(f"realtime session did not reach {wanted} within {timeout}s")
+        await asyncio.sleep(0.02)
 
 
 async def _wait_for_blocker(holder_pid: int, timeout: float = 10) -> bool:
@@ -284,10 +294,10 @@ def test_real_registration_keeps_held_send_owned_until_fenced_send_returns(
             assert json.loads(send_messages[0]) == update
             revoke = client.portal.start_task_soon(account_sessions.revoke, auth_id)
             _wait_event(client, close_finished)
+            client.portal.call(_until, lambda: worker.delivery_admission_open is False, 8)
             assert not delivery.done()
             assert worker.delivery_task is owner
             assert worker.delivery_send_task is send_task and not send_task.done()
-            assert worker.delivery_admission_open is False
             assert len(send_messages) == 1
             client.portal.call(release_send.set)
             delivery.result(timeout=20)
@@ -447,7 +457,9 @@ def test_ack_commit_wins_before_erasure_and_revoke_preserves_ack_outcome(
             )
             assert client.portal.call(_read_command, worker.id, worker.incarnation,
                                       update["command_sequence"]) is None
-            state = client.portal.call(_realtime_state, uuid.UUID(update["session_id"]))
+            session_id = uuid.UUID(update["session_id"])
+            client.portal.call(_until_session_state, session_id, "ended", 8)
+            state = client.portal.call(_realtime_state, session_id)
             assert state["params_revision"] == update["params_revision"]
             assert state["effective_params"] == update["params"]
             assert state["state"] == "ended"

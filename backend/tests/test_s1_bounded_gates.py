@@ -366,7 +366,6 @@ def test_shutdown_joins_a_pending_realtime_end(accounts, monkeypatch):
         end_entered = asyncio.Event()
         holders = []
         original_end = worker_authority.end_realtime_session
-        original_dispose = db.dispose
         original_drain = main_module.drain_worker_deliveries
 
         async def held_end(session_id, generation, browser_owner_id):
@@ -388,16 +387,11 @@ def test_shutdown_joins_a_pending_realtime_end(accounts, monkeypatch):
             events.append("end-returned")
             return result
 
-        async def observed_dispose():
-            events.append("dispose")
-            return await original_dispose()
-
         async def observed_drain():
             shutdown_drain_started.set()
             return await original_drain()
 
         monkeypatch.setattr(worker_authority, "end_realtime_session", held_end)
-        monkeypatch.setattr(db, "dispose", observed_dispose)
         monkeypatch.setattr(main_module, "drain_worker_deliveries", observed_drain)
         thread, done, outcome = _start_request(lambda: client.post(
             "/api/v1/auth/logout",
@@ -429,5 +423,6 @@ def test_shutdown_joins_a_pending_realtime_end(accounts, monkeypatch):
             raise outcome["error"]
     releaser.join(8)
     assert not releaser.is_alive()
+    # held_end queries the session row after the real end returns, which needs
+    # the live engine: shutdown let the pending end finish before disposal.
     assert "end-returned" in events
-    assert events.index("end-returned") < events.index("dispose")

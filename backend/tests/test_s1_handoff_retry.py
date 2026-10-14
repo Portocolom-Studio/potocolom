@@ -908,10 +908,14 @@ def test_grant_renewal_after_erasure_registers_nothing_and_sends_nothing(
                 _command_state, worker_id, worker.incarnation,
                 update["command_sequence"])
             assert state == "erased", "logout must erase the pending update body"
-            assert worker_id not in realtime.workers, (
-                "logout must fence the worker out of the live fleet")
-            assert not worker.delivery_admission_open, (
-                "logout must close the fenced worker's delivery admission")
+            # The durable end and its fence run in an owned task after the
+            # revocation commits, so the response can precede them.
+            client.portal.call(
+                _until,
+                lambda: worker_id not in realtime.workers
+                and not worker.delivery_admission_open,
+                8,
+            )
 
             sends = []
             original_send = worker.ws.send_text
