@@ -232,7 +232,10 @@
 	.sky {
 		position: absolute;
 		inset: 0;
-		background: url('/images/horizon/sunrise-ascii.webp') center bottom / cover no-repeat;
+		background-image: url('/images/horizon/sunrise-ascii.webp');
+		background-position: center bottom;
+		background-size: cover;
+		background-repeat: no-repeat;
 		filter: hue-rotate(195deg) saturate(1.1);
 	}
 
@@ -247,16 +250,11 @@
 	@media (max-width: 47.99rem) {
 		.band {
 			block-size: 22rem;
+			background-color: #0a1022;
 		}
 
 		.band-veil {
 			background: linear-gradient(180deg, #0a1022 0%, rgb(10 16 34 / 0%) 25%);
-		}
-
-		/* At phone width the copyright sits above the bright part of the glow,
-		   so it takes the light ink of the rest of the footer. */
-		.band .bottom {
-			color: #f4f6fb;
 		}
 	}
 
@@ -288,6 +286,22 @@
 		line-height: 1rem;
 	}
 
+	/* A bright fallback behind the artwork keeps the dark desktop copyright
+	   legible if the image cannot load. The phone band uses its own dark base. */
+	@media (min-width: 48rem) {
+		.band {
+			background-color: #e6b56b;
+		}
+	}
+
+	/* Keep the phone's light footer ink over a dark fallback, including when
+	   the artwork request fails. Keep this after the base bottom rule. */
+	@media (max-width: 47.99rem) {
+		.band .bottom {
+			color: #f4f6fb;
+		}
+	}
+
 	.to-top {
 		padding: 0;
 		border: 0;
@@ -300,7 +314,7 @@
 	}
 
 	.to-top:focus-visible {
-		outline: 2px solid #070b16;
+		outline: 2px solid currentColor;
 		outline-offset: 3px;
 	}
 
