@@ -3,7 +3,7 @@
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import AuthSplit from '$lib/components/auth/AuthSplit.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -21,7 +21,6 @@
 		studioReturnSearch,
 		type AuthView
 	} from '$lib/auth-flow';
-	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
@@ -169,134 +168,128 @@
 
 <Seo titleKey="seo.login_title" descriptionKey="seo.login_description" path="/login" noindex />
 
-<div class="bg-background flex min-h-dvh flex-col">
-	<header class="border-b">
-		<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-			<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-				<BrandMark />
-			</a>
-			<LanguageToggle />
-		</div>
-	</header>
-
-	<main class="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12 sm:px-6">
-		{#if landing}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
-					<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
-				</Card.Header>
-			</Card.Root>
-		{:else if loadingConfig}
-			<p class="text-muted-foreground text-center text-sm">{t('auth.loading')}</p>
-		{:else if showChallengeForm}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.challenge.title')}</h1>
-					<Card.Description>{t('auth.challenge.sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content>
-					<form class="flex flex-col gap-4" onsubmit={submitChallenge}>
-						<Field.Field>
-							<Label for="totp-code">{t('auth.challenge.code_label')}</Label>
-							<Input
-								id="totp-code"
-								name="code"
-								autocomplete="one-time-code"
-								inputmode="text"
-								spellcheck={false}
-								required
-								pattern=".*\S.*"
-								bind:value={code}
-							/>
-							<Field.Description>{t('auth.challenge.code_hint')}</Field.Description>
-						</Field.Field>
-						{#if error}
-							<p class="text-destructive text-sm" role="alert">{error}</p>
-						{/if}
-						<Button type="submit" disabled={submitting}>
-							{submitting ? t('auth.submitting') : t('auth.challenge.submit')}
-						</Button>
-						<Button type="button" variant="ghost" onclick={backToPassword}>
-							{t('auth.challenge.back')}
-						</Button>
-					</form>
-				</Card.Content>
-			</Card.Root>
-		{:else if showPasswordForm}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
-					<Card.Description>{t('auth.login.sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-4">
-					{#if resetDone}
-						<p class="text-muted-foreground text-sm" role="status">{t('auth.login.reset_done')}</p>
+<AuthSplit
+	fieldSide="end"
+	kicker={t('hero.kicker')}
+	heading={t('hero.title1')}
+	headingTail={t('hero.title2')}
+>
+	{#if landing}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
+				<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
+			</Card.Header>
+		</Card.Root>
+	{:else if loadingConfig}
+		<p class="text-muted-foreground text-center text-sm">{t('auth.loading')}</p>
+	{:else if showChallengeForm}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.challenge.title')}</h1>
+				<Card.Description>{t('auth.challenge.sub')}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<form class="flex flex-col gap-4" onsubmit={submitChallenge}>
+					<Field.Field>
+						<Label for="totp-code">{t('auth.challenge.code_label')}</Label>
+						<Input
+							id="totp-code"
+							name="code"
+							autocomplete="one-time-code"
+							inputmode="text"
+							spellcheck={false}
+							required
+							pattern=".*\S.*"
+							bind:value={code}
+						/>
+						<Field.Description>{t('auth.challenge.code_hint')}</Field.Description>
+					</Field.Field>
+					{#if error}
+						<p class="text-destructive text-sm" role="alert">{error}</p>
 					{/if}
-					<form class="flex flex-col gap-4" onsubmit={submitLogin}>
-						<Field.Field>
-							<Label for="login-email">{t('auth.login.email_label')}</Label>
-							<Input
-								id="login-email"
-								name="email"
-								type="email"
-								autocomplete="username"
-								spellcheck={false}
-								required
-								bind:value={email}
-							/>
-						</Field.Field>
-						<Field.Field>
-							<Label for="login-password">{t('auth.login.password_label')}</Label>
-							<Input
-								id="login-password"
-								name="password"
-								type="password"
-								autocomplete="current-password"
-								required
-								bind:value={password}
-							/>
-						</Field.Field>
-						<label class="flex items-center gap-2 text-sm">
-							<input type="checkbox" bind:checked={rememberMe} />
-							{t('auth.login.remember')}
-						</label>
-						{#if error}
-							<p class="text-destructive text-sm" role="alert">{error}</p>
-						{/if}
-						<Button type="submit" disabled={submitting}>
-							{submitting ? t('auth.submitting') : t('auth.login.submit')}
-						</Button>
-					</form>
-					<p class="text-center text-sm">
-						<a class="text-foreground underline underline-offset-4" href={resolve('/reset')}
-							>{t('auth.login.forgot')}</a
-						>
-					</p>
-					{#if showGoogle || showGithub}
-						<div class="flex flex-col gap-2">
-							<p class="text-muted-foreground text-center text-sm">{t('auth.login.or_oauth')}</p>
-							{#if showGoogle}
-								<Button variant="outline" href={`/api/v1/auth/redirect/google${providerNext}`}>
-									{t('auth.login.google')}
-								</Button>
-							{/if}
-							{#if showGithub}
-								<Button variant="outline" href={`/api/v1/auth/redirect/github${providerNext}`}>
-									{t('auth.login.github')}
-								</Button>
-							{/if}
-						</div>
+					<Button type="submit" disabled={submitting}>
+						{submitting ? t('auth.submitting') : t('auth.challenge.submit')}
+					</Button>
+					<Button type="button" variant="ghost" onclick={backToPassword}>
+						{t('auth.challenge.back')}
+					</Button>
+				</form>
+			</Card.Content>
+		</Card.Root>
+	{:else if showPasswordForm}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
+				<Card.Description>{t('auth.login.sub')}</Card.Description>
+			</Card.Header>
+			<Card.Content class="flex flex-col gap-4">
+				{#if resetDone}
+					<p class="text-muted-foreground text-sm" role="status">{t('auth.login.reset_done')}</p>
+				{/if}
+				<form class="flex flex-col gap-4" onsubmit={submitLogin}>
+					<Field.Field>
+						<Label for="login-email">{t('auth.login.email_label')}</Label>
+						<Input
+							id="login-email"
+							name="email"
+							type="email"
+							autocomplete="username"
+							spellcheck={false}
+							required
+							bind:value={email}
+						/>
+					</Field.Field>
+					<Field.Field>
+						<Label for="login-password">{t('auth.login.password_label')}</Label>
+						<Input
+							id="login-password"
+							name="password"
+							type="password"
+							autocomplete="current-password"
+							required
+							bind:value={password}
+						/>
+					</Field.Field>
+					<label class="flex items-center gap-2 text-sm">
+						<input type="checkbox" bind:checked={rememberMe} />
+						{t('auth.login.remember')}
+					</label>
+					{#if error}
+						<p class="text-destructive text-sm" role="alert">{error}</p>
 					{/if}
-				</Card.Content>
-			</Card.Root>
-		{:else}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
-					<Card.Description>{t('auth.login.no_methods')}</Card.Description>
-				</Card.Header>
-			</Card.Root>
-		{/if}
-	</main>
-</div>
+					<Button type="submit" disabled={submitting}>
+						{submitting ? t('auth.submitting') : t('auth.login.submit')}
+					</Button>
+				</form>
+				<p class="text-center text-sm">
+					<a class="text-foreground underline underline-offset-4" href={resolve('/reset')}
+						>{t('auth.login.forgot')}</a
+					>
+				</p>
+				{#if showGoogle || showGithub}
+					<div class="flex flex-col gap-2">
+						<p class="text-muted-foreground text-center text-sm">{t('auth.login.or_oauth')}</p>
+						{#if showGoogle}
+							<Button variant="outline" href={`/api/v1/auth/redirect/google${providerNext}`}>
+								{t('auth.login.google')}
+							</Button>
+						{/if}
+						{#if showGithub}
+							<Button variant="outline" href={`/api/v1/auth/redirect/github${providerNext}`}>
+								{t('auth.login.github')}
+							</Button>
+						{/if}
+					</div>
+				{/if}
+			</Card.Content>
+		</Card.Root>
+	{:else}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
+				<Card.Description>{t('auth.login.no_methods')}</Card.Description>
+			</Card.Header>
+		</Card.Root>
+	{/if}
+</AuthSplit>
