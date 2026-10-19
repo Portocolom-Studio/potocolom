@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import uuid
@@ -15,6 +13,7 @@ from sqlalchemy import text
 
 from app import db
 from app.account_lock import hold_the_account
+from app.command_subjects import lock_attempt_ranges, subject_erasure_selection
 from app.protocol6 import preflight_worker_control
 
 logger = logging.getLogger("potocolom.worker_authority")
@@ -356,14 +355,47 @@ async def activate_initial_worker(worker_id: str, incarnation: uuid.UUID) -> boo
 async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
     if db.session_factory is None:
         return
+    from app import command_store
+
     async with db.session_factory() as session:
         async with session.begin():
+            owners = list((await session.execute(
+                text(
+                    "SELECT DISTINCT session.user_id FROM realtime_sessions session "
+                    "JOIN realtime_session_attempts attempt ON attempt.session_id = session.id "
+                    "WHERE attempt.worker_id = :worker_id AND attempt.incarnation = :incarnation "
+                    "AND attempt.state IN ('opening', 'running') ORDER BY session.user_id"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation},
+            )).scalars().all())
+            for user_id in owners:
+                await hold_the_account(session, user_id, wait=True)
+            attempts = list((await session.execute(
+                text(
+                    "SELECT session.id AS session_id, session.user_id, "
+                    "attempt.control_generation, attempt.worker_id, "
+                    "attempt.incarnation, attempt.range_id FROM realtime_sessions session "
+                    "JOIN realtime_session_attempts attempt ON attempt.session_id = session.id "
+                    "WHERE attempt.worker_id = :worker_id AND attempt.incarnation = :incarnation "
+                    "AND attempt.state IN ('opening', 'running') "
+                    "ORDER BY session.user_id, session.id, attempt.control_generation "
+                    "FOR UPDATE OF session, attempt"
+                ),
+                {"worker_id": worker_id, "incarnation": incarnation},
+            )).mappings().all())
+            await lock_attempt_ranges(session, attempts, owners)
+            for attempt in attempts:
+                await command_store.erase_subject_commands(
+                    session, attempt["user_id"], kind="session",
+                    subject_id=attempt["session_id"],
+                    subject_sequence=attempt["control_generation"],
+                )
             await session.execute(
                 text(
                     "UPDATE worker_connections SET lifecycle = 'ended', "
-                    "closed_at = clock_timestamp() "
+                    "closed_at = coalesce(closed_at, clock_timestamp()) "
                     "WHERE worker_id = :worker_id AND incarnation = :incarnation "
-                    "AND transport_owner_id = :owner_id AND closed_at IS NULL"
+                    "AND transport_owner_id = :owner_id"
                 ),
                 {
                     "worker_id": worker_id,
@@ -475,8 +507,53 @@ async def end_realtime_session(session_id: uuid.UUID, generation: int,
                                browser_owner_id: uuid.UUID) -> bool:
     if db.session_factory is None:
         return False
+    from app import command_store
+
     async with db.session_factory() as session:
         async with session.begin():
+            user_id = await session.scalar(
+                text("SELECT user_id FROM realtime_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            )
+            if user_id is None:
+                return False
+            await hold_the_account(session, user_id, wait=True)
+            entity = (await session.execute(
+                text(
+                    "SELECT user_id FROM realtime_sessions WHERE id = :session_id "
+                    "AND control_generation = :generation AND browser_owner_id = :browser_owner_id "
+                    "AND state IN ('assigning', 'live', 'idle') FOR UPDATE"
+                ),
+                {"session_id": session_id, "generation": generation,
+                 "browser_owner_id": browser_owner_id},
+            )).mappings().one_or_none()
+            if entity is None or entity["user_id"] != user_id:
+                return False
+            attempt = (await session.execute(
+                text(
+                    "SELECT worker_id, incarnation FROM realtime_session_attempts "
+                    "WHERE session_id = :session_id AND control_generation = :generation "
+                    "AND state IN ('opening', 'running') FOR UPDATE"
+                ),
+                {"session_id": session_id, "generation": generation},
+            )).mappings().one_or_none()
+            await command_store.erase_subject_commands(
+                session, user_id, kind="session", subject_id=session_id,
+                subject_sequence=generation,
+            )
+            if attempt is not None:
+                await session.execute(
+                    text(
+                        "UPDATE realtime_session_attempts SET state = 'ended', "
+                        "ended_at = coalesce(ended_at, clock_timestamp()) "
+                        "WHERE session_id = :session_id AND control_generation = :generation "
+                        "AND worker_id = :worker_id AND incarnation = :incarnation "
+                        "AND state IN ('opening', 'running')"
+                    ),
+                    {"session_id": session_id, "generation": generation,
+                     "worker_id": attempt["worker_id"],
+                     "incarnation": attempt["incarnation"]},
+                )
             result = await session.execute(
                 text(
                     "UPDATE realtime_sessions SET state = 'ended', ended_at = clock_timestamp() "
@@ -487,15 +564,52 @@ async def end_realtime_session(session_id: uuid.UUID, generation: int,
                 {"session_id": session_id, "generation": generation,
                  "browser_owner_id": browser_owner_id},
             )
-    return result.scalar_one_or_none() is not None
+    ended = result.scalar_one_or_none() is not None
+    if ended and attempt is not None:
+        from app import realtime
+
+        await realtime.close_fenced_worker(attempt["worker_id"], attempt["incarnation"])
+    return ended
 
 
 async def abandon_realtime_attempt(session_id: uuid.UUID, generation: int,
                                    attempt_id: uuid.UUID) -> bool:
     if db.session_factory is None:
         return False
+    from app import command_store
+
     async with db.session_factory() as session:
         async with session.begin():
+            user_id = await session.scalar(
+                text("SELECT user_id FROM realtime_sessions WHERE id = :session_id"),
+                {"session_id": session_id},
+            )
+            if user_id is None:
+                return False
+            await hold_the_account(session, user_id, wait=True)
+            entity = (await session.execute(
+                text(
+                    "SELECT user_id FROM realtime_sessions WHERE id = :session_id "
+                    "AND control_generation = :generation FOR UPDATE"
+                ),
+                {"session_id": session_id, "generation": generation},
+            )).mappings().one_or_none()
+            attempt = (await session.execute(
+                text(
+                    "SELECT attempt_id, worker_id, incarnation FROM realtime_session_attempts "
+                    "WHERE session_id = :session_id "
+                    "AND control_generation = :generation AND attempt_id = :attempt_id "
+                    "AND state IN ('opening', 'running') FOR UPDATE"
+                ),
+                {"session_id": session_id, "generation": generation,
+                 "attempt_id": attempt_id},
+            )).mappings().one_or_none()
+            if entity is None or entity["user_id"] != user_id or attempt is None:
+                return False
+            await command_store.erase_subject_commands(
+                session, user_id, kind="session", subject_id=session_id,
+                subject_sequence=generation,
+            )
             result = await session.execute(
                 text(
                     "UPDATE realtime_session_attempts SET state = 'ended', "
@@ -507,7 +621,12 @@ async def abandon_realtime_attempt(session_id: uuid.UUID, generation: int,
                 {"session_id": session_id, "generation": generation,
                  "attempt_id": attempt_id},
             )
-    return result.scalar_one_or_none() is not None
+    abandoned = result.scalar_one_or_none() is not None
+    if abandoned:
+        from app import realtime
+
+        await realtime.close_fenced_worker(attempt["worker_id"], attempt["incarnation"])
+    return abandoned
 
 
 async def accept_session_ready(worker_id: str, incarnation: uuid.UUID, message: dict) -> bool:
@@ -630,87 +749,33 @@ async def commit_worker_report(
     gpu_ms = report["gpu_ms"]
     frames = report.get("frames", report.get("images", 0))
     duration_ms = report["duration_ms"]
-    ack_type = {
-        "type": "checkpoint_ack",
-        "worker_id": worker_id,
-        "incarnation": str(incarnation),
-        "region": report["region"],
-        "owner_epoch": report["owner_epoch"],
-        "range_id": str(range_id),
-        "report_sequence": sequence,
-        "report_hash": report_hash,
-        "gpu_ms": gpu_ms,
-        "duration_ms": duration_ms,
-        "status": "accepted",
-    }
-    if is_session:
-        ack_type.update({
-            "session_id": str(subject_id),
-            "attempt_id": str(attempt_id),
-            "control_generation": generation,
-            "frames": frames,
-        })
-    else:
-        ack_type.update({
-            "job_id": str(subject_id),
-            "dispatch_sequence": dispatch_sequence,
-            "images": frames,
-        })
+    from app.command_subjects import report_ack
+
+    ack_type = report_ack(
+        report, subject_id, incarnation, range_id, attempt_id, generation, dispatch_sequence
+    )
     async with db.session_factory() as session:
         async with session.begin():
             user_id = await session.scalar(
-                text(
-                    "SELECT user_id FROM realtime_sessions WHERE id = :id"
-                    if is_session else "SELECT user_id FROM jobs WHERE id = :id"
-                ),
+                text("SELECT user_id FROM realtime_sessions WHERE id = :id"
+                     if is_session else "SELECT user_id FROM jobs WHERE id = :id"),
                 {"id": subject_id},
             )
             if user_id is None:
                 raise AuthorityUnavailable("worker report attempt is unknown")
             await hold_the_account(session, user_id, wait=True)
-            entity = (await session.execute(
-                text(
-                    "SELECT id FROM realtime_sessions WHERE id = :id AND user_id = :user_id FOR UPDATE"
-                    if is_session else
-                    "SELECT id, state, current_dispatch_sequence FROM jobs "
-                    "WHERE id = :id AND user_id = :user_id FOR UPDATE"
-                ),
-                {"id": subject_id, "user_id": user_id},
-            )).mappings().one_or_none()
-            if entity is None:
-                raise AuthorityUnavailable("worker report attempt is unknown")
-            if is_session:
-                attempt = (await session.execute(
-                    text(
-                        "SELECT worker_id, incarnation, owner_epoch, attempt_id, range_id, "
-                        "gpu_ms, frames, duration_ms, report_sequence FROM realtime_session_attempts "
-                        "WHERE session_id = :session_id AND control_generation = :generation FOR UPDATE"
-                    ),
-                    {"session_id": subject_id, "generation": generation},
-                )).mappings().one_or_none()
-            else:
-                attempt = (await session.execute(
-                    text(
-                        "SELECT worker_id, incarnation, owner_epoch, dispatch_token_hash, range_id, "
-                        "gpu_ms, frames, duration_ms, report_sequence FROM job_attempts "
-                        "WHERE job_id = :job_id AND dispatch_sequence = :dispatch_sequence FOR UPDATE"
-                    ),
-                    {"job_id": subject_id, "dispatch_sequence": dispatch_sequence},
-                )).mappings().one_or_none()
-            if (attempt is None or attempt["worker_id"] != worker_id
-                    or attempt["incarnation"] != incarnation
-                    or attempt["owner_epoch"] != report["owner_epoch"]
-                    or attempt["range_id"] != range_id
-                    or (is_session and attempt["attempt_id"] != attempt_id)):
+            from app.command_subjects import lock_report_subject
+
+            locked = await lock_report_subject(
+                session, subject_id, user_id, is_session=is_session,
+                generation=generation, dispatch_sequence=dispatch_sequence,
+                worker_id=worker_id, incarnation=incarnation,
+                owner_epoch=report["owner_epoch"], range_id=range_id,
+                attempt_id=attempt_id, report=report,
+            )
+            if locked is None:
                 raise AuthorityUnavailable("worker report range identity is unknown")
-            if not is_session and report["type"] in {"job_done", "job_failed", "job_cancelled"}:
-                token = report.get("dispatch_token")
-                if (not isinstance(token, str) or not token.isascii()
-                        or not hmac.compare_digest(
-                            attempt["dispatch_token_hash"],
-                            hashlib.sha256(token.encode("ascii")).hexdigest(),
-                        )):
-                    raise AuthorityUnavailable("worker report dispatch token is stale")
+            entity, attempt = locked
             job_is_current = (not is_session
                               and entity["current_dispatch_sequence"] == dispatch_sequence)
             physical = (await session.execute(
@@ -728,6 +793,24 @@ async def commit_worker_report(
                     or physical["control_generation"] != generation
                     or physical["dispatch_sequence"] != dispatch_sequence):
                 raise AuthorityUnavailable("worker report range does not match")
+            terminal_job = not is_session and report["type"] in {
+                "job_done", "job_failed", "job_cancelled"
+            }
+            if report.get("physical_complete") and (is_session or terminal_job):
+                from app.command_subjects import lock_reported_subject_rows
+
+                await lock_reported_subject_rows(
+                    session, user_id,
+                    kind="close_session" if is_session else "dispatch_job",
+                    subject_id=subject_id,
+                    subject_sequence=generation if is_session else dispatch_sequence,
+                    worker_id=worker_id, incarnation=incarnation,
+                )
+            elif terminal_job:
+                await subject_erasure_selection(
+                    session, user_id, kind="job", subject_id=subject_id,
+                    subject_sequence=dispatch_sequence,
+                )
             lease = (await session.execute(
                 text(
                     "SELECT owner_id, owner_epoch, lease_id, expires_at FROM scheduler_leases "
@@ -850,7 +933,8 @@ async def commit_worker_report(
                 await session.execute(
                     text(
                         "UPDATE realtime_sessions SET state = 'ended', ended_at = clock_timestamp() "
-                        "WHERE id = :session_id AND control_generation = :generation"
+                        "WHERE id = :session_id AND control_generation = :generation "
+                        "AND state <> 'idle'"
                     ),
                     {"session_id": subject_id, "generation": generation},
                 )
@@ -881,4 +965,32 @@ async def commit_worker_report(
                     ),
                     {"floor": evicted_floor, "range_id": range_id},
                 )
+            if (sequence > physical["report_floor"]
+                    and ((is_session and report.get("physical_complete"))
+                         or (not is_session and report["type"] in {
+                             "job_done", "job_failed", "job_cancelled"
+                         }))):
+                from app import command_store
+
+                subject_sequence = generation if is_session else dispatch_sequence
+                if report.get("physical_complete"):
+                    await command_store.erase_reported_subject_command(
+                        session, user_id,
+                        kind="close_session" if is_session else "dispatch_job",
+                        subject_id=subject_id,
+                        subject_sequence=subject_sequence,
+                        worker_id=worker_id,
+                        incarnation=incarnation,
+                        range_id=range_id,
+                        attempt_id=attempt_id if is_session else None,
+                        report_sequence=sequence,
+                        report_hash=report_hash,
+                    )
+                else:
+                    await command_store.erase_subject_commands(
+                        session, user_id,
+                        kind="session" if is_session else "job",
+                        subject_id=subject_id,
+                        subject_sequence=subject_sequence,
+                    )
             return ack_body

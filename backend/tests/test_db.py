@@ -436,3 +436,73 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
             assert asyncio.run(sql(url, fetch="SELECT count(*) FROM jobs")) == 1
     finally:
         asyncio.run(sql(admin, f'DROP DATABASE IF EXISTS "{supplied}" WITH (FORCE)'))
+
+
+def test_a_close_failure_stays_one_cause_behind_a_second_cancel():
+    import app.db as db
+
+    raised = []
+
+    async def exercise():
+        release = asyncio.Event()
+
+        async def work():
+            await release.wait()
+            raise asyncio.CancelledError() from RuntimeError("close failed")
+
+        async def caller():
+            try:
+                await db.run_to_completion(work())
+            except asyncio.CancelledError as error:
+                raised.append(error)
+                raise
+
+        waiting = asyncio.create_task(caller())
+        await asyncio.sleep(0)
+        waiting.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+
+    asyncio.run(exercise())
+    assert str(raised[0].__cause__) == "close failed"
+
+
+def test_owned_session_keeps_a_cancelled_close_failure_one_cause_deep():
+    import app.db as db
+
+    raised = []
+
+    async def exercise():
+        body_waiting = asyncio.Event()
+        close_started = asyncio.Event()
+        finish_close = asyncio.Event()
+
+        class FailingClose(db.OwnedSession):
+            async def close(self):
+                close_started.set()
+                await finish_close.wait()
+                raise RuntimeError("rollback failed")
+
+        async def holder():
+            try:
+                async with FailingClose():
+                    body_waiting.set()
+                    await asyncio.Event().wait()
+            except asyncio.CancelledError as error:
+                raised.append(error)
+                raise
+
+        holding = asyncio.create_task(holder())
+        await body_waiting.wait()
+        holding.cancel()
+        await close_started.wait()
+        holding.cancel()
+        await asyncio.sleep(0)
+        finish_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await holding
+
+    asyncio.run(exercise())
+    assert str(raised[0].__cause__) == "rollback failed"

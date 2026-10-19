@@ -1884,3 +1884,28 @@ Rejected alternatives:
 - Requiring only checks that always run. Component tests could fail while the pull request still merges.
 - One gate workflow polling the others. It holds a runner while it waits, and four runners share this machine.
 - Removing path filters and always running every job. A docs change would run the full suite.
+
+## Protocol 6 command erasure preserves only proved identity and outcomes
+
+The command journal remains the sole source of exact protocol 6 retry bytes. Each new command records its original account, subject, subject sequence and the SHA-256 of its closed ACK echo projection. Each new physical range records its original account. These narrow references have no live account or subject foreign key. The ACK projection binds the original command kind, wrapper, expiry, body hash and exact subject. Acknowledgements are checked against the actual bound fleet peer, separately from the message fields.
+
+The acknowledged floor advances only through consecutive validated acknowledged rows. An erased, pending, missing or untrusted row above the old floor blocks it. The journal counts every retained row against its limit of 256; pending canonical bodies remain limited to 4 MiB per incarnation, parameter commands to 1 MiB, and small commands and ACKs to 16 KiB. The signed 63-bit maximum is the allocation exhaustion sentinel. Allocation refuses before changing desired parameters, claims, attempts or ranges. No timeout or ACK returns physical capacity.
+
+Revocation, account changes and subject termination erase the affected pending command bodies and key references in their existing authority transaction, after the original account gate. Logout and rotation target only the affected realtime auth-session bindings; they preserve the kept session and unrelated jobs. Account-wide removal reaches all affected work. Safety transitions do not require journal space or a usable encryption key. This amends the earlier durable-cancel rule: a terminal transition must not create a new sensitive cancel body after erasure. Protocol 5 retains its existing courtesy stop messages.
+
+Erasure without a proved command outcome is unknown. It fences later delivery on that incarnation. A genuine exact late ACK can record thin accepted or consuming-refused knowledge without recovering content, publishing parameters or granting new authority. Sequence-gap and stale-sequence replies do not prove the original outcome. A retained conflicting result refuses. An absent row at or below the committed floor is obsolete and is ignored for the same bound source.
+
+All first sends and retries use one tracked owner on the existing Worker. That owner reserves its slot before reading or preparing a command. It registers the exact handoff synchronously under the final account, binding, subject, attempt, range, journal, lease and connection gates. Socket I/O begins only after successful transaction exit and actual session release. A failed or uncertain release never starts I/O. Timeout and cancellation retain the actual operation until it returns. Shutdown stops new delivery and joins those owners before disposing their dependencies. No lock spans preparation, storage or socket I/O.
+
+Assigned browser updates validate a full immutable parameter snapshot. The desired revision and command commit together after a compare-and-set of the original model, binding, generation, attempt and desired revision. An accepted current update publishes only its original snapshot and revision. A newer desired snapshot cannot replace it. A late erased ACK or unavailable key records knowledge without content publication.
+
+Released migrations 0029 through 0033 are unchanged. Migration 0034 preserves existing subjects, attempts, ranges, measurements and receipts. Earlier rows did not record the original account, and operator collapse can change a job's current account. Their NULL account is explicitly unknown; it is never guessed from the live subject. Exact retained command or ACK bytes may establish the old subject and ACK projection. An unavailable original projection remains NULL. Uncertain pending bytes are erased and their incarnation is fenced, without changing the floor. New writers always supply known identity. Legacy unknown identity permits no replay, publication or account authority.
+
+This slice covers the five command kinds already used on main. Shared routing, worker drain and its pin, maintenance, pause and resume keep their own issues and gates. Positive post-purge physical proof follows in S2; fresh claim authority follows in S3.
+
+Rejected alternatives:
+- Advancing the floor to the first pending row or the largest known sequence. Both can hide an erased unknown command.
+- Retaining a sensitive stop body after termination. That adds an exception to immediate erasure and makes safety depend on journal space or keys.
+- Reconstructing a retry or accepted parameter update from current RAM or desired values. Those values can describe a later command.
+- Guessing the original owner of released protocol 6 history, or refusing every installation with such history. Explicit unknown metadata preserves the history without granting authority.
+- A separate delivery queue, manager, wire field or generic outcome layer. The existing journal and Worker owner hold the required state.

@@ -1471,108 +1471,111 @@ async def _claim_committed(job_id: uuid.UUID, worker: realtime.Worker,
 async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: int) -> bool:
     if db.session_factory is None or worker.incarnation is None or worker.grant_nonce is None:
         return False
-    async with db.session_factory() as session:
-        job = await session.get(Job, job_id)
-        if job is None or job.state != "queued":
-            return True
-        attempt = job.attempt
-        previous_sequence = job.current_dispatch_sequence
-        user_id = job.user_id
-        model_id = job.model_id
-        params = job.params
-        source_asset_id = job.source_asset_id
-        source = None
-        if source_asset_id is not None:
-            source = await session.get(Asset, source_asset_id)
-            if source is None:
-                return False
-            source_storage_key = source.storage_key
-        else:
-            source_storage_key = None
-    if epoch != _dispatch_epoch:
-        return True
-    storage_key, thumb_storage_key = dispatch_keys_for_attempt(user_id, job_id, attempt)
-    dispatch_token = secrets.token_urlsafe(16)
-    target = await get_storage().upload_target(storage_key, dispatch_token)
-    thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
-    fields = {
-        "job_id": str(job_id),
-        "model_id": model_id,
-        "params": params,
-        "dispatch_token": dispatch_token,
-        "upload": {"url": target.url, "headers": target.headers},
-        "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
-        "work_budget": {
-            "range_id": str(uuid.uuid4()),
-            "start_gpu_ms": 0,
-            "gpu_ms_limit": None,
-            "remaining_wall_ms": None,
-        },
-    }
-    if source_storage_key is not None:
-        fields["input"] = {
-            "url": await get_storage().worker_fetch_url(source_storage_key),
-        }
-    from app import command_store
+    session_factory = db.session_factory
+    incarnation = worker.incarnation
+    grant_nonce = worker.grant_nonce
+    outcome = {"result": False, "publish": False}
 
-    # Published before the claim commits, as protocol 5 does under its row
-    # lock: a cancel that commits right after the claim must find this entry,
-    # or it marks the row cancelled and never tells the worker.
-    current = InFlight(
-        worker=worker,
-        storage_key=storage_key,
-        thumb_storage_key=thumb_storage_key,
-        user_id=user_id,
-        dispatch_token=dispatch_token,
-        attempt=attempt,
-        dispatch_sequence=previous_sequence + 1,
-    )
-    worker.jobs_in_flight += 1
-    inflight[job_id] = current
-    last_progress_at[job_id] = time.monotonic()
-    try:
-        command = await command_store.commit_command(
-            worker.id,
-            worker.incarnation,
-            "dispatch_job",
-            fields,
-            grant_nonce=worker.grant_nonce,
-            account_user_id=user_id,
-            job_context={"source_asset_id": source_asset_id},
+    async def prepare():
+        if epoch != _dispatch_epoch:
+            outcome["result"] = True
+            return None
+        async with session_factory() as session:
+            job = await session.get(Job, job_id)
+            if job is None or job.state != "queued":
+                outcome["result"] = True
+                return None
+            attempt = job.attempt
+            previous_sequence = job.current_dispatch_sequence
+            user_id = job.user_id
+            model_id = job.model_id
+            params = job.params
+            source_asset_id = job.source_asset_id
+            source = (await session.get(Asset, source_asset_id)
+                      if source_asset_id is not None else None)
+            if source_asset_id is not None and source is None:
+                outcome["result"] = False
+                return None
+            source_storage_key = source.storage_key if source is not None else None
+        if epoch != _dispatch_epoch:
+            outcome["result"] = True
+            return None
+        storage_key, thumb_storage_key = dispatch_keys_for_attempt(user_id, job_id, attempt)
+        dispatch_token = secrets.token_urlsafe(16)
+        target = await get_storage().upload_target(storage_key, dispatch_token)
+        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
+        fields = {
+            "job_id": str(job_id),
+            "model_id": model_id,
+            "params": params,
+            "dispatch_token": dispatch_token,
+            "upload": {"url": target.url, "headers": target.headers},
+            "thumb_upload": {"url": thumb_target.url, "headers": thumb_target.headers},
+            "work_budget": {
+                "range_id": str(uuid.uuid4()),
+                "start_gpu_ms": 0,
+                "gpu_ms_limit": None,
+                "remaining_wall_ms": None,
+            },
+        }
+        if source_storage_key is not None:
+            fields["input"] = {
+                "url": await get_storage().worker_fetch_url(source_storage_key),
+            }
+        from app import command_store
+
+        # Publish before the claim commits so cancellation always finds its attempt.
+        current = InFlight(
+            worker=worker,
+            storage_key=storage_key,
+            thumb_storage_key=thumb_storage_key,
+            user_id=user_id,
+            dispatch_token=dispatch_token,
+            attempt=attempt,
+            dispatch_sequence=previous_sequence + 1,
         )
-    except command_store.CommandRefused as error:
-        _drop_early_entry(job_id, current, worker)
-        return str(error) == "job claim is stale"
-    except Exception:
-        logger.exception("protocol6 claim for job %s failed; reading its outcome", job_id)
+        worker.jobs_in_flight += 1
+        inflight[job_id] = current
+        last_progress_at[job_id] = time.monotonic()
         try:
-            committed = await _claim_committed(job_id, worker, previous_sequence)
+            command = await command_store.commit_command(
+                worker.id,
+                incarnation,
+                "dispatch_job",
+                fields,
+                grant_nonce=grant_nonce,
+                account_user_id=user_id,
+                job_context={"source_asset_id": source_asset_id},
+            )
+        except command_store.CommandRefused as error:
+            _drop_early_entry(job_id, current, worker)
+            outcome["result"] = str(error) == "job claim is stale"
+            return None
         except Exception:
-            # Outcome unknown: the entry stays, so the stall sweep recovers
-            # the job either way, as it does for protocol 5.
-            logger.exception("protocol6 claim outcome for job %s is unknown", job_id)
-            return True
-        if committed:
-            # The claim is durable and its command pending: deliver it.
-            await realtime._deliver_pending_worker_command(worker)
-            return True
-        _drop_early_entry(job_id, current, worker)
-        lost_jobs.append(job_id)
-        return True
-    current.dispatch_sequence = json.loads(command.body)["dispatch_sequence"]
-    try:
-        await asyncio.wait_for(
-            worker.ws.send_text(command.body.decode("utf-8", "strict")),
-            realtime.CLOSE_TIMEOUT,
-        )
-    except Exception:
-        if realtime.workers.get(worker.id) is worker:
-            del realtime.workers[worker.id]
-        on_worker_lost(worker)
-        return True
-    publish(job_id, {"state": "running"})
-    logger.info("job %s dispatched to protocol6 worker %s", job_id, worker.id)
-    return True
+            logger.exception("protocol6 claim for job %s failed; reading its outcome", job_id)
+            try:
+                committed = await _claim_committed(job_id, worker, previous_sequence)
+            except Exception:
+                logger.exception("protocol6 claim outcome for job %s is unknown", job_id)
+                outcome["result"] = True
+                return None
+            if committed:
+                outcome["result"] = True
+                return True
+            _drop_early_entry(job_id, current, worker)
+            lost_jobs.append(job_id)
+            outcome["result"] = True
+            return None
+        current.dispatch_sequence = command.subject_sequence
+        outcome["result"] = True
+        outcome["publish"] = True
+        return command
+
+    await realtime._deliver_pending_worker_command(worker, prepare=prepare)
+    if outcome["publish"]:
+        publish(job_id, {"state": "running"})
+        logger.info("job %s dispatched to protocol6 worker %s", job_id, worker.id)
+    return outcome["result"]
 
 
 async def track_dispatched_command(worker: realtime.Worker, command) -> bool:
@@ -1907,6 +1910,7 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             return
         try:
             async with db.session_factory() as session:
+                await hold_the_account(session, current.user_id, wait=True)
                 job = await locked_job(session, job_id)
                 # A requeue or another verdict may have transitioned the row
                 # while this verdict was in flight; the entry now belongs to
@@ -1939,6 +1943,13 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                         # worker until it reconnected.
                         clear_if_current(worker, job_id, current)
                     return
+                from app import command_store
+
+                if job.current_dispatch_sequence > 0:
+                    await command_store.erase_subject_commands(
+                        session, current.user_id, kind="job", subject_id=job_id,
+                        subject_sequence=job.current_dispatch_sequence,
+                    )
                 job.state = "succeeded"
                 job.gpu_ms = gpu_ms
                 for field, value in phase_ms.items():
@@ -2226,12 +2237,25 @@ async def mark_failed(job_id: uuid.UUID, reason: str,
     belongs to whoever won and must not be cleared.
     """
     assert db.session_factory is not None
+    from app import command_store
+
     async with db.session_factory() as session:
+        user_id = await session.scalar(
+            select(Job.user_id).where(Job.id == job_id)
+        )
+        if user_id is None:
+            return False
+        await hold_the_account(session, user_id, wait=True)
         job = await locked_job(session, job_id)
-        if job is None or job.state in TERMINAL_STATES:
+        if job is None or job.user_id != user_id or job.state in TERMINAL_STATES:
             return False
         if expected_attempt is not None and job.attempt > expected_attempt:
             return False
+        if job.current_dispatch_sequence > 0:
+            await command_store.erase_subject_commands(
+                session, user_id, kind="job", subject_id=job_id,
+                subject_sequence=job.current_dispatch_sequence,
+            )
         job.state = "failed"
         job.failure_reason = reason
         job.finished_at = datetime.now(timezone.utc)
@@ -2247,22 +2271,49 @@ async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
     """PostgreSQL first, the worker second.
 
     The row is the authority and the message is a courtesy: a worker that is
-    gone, wedged, or running an older protocol changes nothing about whether
-    the job is cancelled. Whatever it uploads afterwards is discarded by the
-    terminal-state check on the verdict, and the GPU time it measured is still
-    charged, because it was still spent.
+    gone or wedged changes nothing about whether the job is cancelled.
+    Protocol 4 and 5 workers receive the existing best-effort stop, and late
+    GPU time is charged. Protocol 6 fences the attempt, creates no stop body,
+    and does not charge from late reports.
     """
     assert db.session_factory is not None
+    from app import command_store
+
+    fenced_worker = None
     async with db.session_factory() as session:
-        job = await locked_job(session, job_id)
-        if job is None or job.state in TERMINAL_STATES:
-            return False
-        job.state = "cancelled"
-        job.failure_reason = reason
-        job.finished_at = datetime.now(timezone.utc)
-        await session.commit()
+        async with session.begin():
+            user_id = await session.scalar(
+                select(Job.user_id).where(Job.id == job_id)
+            )
+            if user_id is None:
+                return False
+            await hold_the_account(session, user_id)
+            job = await locked_job(session, job_id)
+            if job is None or job.user_id != user_id or job.state in TERMINAL_STATES:
+                return False
+            if job.current_dispatch_sequence > 0:
+                attempt = (await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation FROM job_attempts "
+                        "WHERE job_id = :job_id AND dispatch_sequence = :sequence FOR UPDATE"
+                    ),
+                    {"job_id": job_id, "sequence": job.current_dispatch_sequence},
+                )).mappings().one_or_none()
+                await command_store.erase_subject_commands(
+                    session, user_id, kind="job", subject_id=job_id,
+                    subject_sequence=job.current_dispatch_sequence,
+                )
+                if attempt is not None:
+                    fenced_worker = (attempt["worker_id"], attempt["incarnation"])
+            job.state = "cancelled"
+            job.failure_reason = reason
+            job.finished_at = datetime.now(timezone.utc)
     publish(job_id, {"state": "cancelled", "reason": reason})
     logger.info("job %s cancelled: %s", job_id, reason)
+    if fenced_worker is not None:
+        from app import realtime
+
+        await realtime.close_fenced_worker(*fenced_worker)
     entry = inflight.get(job_id)
     if entry is not None:
         await _ask_worker_to_stop(job_id, entry)
@@ -2292,23 +2343,6 @@ async def _ask_worker_to_stop(job_id: uuid.UUID, entry: InFlight) -> None:
         return
     with suppress(asyncio.TimeoutError):
         if entry.worker.protocol_version == 6:
-            if entry.dispatch_sequence is None:
-                logger.warning("protocol6 worker %s has no dispatch sequence for job %s",
-                               entry.worker.id, job_id)
-                return
-            try:
-                await asyncio.wait_for(realtime.send_v6_command(
-                    entry.worker,
-                    "cancel_job",
-                    {
-                        "job_id": str(job_id),
-                        "dispatch_sequence": entry.dispatch_sequence,
-                        "dispatch_token": entry.dispatch_token,
-                    },
-                    account_user_id=entry.user_id,
-                ), realtime.CLOSE_TIMEOUT)
-            except realtime.ProtocolError:
-                logger.warning("protocol6 cancel command was refused for job %s", job_id)
             return
         await asyncio.wait_for(realtime.safe_send(entry.worker.ws.send_json({
             "type": "cancel_job",
@@ -2422,6 +2456,12 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
                 if (job is not None and job.state == "running"
                         and job.current_dispatch_sequence == sequence
                         and attempt_state == "failed"):
+                    from app import command_store
+
+                    await command_store.erase_subject_commands(
+                        session, user_id, kind="job", subject_id=job_id,
+                        subject_sequence=sequence,
+                    )
                     job.state = "failed"
                     job.failure_reason = reason
                     job.finished_at = snapshot["terminal_at"]
@@ -2445,6 +2485,12 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
                 if (job is None or job.state != "running"
                         or job.current_dispatch_sequence != sequence or state != "completed"):
                     return False
+                from app import command_store
+
+                await command_store.erase_subject_commands(
+                    session, user_id, kind="job", subject_id=job_id,
+                    subject_sequence=sequence,
+                )
                 job.state = "failed"
                 job.failure_reason = reason
                 job.finished_at = snapshot["terminal_at"]
@@ -2552,6 +2598,12 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
             else:
                 asset_id = existing.id
             job.state = "succeeded"
+            from app import command_store
+
+            await command_store.erase_subject_commands(
+                session, user_id, kind="job", subject_id=job_id,
+                subject_sequence=sequence,
+            )
             job.gpu_ms = attempt["gpu_ms"]
             for field in ("input_fetch_ms", "load_ms", "postprocess_ms"):
                 setattr(job, field, attempt[field])

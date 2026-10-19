@@ -466,7 +466,7 @@ POST /api/v1/users/{id}/state   {"state": "active" | "suspended" | "disabled" | 
 
 ## Cancelling work
 
-Cancellation is cooperative and PostgreSQL is the authority. The row is marked `cancelled` first, and the worker holding the job is told afterwards, best effort and bounded. A worker that never hears, or that runs an older protocol, changes nothing: whatever it uploads afterwards is discarded, and the GPU milliseconds it reports are still recorded against the job and charged as usage, because the GPU really did run for that long.
+PostgreSQL is the authority for cancellation. The row moves to `cancelled` and pending protocol 6 command bodies and key references are erased in the same transaction. Protocol 6 cancellation creates no new sensitive stop body; the affected attempt loses work authority. Protocol 4 and 5 workers receive the existing best-effort, bounded stop message after commit. Cancellation and command ACKs do not prove that physical work has returned. A worker that never hears, or that runs an older protocol, changes nothing: any later output is discarded. For protocol 6, this release does not accept physical completion reports after fencing or charge usage from them; late physical proof is not part of S1.
 
 ## Sharing
 

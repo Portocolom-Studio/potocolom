@@ -14,6 +14,7 @@ import logging
 import random
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import suppress
 from typing import Any
 
@@ -382,10 +383,12 @@ def _command_ack_fields(command: dict[str, Any]) -> dict[str, Any]:
 
 
 class Protocol6CommandLedger:
+    _MAX_RETAINED = 256
+    _MAX_SEQUENCE = 2**63 - 1
+
     def __init__(self) -> None:
         self._next_sequence = 1
-        self._applied_command_id: dict[int, str] = {}
-        self._ack_text: dict[int, str] = {}
+        self._results: OrderedDict[int, tuple[str, str, str]] = OrderedDict()
 
     def _encode_ack(self, ack: dict[str, Any], worker_id: str, incarnation: uuid.UUID) -> str:
         validate_message(ack, expected_worker_id=worker_id, expected_incarnation=incarnation)
@@ -403,13 +406,20 @@ class Protocol6CommandLedger:
     ) -> str:
         sequence = command["command_sequence"]
         command_id = command["command_id"]
-        if sequence in self._applied_command_id:
-            if self._applied_command_id[sequence] == command_id:
-                return self._ack_text[sequence]
+        saved = self._results.get(sequence)
+        if saved is not None:
+            saved_id, saved_hash, saved_ack = saved
+            if (saved_id, saved_hash) == (command_id, command["body_hash"]):
+                return saved_ack
             ack = _command_ack_fields(command)
             ack["status"] = "refused"
             ack["code"] = "sequence_gap"
-            ack["expected_sequence"] = self._next_sequence
+            ack["expected_sequence"] = min(self._next_sequence, self._MAX_SEQUENCE)
+            return self._encode_ack(ack, worker_id, incarnation)
+        if sequence < self._next_sequence:
+            ack = _command_ack_fields(command)
+            ack["status"] = "refused"
+            ack["code"] = "stale_sequence"
             return self._encode_ack(ack, worker_id, incarnation)
         if sequence > self._next_sequence:
             ack = _command_ack_fields(command)
@@ -423,9 +433,10 @@ class Protocol6CommandLedger:
         if code is not None:
             ack["code"] = code
         text = self._encode_ack(ack, worker_id, incarnation)
-        self._applied_command_id[sequence] = command_id
-        self._ack_text[sequence] = text
-        self._next_sequence = sequence + 1
+        self._results[sequence] = (command_id, command["body_hash"], text)
+        if len(self._results) > self._MAX_RETAINED:
+            self._results.popitem(last=False)
+        self._next_sequence = min(sequence + 1, self._MAX_SEQUENCE)
         return text
 
 

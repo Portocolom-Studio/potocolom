@@ -2,12 +2,12 @@
 
 import asyncio
 import hashlib
-import json
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from starlette.websockets import WebSocketDisconnect
 
 from app import command_store, db, jobs, realtime, worker_authority
 from app.main import app
@@ -238,7 +238,7 @@ def test_v6_session_frames_relay_both_ways(monkeypatch):
     model_id = f"v6-rt-frames-{uuid.uuid4()}"
 
     with protocol6_client(worker_id) as client:
-        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
             client, worker_id, model_id
         )
         try:
@@ -270,64 +270,68 @@ def test_v6_session_params_update_revision(monkeypatch):
                 "type": "update_params",
                 "params": {"prompt": "second"},
             })
-            expect(browser_ws, "params_updated")
             updated = decode_control(ws.receive_text().encode("utf-8"))
             assert updated["type"] == "update_session"
             assert updated["params_revision"] == 2
+            ws.send_json(command_ack(updated))
+            expect(browser_ws, "params_updated")
         finally:
             browser_ctx.__exit__(None, None, None)
             fleet_ctx.__exit__(None, None, None)
 
 
 @pytest.mark.db
-def test_v6_session_close_receipt_and_ended_state(monkeypatch):
+def test_v6_terminal_close_fences_worker_without_stop_command(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"v6-close-{uuid.uuid4()}"
     model_id = f"v6-rt-close-{uuid.uuid4()}"
 
     with protocol6_client(worker_id) as client:
-        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
             client, worker_id, model_id
         )
         try:
             browser_ws.send_json({"type": "close"})
-            close_cmd = decode_control(ws.receive_text().encode("utf-8"))
-            assert close_cmd["type"] == "close_session"
-            ws.send_json(command_ack(close_cmd))
-            closed = session_closed_message(worker, open_cmd, grant["grant_nonce"])
-            ws.send_text(json.dumps(closed, separators=(",", ":")))
-            ack = decode_control(ws.receive_text().encode("utf-8"))
-            assert ack["type"] == "checkpoint_ack"
-            assert ack["status"] == "accepted"
+            with pytest.raises(WebSocketDisconnect) as closed:
+                browser_ws.receive_json()
+            assert closed.value.code == 1000
             session_id = uuid.UUID(open_cmd["session_id"])
-            range_id = uuid.UUID(open_cmd["work_budget"]["range_id"])
 
             async def read_terminal():
-                async with db.session_factory() as session:
-                    receipt = await session.scalar(
-                        text(
-                            "SELECT count(*) FROM worker_report_receipts "
-                            "WHERE range_id = :range_id"
-                        ),
-                        {"range_id": range_id},
-                    )
-                    sess_state = await session.scalar(
-                        text("SELECT state FROM realtime_sessions WHERE id = :id"),
-                        {"id": session_id},
-                    )
-                    attempt_state = await session.scalar(
-                        text(
-                            "SELECT state FROM realtime_session_attempts "
-                            "WHERE session_id = :id"
-                        ),
-                        {"id": session_id},
-                    )
-                    return receipt, sess_state, attempt_state
+                for _ in range(100):
+                    async with db.session_factory() as session:
+                        sess_state = await session.scalar(
+                            text("SELECT state FROM realtime_sessions WHERE id = :id"),
+                            {"id": session_id},
+                        )
+                        attempt_state = await session.scalar(
+                            text("SELECT state FROM realtime_session_attempts "
+                                 "WHERE session_id = :id"),
+                            {"id": session_id},
+                        )
+                        connection_closed = await session.scalar(
+                            text("SELECT closed_at IS NOT NULL FROM worker_connections "
+                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+                            {"worker_id": worker_id, "incarnation": worker.incarnation},
+                        )
+                        next_sequence = await session.scalar(
+                            text("SELECT next_command_sequence FROM worker_connections "
+                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+                            {"worker_id": worker_id, "incarnation": worker.incarnation},
+                        )
+                    if sess_state == "ended" and connection_closed:
+                        return sess_state, attempt_state, connection_closed, next_sequence
+                    await asyncio.sleep(0.01)
+                return sess_state, attempt_state, connection_closed, next_sequence
 
-            receipt, sess_state, attempt_state = client.portal.call(read_terminal)
-            assert receipt == 1
+            sess_state, attempt_state, connection_closed, next_sequence = client.portal.call(
+                read_terminal
+            )
             assert sess_state == "ended"
             assert attempt_state == "ended"
+            assert connection_closed is True
+            assert next_sequence == int(open_cmd["command_sequence"]) + 1
+            assert worker_id not in realtime.workers
         finally:
             browser_ctx.__exit__(None, None, None)
             fleet_ctx.__exit__(None, None, None)
@@ -389,38 +393,34 @@ def test_a_refused_open_session_frees_the_slot_and_keeps_the_browser(monkeypatch
 
 
 @pytest.mark.db
-def test_v6_second_session_on_same_worker_after_close(monkeypatch):
+def test_v6_new_session_after_terminal_close_uses_new_incarnation(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"v6-reopen-{uuid.uuid4()}"
     model_id = f"v6-rt-reopen-{uuid.uuid4()}"
 
     with protocol6_client(worker_id) as client:
-        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+        _ws, worker, _grant, _open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
             client, worker_id, model_id
         )
+        old_incarnation = worker.incarnation
         try:
             browser_ws.send_json({"type": "close"})
-            close_cmd = decode_control(ws.receive_text().encode("utf-8"))
-            assert close_cmd["type"] == "close_session"
-            ws.send_json(command_ack(close_cmd))
-            closed = session_closed_message(worker, open_cmd, grant["grant_nonce"])
-            ws.send_text(json.dumps(closed, separators=(",", ":")))
-            decode_control(ws.receive_text().encode("utf-8"))
+            with pytest.raises(WebSocketDisconnect):
+                browser_ws.receive_json()
         finally:
             browser_ctx.__exit__(None, None, None)
-
-        with client.websocket_connect("/api/v1/realtime") as browser_ws2:
-            browser_ws2.send_json({
-                "type": "open",
-                "model_id": model_id,
-                "params": {"prompt": "again"},
-            })
-            open_cmd2 = decode_control(ws.receive_text().encode("utf-8"))
-            assert open_cmd2["type"] == "open_session"
-            ws.send_json(command_ack(open_cmd2))
-            ws.send_json(session_ready_message(worker, open_cmd2, grant["grant_nonce"]))
-            expect(browser_ws2, "ready")
         fleet_ctx.__exit__(None, None, None)
+        assert worker_id not in realtime.workers
+
+        _ws2, worker2, _grant2, open_cmd2, _browser2, browser_ctx2, fleet_ctx2 = (
+            open_live_session(client, worker_id, model_id)
+        )
+        try:
+            assert worker2.incarnation != old_incarnation
+            assert open_cmd2["type"] == "open_session"
+        finally:
+            browser_ctx2.__exit__(None, None, None)
+            fleet_ctx2.__exit__(None, None, None)
 
 
 @pytest.mark.db
@@ -584,16 +584,16 @@ def test_a_refused_update_session_does_not_close_the_browser(monkeypatch):
         try:
             refuse_command(monkeypatch, "update_session")
             browser_ws.send_json({"type": "update_params", "params": {"prompt": "second"}})
-            expect(browser_ws, "params_updated")
+            session = realtime.sessions[uuid.UUID(open_cmd["session_id"])]
+            assert session.desired_params["prompt"] == "house"
+            assert session.desired_revision == 1
         finally:
             browser_ctx.__exit__(None, None, None)
             fleet_ctx.__exit__(None, None, None)
 
 
 @pytest.mark.db
-def test_a_refused_v6_session_is_closed_on_the_worker_before_its_attempt_ends(monkeypatch):
-    """close_session needs the attempt still open; abandoning first would get
-    the close refused and leave the worker holding the runner."""
+def test_a_refused_v6_session_fences_its_attempt_without_a_stop_command(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"v6-refused-{uuid.uuid4()}"
     model_id = f"v6-rt-refused-{uuid.uuid4()}"
@@ -620,20 +620,30 @@ def test_a_refused_v6_session_is_closed_on_the_worker_before_its_attempt_ends(mo
                                 "grant_nonce": grant["grant_nonce"]})
                 validate_message(refused)
                 ws.send_json(refused)
-                close = decode_control(ws.receive_text().encode("utf-8"))
-                assert close["type"] == "close_session"
-                assert close["attempt_id"] == open_cmd["attempt_id"]
+                with pytest.raises(WebSocketDisconnect):
+                    ws.receive_text()
 
                 async def attempt_state():
                     async with db.session_factory() as session:
-                        return await session.scalar(
+                        state = await session.scalar(
                             text("SELECT state FROM realtime_session_attempts "
                                  "WHERE attempt_id = :attempt_id"),
                             {"attempt_id": uuid.UUID(open_cmd["attempt_id"])},
                         )
+                        next_sequence = await session.scalar(
+                            text("SELECT next_command_sequence FROM worker_connections "
+                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+                            {"worker_id": worker_id, "incarnation": incarnation},
+                        )
+                        closed = await session.scalar(
+                            text("SELECT closed_at IS NOT NULL FROM worker_connections "
+                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+                            {"worker_id": worker_id, "incarnation": incarnation},
+                        )
+                        return state, next_sequence, closed
 
                 for _ in range(200):
-                    if client.portal.call(attempt_state) == "ended":
+                    if client.portal.call(attempt_state)[0] == "ended":
                         break
                     client.portal.call(asyncio.sleep, 0.01)
-                assert client.portal.call(attempt_state) == "ended"
+                assert client.portal.call(attempt_state) == ("ended", 2, True)

@@ -75,6 +75,10 @@ async def change_state(
                     and not await _remaining_administrators(session, user_id)):
                 raise HTTPException(status_code=403,
                                     detail="the last administrator cannot be suspended")
+            if change.state != "active":
+                from app import command_store
+
+                await command_store.erase_account_commands(session, {user_id})
             target.state = change.state
             if change.state != "active":
                 # The mailed capabilities before the sessions, because that is

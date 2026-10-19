@@ -56,10 +56,13 @@ async def collapse(confirmation: str) -> dict:
             # pool; this command must not, because aborting here is the
             # half-finished destruction issue #444 exists to stop.
             held = list((await session.execute(
-                select(User.id).where(User.id != local).order_by(User.id)
+                select(User.id).order_by(User.id)
             )).scalars().all())
             for user_id in held:
                 await hold_the_account(session, user_id, wait=True)
+            from app import command_store
+
+            await command_store.erase_account_commands(session, held)
             # The work first: it is what a foreign key would otherwise hold on
             # to, and moving it is the whole reason the accounts can go.
             await session.execute(update(Job).where(Job.user_id != local).values(user_id=local))
@@ -176,6 +179,9 @@ async def clear_factor(email: str) -> bool:
                 # above that is the account's answer for the whole
                 # transaction rather than a guess about one moment in it.
                 return False
+            from app import command_store
+
+            await command_store.erase_realtime_commands(session, target.id)
             await session.execute(
                 delete(RecoveryCode).where(RecoveryCode.user_id == target.id))
             await session.execute(

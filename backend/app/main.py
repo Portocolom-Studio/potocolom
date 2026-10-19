@@ -23,7 +23,12 @@ from app.gpu_samples import maintain_loop
 from app.jobs import maintain_deletes_loop, router as jobs_router
 from app.logs import setup_logging
 from app.metrics import router as metrics_router
-from app.realtime import reap_dead_workers
+from app.realtime import (
+    drain_worker_deliveries,
+    reap_dead_workers,
+    start_worker_deliveries,
+    stop_worker_deliveries,
+)
 from app.realtime import router as realtime_router
 from app.realtime import sweep_dead_sessions
 from app.accounts import router as accounts_router
@@ -105,29 +110,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await running.enter_async_context(db.hold_local_startup_lock())
         admitted = True
         running.push_async_callback(db.dispose)
-        # SQLAlchemy closes its session in a shielded child task, so
-        # initialization must finish before its engine is disposed.
         async def initialize_database():
             if await db.connect():
                 await jobs.recover()
 
-        initialization = asyncio.create_task(initialize_database())
-        while not initialization.done():
-            try:
-                await asyncio.shield(initialization)
-            except asyncio.CancelledError as error:
-                if not initialization.cancelled():
-                    cancelled = error
-            except BaseException:
-                pass
-        try:
-            initialization.result()
-        except BaseException as error:
-            if cancelled is not None:
-                raise cancelled from error
-            raise
-        if cancelled is not None:
-            raise cancelled
+        await db.run_to_completion(initialize_database())
+        start_worker_deliveries()
         task_factories = (
             reap_dead_workers,
             sweep_dead_sessions,
@@ -146,10 +134,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for start_task in task_factories:
             tasks.append(asyncio.create_task(start_task()))
         yield
-    except asyncio.CancelledError as exc:
-        cancelled = exc
+    except asyncio.CancelledError as error:
+        cancelled = error
     finally:
         async def shutdown():
+            stop_worker_deliveries()
             try:
                 for task in tasks:
                     task.cancel()
@@ -165,25 +154,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                                 raise error.__cause__
             finally:
                 try:
-                    if admitted:
-                        await jobs.drain_blob_cleanup()
+                    await drain_worker_deliveries()
                 finally:
-                    await running.aclose()
+                    try:
+                        if admitted:
+                            await jobs.drain_blob_cleanup()
+                    finally:
+                        await running.aclose()
 
-        cleanup = asyncio.create_task(shutdown())
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError as exc:
-                if not cleanup.cancelled():
-                    cancelled = exc
-            except BaseException:
-                break
         try:
-            cleanup.result()
+            await db.run_to_completion(shutdown())
         except BaseException as error:
             if cancelled is not None:
-                raise cancelled from error
+                raise cancelled from db.failure_cause(error)
             raise
         if cancelled is not None:
             raise cancelled
