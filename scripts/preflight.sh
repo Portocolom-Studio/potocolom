@@ -39,6 +39,67 @@ fail() { printf '  %sfail%s %s\n' "$R" "$N" "$1"; fails=$((fails + 1)); }
 note() { printf '      %s\n' "$1"; }
 head_() { printf '\n%s%s%s\n' "$B" "$1" "$N"; }
 
+distro_family() {
+  local os_release="${POTOCOLOM_OS_RELEASE:-/etc/os-release}" id="" id_like="" key value
+  [[ -r "$os_release" ]] || { printf 'other\n'; return; }
+  while IFS='=' read -r key value; do
+    value="$(printf '%s' "$value" | sed 's/^"//; s/"$//; s/^\x27//; s/\x27$//')"
+    case "$key" in
+      ID) id="$value" ;;
+      ID_LIKE) id_like="$value" ;;
+    esac
+  done <"$os_release"
+  case "$id" in
+    ubuntu) printf 'ubuntu\n'; return ;;
+    debian) printf 'debian\n'; return ;;
+    fedora) printf 'fedora\n'; return ;;
+    rhel|centos|rocky|almalinux|amzn) printf 'rhel\n'; return ;;
+    opensuse*|sles) printf 'suse\n'; return ;;
+  esac
+  case " $id_like " in
+    *' ubuntu '*) printf 'ubuntu\n' ;;
+    *' debian '*) printf 'debian\n' ;;
+    *' rhel '*|*' fedora '*) printf 'rhel\n' ;;
+    *' suse '*) printf 'suse\n' ;;
+    *) printf 'other\n' ;;
+  esac
+}
+
+print_toolkit_fix() {
+  case "$1" in
+    ubuntu|debian)
+      note "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+      note "  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+      note "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+      ;;
+    fedora|rhel)
+      note "  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
+      note "  sudo dnf install -y nvidia-container-toolkit"
+      ;;
+    suse)
+      note "  sudo zypper ar https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo"
+      note "  sudo zypper --gpg-auto-import-keys install -y nvidia-container-toolkit"
+      ;;
+    *) note "  https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html" ;;
+  esac
+  note "  sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
+}
+
+print_driver_fix() {
+  case "$1" in
+    ubuntu) note "  sudo ubuntu-drivers install" ;;
+    debian)
+      note "  enable the contrib, non-free and non-free-firmware components in /etc/apt/sources.list, then:"
+      note "  sudo apt-get update && sudo apt-get install -y nvidia-driver firmware-misc-nonfree"
+      ;;
+    fedora)
+      note "  enable RPM Fusion (https://rpmfusion.org/Configuration), then: sudo dnf install -y akmod-nvidia"
+      ;;
+    *) note "  https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/" ;;
+  esac
+  note "  reboot, then check that nvidia-smi lists the GPU"
+}
+
 # Compare dotted versions: version_ge 535.261.03 525.60.13
 version_ge() {
   [[ "$1" == "$2" ]] && return 0
@@ -174,9 +235,10 @@ scan_unusable_gpus() {
     slot="${device##*/}"
     if [[ "$vendor" == 0x10de ]]; then
       warn "NVIDIA GPU found at ${slot} but no working NVIDIA driver"
-      note "install the NVIDIA driver, reboot, then check that nvidia-smi lists the GPU:"
-      note "https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/"
-      note "then the NVIDIA Container Toolkit for Docker: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+      print_driver_fix "$(distro_family)"
+      if ! toolkit_present; then
+        print_toolkit_fix "$(distro_family)"
+      fi
     elif [[ "$vendor" == 0x1002 ]]; then
       warn "AMD GPU found at ${slot} but /dev/kfd is missing (amdgpu compute not available)"
       note "load the amdgpu kernel driver; see docs/self-hosting.md"
@@ -184,6 +246,10 @@ scan_unusable_gpus() {
     found=true
   done
   [[ "$found" == true ]]
+}
+
+toolkit_present() {
+  command -v nvidia-ctk >/dev/null 2>&1 || command -v nvidia-container-runtime >/dev/null 2>&1 || command -v nvidia-container-cli >/dev/null 2>&1
 }
 
 if [[ "$profile" == rocm ]]; then
@@ -229,6 +295,7 @@ elif [[ "$profile" == gpu ]]; then
       fi
     else
       fail "driver ${driver_version} is older than ${CUDA_MIN_DRIVER}; the CUDA ${CUDA_IMAGE_VERSION} worker image will not load"
+      print_driver_fix "$(distro_family)"
     fi
   else
     fail "nvidia-smi lists a GPU but not its memory and driver version: ${smi:-no output}"
@@ -238,16 +305,16 @@ elif [[ "$profile" == gpu ]]; then
   # the Docker gpu profile needs it, so a contributor gets a warning.
   container_gpu=fail
   [[ "$contributor" == true ]] && container_gpu=warn
-  if command -v nvidia-ctk >/dev/null 2>&1; then
+  if toolkit_present; then
     pass "NVIDIA Container Toolkit installed"
   else
     "$container_gpu" "NVIDIA Container Toolkit missing; the gpu profile cannot pass the GPU through"
-    note "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+    print_toolkit_fix "$(distro_family)"
   fi
 
   # The only check that proves the whole chain works, so it is worth the
   # container pull. Skip with POTOCOLOM_SKIP_GPU_TEST=1.
-  if [[ "$docker_ok" == true && "${POTOCOLOM_SKIP_GPU_TEST:-0}" != "1" ]]; then
+  if toolkit_present && [[ "$docker_ok" == true && "${POTOCOLOM_SKIP_GPU_TEST:-0}" != "1" ]]; then
     if docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L >/dev/null 2>&1; then
       pass "docker can reach the GPU (--gpus all works)"
     else

@@ -2,6 +2,7 @@
 set -uo pipefail
 # ensure-env.sh honours these; inherited, they would point at a real .env.
 unset ENV_FILE ENV_EXAMPLE
+unset POTOCOLOM_SKIP_GPU_TEST
 
 repo="$(dirname "${BASH_SOURCE[0]}")/.."
 tmp="$(mktemp -d "$repo/.gpu-detection.XXXXXX")"
@@ -20,7 +21,13 @@ new_case() {
 	cat >"$case_dir/bin/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${FAKE_NVIDIA:-fail}" == ok ]]; then
-	printf 'Test GPU\n'
+	if [[ "$*" == *'--query-gpu=name,memory.total,driver_version'* ]]; then
+		printf 'NVIDIA GeForce RTX 3050 Laptop GPU, 4096 MiB, 595.91.07\n'
+	elif [[ "$*" == *'--query-gpu=name'* ]]; then
+		printf 'NVIDIA GeForce RTX 3050 Laptop GPU\n'
+	else
+		printf 'CUDA Version: 13.2\n'
+	fi
 	exit 0
 fi
 if [[ "${FAKE_NVIDIA:-fail}" == two ]]; then
@@ -32,6 +39,9 @@ fi
 exit 9
 EOF
 	chmod +x "$case_dir/bin/nvidia-smi"
+	for utility in bash dirname uname awk df tail tr sort head grep cut xargs id openssl mktemp mv sed; do
+		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(command -v "$utility")" "$case_dir/bin/$utility"
+	done
 }
 
 # The repository layout preflight reads, so ensure-env writes only in the case.
@@ -57,9 +67,12 @@ expect_profile() {
 }
 
 expect_preflight_gpu() {
-	local name="$1" vendor="$2" expected="$3" kfd="${4:-absent}" slot="0000:01:00.0" output kfd_path
+	local name="$1" vendor="$2" expected="$3" kfd="${4:-absent}" id="${5:-ubuntu}" id_like="${6:-}" nvidia="${7:-fail}" docker_mode="${8:-ok}" toolkit="${9:-false}" expected_rc="${10:-any}" unexpected="${11:-}" slot="0000:01:00.0" output kfd_path contributor="--contributor" env_args=()
 	new_case "$name"
 	copy_repo
+	if [[ "$id" != missing ]]; then
+		printf 'ID=%s\nID_LIKE="%s"\n' "$id" "$id_like" >"$case_dir/os-release"
+	fi
 	mkdir -p "$case_dir/pci/$slot"
 	printf '0x030000\n' >"$case_dir/pci/$slot/class"
 	printf '%s\n' "$vendor" >"$case_dir/pci/$slot/vendor"
@@ -69,11 +82,37 @@ expect_preflight_gpu() {
 	else
 		kfd_path="$case_dir/no-kfd"
 	fi
-	output="$(FAKE_NVIDIA=fail POTOCOLOM_KFD="$kfd_path" POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_SKIP_GPU_TEST=1 TMPDIR="$case_dir" PATH="$case_dir/bin:/usr/bin:/bin" bash "$case_dir/repo/scripts/preflight.sh" --contributor 2>&1)" || true
-	if [[ "$output" == *"$expected"* ]]; then
+	cat >"$case_dir/bin/docker" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == --version ]]; then printf 'Docker version 28.0.0, build test\\n'; exit 0; fi
+if [[ "\$1" == compose ]]; then printf '2.30.0\\n'; exit 0; fi
+if [[ "\$1" == info ]]; then exit 0; fi
+if [[ "\$1" == run && '$docker_mode' == fail ]]; then exit 1; fi
+exit 0
+EOF
+	chmod +x "$case_dir/bin/docker"
+	if [[ "$toolkit" == true || "$toolkit" == ctk ]]; then
+		toolkit_binary=nvidia-ctk
+	elif [[ "$toolkit" == runtime ]]; then
+		toolkit_binary=nvidia-container-runtime
+	elif [[ "$toolkit" == cli ]]; then
+		toolkit_binary=nvidia-container-cli
+	else
+		toolkit_binary=""
+	fi
+	if [[ -n "$toolkit_binary" ]]; then
+		printf '#!/usr/bin/env bash\nexit 0\n' >"$case_dir/bin/$toolkit_binary"
+		chmod +x "$case_dir/bin/$toolkit_binary"
+	fi
+	[[ "$nvidia" == ok ]] && contributor=""
+	env_args=("FAKE_NVIDIA=$nvidia" "POTOCOLOM_OS_RELEASE=$case_dir/os-release" "POTOCOLOM_KFD=$kfd_path" "POTOCOLOM_PCI_DEVICES=$case_dir/pci" "TMPDIR=$case_dir" "PATH=$case_dir/bin")
+	[[ "$docker_mode" == fail ]] || env_args+=(POTOCOLOM_SKIP_GPU_TEST=1)
+	output="$(env "${env_args[@]}" bash "$case_dir/repo/scripts/preflight.sh" $contributor 2>&1)"
+	local rc=$?
+	if [[ "$output" == *"$expected"* && ( -z "$unexpected" || "$output" != *"$unexpected"* ) && ( "$expected_rc" == any || "$rc" -eq "$expected_rc" ) ]]; then
 		printf 'ok %s\n' "$name"
 	else
-		fail_case "$name" "$output"
+		fail_case "$name" "exit=$rc\n$output"
 	fi
 }
 
@@ -81,9 +120,6 @@ expect_toolchain() {
 	local name="$1" node_version="$2" npm_present="$3" expected="$4" expected_rc="$5" output rc
 	new_case "$name"
 	copy_repo
-	for utility in bash dirname uname awk df tail tr sort grep cut xargs id openssl mktemp mv sed head; do
-		ln -s "$(command -v "$utility")" "$case_dir/bin/$utility"
-	done
 	cat >"$case_dir/bin/make" <<'EOF'
 #!/usr/bin/env bash
 target="${!#}"
@@ -146,6 +182,18 @@ expect_preflight_gpu preflight-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:
 expect_preflight_gpu preflight-rocm-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:01:00.0' present
 expect_preflight_gpu preflight-amd-without-kfd 0x1002 'AMD GPU found at 0000:01:00.0'
 expect_preflight_gpu preflight-unsupported-pci 0x8086 'no NVIDIA or AMD compute GPU detected'
+
+expect_preflight_gpu distro-ubuntu 0x10de 'sudo ubuntu-drivers install' absent ubuntu ''
+expect_preflight_gpu distro-linuxmint 0x10de 'sudo ubuntu-drivers install' absent linuxmint 'ubuntu debian'
+expect_preflight_gpu distro-debian 0x10de 'sudo apt-get update && sudo apt-get install -y nvidia-driver firmware-misc-nonfree' absent debian
+expect_preflight_gpu distro-fedora 0x10de 'sudo dnf install -y nvidia-container-toolkit' absent fedora
+expect_preflight_gpu distro-rocky 0x10de 'https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/' absent rocky 'rhel centos fedora'
+expect_preflight_gpu distro-opensuse 0x10de 'sudo zypper --gpg-auto-import-keys install -y nvidia-container-toolkit' absent opensuse-tumbleweed 'opensuse suse'
+expect_preflight_gpu distro-arch 0x10de 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' absent arch
+expect_preflight_gpu distro-missing-release 0x10de 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' absent missing
+expect_preflight_gpu laptop-toolkit-missing 0x8086 'sudo apt-get install -y nvidia-container-toolkit' absent debian '' ok fail false 1 'toolkit installed but passthrough is broken'
+expect_preflight_gpu toolkit-present-passthrough-fails 0x8086 'toolkit installed but passthrough is broken' absent ubuntu '' ok fail true 1
+expect_preflight_gpu toolkit-runtime-passthrough-fails 0x8086 'toolkit installed but passthrough is broken' absent ubuntu '' ok fail runtime 1
 
 expect_toolchain toolchain-old-node v20.0.0 true 'Node.js 24+ is required' 1
 expect_toolchain toolchain-missing-npm v24.0.0 false 'npm not installed' 1

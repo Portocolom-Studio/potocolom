@@ -97,7 +97,8 @@ driver must be 525.60.13 or newer. CUDA minor version compatibility carries the
 525.60.13 the worker fails at import with a CUDA error.
 
 1. Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-   and restart the docker daemon.
+   and restart the docker daemon. When the driver or the toolkit is missing,
+   preflight prints the commands for the detected distro.
 2. `docker compose -f deploy/compose/compose.yml --profile gpu up -d --build`
    uses the `deploy.resources.reservations.devices` block already in the
    compose file; no further configuration is needed.
