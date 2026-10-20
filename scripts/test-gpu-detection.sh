@@ -2,7 +2,7 @@
 set -uo pipefail
 # ensure-env.sh honours these; inherited, they would point at a real .env.
 unset ENV_FILE ENV_EXAMPLE
-unset POTOCOLOM_SKIP_GPU_TEST
+unset POTOCOLOM_SKIP_GPU_TEST POTOCOLOM_PROFILE
 
 repo="$(dirname "${BASH_SOURCE[0]}")/.."
 tmp="$(mktemp -d "$repo/.gpu-detection.XXXXXX")"
@@ -53,12 +53,12 @@ copy_repo() {
 }
 
 expect_profile() {
-	local name="$1" nvidia="$2" kfd="$3" expected="$4" actual
+	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual
 	new_case "$name"
 	if [[ "$kfd" == present ]]; then
 		: >"$case_dir/kfd"
 	fi
-	actual="$(FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
+	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
 	if [[ "$actual" == "$expected" ]]; then
 		printf 'ok %s\n' "$name"
 	else
@@ -71,9 +71,10 @@ expect_profile() {
 # (os-release; id=missing leaves no file, crlf=yes writes CRLF line ends), nvidia (ok|fail), docker (ok|fail
 # for run --gpus), toolkit (none|ctk|runtime|cli), rc (exit code, or any),
 # absent (text that must not appear), mode (contributor|selfhost; default
-# contributor without a working NVIDIA GPU, selfhost with one).
+# contributor without a working NVIDIA GPU, selfhost with one), profile
+# (POTOCOLOM_PROFILE).
 expect_preflight_gpu() {
-	local name="$1" expected="$2" vendor=0x10de kfd=absent id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no
+	local name="$1" expected="$2" vendor=0x10de kfd=absent id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no profile=""
 	local slot="0000:01:00.0" output code kfd_path option tool
 	shift 2
 	for option in "$@"; do
@@ -123,7 +124,7 @@ EOF
 	local args=()
 	[[ "$mode" == contributor ]] && args=(--contributor)
 	# Port 9 (discard) is never served here, so the selfhost port check passes.
-	output="$(env FAKE_NVIDIA="$nvidia" POTOCOLOM_OS_RELEASE="$case_dir/os-release" POTOCOLOM_KFD="$kfd_path" \
+	output="$(env POTOCOLOM_PROFILE="$profile" FAKE_NVIDIA="$nvidia" POTOCOLOM_OS_RELEASE="$case_dir/os-release" POTOCOLOM_KFD="$kfd_path" \
 		POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_PORT=9 TMPDIR="$case_dir" PATH="$case_dir/bin" \
 		bash "$case_dir/repo/scripts/preflight.sh" "${args[@]}" 2>&1)"
 	code=$?
@@ -196,8 +197,11 @@ expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
 expect_profile profile-smoke nvidia-fail absent smoke
+expect_profile profile-override-rocm ok present rocm rocm
+expect_profile profile-override-invalid ok present gpu cuda
 expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' rc=0
 expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
+expect_preflight_gpu preflight-rocm-override-without-kfd 'POTOCOLOM_PROFILE=rocm but /dev/kfd is missing' vendor=0x8086 profile=rocm rc=1
 expect_preflight_gpu preflight-amd-without-kfd 'AMD GPU found at 0000:01:00.0' vendor=0x1002
 expect_preflight_gpu preflight-unsupported-pci 'no NVIDIA or AMD compute GPU detected' vendor=0x8086
 

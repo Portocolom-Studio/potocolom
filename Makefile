@@ -339,6 +339,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	done; \
 	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; the example DB password is rotated; every auth target shares the API database'
 	@bash scripts/test-gpu-detection.sh
+	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \

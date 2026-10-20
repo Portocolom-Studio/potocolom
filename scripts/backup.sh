@@ -89,7 +89,10 @@ cleanup() {
 	fi
 	exit "$status"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# A signal must end the run as a failure, not with the last command's status.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Restart only an api that was running: an operator who stopped it on
 # purpose gets it back stopped. Set before the stop, so an interrupt during
@@ -120,8 +123,14 @@ chmod 600 "$OUT/env.new"
 (cd "$OUT" && sha256sum database.dump.new assets.tar.new env.new \
 	| sed 's/\.new$//' >SHA256SUMS.new)
 chmod 600 "$OUT/SHA256SUMS.new"
+# The swap is four renames; a signal in the middle would leave a new dump
+# beside old assets with no manifest, so it is not interruptible.
+trap '' INT TERM HUP
 rm -f "$OUT/SHA256SUMS"
 for name in database.dump assets.tar env; do mv "$OUT/$name.new" "$OUT/$name"; done
 mv "$OUT/SHA256SUMS.new" "$OUT/SHA256SUMS"
+trap - HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "backup written to $OUT"

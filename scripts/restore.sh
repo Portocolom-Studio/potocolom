@@ -73,6 +73,9 @@ PROJECT="${COMPOSE_PROJECT_NAME:-${env_project:-$dir_project}}"
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE")
 for file in "${FILES[@]}"; do COMPOSE+=(-f "$file"); done
 
+# A daemon that does not answer would read as "no volume" below, and the
+# cleanup of a failed restore runs down -v on whatever project that was.
+docker info >/dev/null 2>&1 || die "cannot reach Docker; start the daemon and run this again"
 for volume in pgdata assets; do
 	if docker volume inspect "${PROJECT}_${volume}" >/dev/null 2>&1; then
 		die "$PROJECT already has a ${volume} volume; restore into a new, empty project (set COMPOSE_PROJECT_NAME)"
