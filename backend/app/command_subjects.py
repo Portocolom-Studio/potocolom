@@ -692,20 +692,26 @@ async def lock_reported_command(
     if kind == "close_session":
         proof = (await session.execute(
             text(
-                "SELECT session.state AS entity_state, attempt.state AS attempt_state, "
+                "SELECT session.state AS entity_state, "
+                "session.control_generation AS entity_generation, "
+                "attempt.state AS attempt_state, "
                 "attempt.attempt_id, attempt.worker_id, attempt.incarnation, attempt.range_id "
                 "FROM realtime_sessions session JOIN realtime_session_attempts attempt "
                 "ON attempt.session_id = session.id WHERE session.id = :subject_id "
                 "AND session.user_id = :account_user_id "
-                "AND session.control_generation = :subject_sequence "
+                "AND session.control_generation >= :subject_sequence "
                 "AND attempt.control_generation = :subject_sequence"
             ),
             {"subject_id": subject_id, "account_user_id": account_user_id,
              "subject_sequence": subject_sequence},
         )).mappings().one_or_none()
-        # An idle release keeps the row idle; the receipt of a terminal close
-        # has already moved its row from ending to ended.
-        if (proof is None or proof["entity_state"] not in {"idle", "ended"}
+        # The ended attempt is the proof. The row's state matters only while it
+        # is still at this generation: an idle release keeps it idle, a terminal
+        # close's receipt has already ended it. A browser that resumed before the
+        # report moved the row to a newer generation, which this report cannot touch.
+        if (proof is None
+                or (proof["entity_generation"] == subject_sequence
+                    and proof["entity_state"] not in {"idle", "ended"})
                 or proof["attempt_state"] != "ended" or proof["attempt_id"] != attempt_id
                 or proof["worker_id"] != worker_id or proof["incarnation"] != incarnation
                 or proof["range_id"] != range_id):
