@@ -125,10 +125,11 @@ chmod 600 "$OUT/env.new"
 chmod 600 "$OUT/SHA256SUMS.new"
 # The swap is four renames; a signal in the middle would leave a new dump
 # beside old assets with no manifest, so it is not interruptible.
-trap '' INT TERM
+trap '' INT TERM HUP
 rm -f "$OUT/SHA256SUMS"
 for name in database.dump assets.tar env; do mv "$OUT/$name.new" "$OUT/$name"; done
 mv "$OUT/SHA256SUMS.new" "$OUT/SHA256SUMS"
+trap - HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

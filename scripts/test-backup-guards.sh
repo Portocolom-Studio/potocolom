@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A backup stopped by a signal must fail and leave the previous recovery
-# point whole. A fake docker holds pg_dump open long enough to send TERM.
+# point whole (a fake docker holds pg_dump open long enough to send TERM),
+# and a restore must refuse to run when the Docker daemon does not answer.
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,3 +37,26 @@ if ! (cd "$tmp/out" && sha256sum -c --quiet SHA256SUMS) || compgen -G "$tmp/out/
 	exit 1
 fi
 printf 'ok backup-term-exit\nok backup-term-keeps-previous\n'
+
+mkdir -p "$tmp/nodaemon/bin" "$tmp/restore-in"
+cat >"$tmp/nodaemon/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+	info) exit 1 ;;
+	volume) exit 1 ;;
+esac
+printf '%s\n' "$*" >>"${DOCKER_LOG:?}"
+exit 0
+EOF
+chmod +x "$tmp/nodaemon/bin/docker"
+cp "$tmp/out/"* "$tmp/restore-in/"
+: >"$tmp/docker.log"
+rc=0
+PATH="$tmp/nodaemon/bin:$PATH" DOCKER_LOG="$tmp/docker.log" COMPOSE_FILE="$repo/deploy/compose/compose.yml" \
+	bash "$repo/scripts/restore.sh" "$tmp/restore-in" >/dev/null 2>&1 || rc=$?
+if [[ "$rc" -eq 0 || -s "$tmp/docker.log" ]]; then
+	printf 'FAIL restore-refuses-without-daemon: exit %s, docker calls:\n' "$rc"
+	cat "$tmp/docker.log"
+	exit 1
+fi
+printf 'ok restore-refuses-without-daemon\n'

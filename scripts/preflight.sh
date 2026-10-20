@@ -256,7 +256,12 @@ toolkit_present() {
 }
 
 if [[ "$profile" == rocm ]]; then
-  pass "AMD compute device /dev/kfd present"
+  # POTOCOLOM_PROFILE=rocm can select this branch on a host without the device.
+  if [[ -e "${POTOCOLOM_KFD:-/dev/kfd}" ]]; then
+    pass "AMD compute device /dev/kfd present"
+  else
+    fail "POTOCOLOM_PROFILE=rocm but /dev/kfd is missing; the ROCm worker cannot start"
+  fi
   if [[ -d /dev/dri ]]; then
     pass "/dev/dri present"
   else
