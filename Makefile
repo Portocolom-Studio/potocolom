@@ -121,6 +121,7 @@ check-node: ## fail fast unless Node.js 24+ is on PATH
 	@node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)' || { \
 		echo 'error: Node.js 24 or newer is required (found '"$$(node --version)"').' >&2; \
 		exit 1; }
+	@echo "node $$(node --version)"
 
 check-worker-venv:
 	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null && test -x worker/.venv/bin/pip || { \

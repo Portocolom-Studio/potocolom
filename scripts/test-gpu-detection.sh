@@ -34,6 +34,14 @@ EOF
 	chmod +x "$case_dir/bin/nvidia-smi"
 }
 
+# The repository layout preflight reads, so ensure-env writes only in the case.
+copy_repo() {
+	mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models"
+	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
+	cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
+	cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
+}
+
 expect_profile() {
 	local name="$1" nvidia="$2" kfd="$3" expected="$4" actual
 	new_case "$name"
@@ -51,10 +59,8 @@ expect_profile() {
 expect_preflight_gpu() {
 	local name="$1" vendor="$2" expected="$3" kfd="${4:-absent}" slot="0000:01:00.0" output kfd_path
 	new_case "$name"
-	mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models" "$case_dir/pci/$slot"
-	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
-	cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
-	cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
+	copy_repo
+	mkdir -p "$case_dir/pci/$slot"
 	printf '0x030000\n' >"$case_dir/pci/$slot/class"
 	printf '%s\n' "$vendor" >"$case_dir/pci/$slot/vendor"
 	if [[ "$kfd" == present ]]; then
@@ -64,7 +70,7 @@ expect_preflight_gpu() {
 		kfd_path="$case_dir/no-kfd"
 	fi
 	output="$(FAKE_NVIDIA=fail POTOCOLOM_KFD="$kfd_path" POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_SKIP_GPU_TEST=1 TMPDIR="$case_dir" PATH="$case_dir/bin:/usr/bin:/bin" bash "$case_dir/repo/scripts/preflight.sh" --contributor 2>&1)" || true
-	if [[ "$output" == *"$expected"* && "$output" == *"$slot"* ]]; then
+	if [[ "$output" == *"$expected"* ]]; then
 		printf 'ok %s\n' "$name"
 	else
 		fail_case "$name" "$output"
@@ -72,15 +78,12 @@ expect_preflight_gpu() {
 }
 
 expect_toolchain() {
-	local name="$1" node_version="$2" npm_present="$3" expected="$4" output rc
+	local name="$1" node_version="$2" npm_present="$3" expected="$4" expected_rc="$5" output rc
 	new_case "$name"
-	mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models"
+	copy_repo
 	for utility in bash dirname uname awk df tail tr sort grep cut xargs id openssl mktemp mv sed head; do
 		ln -s "$(command -v "$utility")" "$case_dir/bin/$utility"
 	done
-	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
-	cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
-	cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
 	cat >"$case_dir/bin/make" <<'EOF'
 #!/usr/bin/env bash
 target="${!#}"
@@ -88,6 +91,7 @@ case "$target" in
 	check-python) printf 'venvs use /usr/bin/python3 (3.12.0)\n' ;;
 	check-node)
 		if node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)'; then
+			printf 'node %s\n' "$(node --version)"
 			exit 0
 		fi
 		printf 'error: Node.js 24 or newer is required (found %s).\n' "$(node --version)" >&2
@@ -126,15 +130,10 @@ EOF
 	[[ "$npm_present" != true ]] || chmod +x "$case_dir/bin/npm"
 	output="$(FAKE_NVIDIA=fail POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_PCI_DEVICES="$case_dir/no-pci" POTOCOLOM_SKIP_GPU_TEST=1 TMPDIR="$case_dir" PATH="$case_dir/bin" bash "$case_dir/repo/scripts/preflight.sh" --contributor 2>&1)"
 	rc=$?
-	if [[ "$output" == *"$expected"* ]]; then
-		if [[ "$name" == toolchain-all-present && "$output" == *"fail"* ]] ||
-			[[ "$name" != toolchain-all-present && "$rc" -ne 1 ]]; then
-			fail_case "$name" "$output"
-		else
-			printf 'ok %s\n' "$name"
-		fi
+	if [[ "$output" == *"$expected"* && "$rc" -eq "$expected_rc" ]]; then
+		printf 'ok %s\n' "$name"
 	else
-		fail_case "$name" "$output"
+		fail_case "$name" "exit=$rc\n$output"
 	fi
 }
 
@@ -143,27 +142,14 @@ expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
 expect_profile profile-smoke nvidia-fail absent smoke
-expect_preflight_gpu preflight-unusable-nvidia 0x10de 'NVIDIA GPU found at'
-expect_preflight_gpu preflight-rocm-unusable-nvidia 0x10de 'NVIDIA GPU found at' present
-expect_preflight_gpu preflight-amd-without-kfd 0x1002 'AMD GPU found at'
+expect_preflight_gpu preflight-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:01:00.0'
+expect_preflight_gpu preflight-rocm-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:01:00.0' present
+expect_preflight_gpu preflight-amd-without-kfd 0x1002 'AMD GPU found at 0000:01:00.0'
+expect_preflight_gpu preflight-unsupported-pci 0x8086 'no NVIDIA or AMD compute GPU detected'
 
-expect_toolchain toolchain-old-node v20.0.0 true 'Node.js 24+ is required'
-expect_toolchain toolchain-missing-npm v24.0.0 false 'npm not installed'
-expect_toolchain toolchain-all-present v24.0.0 true 'Toolchain'
-
-new_case preflight-unsupported-pci
-mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models" "$case_dir/pci/0000:02:00.0"
-cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
-cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
-cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
-printf '0x030000\n' >"$case_dir/pci/0000:02:00.0/class"
-printf '0x8086\n' >"$case_dir/pci/0000:02:00.0/vendor"
-output="$(FAKE_NVIDIA=fail POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_SKIP_GPU_TEST=1 TMPDIR="$case_dir" PATH="$case_dir/bin:/usr/bin:/bin" bash "$case_dir/repo/scripts/preflight.sh" --contributor 2>&1)" || true
-if [[ "$output" == *"no NVIDIA or AMD compute GPU detected"* ]]; then
-	printf 'ok preflight-unsupported-pci\n'
-else
-	fail_case preflight-unsupported-pci "$output"
-fi
+expect_toolchain toolchain-old-node v20.0.0 true 'Node.js 24+ is required' 1
+expect_toolchain toolchain-missing-npm v24.0.0 false 'npm not installed' 1
+expect_toolchain toolchain-all-present v24.0.0 true 'ok node v24.0.0' 0
 
 new_case preflight-unknown-argument
 mkdir -p "$case_dir/repo/scripts"

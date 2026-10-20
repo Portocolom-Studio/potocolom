@@ -93,34 +93,26 @@ fi
 if [[ "$contributor" == true ]]; then
   head_ "Toolchain"
 
-  make_available=false
+  # The Makefile owns the version rules; this only reports them together.
+  make_check() {
+    local target="$1" requirement="$2" out line
+    if out="$(make -s -C "$ROOT" "$target" 2>&1)"; then
+      pass "${out##*$'\n'}"
+    else
+      fail "$requirement"
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && note "$line"
+      done <<<"$out"
+    fi
+  }
+
   if command -v make >/dev/null 2>&1; then
     pass "make installed"
-    make_available=true
+    make_check check-python "Python 3.11+ with venv support is required"
+    make_check check-node "Node.js 24+ is required"
   else
     fail "make not installed"
     note "sudo apt install make   # or your package manager"
-  fi
-
-  if [[ "$make_available" == true ]]; then
-    if out="$(make -s -C "$ROOT" check-python 2>&1)"; then
-      python_result="$(printf '%s\n' "$out" | tail -n1)"
-      pass "$python_result"
-    else
-      fail "Python 3.11+ with venv support is required"
-      while IFS= read -r line; do
-        [[ -n "$line" ]] && note "$line"
-      done <<<"$out"
-    fi
-
-    if out="$(make -s -C "$ROOT" check-node 2>&1)"; then
-      pass "node $(node --version)"
-    else
-      fail "Node.js 24+ is required"
-      while IFS= read -r line; do
-        [[ -n "$line" ]] && note "$line"
-      done <<<"$out"
-    fi
   fi
 
   if command -v npm >/dev/null 2>&1; then
@@ -220,11 +212,6 @@ if [[ "$profile" == rocm ]]; then
   else
     warn "rocm-smi not on the host (fine: the container ships ROCm userspace), VRAM unknown"
   fi
-  scan_unusable_gpus "0x10de" || true
-  if [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>&1; then
-    warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
-    note "this host uses the AMD worker; the NVIDIA card stays unused until nvidia-smi lists it"
-  fi
 
 elif [[ "$profile" == gpu ]]; then
   if command -v nvidia-smi >/dev/null 2>&1 && smi="$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>&1)" && [[ -n "$smi" ]]; then
@@ -244,8 +231,7 @@ elif [[ "$profile" == gpu ]]; then
       fail "driver ${driver_version} is older than ${CUDA_MIN_DRIVER}; the CUDA ${CUDA_IMAGE_VERSION} worker image will not load"
     fi
   else
-    warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
-    note "the gpu profile needs a usable GPU; this host will fall through to the simulated worker"
+    fail "nvidia-smi lists a GPU but not its memory and driver version: ${smi:-no output}"
   fi
 
   # The native worker of make init/make dev runs without the toolkit; only
@@ -269,12 +255,18 @@ elif [[ "$profile" == gpu ]]; then
       note "sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
     fi
   fi
-else
+fi
+
+# Hardware the chosen profile leaves unused. A gpu host is not scanned: an
+# AMD CPU's iGPU there is expected and not a problem.
+if [[ "$profile" != gpu ]]; then
   if [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>&1; then
     warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
-    note "the gpu profile needs a usable GPU; this host will fall through to the simulated worker"
+    note "the NVIDIA card stays unused until nvidia-smi lists it"
   fi
-  if ! scan_unusable_gpus "0x10de 0x1002"; then
+  if [[ "$profile" == rocm ]]; then
+    scan_unusable_gpus "0x10de" || true
+  elif ! scan_unusable_gpus "0x10de 0x1002"; then
     warn "no NVIDIA or AMD compute GPU detected"
     note "the full stack still runs against the simulated worker: scripts/compose-smoke.sh"
   fi
@@ -340,14 +332,11 @@ fi
 
 if [[ "$contributor" == true ]]; then
   ((warns > 0)) && printf '  %d warning(s).\n' "$warns"
-else
-  ((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"
-fi
-
-if [[ "$contributor" == true ]]; then
   printf '  Host ready for make init.\n'
   exit 0
 fi
+
+((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"
 
 # A source checkout has the Dockerfiles and builds the images; a release
 # install only has the compose file, so it pulls what the image: tags name
