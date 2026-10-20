@@ -4,7 +4,8 @@
 # example when the file is missing (hex secrets), and fills empty
 # POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty secret, except
 # the example's change-me database password before any database uses it.
-# Starts nothing and installs nothing.
+# Installs nothing and starts no service; the NVIDIA passthrough check runs
+# one throwaway container (POTOCOLOM_SKIP_GPU_TEST=1 skips it).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -60,8 +60,10 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 # With make: make selfhost
 ```
 
-`scripts/preflight.sh` starts nothing and installs nothing. It checks the table
-above against the running machine, names the profile you can run, prints the
+`scripts/preflight.sh` installs nothing and starts no service; on an NVIDIA
+host with the Container Toolkit it runs one throwaway `docker run --gpus all`
+container to prove passthrough (`POTOCOLOM_SKIP_GPU_TEST=1` skips it). It checks
+the table above against the running machine, names the profile you can run, prints the
 fix for anything missing, and writes `deploy/compose/.env` from the example
 when that file is missing (hex `POSTGRES_PASSWORD` and `FLEET_SECRET`). It
 fills those keys when they are empty and refuses to overwrite a non-empty
