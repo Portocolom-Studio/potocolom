@@ -89,13 +89,15 @@ main() {
 
 	if [[ -n "${POTOCOLOM_PROFILE:-}" ]]; then
 		profile="$POTOCOLOM_PROFILE"
-	elif [[ -e /dev/kfd ]]; then
-		profile="rocm"
-	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
-		profile="gpu"
-	else
-		echo "error: no NVIDIA or AMD GPU found. The released images need one. To try the stack with the simulated worker, clone the repository and run scripts/compose-smoke.sh." >&2
+	elif [[ ! -f "$DIR/scripts/gpu-profile.sh" ]]; then
+		echo "error: the $VERSION bundle predates scripts/gpu-profile.sh; set POTOCOLOM_PROFILE=gpu (NVIDIA) or rocm (AMD)" >&2
 		exit 1
+	else
+		profile="$(bash "$DIR/scripts/gpu-profile.sh")"
+		if [[ "$profile" == smoke ]]; then
+			echo "error: no NVIDIA or AMD GPU found. The released images need one. To try the stack with the simulated worker, clone the repository and run scripts/compose-smoke.sh. See the GPU section of the preflight output above." >&2
+			exit 1
+		fi
 	fi
 	if [[ "$profile" != gpu && "$profile" != rocm ]]; then
 		echo "error: POTOCOLOM_PROFILE must be gpu or rocm, not $profile" >&2
@@ -127,6 +129,12 @@ main() {
 		}
 	' "$ENV_FILE" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
+
+	# A host that changed vendor since the last install (or one that older
+	# releases detected as AMD before NVIDIA) still runs the other worker.
+	if [[ "$profile" == gpu ]]; then other=(rocm worker-rocm); else other=(gpu worker); fi
+	POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
+		-f "$DIR/deploy/compose/compose.yml" --profile "${other[0]}" rm -sf "${other[1]}"
 
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
