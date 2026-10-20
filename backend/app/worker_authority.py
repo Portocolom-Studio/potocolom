@@ -412,6 +412,19 @@ async def close_worker(worker_id: str, incarnation: uuid.UUID) -> None:
                 ),
                 {"worker_id": worker_id, "incarnation": incarnation},
             )
+            # A terminal close waits for this attempt's session_closed; with the
+            # worker gone that receipt cannot come, so the row ends here.
+            for attempt in attempts:
+                await session.execute(
+                    text(
+                        "UPDATE realtime_sessions SET state = 'ended', "
+                        "ended_at = coalesce(ended_at, clock_timestamp()) "
+                        "WHERE id = :session_id AND control_generation = :generation "
+                        "AND state = 'ending'"
+                    ),
+                    {"session_id": attempt["session_id"],
+                     "generation": attempt["control_generation"]},
+                )
 
 
 async def touch_worker(
@@ -522,7 +535,7 @@ async def end_realtime_session(session_id: uuid.UUID, generation: int,
                 text(
                     "SELECT user_id FROM realtime_sessions WHERE id = :session_id "
                     "AND control_generation = :generation AND browser_owner_id = :browser_owner_id "
-                    "AND state IN ('assigning', 'live', 'idle') FOR UPDATE"
+                    "AND state IN ('assigning', 'live', 'idle', 'ending') FOR UPDATE"
                 ),
                 {"session_id": session_id, "generation": generation,
                  "browser_owner_id": browser_owner_id},
@@ -559,7 +572,7 @@ async def end_realtime_session(session_id: uuid.UUID, generation: int,
                     "UPDATE realtime_sessions SET state = 'ended', ended_at = clock_timestamp() "
                     "WHERE id = :session_id AND control_generation = :generation "
                     "AND browser_owner_id = :browser_owner_id "
-                    "AND state IN ('assigning', 'live', 'idle') RETURNING id"
+                    "AND state IN ('assigning', 'live', 'idle', 'ending') RETURNING id"
                 ),
                 {"session_id": session_id, "generation": generation,
                  "browser_owner_id": browser_owner_id},

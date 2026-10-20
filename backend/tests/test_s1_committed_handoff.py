@@ -20,7 +20,7 @@ from test_fleet_protocol6 import (
     request_work_grant,
     root_keys,
 )
-from test_v6_sessions import command_ack, open_live_session, session_ready_message
+from test_v6_sessions import command_ack, open_live_session, refuse_command, session_ready_message
 
 
 _UPDATE_MARKER = "s1_committed_update"
@@ -688,6 +688,132 @@ def test_workerless_update_survives_an_old_committed_update(monkeypatch):
                 [browser_context, second_fleet_context, fleet_context],
                 second_worker_id if second_fleet_context is not None else None,
                 [commit_gate.release if commit_gate is not None else None, release_detach],
+            )
+        if primary is not None:
+            if cleanup_error is not None:
+                raise primary[0].with_traceback(primary[1]) from cleanup_error
+            raise primary[0].with_traceback(primary[1])
+        if cleanup_error is not None:
+            raise cleanup_error
+
+
+async def read_params_state(session_id: uuid.UUID) -> tuple[int, str | None]:
+    async with db.session_factory() as session:
+        row = (await session.execute(
+            text(
+                "SELECT params_revision, effective_params->>'prompt' AS prompt "
+                "FROM realtime_sessions WHERE id = :session_id"
+            ),
+            {"session_id": session_id},
+        )).mappings().one()
+    return row["params_revision"], row["prompt"]
+
+
+async def wait_for_params(session_id: uuid.UUID, revision: int, prompt: str) -> None:
+    state = None
+    for _ in range(250):
+        state = await read_params_state(session_id)
+        if state == (revision, prompt):
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"stored params stayed at {state}, not {(revision, prompt)}")
+
+
+@pytest.mark.db
+def test_updates_after_a_resume_publish_past_the_old_generation(monkeypatch):
+    root_keys(monkeypatch)
+    first_worker_id = f"s1-resume-params-{uuid.uuid4()}"
+    second_worker_id = f"s1-resume-params-replacement-{uuid.uuid4()}"
+    model_id = f"s1-resume-params-model-{uuid.uuid4()}"
+    reassign_future = None
+    reassign_tasks = []
+    primary = None
+
+    with protocol6_client(first_worker_id) as client:
+        browser_context = fleet_context = second_fleet_context = None
+        try:
+            first_fleet, _first_worker, _grant, open_cmd, browser, browser_context, fleet_context = (
+                open_live_session(client, first_worker_id, model_id)
+            )
+            second_fleet, second_fleet_context, second_worker, second_grant = add_protocol6_worker(
+                client, second_worker_id, model_id
+            )
+            session_id = uuid.UUID(open_cmd["session_id"])
+            session = realtime.sessions[session_id]
+            for revision in range(2, 8):
+                browser.send_json({"type": "update_params",
+                                   "params": {"prompt": f"step {revision}"}})
+                update = decode_control(first_fleet.receive_text().encode("utf-8"))
+                assert update["params_revision"] == revision
+                first_fleet.send_json(command_ack(update))
+                assert receive_type(browser, "params_updated")["params"]["prompt"] == (
+                    f"step {revision}"
+                )
+            client.portal.call(wait_for_params, session_id, 7, "step 7")
+
+            reassign_future = start_reassign(client, session, reassign_tasks)
+            replacement_open(second_fleet, second_worker, second_grant, browser, session_id)
+
+            browser.send_json({"type": "update_params", "params": {"prompt": "after resume"}})
+            update = decode_control(second_fleet.receive_text().encode("utf-8"))
+            assert update["type"] == "update_session"
+            assert update["params_revision"] == 2
+            second_fleet.send_json(command_ack(update))
+            client.portal.call(wait_for_params, session_id, 2, "after resume")
+            assert receive_type(browser, "params_updated")["params"]["prompt"] == "after resume"
+        except BaseException as error:
+            primary = (error, error.__traceback__)
+        finally:
+            cleanup_error = finish_test(
+                client,
+                None,
+                [reassign_future],
+                [*reassign_tasks],
+                [browser_context, second_fleet_context, fleet_context],
+                second_worker_id if second_fleet_context is not None else None,
+                [],
+            )
+        if primary is not None:
+            if cleanup_error is not None:
+                raise primary[0].with_traceback(primary[1]) from cleanup_error
+            raise primary[0].with_traceback(primary[1])
+        if cleanup_error is not None:
+            raise cleanup_error
+
+
+@pytest.mark.db
+def test_refused_update_reopens_the_replacement_with_the_submitted_params(monkeypatch):
+    root_keys(monkeypatch)
+    refuse_command(monkeypatch, "update_session")
+    first_worker_id = f"s1-refused-resume-{uuid.uuid4()}"
+    second_worker_id = f"s1-refused-resume-replacement-{uuid.uuid4()}"
+    model_id = f"s1-refused-resume-model-{uuid.uuid4()}"
+    primary = None
+
+    with protocol6_client(first_worker_id) as client:
+        browser_context = fleet_context = second_fleet_context = None
+        try:
+            _first_fleet, _first_worker, _grant, open_cmd, browser, browser_context, fleet_context = (
+                open_live_session(client, first_worker_id, model_id)
+            )
+            second_fleet, second_fleet_context, second_worker, second_grant = add_protocol6_worker(
+                client, second_worker_id, model_id
+            )
+            session_id = uuid.UUID(open_cmd["session_id"])
+            browser.send_json({"type": "update_params", "params": {"prompt": "new"}})
+            opened = replacement_open(second_fleet, second_worker, second_grant, browser, session_id)
+            assert opened["params"]["prompt"] == "new"
+        except BaseException as error:
+            primary = (error, error.__traceback__)
+        finally:
+            cleanup_error = finish_test(
+                client,
+                None,
+                [],
+                [],
+                [browser_context, second_fleet_context, fleet_context],
+                second_worker_id if second_fleet_context is not None else None,
+                [],
             )
         if primary is not None:
             if cleanup_error is not None:

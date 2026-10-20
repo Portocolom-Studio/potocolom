@@ -1909,3 +1909,18 @@ Rejected alternatives:
 - Reconstructing a retry or accepted parameter update from current RAM or desired values. Those values can describe a later command.
 - Guessing the original owner of released protocol 6 history, or refusing every installation with such history. Explicit unknown metadata preserves the history without granting authority.
 - A separate delivery queue, manager, wire field or generic outcome layer. The existing journal and Worker owner hold the required state.
+
+## An ordinary protocol 6 canvas close is a command, not a fence
+
+Implements issue #743. When the browser ends its own live session, the API commits a terminal `close_session` before any erasure: the session row moves from `live` to `ending`, the worker closes its runner and answers `session_closed` with `physical_complete`, and that receipt ends the attempt and the row. The outcome is proved, so nothing is erased without proof and the worker incarnation stays open: its grant renews and its other jobs and sessions continue. A close that is committed but not answered within `CLOSE_RECEIPT_TIMEOUT` (30 s; its delivery may be refused, for example after the browser binding expired, or the worker may never report) is erased and fenced like any unproven outcome, and losing the worker ends a row still `ending`. Rows orphaned by an API crash are not covered yet (#747).
+
+The fence stays wherever the outcome is not proved. A revocation or a dead account session still erases and fences at once, because they do not go through the browser's own close. The terminal commit also refuses, and the close falls back to erase and fence, when the session has a pending command (its outcome is unproven), when the account principal or grant is no longer current, or when the commit or its send does not finish within the close timeout.
+
+This narrows "Protocol 6 command erasure preserves only proved identity and outcomes" on one point. That entry fences an erasure without a proved outcome; it never required a fence when nothing was erased, and its promise that unrelated jobs are preserved holds again. It does not create a sensitive cancel body after erasure: the close is committed before anything is erased, and the fallback creates none.
+
+A parameter edit refused because the worker can no longer take commands now rides on the replacement attempt instead of being dropped. The replacement adopts the committed snapshot only when its revision is newer than the one this process holds.
+
+Rejected alternatives:
+- Fencing every ordinary close, as #729 shipped on main. Each canvas close cut the worker off at its next grant renewal, and its unrelated jobs entered worker-loss recovery.
+- Skipping the fence without sending anything. The worker would keep the closed session's runner and its memory until the connection ended.
+- Sending a courtesy `close_session` after erasure, as before #729. That creates a new sensitive command body after erasure.

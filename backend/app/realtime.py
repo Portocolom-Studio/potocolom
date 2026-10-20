@@ -97,6 +97,10 @@ REALTIME_ROLES = frozenset({"user", "admin"})
 # How long revocation waits for one socket to take its close. A wedged
 # transport must not hold the request that revoked it.
 CLOSE_TIMEOUT = 2.0
+# A committed terminal close_session that has not been answered with
+# session_closed by then is erased and fenced: the command may never be
+# delivered (its browser binding expired) or the worker may never report.
+CLOSE_RECEIPT_TIMEOUT = 30.0
 FLEET_TOKEN_HEADER = "x-fleet-token"
 # Same 500 ms bar the worker uses in slots_from_frame_ms. Duplicated rather
 # than imported: the two packages have no shared module.
@@ -548,6 +552,8 @@ def start_worker_deliveries() -> None:
 def stop_worker_deliveries() -> None:
     global _worker_delivery_admission_open
     _worker_delivery_admission_open = False
+    for deadline in list(_close_deadlines):
+        deadline.cancel()
     for worker in list(workers.values()):
         worker.delivery_admission_open = False
     owned = list(_worker_delivery_owners.items())
@@ -1151,6 +1157,9 @@ def with_generation(payload: dict, generation: int) -> dict:
 workers: dict[str, Worker] = {}
 _sent_command_sequences: dict[tuple[str, uuid.UUID], tuple[int, float]] = {}
 _worker_delivery_owners: dict[asyncio.Task, Worker] = {}
+# Not delivery owners: those are joined on worker loss and shutdown, and a
+# deadline sleeps for CLOSE_RECEIPT_TIMEOUT. Shutdown cancels these instead.
+_close_deadlines: set[asyncio.Task] = set()
 _worker_delivery_admission_open = True
 sessions: dict[uuid.UUID, Session] = {}
 gpu_requests: dict[str, asyncio.Future] = {}
@@ -1323,7 +1332,8 @@ async def close_abandoned_session(worker: Worker, session: Session,
 
 
 async def _send_v6_close_session(worker: Worker, session: Session, generation: int,
-                                 attempt_id: uuid.UUID | None) -> bool:
+                                 attempt_id: uuid.UUID | None, *,
+                                 terminal: bool = False) -> bool:
     if worker.protocol_version != 6 or attempt_id is None or session.user_id is None:
         return False
     try:
@@ -1333,6 +1343,7 @@ async def _send_v6_close_session(worker: Worker, session: Session, generation: i
             {"session_id": str(session.id), "attempt_id": str(attempt_id),
              "control_generation": generation},
             account_user_id=session.user_id,
+            session_context={"terminal": True} if terminal else None,
         )
     except ProtocolError:
         return False
@@ -1477,7 +1488,46 @@ def arm_settlement(session: Session, worker: Worker, generation: int) -> None:
             session.user_id, session.model_id, worker)
 
 
-async def release(session: Session) -> None:
+async def _end_and_fence(session_id: uuid.UUID, generation: int, worker: Worker) -> None:
+    """Erase the session's commands, end it and fence its incarnation."""
+    from app import worker_authority
+
+    end = worker_authority.end_realtime_session(
+        session_id, generation, worker_authority.TRANSPORT_OWNER_ID
+    )
+    if not _worker_delivery_admission_open:
+        await db.run_to_completion(end)
+        return
+    end_task = asyncio.create_task(end)
+    _worker_delivery_owners[end_task] = worker
+
+    def end_finished(task: asyncio.Task) -> None:
+        _worker_delivery_owners.pop(task, None)
+        try:
+            task.result()
+        except BaseException:
+            logger.warning("realtime session end failed for %s", session_id)
+
+    end_task.add_done_callback(end_finished)
+
+
+def _arm_close_deadline(session_id: uuid.UUID, generation: int, worker: Worker) -> None:
+    async def deadline() -> None:
+        await asyncio.sleep(CLOSE_RECEIPT_TIMEOUT)
+        # A lost worker already ended its rows in close_worker; otherwise a row
+        # the receipt ended is left alone by end_realtime_session.
+        if workers.get(worker.id) is worker and _worker_delivery_admission_open:
+            await _end_and_fence(session_id, generation, worker)
+
+    task = asyncio.create_task(deadline())
+    _close_deadlines.add(task)
+    task.add_done_callback(_close_deadlines.discard)
+
+
+async def release(session: Session, *, closing: bool = False) -> None:
+    """closing: the browser ended its own session, so a protocol 6 worker gets
+    a close_session it can answer; every other end (a revocation, a dead
+    account session) erases and fences at once."""
     if session.worker is None:
         admit_queued()
         return
@@ -1504,25 +1554,24 @@ async def release(session: Session) -> None:
                             session.id, generation, session.attempt_id
                         )
                 else:
-                    from app import worker_authority
-
-                    end = worker_authority.end_realtime_session(
-                        session.id, generation, worker_authority.TRANSPORT_OWNER_ID
-                    )
-                    if not _worker_delivery_admission_open:
-                        await db.run_to_completion(end)
-                    else:
-                        end_task = asyncio.create_task(end)
-                        _worker_delivery_owners[end_task] = worker
-
-                        def end_finished(task: asyncio.Task) -> None:
-                            _worker_delivery_owners.pop(task, None)
-                            try:
-                                task.result()
-                            except BaseException:
-                                logger.warning("realtime session end failed for %s", session.id)
-
-                        end_task.add_done_callback(end_finished)
+                    # An ordinary close is a command the worker answers with
+                    # session_closed, which proves the runner gone. Only a close
+                    # that cannot be committed (revoked, a pending command, no
+                    # grant) or does not land in time erases and fences.
+                    closed = False
+                    if closing:
+                        try:
+                            closed = await asyncio.wait_for(_send_v6_close_session(
+                                worker, session, generation, session.attempt_id,
+                                terminal=True,
+                            ), CLOSE_TIMEOUT)
+                        except asyncio.TimeoutError:
+                            closed = False
+                    if closed:
+                        _arm_close_deadline(session.id, generation, worker)
+                        admit_queued()
+                        return
+                    await _end_and_fence(session.id, generation, worker)
             else:
                 await asyncio.wait_for(safe_send(worker.ws.send_json(with_generation(
                     {"type": "close_session", "session_id": str(session.id)},
@@ -1563,7 +1612,10 @@ async def reassign(session: Session) -> None:
         committed = await command_subjects.read_committed_desired(
             session.id, session.user_id, generation
         )
-        if committed is not None and session.desired_params is desired_snapshot:
+        # An edit this process holds but never committed (a refused update) keeps
+        # the revision it had, so only a committed snapshot past it may replace it.
+        if (committed is not None and committed[1] > session.desired_revision
+                and session.desired_params is desired_snapshot):
             session.desired_params, session.desired_revision = committed
     session.control_generation += 1
     session.params = dict(session.desired_params)
@@ -2585,6 +2637,9 @@ async def realtime(ws: WebSocket) -> None:
                                     # The worker can no longer take commands (its grant
                                     # lapsed, say); that ends its attempt, not the
                                     # browser's session.
+                                    # The replacement opens with desired_params, so the
+                                    # refused edit has to ride on it.
+                                    session.desired_params = merged_params
                                     schedule_reassign(session)
                             else:
                                 session.params = merged_params
@@ -2612,7 +2667,7 @@ async def realtime(ws: WebSocket) -> None:
         sessions.pop(session.id, None)
         transition(session, {"queued", "assigning", "live", "idle", "ending"}, "ending")
         transition(session, "ending", "ended")
-        await release(session)
+        await release(session, closing=True)
         # The writer is the only task that touches the browser socket, so it
         # must not outlive the handler: a posted close gets a bounded moment
         # to land, otherwise the socket is gone and the task is cancelled.

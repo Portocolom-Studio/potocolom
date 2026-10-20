@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import uuid
 
 import pytest
@@ -280,61 +281,245 @@ def test_v6_session_params_update_revision(monkeypatch):
             fleet_ctx.__exit__(None, None, None)
 
 
+async def _close_state(worker_id: str, incarnation: uuid.UUID, session_id: uuid.UUID):
+    async with db.session_factory() as session:
+        sess_state = await session.scalar(
+            text("SELECT state FROM realtime_sessions WHERE id = :id"), {"id": session_id},
+        )
+        attempt_state = await session.scalar(
+            text("SELECT state FROM realtime_session_attempts WHERE session_id = :id"),
+            {"id": session_id},
+        )
+        connection_closed = await session.scalar(
+            text("SELECT closed_at IS NOT NULL FROM worker_connections "
+                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+            {"worker_id": worker_id, "incarnation": incarnation},
+        )
+        pending = await session.scalar(
+            text("SELECT count(*) FROM worker_commands WHERE subject_id = :id "
+                 "AND state = 'pending'"),
+            {"id": session_id},
+        )
+    return sess_state, attempt_state, connection_closed, pending
+
+
+def _wait_close_state(client, worker_id, incarnation, session_id, done):
+    async def poll():
+        for _ in range(300):
+            state = await _close_state(worker_id, incarnation, session_id)
+            if done(state):
+                return state
+            await asyncio.sleep(0.01)
+        return state
+
+    return client.portal.call(poll)
+
+
+def _close_browser(browser_ws) -> None:
+    browser_ws.send_json({"type": "close"})
+    with pytest.raises(WebSocketDisconnect) as closed:
+        browser_ws.receive_json()
+    assert closed.value.code == 1000
+
+
 @pytest.mark.db
-def test_v6_terminal_close_fences_worker_without_stop_command(monkeypatch):
+def test_v6_live_close_sends_close_session_and_keeps_the_worker(monkeypatch):
+    """An ordinary canvas close is a close_session the worker answers with
+    session_closed: the incarnation is not fenced and its other work is kept."""
     root_keys(monkeypatch)
+    monkeypatch.setattr(realtime, "CLOSE_RECEIPT_TIMEOUT", 0.3)
     worker_id = f"v6-close-{uuid.uuid4()}"
     model_id = f"v6-rt-close-{uuid.uuid4()}"
+    lost = []
+    real_lost = jobs.on_worker_lost
+    monkeypatch.setattr(jobs, "on_worker_lost",
+                        lambda worker: (lost.append(worker.id), real_lost(worker))[1])
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+            _close_browser(browser_ws)
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] != "live")
+            assert state[0] == "ending"
+            assert state[2] is False
+            close_cmd = decode_control(ws.receive_text().encode("utf-8"))
+            assert close_cmd["type"] == "close_session"
+            assert close_cmd["attempt_id"] == open_cmd["attempt_id"]
+            assert close_cmd["control_generation"] == open_cmd["control_generation"]
+
+            ws.send_json(command_ack(close_cmd))
+            ws.send_json(session_closed_message(worker, open_cmd, grant["grant_nonce"]))
+            report_ack = ws.receive_json()
+            assert report_ack["type"] == "checkpoint_ack"
+            assert report_ack["status"] == "accepted"
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] == "ended")
+            assert state == ("ended", "ended", False, 0)
+            assert realtime.workers.get(worker_id) is worker
+            # The receipt deadline passing must leave an answered close alone.
+            client.portal.call(asyncio.sleep, 0.6)
+            assert lost == []
+            # The next routine renewal is where a fenced incarnation is cut off.
+            request_work_grant(ws, worker_id, worker.incarnation)
+            assert realtime.workers.get(worker_id) is worker
+        finally:
+            browser_ctx.__exit__(None, None, None)
+            fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_live_close_falls_back_to_the_fence_when_close_is_refused(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"v6-close-refused-{uuid.uuid4()}"
+    model_id = f"v6-rt-close-refused-{uuid.uuid4()}"
 
     with protocol6_client(worker_id) as client:
         ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
             client, worker_id, model_id
         )
         try:
-            browser_ws.send_json({"type": "close"})
-            with pytest.raises(WebSocketDisconnect) as closed:
-                browser_ws.receive_json()
-            assert closed.value.code == 1000
             session_id = uuid.UUID(open_cmd["session_id"])
-
-            async def read_terminal():
-                for _ in range(100):
-                    async with db.session_factory() as session:
-                        sess_state = await session.scalar(
-                            text("SELECT state FROM realtime_sessions WHERE id = :id"),
-                            {"id": session_id},
-                        )
-                        attempt_state = await session.scalar(
-                            text("SELECT state FROM realtime_session_attempts "
-                                 "WHERE session_id = :id"),
-                            {"id": session_id},
-                        )
-                        connection_closed = await session.scalar(
-                            text("SELECT closed_at IS NOT NULL FROM worker_connections "
-                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
-                            {"worker_id": worker_id, "incarnation": worker.incarnation},
-                        )
-                        next_sequence = await session.scalar(
-                            text("SELECT next_command_sequence FROM worker_connections "
-                                 "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
-                            {"worker_id": worker_id, "incarnation": worker.incarnation},
-                        )
-                    if sess_state == "ended" and connection_closed:
-                        return sess_state, attempt_state, connection_closed, next_sequence
-                    await asyncio.sleep(0.01)
-                return sess_state, attempt_state, connection_closed, next_sequence
-
-            sess_state, attempt_state, connection_closed, next_sequence = client.portal.call(
-                read_terminal
-            )
-            assert sess_state == "ended"
-            assert attempt_state == "ended"
-            assert connection_closed is True
-            assert next_sequence == int(open_cmd["command_sequence"]) + 1
+            refuse_command(monkeypatch, "close_session")
+            _close_browser(browser_ws)
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] == "ended" and s[2])
+            assert state == ("ended", "ended", True, 0)
             assert worker_id not in realtime.workers
         finally:
             browser_ctx.__exit__(None, None, None)
             fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_live_close_that_does_not_land_in_time_falls_back_to_the_fence(monkeypatch):
+    """The close committed (the row is ending) but its send never returned:
+    the timeout falls back to erasing that close and fencing the worker."""
+    root_keys(monkeypatch)
+    monkeypatch.setattr(realtime, "CLOSE_TIMEOUT", 0.3)
+    worker_id = f"v6-close-stuck-{uuid.uuid4()}"
+    model_id = f"v6-rt-close-stuck-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        stuck = asyncio.Event()
+
+        async def never_returns(*args, **kwargs):
+            await stuck.wait()
+
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+            monkeypatch.setattr(worker.ws, "send_text", never_returns)
+            _close_browser(browser_ws)
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] == "ended" and s[2])
+            assert state == ("ended", "ended", True, 0)
+            assert worker_id not in realtime.workers
+        finally:
+            client.portal.call(stuck.set)
+            browser_ctx.__exit__(None, None, None)
+            fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_live_close_never_delivered_is_fenced_at_the_receipt_deadline(monkeypatch):
+    """A committed close whose delivery is refused (an expired browser binding,
+    say) cannot be answered; the receipt deadline erases it and fences."""
+    root_keys(monkeypatch)
+    monkeypatch.setattr(realtime, "CLOSE_RECEIPT_TIMEOUT", 0.3)
+    worker_id = f"v6-close-undelivered-{uuid.uuid4()}"
+    model_id = f"v6-rt-close-undelivered-{uuid.uuid4()}"
+    real_register = command_store.register_delivery
+
+    async def refuse_close(command, **kwargs):
+        if json.loads(command.body)["type"] == "close_session":
+            return False
+        return await real_register(command, **kwargs)
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+            monkeypatch.setattr(command_store, "register_delivery", refuse_close)
+            _close_browser(browser_ws)
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] == "ended" and s[2])
+            assert state == ("ended", "ended", True, 0)
+            assert worker_id not in realtime.workers
+        finally:
+            browser_ctx.__exit__(None, None, None)
+            fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_live_close_with_a_pending_update_fences(monkeypatch):
+    """A pending update carries a parameter body whose outcome is unproven, so
+    the close erases it and fences rather than leave it behind."""
+    root_keys(monkeypatch)
+    worker_id = f"v6-close-pending-{uuid.uuid4()}"
+    model_id = f"v6-rt-close-pending-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+            browser_ws.send_json({"type": "update_params", "params": {"prompt": "second"}})
+            update_cmd = decode_control(ws.receive_text().encode("utf-8"))
+            assert update_cmd["type"] == "update_session"
+            _close_browser(browser_ws)
+            state = _wait_close_state(client, worker_id, worker.incarnation, session_id,
+                                      lambda s: s[0] == "ended" and s[2])
+            assert state == ("ended", "ended", True, 0)
+            assert worker_id not in realtime.workers
+        finally:
+            browser_ctx.__exit__(None, None, None)
+            fleet_ctx.__exit__(None, None, None)
+
+
+@pytest.mark.db
+def test_v6_live_close_without_a_receipt_ends_when_the_worker_goes(monkeypatch):
+    """A worker that takes the close and never reports session_closed leaves
+    the row ending; losing that worker must still end the session."""
+    root_keys(monkeypatch)
+    worker_id = f"v6-close-silent-{uuid.uuid4()}"
+    model_id = f"v6-rt-close-silent-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        ws, worker, _grant, open_cmd, browser_ws, browser_ctx, fleet_ctx = open_live_session(
+            client, worker_id, model_id
+        )
+        incarnation = worker.incarnation
+        fleet_open = True
+        try:
+            session_id = uuid.UUID(open_cmd["session_id"])
+            _close_browser(browser_ws)
+            # Read the socket only once the row says a close was committed, so a
+            # regression fails here instead of blocking on a frame never sent.
+            state = _wait_close_state(client, worker_id, incarnation, session_id,
+                                      lambda s: s[0] != "live")
+            assert state[0] == "ending"
+            close_cmd = decode_control(ws.receive_text().encode("utf-8"))
+            assert close_cmd["type"] == "close_session"
+            ws.send_json(command_ack(close_cmd))
+            fleet_ctx.__exit__(None, None, None)
+            fleet_open = False
+            state = _wait_close_state(client, worker_id, incarnation, session_id,
+                                      lambda s: s[0] == "ended" and s[1] == "ended")
+            assert state[:2] == ("ended", "ended")
+            assert state[3] == 0
+        finally:
+            browser_ctx.__exit__(None, None, None)
+            if fleet_open:
+                fleet_ctx.__exit__(None, None, None)
 
 
 @pytest.mark.db
@@ -585,7 +770,11 @@ def test_a_refused_update_session_does_not_close_the_browser(monkeypatch):
             refuse_command(monkeypatch, "update_session")
             browser_ws.send_json({"type": "update_params", "params": {"prompt": "second"}})
             session = realtime.sessions[uuid.UUID(open_cmd["session_id"])]
-            assert session.desired_params["prompt"] == "house"
+            for _ in range(500):
+                if session.desired_params["prompt"] == "second":
+                    break
+                client.portal.call(asyncio.sleep, 0.01)
+            assert session.desired_params["prompt"] == "second"
             assert session.desired_revision == 1
         finally:
             browser_ctx.__exit__(None, None, None)
