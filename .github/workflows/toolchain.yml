@@ -9,6 +9,9 @@ on:
     branches: [main]
     paths:
       - "Makefile"
+      - "scripts/gpu-profile.sh"
+      - "scripts/preflight.sh"
+      - "scripts/test-gpu-detection.sh"
       - "**/pyproject.toml"
       - "frontend/package.json"
       - "frontend/.npmrc"
@@ -24,6 +27,9 @@ jobs:
     with:
       paths: |
         Makefile
+        scripts/gpu-profile.sh
+        scripts/preflight.sh
+        scripts/test-gpu-detection.sh
         **/pyproject.toml
         frontend/package.json
         frontend/.npmrc

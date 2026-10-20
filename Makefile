@@ -1,6 +1,6 @@
 # Development entry points. `make verify` runs exactly what CI runs.
 # First time on a machine:
-#   make init                  # venvs, GPU extras, secrets, postgres
+#   make init                  # host preflight, venvs, GPU extras, secrets, postgres
 #   make dev                   # native studio on :5173 (or make selfhost for :8080)
 # The local stack is three processes in three terminals, in this order:
 #   make deps && make api      # terminal 1: PostgreSQL etc., then the API
@@ -78,12 +78,10 @@ ensure-env: ## write deploy/compose/.env; fill empty FLEET_SECRET / POSTGRES_PAS
 # must not become the documented path.
 COMPOSE_FILE := $(CURDIR)/deploy/compose/compose.yml
 # gpu on NVIDIA, rocm on AMD, smoke (simulated worker) without either. Detected
-# the same way scripts/preflight.sh reports it; override with PROFILE=.
+# by the shared GPU profile script; override with PROFILE=.
 # nvidia-smi must actually enumerate a GPU: driver files alone do not prove
 # CUDA can run, so the query is the gate, not /proc/driver/nvidia/version.
-PROFILE ?= $(shell if [ -e /dev/kfd ]; then echo rocm; \
-	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; \
-	then echo gpu; else echo smoke; fi)
+PROFILE ?= $(shell bash "$(CURDIR)/scripts/gpu-profile.sh")
 
 compose-up: ensure-env ## self-hosted stack up (PROFILE=gpu|rocm|smoke, detected by default)
 	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" up -d --build
@@ -123,6 +121,7 @@ check-node: ## fail fast unless Node.js 24+ is on PATH
 	@node -e 'process.exit(Number(process.versions.node.split(".")[0]) < 24 ? 1 : 0)' || { \
 		echo 'error: Node.js 24 or newer is required (found '"$$(node --version)"').' >&2; \
 		exit 1; }
+	@echo "node $$(node --version)"
 
 check-worker-venv:
 	@worker/.venv/bin/python $(VENV_OK) 2>/dev/null && test -x worker/.venv/bin/pip || { \
@@ -181,8 +180,8 @@ setup-inference: check-worker-venv
 
 # Sequential: setup-inference needs the venvs from setup; deps needs Docker.
 # Not a dependency list, so `make -j init` cannot race those.
-init: ## first-time contributor: venvs, GPU extras, secrets, postgres
-	@$(MAKE) ensure-env
+init: ## first-time contributor: host check, venvs, GPU extras, secrets, postgres
+	@bash "$(CURDIR)/scripts/preflight.sh" --contributor
 	@$(MAKE) setup
 	@$(MAKE) setup-inference
 	@$(MAKE) deps
@@ -293,7 +292,7 @@ dco-hook: ## sign off every commit in this clone automatically (CONTRIBUTING.md)
 	@echo 'hooks now run from .githooks; git commit adds Signed-off-by for you.'
 	@echo 'Undo with: git config --unset core.hooksPath'
 
-verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less venv
+verify-guards: ## prove setup guards and shared GPU detection
 	@tmp=$$(mktemp -d); trap 'rm -rf "$$tmp"' EXIT; \
 	mkdir -p "$$tmp/bin"; \
 	for c in python3 python3.11 python3.12 python3.13; do \
@@ -339,6 +338,7 @@ verify-guards: ## prove setup refuses a too-old Python and recreates a pip-less 
 		fi; \
 	done; \
 	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; the example DB password is rotated; every auth target shares the API database'
+	@bash scripts/test-gpu-detection.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \

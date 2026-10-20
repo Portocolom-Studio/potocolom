@@ -10,18 +10,15 @@ API_PORT="${API_PORT:-8000}"
 WEB_PORT="${WEB_PORT:-5173}"
 # Default to whatever this machine can actually run. A hardcoded default sends
 # every contributor without that vendor's GPU into a worker that cannot start.
-# /dev/kfd is the AMD compute device, absent on display-only amdgpu; NVIDIA
-# requires nvidia-smi to actually enumerate a GPU, not just driver files:
-# a laptop dGPU idles in D3cold with its modules unloaded, so lsmod is
-# silent on a working install, but nvidia-smi must still report a device.
+# GPU selection is shared with preflight and make PROFILE so a working NVIDIA
+# GPU wins even when an AMD iGPU also exposes /dev/kfd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 detect_worker() {
-	if [[ -e /dev/kfd ]]; then
-		echo rocm
-	elif nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1; then
-		echo cuda
-	else
-		echo sim
-	fi
+	case "$(bash "$SCRIPT_DIR/gpu-profile.sh")" in
+		gpu) echo cuda ;;
+		rocm) echo rocm ;;
+		smoke) echo sim ;;
+	esac
 }
 WORKER="${WORKER:-$(detect_worker)}"
 DATABASE_URL="${DATABASE_URL:-postgresql://potocolom:potocolom@localhost:5432/potocolom}"

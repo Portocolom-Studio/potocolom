@@ -147,7 +147,7 @@ jobs:
           docker cp "$container:/app/static/." release-static/
           tar -czf "potocolom-$VERSION-static.tar.gz" -C release-static .
           tar -czf "potocolom-$VERSION-selfhost.tar.gz" deploy/compose/compose.yml deploy/compose/.env.example \
-            scripts/preflight.sh scripts/ensure-env.sh scripts/auth-enable.sh worker/models/*.json
+            scripts/preflight.sh scripts/gpu-profile.sh scripts/ensure-env.sh scripts/auth-enable.sh worker/models/*.json
           sed "s/__POTOCOLOM_VERSION__/$VERSION/" scripts/install.sh > install.sh
           gh release create "$VERSION" --verify-tag --draft --title "potocolom $VERSION" \
             --notes-file docs/release-checklist.md

@@ -9,6 +9,15 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${POTOCOLOM_PORT:-8080}"
+contributor=false
+if (($# > 0)); then
+  if (($# == 1)) && [[ "$1" == --contributor ]]; then
+    contributor=true
+  else
+    printf 'usage: preflight.sh [--contributor]\n' >&2
+    exit 2
+  fi
+fi
 
 # Worker images are built on CUDA 12.8; a 12.x driver runs them under CUDA
 # minor version compatibility, which needs 525.60.13 or newer.
@@ -68,13 +77,49 @@ else
   fail "Disk ${disk_gb} GB free is below the 20 GB minimum"
 fi
 
-if ! (echo >"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
-  pass "port ${PORT} free"
-elif curl -sf --max-time 2 "http://localhost:${PORT}/api/v1/health" 2>/dev/null | grep -q '"status"'; then
-  # Re-running preflight against a stack that is already up is not a problem.
-  pass "port ${PORT} serving potocolom already (stack is up)"
-else
-  fail "port ${PORT} is in use by something else; free it or publish the studio elsewhere"
+if [[ "$contributor" != true ]]; then
+  if ! (echo >"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
+    pass "port ${PORT} free"
+  elif curl -sf --max-time 2 "http://localhost:${PORT}/api/v1/health" 2>/dev/null | grep -q '"status"'; then
+    # Re-running preflight against a stack that is already up is not a problem.
+    pass "port ${PORT} serving potocolom already (stack is up)"
+  else
+    fail "port ${PORT} is in use by something else; free it or publish the studio elsewhere"
+  fi
+fi
+
+# ---------------------------------------------------------- toolchain
+
+if [[ "$contributor" == true ]]; then
+  head_ "Toolchain"
+
+  # The Makefile owns the version rules; this only reports them together.
+  make_check() {
+    local target="$1" requirement="$2" out line
+    if out="$(make -s -C "$ROOT" "$target" 2>&1)"; then
+      pass "${out##*$'\n'}"
+    else
+      fail "$requirement"
+      while IFS= read -r line; do
+        [[ -n "$line" ]] && note "$line"
+      done <<<"$out"
+    fi
+  }
+
+  if command -v make >/dev/null 2>&1; then
+    pass "make installed"
+    make_check check-python "Python 3.11+ with venv support is required"
+    make_check check-node "Node.js 24+ is required"
+  else
+    fail "make not installed"
+    note "sudo apt install make   # or your package manager"
+  fi
+
+  if command -v npm >/dev/null 2>&1; then
+    pass "npm installed"
+  else
+    fail "npm not installed (it ships with Node.js)"
+  fi
 fi
 
 # -------------------------------------------------------------- docker
@@ -114,12 +159,34 @@ fi
 
 head_ "GPU"
 
-profile=""
+profile="$(bash "$ROOT/scripts/gpu-profile.sh")"
 vram_mb=0
 
-# AMD first: /dev/kfd is the compute device the ROCm worker needs, and it is
-# absent on machines with only a display-capable amdgpu.
-if [[ -e /dev/kfd ]]; then
+scan_unusable_gpus() {
+  local vendors="$1" pci_devices device class vendor slot found=false
+  pci_devices="${POTOCOLOM_PCI_DEVICES:-/sys/bus/pci/devices}"
+  for device in "$pci_devices"/*; do
+    [[ -d "$device" && -r "$device/class" && -r "$device/vendor" ]] || continue
+    IFS= read -r class <"$device/class" || continue
+    [[ "$class" == 0x03* ]] || continue
+    IFS= read -r vendor <"$device/vendor" || continue
+    [[ " $vendors " == *" $vendor "* ]] || continue
+    slot="${device##*/}"
+    if [[ "$vendor" == 0x10de ]]; then
+      warn "NVIDIA GPU found at ${slot} but no working NVIDIA driver"
+      note "install the NVIDIA driver, reboot, then check that nvidia-smi lists the GPU:"
+      note "https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/"
+      note "then the NVIDIA Container Toolkit for Docker: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
+    elif [[ "$vendor" == 0x1002 ]]; then
+      warn "AMD GPU found at ${slot} but /dev/kfd is missing (amdgpu compute not available)"
+      note "load the amdgpu kernel driver; see docs/self-hosting.md"
+    fi
+    found=true
+  done
+  [[ "$found" == true ]]
+}
+
+if [[ "$profile" == rocm ]]; then
   pass "AMD compute device /dev/kfd present"
   if [[ -d /dev/dri ]]; then
     pass "/dev/dri present"
@@ -145,16 +212,8 @@ if [[ -e /dev/kfd ]]; then
   else
     warn "rocm-smi not on the host (fine: the container ships ROCm userspace), VRAM unknown"
   fi
-  profile="rocm"
 
-# NVIDIA. Deliberately NOT detected with lsmod: on Optimus laptops the dGPU
-# sits in D3cold with its modules unloaded until something touches it, so
-# lsmod reports nothing on a perfectly working install. /proc/driver/nvidia
-# exists regardless, and nvidia-smi wakes the device. Driver files alone do
-# not prove CUDA can run, so nvidia-smi must actually enumerate a GPU before
-# this branch selects the gpu profile; otherwise the host falls through to
-# the simulated worker.
-elif [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>&1; then
+elif [[ "$profile" == gpu ]]; then
   if command -v nvidia-smi >/dev/null 2>&1 && smi="$(nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>&1)" && [[ -n "$smi" ]]; then
     gpu_name="$(echo "$smi" | head -n1 | cut -d, -f1 | xargs)"
     vram_mb="$(echo "$smi" | head -n1 | cut -d, -f2 | tr -dc '0-9')"
@@ -172,14 +231,17 @@ elif [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>
       fail "driver ${driver_version} is older than ${CUDA_MIN_DRIVER}; the CUDA ${CUDA_IMAGE_VERSION} worker image will not load"
     fi
   else
-    warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
-    note "the gpu profile needs a usable GPU; this host will fall through to the simulated worker"
+    fail "nvidia-smi lists a GPU but not its memory and driver version: ${smi:-no output}"
   fi
 
+  # The native worker of make init/make dev runs without the toolkit; only
+  # the Docker gpu profile needs it, so a contributor gets a warning.
+  container_gpu=fail
+  [[ "$contributor" == true ]] && container_gpu=warn
   if command -v nvidia-ctk >/dev/null 2>&1; then
     pass "NVIDIA Container Toolkit installed"
   else
-    fail "NVIDIA Container Toolkit missing; the gpu profile cannot pass the GPU through"
+    "$container_gpu" "NVIDIA Container Toolkit missing; the gpu profile cannot pass the GPU through"
     note "https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html"
   fi
 
@@ -189,23 +251,25 @@ elif [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>
     if docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L >/dev/null 2>&1; then
       pass "docker can reach the GPU (--gpus all works)"
     else
-      fail "docker cannot reach the GPU; toolkit installed but passthrough is broken"
+      "$container_gpu" "docker cannot reach the GPU; toolkit installed but passthrough is broken"
       note "sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"
     fi
   fi
-  # Only claim the gpu profile when nvidia-smi actually enumerated a GPU
-  # above. Driver files alone do not prove CUDA can run, so a host with the
-  # driver installed but no device falls through to the simulated worker.
-  if [[ -n "${vram_mb:-}" && "$vram_mb" -gt 0 ]]; then
-    profile="gpu"
-  else
-    profile="smoke"
-  fi
+fi
 
-else
-  warn "no NVIDIA or AMD compute GPU detected"
-  note "the full stack still runs against the simulated worker: scripts/compose-smoke.sh"
-  profile="smoke"
+# Hardware the chosen profile leaves unused. A gpu host is not scanned: an
+# AMD CPU's iGPU there is expected and not a problem.
+if [[ "$profile" != gpu ]]; then
+  if [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>&1; then
+    warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
+    note "the NVIDIA card stays unused until nvidia-smi lists it"
+  fi
+  if [[ "$profile" == rocm ]]; then
+    scan_unusable_gpus "0x10de" || true
+  elif ! scan_unusable_gpus "0x10de 0x1002"; then
+    warn "no NVIDIA or AMD compute GPU detected"
+    note "the full stack still runs against the simulated worker: scripts/compose-smoke.sh"
+  fi
 fi
 
 # ------------------------------------------------------------ capacity
@@ -264,6 +328,12 @@ head_ "Verdict"
 if ((fails > 0)); then
   printf '  %s%d blocking problem(s)%s above. Fix them, then run this again.\n' "$R" "$fails" "$N"
   exit 1
+fi
+
+if [[ "$contributor" == true ]]; then
+  ((warns > 0)) && printf '  %d warning(s).\n' "$warns"
+  printf '  Host ready for make init.\n'
+  exit 0
 fi
 
 ((warns > 0)) && printf '  %d warning(s); the stack will start.\n' "$warns"

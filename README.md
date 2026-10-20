@@ -113,11 +113,12 @@ The repository is a monorepo: `frontend/` (SvelteKit SPA), `backend/` (FastAPI A
 Unlike self-hosting above, this is where `make` earns its place: these targets
 drive a native toolchain, not containers, so they need the prerequisites listed
 above rather than Docker alone. `scripts/preflight.sh` / `make selfhost` are
-the self-hosting check and start. Contributors run `make init` instead: that is
-the Python, Node, secrets, GPU extras and postgres check.
+the self-hosting check and start. Contributors run `make init` instead: it first
+checks Python 3.11+, Node 24+, Docker with Compose v2, and the GPU driver, and
+stops on a blocking problem before installing anything or starting postgres.
 
 ```
-make init            # first time: venvs, GPU extras, secrets, postgres
+make init            # first time: Python 3.11+, Node 24+, Docker Compose v2, GPU driver check; then setup
 make dev             # native studio on :5173; make selfhost is the Docker product on :8080
 make verify          # lint, test and build: exactly what CI runs (optional after init)
 make simulate        # live connection handling demo (API + workers + simulated browser)

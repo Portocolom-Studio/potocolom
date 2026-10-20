@@ -46,10 +46,12 @@ Two doors. Do not mix them on the same ports.
 **Hack on the code** (native, studio at http://localhost:5173):
 
 ```
-make init            # venvs, GPU extras, secrets, postgres
+make init            # checks Python 3.11+, Node 24+, Docker Compose v2, and the GPU driver; stops on a blocking problem
 make dev             # API + studio + worker; make dev-status if the studio is blank
 make verify          # optional; the same lint/test/build CI runs
 ```
+
+`make init` first checks Python 3.11+, Node 24+, Docker with Compose v2, and the GPU driver, and stops on a blocking problem.
 
 `make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
 
