@@ -12,6 +12,8 @@ on:
       - "scripts/gpu-profile.sh"
       - "scripts/preflight.sh"
       - "scripts/test-gpu-detection.sh"
+      - "scripts/backup.sh"
+      - "scripts/test-backup-signal.sh"
       - "**/pyproject.toml"
       - "frontend/package.json"
       - "frontend/.npmrc"
@@ -30,6 +32,8 @@ jobs:
         scripts/gpu-profile.sh
         scripts/preflight.sh
         scripts/test-gpu-detection.sh
+        scripts/backup.sh
+        scripts/test-backup-signal.sh
         **/pyproject.toml
         frontend/package.json
         frontend/.npmrc

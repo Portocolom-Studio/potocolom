@@ -53,12 +53,12 @@ copy_repo() {
 }
 
 expect_profile() {
-	local name="$1" nvidia="$2" kfd="$3" expected="$4" actual
+	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual
 	new_case "$name"
 	if [[ "$kfd" == present ]]; then
 		: >"$case_dir/kfd"
 	fi
-	actual="$(FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
+	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
 	if [[ "$actual" == "$expected" ]]; then
 		printf 'ok %s\n' "$name"
 	else
@@ -196,6 +196,8 @@ expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
 expect_profile profile-smoke nvidia-fail absent smoke
+expect_profile profile-override-rocm ok present rocm rocm
+expect_profile profile-override-invalid ok present gpu cuda
 expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' rc=0
 expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
 expect_preflight_gpu preflight-amd-without-kfd 'AMD GPU found at 0000:01:00.0' vendor=0x1002
