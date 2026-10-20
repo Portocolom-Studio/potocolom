@@ -624,6 +624,50 @@ def test_idle_release_closes_attempt_and_keeps_browser_session_resumable(monkeyp
 
 
 @pytest.mark.db
+def test_late_idle_close_receipt_after_resume_keeps_worker_open(monkeypatch):
+    """The browser resumes before the idle close is reported: the generation
+    has moved on, and the late but valid session_closed must still settle
+    instead of tearing down the worker."""
+    root_keys(monkeypatch)
+    monkeypatch.setattr(realtime, "IDLE_RELEASE_SECONDS", 0)
+    worker_id = f"s1-idle-late-{uuid.uuid4()}"
+    model_id = f"s1-idle-late-model-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        worker_ws, worker, grant, open_command, browser_ws, browser, fleet = (
+            open_live_session(client, worker_id, model_id)
+        )
+        try:
+            session_id = uuid.UUID(open_command["session_id"])
+            client.portal.call(realtime.release_idle_sessions)
+            close_command = worker_ws.receive_json()
+            assert close_command["type"] == "close_session"
+            worker_ws.send_json(command_ack(close_command))
+            browser_ws.send_bytes(canvas_frame(session_id, b"resume", revision=1))
+            reopened = worker_ws.receive_json()
+            assert reopened["type"] == "open_session"
+            assert reopened["control_generation"] == close_command["control_generation"] + 1
+            worker_ws.send_json(command_ack(reopened))
+            worker_ws.send_json(session_ready_message(worker, reopened, grant["grant_nonce"]))
+            assert worker_ws.receive_bytes() == canvas_frame(
+                session_id, b"resume", revision=1
+            )
+
+            worker_ws.send_json(session_closed_message(
+                worker, open_command, grant["grant_nonce"]
+            ))
+            report_ack = worker_ws.receive_json()
+            assert report_ack["type"] == "checkpoint_ack"
+            assert report_ack["status"] == "accepted"
+            assert realtime.workers.get(worker_id) is worker
+            request_work_grant(worker_ws, worker_id, worker.incarnation)
+            assert realtime.workers.get(worker_id) is worker
+        finally:
+            browser.__exit__(None, None, None)
+            fleet.__exit__(None, None, None)
+
+
+@pytest.mark.db
 def test_physical_job_completion_before_dispatch_ack_keeps_worker_open(monkeypatch):
     root_keys(monkeypatch)
     worker_id = f"s1-report-before-ack-{uuid.uuid4()}"
