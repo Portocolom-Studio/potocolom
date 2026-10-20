@@ -13,6 +13,7 @@ on:
       - "scripts/preflight.sh"
       - "scripts/test-gpu-detection.sh"
       - "scripts/backup.sh"
+      - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
       - "**/pyproject.toml"
       - "frontend/package.json"
@@ -33,6 +34,7 @@ jobs:
         scripts/preflight.sh
         scripts/test-gpu-detection.sh
         scripts/backup.sh
+        scripts/restore.sh
         scripts/test-backup-guards.sh
         **/pyproject.toml
         frontend/package.json

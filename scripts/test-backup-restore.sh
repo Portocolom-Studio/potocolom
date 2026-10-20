@@ -9,6 +9,9 @@ set -euo pipefail
 
 umask 077
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The release runs the copies from the extracted self-host bundle, so a
+# script missing from the bundle fails here rather than on a release install.
+SCRIPTS="${RECOVERY_SCRIPTS_DIR:-$ROOT/scripts}"
 SMOKE_FILE="$ROOT/deploy/compose/compose.smoke.yml"
 
 mkdir -p /tmp/opencode
@@ -330,7 +333,7 @@ thumb_sha="$(fetch_asset "$thumb_id" "$WORK/thumb.webp")" \
 
 echo "backing up the source project"
 if COMPOSE_PROJECT_NAME="$SRC" ENV_FILE="$ENVF" COMPOSE_FILE="$COMPOSE_FILE" \
-	"$ROOT/scripts/backup.sh" "$BACKUP" >"$WORK/backup.log" 2>&1; then
+	"$SCRIPTS/backup.sh" "$BACKUP" >"$WORK/backup.log" 2>&1; then
 	cat "$WORK/backup.log"
 else
 	cat "$WORK/backup.log" >&2
@@ -360,7 +363,7 @@ export COMPOSE_SMOKE_PORT="$(free_port)"
 BASE="http://localhost:$COMPOSE_SMOKE_PORT"
 echo "restoring into a new project on $BASE"
 if COMPOSE_PROJECT_NAME="$DST" COMPOSE_SMOKE_PORT="$COMPOSE_SMOKE_PORT" \
-	"$ROOT/scripts/restore.sh" "$BACKUP" >"$WORK/restore.log" 2>&1; then
+	"$SCRIPTS/restore.sh" "$BACKUP" >"$WORK/restore.log" 2>&1; then
 	cat "$WORK/restore.log"
 	pass "restore.sh restored the backup into a new, empty project"
 else
@@ -400,7 +403,7 @@ echo "checking a backup with database.dump removed"
 cp -a "$BACKUP" "$WORK/no-database"
 rm "$WORK/no-database/database.dump"
 if COMPOSE_PROJECT_NAME="$NOREF" COMPOSE_FILE="$COMPOSE_FILE" \
-	"$ROOT/scripts/restore.sh" "$WORK/no-database" >"$WORK/refuse.log" 2>&1; then
+	"$SCRIPTS/restore.sh" "$WORK/no-database" >"$WORK/refuse.log" 2>&1; then
 	fail "restore.sh refused a backup with database.dump removed"
 elif docker volume inspect "${NOREF}_pgdata" >/dev/null 2>&1 \
 	|| docker volume inspect "${NOREF}_assets" >/dev/null 2>&1; then
@@ -426,7 +429,7 @@ tar -cf "$WORK/short-assets/assets.tar" -C "$WORK/unpacked" .
 export COMPOSE_SMOKE_PORT="$(free_port)"
 BASE="http://localhost:$COMPOSE_SMOKE_PORT"
 if COMPOSE_PROJECT_NAME="$NEG" COMPOSE_SMOKE_PORT="$COMPOSE_SMOKE_PORT" \
-	"$ROOT/scripts/restore.sh" "$WORK/short-assets" >"$WORK/restore-short.log" 2>&1; then
+	"$SCRIPTS/restore.sh" "$WORK/short-assets" >"$WORK/restore-short.log" 2>&1; then
 	cat "$WORK/restore-short.log"
 else
 	cat "$WORK/restore-short.log" >&2

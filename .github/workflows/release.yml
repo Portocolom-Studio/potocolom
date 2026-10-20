@@ -98,6 +98,14 @@ jobs:
         env:
           REGISTRY: ${{ steps.images.outputs.registry }}
         run: |
+          # The self-host bundle is built here so the recovery proof below
+          # runs the exact scripts a release install receives.
+          tar -czf "potocolom-$VERSION-selfhost.tar.gz" deploy/compose/compose.yml deploy/compose/.env.example \
+            scripts/preflight.sh scripts/gpu-profile.sh scripts/ensure-env.sh scripts/auth-enable.sh \
+            scripts/backup.sh scripts/restore.sh worker/models/*.json
+          bundle="$RUNNER_TEMP/selfhost-bundle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf "$bundle" && mkdir -p "$bundle"
+          tar -xzf "potocolom-$VERSION-selfhost.tar.gz" -C "$bundle"
           for image in worker-cuda worker-rocm; do
             docker run --rm --entrypoint python "$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" \
               -c 'import torch, diffusers, transformers, torchao; print(torch.__version__, diffusers.__version__)'
@@ -109,7 +117,7 @@ jobs:
             # account (issue #693).
             COMPOSE_SMOKE_API_IMAGE="$REGISTRY/potocolom-api:$VERSION" \
               COMPOSE_SMOKE_WORKER_IMAGE="$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" \
-              scripts/test-backup-restore.sh
+              RECOVERY_SCRIPTS_DIR="$bundle/scripts" scripts/test-backup-restore.sh
           done
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
@@ -146,9 +154,6 @@ jobs:
           mkdir release-static
           docker cp "$container:/app/static/." release-static/
           tar -czf "potocolom-$VERSION-static.tar.gz" -C release-static .
-          tar -czf "potocolom-$VERSION-selfhost.tar.gz" deploy/compose/compose.yml deploy/compose/.env.example \
-            scripts/preflight.sh scripts/gpu-profile.sh scripts/ensure-env.sh scripts/auth-enable.sh \
-            scripts/backup.sh scripts/restore.sh worker/models/*.json
           sed "s/__POTOCOLOM_VERSION__/$VERSION/" scripts/install.sh > install.sh
           gh release create "$VERSION" --verify-tag --draft --title "potocolom $VERSION" \
             --notes-file docs/release-checklist.md

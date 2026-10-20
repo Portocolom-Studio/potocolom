@@ -41,11 +41,8 @@ printf 'ok backup-term-exit\nok backup-term-keeps-previous\n'
 mkdir -p "$tmp/nodaemon/bin" "$tmp/restore-in"
 cat >"$tmp/nodaemon/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-case "$1" in
-	info) exit 1 ;;
-	volume) exit 1 ;;
-esac
-printf '%s\n' "$*" >>"${DOCKER_LOG:?}"
+printf '%s\n' "$1" >>"${DOCKER_LOG:?}"
+[[ "$1" == info ]] && exit 1
 exit 0
 EOF
 chmod +x "$tmp/nodaemon/bin/docker"
@@ -54,7 +51,8 @@ cp "$tmp/out/"* "$tmp/restore-in/"
 rc=0
 PATH="$tmp/nodaemon/bin:$PATH" DOCKER_LOG="$tmp/docker.log" COMPOSE_FILE="$repo/deploy/compose/compose.yml" \
 	bash "$repo/scripts/restore.sh" "$tmp/restore-in" >/dev/null 2>&1 || rc=$?
-if [[ "$rc" -eq 0 || -s "$tmp/docker.log" ]]; then
+# The daemon check must be the first and only docker call.
+if [[ "$rc" -eq 0 || "$(cat "$tmp/docker.log")" != info ]]; then
 	printf 'FAIL restore-refuses-without-daemon: exit %s, docker calls:\n' "$rc"
 	cat "$tmp/docker.log"
 	exit 1
