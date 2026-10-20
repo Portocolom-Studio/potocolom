@@ -75,8 +75,9 @@ Everything below is the same stack built from a source checkout instead.
 
 `scripts/preflight.sh` (or `make preflight`) checks everything on this page
 against the machine you are on, names the compose profile it can run, and
-prints the fix for anything missing. It starts no containers and installs
-nothing. When `deploy/compose/.env` is missing it writes one from the
+prints the fix for anything missing. It installs nothing; on an NVIDIA host
+with the Container Toolkit it runs one throwaway `docker run --gpus all`
+container to prove passthrough (skip it with `POTOCOLOM_SKIP_GPU_TEST=1`). When `deploy/compose/.env` is missing it writes one from the
 example with generated hex secrets. Empty `POSTGRES_PASSWORD` / `FLEET_SECRET`
 are filled; a non-empty value is left alone. The one exception is the
 example's `POSTGRES_PASSWORD=change-me`: it is rotated when Docker answers and
@@ -97,7 +98,9 @@ driver must be 525.60.13 or newer. CUDA minor version compatibility carries the
 525.60.13 the worker fails at import with a CUDA error.
 
 1. Install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-   and restart the docker daemon.
+   and restart the docker daemon. When the driver or the toolkit is missing,
+   preflight prints the commands for the detected distro (a link to NVIDIA's
+   guide where it has none).
 2. `docker compose -f deploy/compose/compose.yml --profile gpu up -d --build`
    uses the `deploy.resources.reservations.devices` block already in the
    compose file; no further configuration is needed.
