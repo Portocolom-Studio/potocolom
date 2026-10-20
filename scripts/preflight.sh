@@ -42,7 +42,8 @@ head_() { printf '\n%s%s%s\n' "$B" "$1" "$N"; }
 distro_family() {
   local os_release="${POTOCOLOM_OS_RELEASE:-/etc/os-release}" id="" id_like="" key value
   [[ -r "$os_release" ]] || { printf 'other\n'; return; }
-  while IFS='=' read -r key value; do
+  while IFS='=' read -r key value || [[ -n "$key" ]]; do
+    value="${value%$'\r'}"
     value="$(printf '%s' "$value" | sed 's/^"//; s/"$//; s/^\x27//; s/\x27$//')"
     case "$key" in
       ID) id="$value" ;;
@@ -68,6 +69,7 @@ distro_family() {
 print_toolkit_fix() {
   case "$1" in
     ubuntu|debian)
+      note "  sudo apt-get update && sudo apt-get install -y ca-certificates curl gnupg2"
       note "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
       note "  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
       note "  sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
@@ -87,13 +89,13 @@ print_toolkit_fix() {
 
 print_driver_fix() {
   case "$1" in
-    ubuntu) note "  sudo ubuntu-drivers install" ;;
+    ubuntu) note "  sudo apt-get install -y ubuntu-drivers-common && sudo ubuntu-drivers install" ;;
     debian)
       note "  enable the contrib, non-free and non-free-firmware components in /etc/apt/sources.list, then:"
-      note "  sudo apt-get update && sudo apt-get install -y nvidia-driver firmware-misc-nonfree"
+      note "  sudo apt-get update && sudo apt-get install -y linux-headers-\$(dpkg --print-architecture) nvidia-driver firmware-misc-nonfree"
       ;;
     fedora)
-      note "  enable RPM Fusion (https://rpmfusion.org/Configuration), then: sudo dnf install -y akmod-nvidia"
+      note "  enable RPM Fusion (https://rpmfusion.org/Configuration), then: sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia-cuda"
       ;;
     *) note "  https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/" ;;
   esac

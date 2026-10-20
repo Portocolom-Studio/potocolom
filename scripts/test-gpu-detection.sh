@@ -39,8 +39,8 @@ fi
 exit 9
 EOF
 	chmod +x "$case_dir/bin/nvidia-smi"
-	for utility in bash dirname uname awk df tail tr sort head grep cut xargs id openssl mktemp mv sed; do
-		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(command -v "$utility")" "$case_dir/bin/$utility"
+	for utility in bash dirname uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed; do
+		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(type -P "$utility")" "$case_dir/bin/$utility"
 	done
 }
 
@@ -66,53 +66,71 @@ expect_profile() {
 	fi
 }
 
+# expect_preflight_gpu NAME EXPECTED [key=value...]
+# keys: vendor (PCI vendor, default 0x10de), kfd (present|absent), id, id_like
+# (os-release; id=missing leaves no file, crlf=yes writes CRLF line ends), nvidia (ok|fail), docker (ok|fail
+# for run --gpus), toolkit (none|ctk|runtime|cli), rc (exit code, or any),
+# absent (text that must not appear), mode (contributor|selfhost; default
+# contributor without a working NVIDIA GPU, selfhost with one).
 expect_preflight_gpu() {
-	local name="$1" vendor="$2" expected="$3" kfd="${4:-absent}" id="${5:-ubuntu}" id_like="${6:-}" nvidia="${7:-fail}" docker_mode="${8:-ok}" toolkit="${9:-false}" expected_rc="${10:-any}" unexpected="${11:-}" slot="0000:01:00.0" output kfd_path contributor="--contributor" env_args=()
+	local name="$1" expected="$2" vendor=0x10de kfd=absent id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no
+	local slot="0000:01:00.0" output code kfd_path option tool
+	shift 2
+	for option in "$@"; do
+		local "$option"
+	done
 	new_case "$name"
 	copy_repo
 	if [[ "$id" != missing ]]; then
 		printf 'ID=%s\nID_LIKE="%s"\n' "$id" "$id_like" >"$case_dir/os-release"
+		[[ "$crlf" == yes ]] && sed -i 's/$/\r/' "$case_dir/os-release"
 	fi
 	mkdir -p "$case_dir/pci/$slot"
 	printf '0x030000\n' >"$case_dir/pci/$slot/class"
 	printf '%s\n' "$vendor" >"$case_dir/pci/$slot/vendor"
+	kfd_path="$case_dir/no-kfd"
 	if [[ "$kfd" == present ]]; then
-		: >"$case_dir/kfd"
 		kfd_path="$case_dir/kfd"
-	else
-		kfd_path="$case_dir/no-kfd"
+		: >"$kfd_path"
 	fi
 	cat >"$case_dir/bin/docker" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == --version ]]; then printf 'Docker version 28.0.0, build test\\n'; exit 0; fi
 if [[ "\$1" == compose ]]; then printf '2.30.0\\n'; exit 0; fi
-if [[ "\$1" == info ]]; then exit 0; fi
-if [[ "\$1" == run && '$docker_mode' == fail ]]; then exit 1; fi
+if [[ "\$1" == run && '$docker' == fail ]]; then exit 1; fi
 exit 0
 EOF
 	chmod +x "$case_dir/bin/docker"
-	if [[ "$toolkit" == true || "$toolkit" == ctk ]]; then
-		toolkit_binary=nvidia-ctk
-	elif [[ "$toolkit" == runtime ]]; then
-		toolkit_binary=nvidia-container-runtime
-	elif [[ "$toolkit" == cli ]]; then
-		toolkit_binary=nvidia-container-cli
-	else
-		toolkit_binary=""
+	case "$toolkit" in
+		ctk) toolkit=nvidia-ctk ;;
+		runtime) toolkit=nvidia-container-runtime ;;
+		cli) toolkit=nvidia-container-cli ;;
+		*) toolkit="" ;;
+	esac
+	if [[ -n "$toolkit" ]]; then
+		printf '#!/usr/bin/env bash\nexit 0\n' >"$case_dir/bin/$toolkit"
+		chmod +x "$case_dir/bin/$toolkit"
 	fi
-	if [[ -n "$toolkit_binary" ]]; then
-		printf '#!/usr/bin/env bash\nexit 0\n' >"$case_dir/bin/$toolkit_binary"
-		chmod +x "$case_dir/bin/$toolkit_binary"
+	# The contributor toolchain passes, so only GPU findings decide the exit code.
+	for tool in make node npm; do
+		printf '#!/usr/bin/env bash\nprintf "%s ok\\n"\n' "$tool" >"$case_dir/bin/$tool"
+		chmod +x "$case_dir/bin/$tool"
+	done
+	if [[ -z "$mode" ]]; then
+		mode=contributor
+		[[ "$nvidia" == ok ]] && mode=selfhost
 	fi
-	[[ "$nvidia" == ok ]] && contributor=""
-	env_args=("FAKE_NVIDIA=$nvidia" "POTOCOLOM_OS_RELEASE=$case_dir/os-release" "POTOCOLOM_KFD=$kfd_path" "POTOCOLOM_PCI_DEVICES=$case_dir/pci" "TMPDIR=$case_dir" "PATH=$case_dir/bin")
-	[[ "$docker_mode" == fail ]] || env_args+=(POTOCOLOM_SKIP_GPU_TEST=1)
-	output="$(env "${env_args[@]}" bash "$case_dir/repo/scripts/preflight.sh" $contributor 2>&1)"
-	local rc=$?
-	if [[ "$output" == *"$expected"* && ( -z "$unexpected" || "$output" != *"$unexpected"* ) && ( "$expected_rc" == any || "$rc" -eq "$expected_rc" ) ]]; then
+	local args=()
+	[[ "$mode" == contributor ]] && args=(--contributor)
+	# Port 9 (discard) is never served here, so the selfhost port check passes.
+	output="$(env FAKE_NVIDIA="$nvidia" POTOCOLOM_OS_RELEASE="$case_dir/os-release" POTOCOLOM_KFD="$kfd_path" \
+		POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_PORT=9 TMPDIR="$case_dir" PATH="$case_dir/bin" \
+		bash "$case_dir/repo/scripts/preflight.sh" "${args[@]}" 2>&1)"
+	code=$?
+	if [[ "$output" == *"$expected"* && ( -z "$absent" || "$output" != *"$absent"* ) && ( "$rc" == any || "$code" -eq "$rc" ) ]]; then
 		printf 'ok %s\n' "$name"
 	else
-		fail_case "$name" "exit=$rc\n$output"
+		fail_case "$name" "exit=$code\n$output"
 	fi
 }
 
@@ -178,22 +196,29 @@ expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
 expect_profile profile-smoke nvidia-fail absent smoke
-expect_preflight_gpu preflight-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:01:00.0'
-expect_preflight_gpu preflight-rocm-unusable-nvidia 0x10de 'NVIDIA GPU found at 0000:01:00.0' present
-expect_preflight_gpu preflight-amd-without-kfd 0x1002 'AMD GPU found at 0000:01:00.0'
-expect_preflight_gpu preflight-unsupported-pci 0x8086 'no NVIDIA or AMD compute GPU detected'
+expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' rc=0
+expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
+expect_preflight_gpu preflight-amd-without-kfd 'AMD GPU found at 0000:01:00.0' vendor=0x1002
+expect_preflight_gpu preflight-unsupported-pci 'no NVIDIA or AMD compute GPU detected' vendor=0x8086
 
-expect_preflight_gpu distro-ubuntu 0x10de 'sudo ubuntu-drivers install' absent ubuntu ''
-expect_preflight_gpu distro-linuxmint 0x10de 'sudo ubuntu-drivers install' absent linuxmint 'ubuntu debian'
-expect_preflight_gpu distro-debian 0x10de 'sudo apt-get update && sudo apt-get install -y nvidia-driver firmware-misc-nonfree' absent debian
-expect_preflight_gpu distro-fedora 0x10de 'sudo dnf install -y nvidia-container-toolkit' absent fedora
-expect_preflight_gpu distro-rocky 0x10de 'https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/' absent rocky 'rhel centos fedora'
-expect_preflight_gpu distro-opensuse 0x10de 'sudo zypper --gpg-auto-import-keys install -y nvidia-container-toolkit' absent opensuse-tumbleweed 'opensuse suse'
-expect_preflight_gpu distro-arch 0x10de 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' absent arch
-expect_preflight_gpu distro-missing-release 0x10de 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' absent missing
-expect_preflight_gpu laptop-toolkit-missing 0x8086 'sudo apt-get install -y nvidia-container-toolkit' absent debian '' ok fail false 1 'toolkit installed but passthrough is broken'
-expect_preflight_gpu toolkit-present-passthrough-fails 0x8086 'toolkit installed but passthrough is broken' absent ubuntu '' ok fail true 1
-expect_preflight_gpu toolkit-runtime-passthrough-fails 0x8086 'toolkit installed but passthrough is broken' absent ubuntu '' ok fail runtime 1
+expect_preflight_gpu distro-ubuntu 'sudo apt-get install -y ubuntu-drivers-common && sudo ubuntu-drivers install' id=ubuntu rc=0
+expect_preflight_gpu distro-linuxmint 'sudo ubuntu-drivers install' id=linuxmint id_like='ubuntu debian'
+expect_preflight_gpu distro-debian 'sudo apt-get install -y linux-headers-$(dpkg --print-architecture) nvidia-driver firmware-misc-nonfree' id=debian
+expect_preflight_gpu distro-crlf-release 'nvidia-driver firmware-misc-nonfree' id=debian crlf=yes
+expect_preflight_gpu distro-debian-toolkit-repo 'sudo gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg' id=debian
+expect_preflight_gpu distro-apt-prerequisites 'sudo apt-get install -y ca-certificates curl gnupg2' id=debian
+expect_preflight_gpu distro-fedora-driver 'sudo dnf install -y akmod-nvidia xorg-x11-drv-nvidia-cuda' id=fedora
+expect_preflight_gpu distro-fedora 'sudo dnf install -y nvidia-container-toolkit' id=fedora
+expect_preflight_gpu distro-rocky 'https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/' id=rocky id_like='rhel centos fedora'
+expect_preflight_gpu distro-rocky-toolkit 'sudo dnf install -y nvidia-container-toolkit' id=rocky id_like='rhel centos fedora'
+expect_preflight_gpu distro-opensuse 'sudo zypper --gpg-auto-import-keys install -y nvidia-container-toolkit' id=opensuse-tumbleweed id_like='opensuse suse'
+expect_preflight_gpu distro-arch 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' id=arch
+expect_preflight_gpu distro-missing-release 'https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html' id=missing
+expect_preflight_gpu laptop-toolkit-missing 'sudo apt-get install -y nvidia-container-toolkit' vendor=0x8086 id=debian nvidia=ok docker=fail rc=1 absent='toolkit installed but passthrough is broken'
+expect_preflight_gpu toolkit-present-passthrough-fails 'toolkit installed but passthrough is broken' vendor=0x8086 nvidia=ok docker=fail toolkit=ctk rc=1
+expect_preflight_gpu toolkit-runtime-passthrough-fails 'toolkit installed but passthrough is broken' vendor=0x8086 nvidia=ok docker=fail toolkit=runtime rc=1
+expect_preflight_gpu contributor-toolkit-missing-warns 'warn NVIDIA Container Toolkit missing' vendor=0x8086 nvidia=ok mode=contributor rc=0
+expect_preflight_gpu toolkit-cli-passthrough-fails 'toolkit installed but passthrough is broken' vendor=0x8086 nvidia=ok docker=fail toolkit=cli rc=1
 
 expect_toolchain toolchain-old-node v20.0.0 true 'Node.js 24+ is required' 1
 expect_toolchain toolchain-missing-npm v24.0.0 false 'npm not installed' 1
