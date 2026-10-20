@@ -660,6 +660,22 @@ def test_late_idle_close_receipt_after_resume_keeps_worker_open(monkeypatch):
             assert report_ack["type"] == "checkpoint_ack"
             assert report_ack["status"] == "accepted"
             assert realtime.workers.get(worker_id) is worker
+
+            async def row():
+                async with db.session_factory() as session:
+                    return (await session.execute(
+                        text("SELECT state, control_generation FROM realtime_sessions "
+                             "WHERE id = :id"),
+                        {"id": session_id},
+                    )).mappings().one()
+
+            current = client.portal.call(row)
+            assert current["state"] == "live"
+            assert current["control_generation"] == reopened["control_generation"]
+            browser_ws.send_bytes(canvas_frame(session_id, b"after", revision=2))
+            assert worker_ws.receive_bytes() == canvas_frame(
+                session_id, b"after", revision=2
+            )
             request_work_grant(worker_ws, worker_id, worker.incarnation)
             assert realtime.workers.get(worker_id) is worker
         finally:
