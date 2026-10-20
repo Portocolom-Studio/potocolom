@@ -239,12 +239,25 @@ async def prepare_command_subject(
                 or attempt is None or attempt["worker_id"] != worker_id
                 or attempt["incarnation"] != incarnation):
             raise CommandRefused("session close is stale")
-        changed = await session.execute(
+        # A terminal close (the browser left) ends the row once the worker's
+        # session_closed proves the runner is gone; an idle release keeps it.
+        terminal = isinstance(session_context, dict) and session_context.get("terminal") is True
+        if terminal and await session.scalar(
             text(
-                "UPDATE realtime_sessions SET state = 'idle' WHERE id = :session_id "
-                "AND control_generation = :generation AND state = 'live' RETURNING id"
+                "SELECT EXISTS (SELECT 1 FROM worker_commands WHERE subject_id = :session_id "
+                "AND subject_sequence = :generation AND state = 'pending')"
             ),
             {"session_id": session_id, "generation": generation},
+        ):
+            # A pending command's outcome is unproven; the caller erases and fences.
+            raise CommandRefused("session close has a pending command")
+        changed = await session.execute(
+            text(
+                "UPDATE realtime_sessions SET state = :target WHERE id = :session_id "
+                "AND control_generation = :generation AND state = 'live' RETURNING id"
+            ),
+            {"session_id": session_id, "generation": generation,
+             "target": "ending" if terminal else "idle"},
         )
         if changed.scalar_one_or_none() is None:
             raise CommandRefused("session release changed before commit")
@@ -351,6 +364,7 @@ async def apply_command_claim(
                     "ON CONFLICT (id) DO UPDATE SET model_id = EXCLUDED.model_id, "
                     "effective_params = EXCLUDED.effective_params, "
                     "desired_params = EXCLUDED.desired_params, "
+                    "params_revision = EXCLUDED.params_revision, "
                     "desired_revision = EXCLUDED.desired_revision, state = 'assigning', "
                     "control_generation = EXCLUDED.control_generation, started_at = NULL, "
                     "ended_at = NULL, owner_epoch = EXCLUDED.owner_epoch"
@@ -487,7 +501,7 @@ async def lock_delivery_subject(
         expected_state = {
             "open_session": "assigning",
             "update_session": ("live", "idle"),
-            "close_session": "idle",
+            "close_session": ("idle", "ending"),
         }.get(kind)
         if (expected_state is None or
                 (entity["state"] not in expected_state if isinstance(expected_state, tuple)
@@ -689,7 +703,9 @@ async def lock_reported_command(
             {"subject_id": subject_id, "account_user_id": account_user_id,
              "subject_sequence": subject_sequence},
         )).mappings().one_or_none()
-        if (proof is None or proof["entity_state"] != "idle"
+        # An idle release keeps the row idle; the receipt of a terminal close
+        # has already moved its row from ending to ended.
+        if (proof is None or proof["entity_state"] not in {"idle", "ended"}
                 or proof["attempt_state"] != "ended" or proof["attempt_id"] != attempt_id
                 or proof["worker_id"] != worker_id or proof["incarnation"] != incarnation
                 or proof["range_id"] != range_id):
