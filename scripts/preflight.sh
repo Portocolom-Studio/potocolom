@@ -465,7 +465,7 @@ if [[ "$contributor" != true && -z "${POTOCOLOM_PUBLIC_URL:-}" ]]; then
   public_url="$(sed -n 's/^PUBLIC_URL=//p' "$env_file" 2>/dev/null | tail -n 1 | tr -d "\"'" | tr -d '\r')"
   if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
     public_host="${BASH_REMATCH[1]}"
-    if [[ "$public_host" == localhost || "$public_host" == 127.0.0.1 || "$public_host" == '[::1]' ]]; then
+    if [[ "$public_host" == localhost || "$public_host" == 127.* || "$public_host" == '[::1]' ]]; then
       warn "PUBLIC_URL is $public_url; the studio only works from this machine"
       note "Set POTOCOLOM_PUBLIC_URL during install or change PUBLIC_URL in deploy/compose/.env."
     fi

@@ -75,7 +75,10 @@ Everything below is the same stack built from a source checkout instead.
 
 Set `PUBLIC_URL` with `POTOCOLOM_PUBLIC_URL` during installation or in
 `deploy/compose/.env`, then run `docker compose up -d` to apply it. It must
-match what the browser types exactly, including scheme, host and port. For
+match the origin the browser sends exactly: lowercase scheme and host, the
+port only when it is not the default (no `:80` on http, no `:443` on https),
+no path. The installer stores that form and asks for a hostname instead of an
+IPv6 literal. For
 anything beyond a trusted LAN, put an [HTTPS reverse proxy](#tls-and-hsts)
 in front of the API.
 
