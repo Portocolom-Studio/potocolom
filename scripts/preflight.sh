@@ -34,6 +34,10 @@ fi
 fails=0
 warns=0
 
+# From torch.cuda.get_arch_list() in the shipped ROCm 6.3 worker image;
+# update this list whenever the ROCm wheel version changes.
+ROCM_SUPPORTED_GFX="gfx900 gfx906 gfx908 gfx90a gfx942 gfx1030 gfx1100 gfx1101 gfx1102 gfx1200 gfx1201"
+
 pass() { printf '  %sok%s %s\n' "$G" "$N" "$1"; }
 warn() { printf '  %swarn%s %s\n' "$Y" "$N" "$1"; warns=$((warns + 1)); }
 fail() { printf '  %sfail%s %s\n' "$R" "$N" "$1"; fails=$((fails + 1)); }
@@ -101,6 +105,18 @@ print_driver_fix() {
     *) note "  https://docs.nvidia.com/datacenter/tesla/driver-installation-guide/" ;;
   esac
   note "  reboot, then check that nvidia-smi lists the GPU"
+}
+
+print_amd_driver_fix() {
+  case "$1" in
+    debian) note "  sudo apt-get update && sudo apt-get install -y firmware-amd-graphics" ;;
+    ubuntu) note "  sudo apt-get update && sudo apt-get install -y linux-firmware" ;;
+    fedora) note "  sudo dnf install -y amd-gpu-firmware" ;;
+    rhel) note "  sudo dnf install -y linux-firmware" ;;
+    suse) note "  sudo zypper install -y kernel-firmware-amdgpu" ;;
+    *) note "  https://rocm.docs.amd.com/projects/install-on-linux/en/latest/" ;;
+  esac
+  note "  reboot, then check that /dev/kfd exists"
 }
 
 # Compare dotted versions: version_ge 535.261.03 525.60.13
@@ -244,7 +260,7 @@ scan_unusable_gpus() {
       fi
     elif [[ "$vendor" == 0x1002 ]]; then
       warn "AMD GPU found at ${slot} but /dev/kfd is missing (amdgpu compute not available)"
-      note "load the amdgpu kernel driver; see docs/self-hosting.md"
+      print_amd_driver_fix "$(distro_family)"
     fi
     found=true
   done
@@ -256,13 +272,50 @@ toolkit_present() {
 }
 
 if [[ "$profile" == rocm ]]; then
+  supported_gpus=0
+  found_gfx=()
+  topology="${POTOCOLOM_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"
+  topology_read=false
+  shopt -s nullglob
+  for properties in "$topology"/*/properties; do
+    [[ -r "$properties" ]] || continue
+    topology_read=true
+    while read -r key value _; do
+      [[ "$key" == gfx_target_version && "$value" =~ ^[0-9]+$ ]] || continue
+      target=$((10#$value))
+      ((target == 0)) && continue
+      major=$((target / 10000))
+      minor=$(((target % 10000) / 100))
+      stepping=$((target % 100))
+      gfx="gfx${major}$(printf '%x' "$minor")$(printf '%x' "$stepping")"
+      found_gfx+=("$gfx")
+    done <"$properties"
+  done
+  shopt -u nullglob
+  if [[ "$topology_read" != true || "${#found_gfx[@]}" -eq 0 ]]; then
+    warn "could not read the AMD GPU target; the ROCm worker may not support this GPU"
+  else
+    for gfx in "${found_gfx[@]}"; do
+      if [[ " $ROCM_SUPPORTED_GFX " == *" $gfx "* ]]; then
+        pass "AMD GPU ${gfx} supported by the ROCm worker"
+        supported_gpus=$((supported_gpus + 1))
+      else
+        warn "AMD GPU ${gfx} is not supported by the ROCm worker"
+      fi
+    done
+    if ((supported_gpus == 0)); then
+      fail "no AMD GPU supported by the ROCm worker (found: ${found_gfx[*]})"
+      note "supported targets: ${ROCM_SUPPORTED_GFX}"
+    fi
+  fi
   # POTOCOLOM_PROFILE=rocm can select this branch on a host without the device.
   if [[ -e "${POTOCOLOM_KFD:-/dev/kfd}" ]]; then
     pass "AMD compute device /dev/kfd present"
   else
     fail "POTOCOLOM_PROFILE=rocm but /dev/kfd is missing; the ROCm worker cannot start"
   fi
-  if [[ -d /dev/dri ]]; then
+  dri_path="${POTOCOLOM_DRI:-/dev/dri}"
+  if [[ -d "$dri_path" ]]; then
     pass "/dev/dri present"
   else
     fail "/dev/dri missing; the ROCm worker needs both devices passed through"
@@ -275,6 +328,13 @@ if [[ "$profile" == rocm ]]; then
     pass "running as root"
   elif [[ "$groups_have" == *video* ]]; then
     pass "user in group(s):${groups_have}"
+    if [[ "$groups_have" != *render* ]]; then
+      render_unreadable=false
+      for render_node in "$dri_path"/renderD*; do
+        [[ -e "$render_node" && ! -r "$render_node" ]] && render_unreadable=true
+      done
+      [[ "$render_unreadable" != true ]] || warn "user is not in the 'render' group and cannot read /dev/dri/renderD*"
+    fi
   else
     fail "user not in the 'video' group"
     note "sudo usermod -aG video,render $USER   # then log out and back in"
