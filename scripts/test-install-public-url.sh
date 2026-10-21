@@ -34,6 +34,9 @@ while (($#)); do
 		shift
 	fi
 done
+# Only downloads (-o) are served; anything else, such as preflight's health
+# probe of a studio that happens to be on port 8080, gets a refused connection.
+[[ -n "${out:-}" ]] || exit 7
 printf 'called\n' >>"${CURL_LOG:?}"
 case "$out" in
 	*SHA256SUMS) cp "$BUNDLE_DIR/SHA256SUMS" "$out" ;;
@@ -140,6 +143,30 @@ invalid_case invalid-default-http-port http://studio.example:80
 invalid_case invalid-port-range http://studio.example:65536
 invalid_case invalid-leading-zero-port http://studio.example:08080
 invalid_case invalid-ipv6-literal 'http://[::1]:8080'
+invalid_case invalid-ipv4-leading-zero http://192.168.001.10:8080
+invalid_case invalid-ipv4-hex http://0xc0.0xa8.1.10:8080
+invalid_case invalid-ipv4-integer http://3232235786:8080
+invalid_case invalid-ipv4-octet http://192.168.1.256:8080
+
+# A hostname that only starts with 127. is not loopback.
+make_case hostname-starting-127-is-not-loopback
+output="$(run_install "$case_dir" POTOCOLOM_PUBLIC_URL=http://127.studio.example:8080)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" != *'only works from this machine'* ]]; then
+	printf 'ok hostname-starting-127-is-not-loopback\n'
+else
+	fail_case hostname-starting-127-is-not-loopback
+fi
+
+# The final message reads the value the way Compose does.
+make_case reads-export-and-comment
+mkdir -p "$case_dir/install/deploy/compose"
+sed 's|^PUBLIC_URL=.*|export PUBLIC_URL=http://192.168.1.10:8080 # set by hand|' "$repo/deploy/compose/.env.example" >"$case_dir/install/deploy/compose/.env"
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'Open http://192.168.1.10:8080'$'\n'* && "$output" != *'only works from this machine'* ]]; then
+	printf 'ok reads-export-and-comment\n'
+else
+	fail_case reads-export-and-comment
+fi
 
 # The value is stored in the canonical form browsers send as Origin.
 make_case normalizes-case
@@ -155,7 +182,7 @@ make_case replaces-every-line-form
 mkdir -p "$case_dir/install/deploy/compose"
 {
 	cat "$repo/deploy/compose/.env.example"
-	printf 'export PUBLIC_URL=http://old2:8080\n  PUBLIC_URL = http://old3:8080\n'
+	printf 'export PUBLIC_URL=http://old2:8080\n  PUBLIC_URL=http://old3:8080 # an old comment\n'
 } >"$case_dir/install/deploy/compose/.env"
 output="$(run_install "$case_dir" POTOCOLOM_PUBLIC_URL=http://192.168.1.10:8080)" && rc=0 || rc=$?
 forms="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*=' "$case_dir/install/deploy/compose/.env")"

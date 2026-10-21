@@ -462,10 +462,12 @@ fi
 # install.sh runs this before it writes POTOCOLOM_PUBLIC_URL into .env.
 if [[ "$contributor" != true && -z "${POTOCOLOM_PUBLIC_URL:-}" ]]; then
   env_file="$ROOT/deploy/compose/.env"
-  public_url="$(sed -n 's/^PUBLIC_URL=//p' "$env_file" 2>/dev/null | tail -n 1 | tr -d "\"'" | tr -d '\r')"
+  # Compose syntax: an optional export, and an unquoted value ends at a comment.
+  public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL=["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$env_file" 2>/dev/null | tail -n 1)"
   if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
     public_host="${BASH_REMATCH[1]}"
-    if [[ "$public_host" == localhost || "$public_host" == 127.* || "$public_host" == '[::1]' ]]; then
+    if [[ "$public_host" == localhost || "$public_host" == '[::1]' \
+      || "$public_host" =~ ^127(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$ ]]; then
       warn "PUBLIC_URL is $public_url; the studio only works from this machine"
       note "Set POTOCOLOM_PUBLIC_URL during install or change PUBLIC_URL in deploy/compose/.env."
     fi

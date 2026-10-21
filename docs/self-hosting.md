@@ -74,7 +74,9 @@ Everything below is the same stack built from a source checkout instead.
 ## Reaching the studio from other machines
 
 Set `PUBLIC_URL` with `POTOCOLOM_PUBLIC_URL` during installation or in
-`deploy/compose/.env`, then run `docker compose up -d` to apply it. It must
+`deploy/compose/.env`, then apply it from the install directory with
+`docker compose -f deploy/compose/compose.yml --profile gpu up -d` (`rocm`
+on AMD). It must
 match the origin the browser sends exactly: lowercase scheme and host, the
 port only when it is not the default (no `:80` on http, no `:443` on https),
 no path. The installer stores that form and asks for a hostname instead of an

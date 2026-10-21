@@ -29,12 +29,21 @@ main() {
 		set_public_url=true
 		public_url_input="$(printf '%s' "$POTOCOLOM_PUBLIC_URL" | tr '[:upper:]' '[:lower:]')"
 		url_error=""
-		if [[ ! "$public_url_input" =~ ^(https?)://([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:([1-9][0-9]{0,4}))?$ ]]; then
+		url_scheme=""; url_host=""; url_port=""
+		if [[ "$public_url_input" =~ ^(https?)://([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:([1-9][0-9]{0,4}))?$ ]]; then
+			url_scheme="${BASH_REMATCH[1]}"; url_host="${BASH_REMATCH[2]}"; url_port="${BASH_REMATCH[5]}"
+		fi
+		if [[ -z "$url_scheme" ]]; then
 			url_error="must be http:// or https:// followed by a hostname or IPv4 address and an optional port, with no path, query, fragment, user info or trailing slash (for IPv6, use a hostname)"
-		elif [[ -n "${BASH_REMATCH[5]}" ]] && ((BASH_REMATCH[5] > 65535)); then
+		elif [[ -n "$url_port" ]] && ((url_port > 65535)); then
 			url_error="has a port above 65535"
-		elif [[ "${BASH_REMATCH[1]}:${BASH_REMATCH[5]}" == http:80 || "${BASH_REMATCH[1]}:${BASH_REMATCH[5]}" == https:443 ]]; then
-			url_error="must leave out the default port (:${BASH_REMATCH[5]})"
+		elif [[ "$url_scheme:$url_port" == http:80 || "$url_scheme:$url_port" == https:443 ]]; then
+			url_error="must leave out the default port (:$url_port)"
+		elif [[ "${url_host##*.}" =~ ^(0x[0-9a-f]*|[0-9]+)$ \
+			&& ! "$url_host" =~ ^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$ ]]; then
+			# A numeric last label makes browsers parse the host as IPv4 and
+			# rewrite it (192.168.001.10, 0xc0.0xa8.1.10, 3232235786).
+			url_error="must write an IPv4 address as four plain decimal numbers (192.168.1.10)"
 		fi
 		if [[ -n "$url_error" ]]; then
 			echo "error: POTOCOLOM_PUBLIC_URL $url_error" >&2
@@ -168,14 +177,16 @@ main() {
 
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
-	public_url="$(sed -n 's/^PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1 | tr -d "\"'" | tr -d '\r')"
+	# Compose syntax: an optional export, and an unquoted value ends at a comment.
+	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL=["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
 	public_url="${public_url:-http://localhost:8080}"
 
 	echo
 	echo "potocolom $VERSION is running. Open $public_url"
 	if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
 		public_host="${BASH_REMATCH[1]}"
-		if [[ "$public_host" == localhost || "$public_host" == 127.* || "$public_host" == '[::1]' ]]; then
+		if [[ "$public_host" == localhost || "$public_host" == '[::1]' \
+			|| "$public_host" =~ ^127(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$ ]]; then
 			if command -v hostname >/dev/null 2>&1; then
 				addresses="$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) { n = split($i, a, "."); ok = (n == 4); for (j = 1; j <= n; j++) if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok = 0; if (ok && a[1] + 0 != 127) { if (out != "") out = out " "; out = out $i } } } END { print out }')"
 			else
