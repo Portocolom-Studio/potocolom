@@ -460,7 +460,7 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
 
 async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                           configured_slots: int) -> None:
-    """Load and time every remaining realtime model before hello.
+    """Load and time every remaining realtime model before a fleet connection.
 
     Reconnects reuse a warm engine, so calibration is a no-op once slots are set,
     unless the last pass failed, when the reconnect measures again.
@@ -1322,7 +1322,6 @@ async def _serve_protocol6(
 
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
                            engine: Engine) -> None:
-    await warmup_realtime(engine, manifests, settings.realtime_slots)
     wire_manifests = engine.measured_manifests(manifests)
     p95_map: dict[str, int] = {}
     for wire in wire_manifests:
@@ -1415,6 +1414,7 @@ async def run() -> None:
     try:
         while True:
             try:
+                await warmup_realtime(engine, manifests, settings.realtime_slots)
                 async with websockets.connect(
                     settings.api_url,
                     # Lowercase: header names are case-insensitive, but not every
