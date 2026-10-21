@@ -109,7 +109,10 @@ print_driver_fix() {
 
 print_amd_driver_fix() {
   case "$1" in
-    debian) note "  sudo apt-get update && sudo apt-get install -y firmware-amd-graphics" ;;
+    debian)
+      note "  enable the non-free-firmware component in /etc/apt/sources.list, then:"
+      note "  sudo apt-get update && sudo apt-get install -y firmware-amd-graphics"
+      ;;
     ubuntu) note "  sudo apt-get update && sudo apt-get install -y linux-firmware" ;;
     fedora) note "  sudo dnf install -y amd-gpu-firmware" ;;
     rhel) note "  sudo dnf install -y linux-firmware" ;;
