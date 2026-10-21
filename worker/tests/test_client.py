@@ -1433,7 +1433,14 @@ def test_run_warms_before_the_first_connection_attempt(monkeypatch):
         pass
 
     async def fake_warmup(*_args):
+        # Suspend once (asyncio.sleep is patched below), so a connect that
+        # started before warmup finished would land between the two events.
         events.append("warmup")
+        loop = asyncio.get_running_loop()
+        resumed = loop.create_future()
+        loop.call_soon(resumed.set_result, None)
+        await resumed
+        events.append("warmed")
 
     async def fake_serve_connection(*_args):
         return None
@@ -1452,7 +1459,7 @@ def test_run_warms_before_the_first_connection_attempt(monkeypatch):
     with pytest.raises(StopReconnect):
         asyncio.run(run())
 
-    assert events == ["warmup", "connect"]
+    assert events == ["warmup", "warmed", "connect"]
 
 
 def test_run_remeasures_before_each_reconnect(monkeypatch):
@@ -1474,7 +1481,14 @@ def test_run_remeasures_before_each_reconnect(monkeypatch):
             return None
 
     async def fake_warmup(*_args):
+        # Suspend once (asyncio.sleep is patched below), so a connect that
+        # started before warmup finished would land between the two events.
         events.append("warmup")
+        loop = asyncio.get_running_loop()
+        resumed = loop.create_future()
+        loop.call_soon(resumed.set_result, None)
+        await resumed
+        events.append("warmed")
 
     async def fake_serve_connection(*_args):
         raise StopReconnect
@@ -1493,7 +1507,7 @@ def test_run_remeasures_before_each_reconnect(monkeypatch):
     with pytest.raises(StopReconnect):
         asyncio.run(run())
 
-    assert events == ["warmup", "connect", "warmup", "connect"]
+    assert events == ["warmup", "warmed", "connect", "warmup", "warmed", "connect"]
 
 
 def test_serve_connection_does_not_warmup(monkeypatch):
