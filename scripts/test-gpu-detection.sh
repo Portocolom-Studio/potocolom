@@ -116,6 +116,11 @@ expect_preflight_gpu() {
 		done
 	fi
 	mkdir -p "$case_dir/dri"
+	if [[ "$render" == unreadable && "$EUID" -eq 0 ]]; then
+		# Root reads a mode 000 file, so this case cannot be staged.
+		printf 'skip %s (running as root)\n' "$name"
+		return
+	fi
 	if [[ "$render" == unreadable ]]; then
 		: >"$case_dir/dri/renderD128"
 		chmod 000 "$case_dir/dri/renderD128"
