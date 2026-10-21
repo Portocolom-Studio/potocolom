@@ -238,7 +238,6 @@ def _job_engine(pipeline: _JobPipeline) -> DiffusersEngine:
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._pipeline = MagicMock(return_value=pipeline)
     return engine
@@ -1426,7 +1425,6 @@ def test_eviction_releases_every_entry_a_model_shares_weights_across():
 
     engine._pipelines = {("rt", "t2i"): Pipe(), ("rt", "realtime"): Pipe(),
                          ("other", "t2i"): Pipe()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"rt": "full", "other": "full"}
     engine._last_used = {"rt": 1.0, "other": 2.0}
@@ -1452,7 +1450,6 @@ def test_load_realtime_registers_the_base_under_the_t2i_key():
     engine.device = "cpu"
     engine.dtype = object()
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     base = MagicMock()
     base.unet = object()
@@ -1611,8 +1608,8 @@ def test_diffusers_measured_manifests_use_free_vram():
     engine.memory_mode = "auto"
     engine._rungs = {}
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -1635,7 +1632,6 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
     )
     engine._rungs = {"cold": "full"}
     engine._pipelines = {("cold", "t2i"): object()}
-    engine._resident_bytes = {}
     engine._last_used = {"cold": 0.0}
     engine._free_gpu_cache = MagicMock()
     manifest = Manifest(
@@ -1651,17 +1647,18 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
     assert engine.model_rung(manifest.id) == "model_offload"
 
 
-def _resident_vram_engine(rungs):
+def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
-    engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
-    )
+    held = 8 * len(rungs) if held_gib is None else held_gib
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(
+        mem_get_info=lambda: (int(free_gib * 1024**3), 16 * 1024**3),
+        memory_reserved=lambda: int(held * 1024**3),
+    ))
     engine._rungs = rungs
     engine._pipelines = {(model_id, "t2i"): object() for model_id in rungs}
-    engine._resident_bytes = {model_id: 8 * 1024**3 for model_id in rungs}
     return engine
 
 
@@ -1682,32 +1679,10 @@ def test_measured_manifests_reclaim_loaded_models_for_unloaded_realtime_model():
     assert "realtime" in wires[1]["capabilities"]
 
 
-def test_measured_manifests_do_not_reclaim_an_evicted_model():
-    # Eviction drops the pipelines but keeps the pinned rung; that model
-    # holds no VRAM, so it cannot make room for another.
-    engine = _resident_vram_engine({"cached": "full"})
-    engine._pipelines = {}
-    engine._resident_bytes = {}
-    cached = Manifest(
-        id="cached", name="Cached", capabilities=["text_to_image"],
-        min_vram_gb=8,
-    )
-    vega = Manifest(
-        id="vega-rt", name="VegaRT",
-        capabilities=["text_to_image", "image_to_image", "realtime"],
-        min_vram_gb=8,
-    )
-
-    wires = engine.measured_manifests([cached, vega])
-
-    assert "realtime" not in wires[1]["capabilities"]
-
-
 def test_measured_manifests_do_not_reclaim_an_offloaded_resident():
     # An offload rung keeps its weights on the CPU; evicting it frees little.
-    engine = _resident_vram_engine({"cached": "model_offload"})
-    # Measured: an offloaded pipeline keeps most weights on the CPU.
-    engine._resident_bytes = {"cached": int(0.2 * 1024**3)}
+    # PyTorch holds little for it: its weights stay on the CPU.
+    engine = _resident_vram_engine({"cached": "model_offload"}, held_gib=0.2)
     cached = Manifest(
         id="cached", name="Cached", capabilities=["text_to_image"],
         min_vram_gb=8,
@@ -1724,19 +1699,16 @@ def test_measured_manifests_do_not_reclaim_an_offloaded_resident():
 
 
 def test_available_vram_applies_the_reserve_after_reclaiming():
-    # 0.5 GiB free + 8 GiB reclaimable - 1.5 GiB reserve is 7 GiB, below an
+    # 0.5 GiB free + 8 GiB held by PyTorch - 1.5 GiB reserve is 7 GiB, below an
     # 8 GiB model; clamping the free memory first would advertise 8 GiB.
-    engine = _resident_vram_engine({"cached": "full"})
-    engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (int(0.5 * 1024**3), 16 * 1024**3)),
-    )
+    engine = _resident_vram_engine({"cached": "full"}, free_gib=0.5)
     vega = Manifest(
         id="vega-rt", name="VegaRT",
         capabilities=["text_to_image", "image_to_image", "realtime"],
         min_vram_gb=8,
     )
 
-    assert engine._available_vram_bytes(vega) == 7 * 1024**3
+    assert engine._available_vram_bytes() == 7 * 1024**3
     assert engine._predicted_rung(vega) != "full"
 
 
@@ -1768,14 +1740,10 @@ def test_calibration_counts_evictable_residents():
     assert engine.realtime_p95_ms("vega-rt") == 200
 
 
-def test_prediction_uses_measured_allocation_not_the_manifest_floor():
-    # A resident whose floor is 8 GiB but which measurably holds 4 GiB:
+def test_prediction_counts_what_pytorch_holds_not_the_manifest_floor():
+    # A resident whose floor is 8 GiB but which holds 4 GiB on the device:
     # 5 + 4 - 1.5 = 7.5 GiB, so an 8 GiB model would load offloaded.
-    engine = _resident_vram_engine({"cached": "full"})
-    engine._resident_bytes = {"cached": 4 * 1024**3}
-    engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (5 * 1024**3, 16 * 1024**3)),
-    )
+    engine = _resident_vram_engine({"cached": "full"}, free_gib=5, held_gib=4)
     vega = Manifest(
         id="vega-rt", name="VegaRT",
         capabilities=["text_to_image", "image_to_image", "realtime"],
@@ -1785,34 +1753,17 @@ def test_prediction_uses_measured_allocation_not_the_manifest_floor():
     assert engine._predicted_rung(vega) != "full"
 
 
-def test_load_measured_records_the_first_load_and_forgets_on_unload():
-    allocated = [0]
-    engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
-    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_allocated=lambda: allocated[0]))
-    engine._pipelines = {}
-    engine._rungs = {"m": "full"}
-    engine._resident_bytes = {}
-    engine._detach_preview_decoder = MagicMock()
-    manifest = Manifest(id="m", name="M", capabilities=["text_to_image"], min_vram_gb=8)
+def test_prediction_counts_the_allocator_cache():
+    # 4 GiB of weights plus 3 GiB cached: eviction's empty_cache returns both,
+    # so 5 + 7 - 1.5 = 10.5 GiB and an 8 GiB model loads fully resident.
+    engine = _resident_vram_engine({"cached": "full"}, free_gib=5, held_gib=7)
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
 
-    loads = iter([4 * 1024**3, 1 * 1024**3])
-
-    def load(_manifest, _mode):
-        allocated[0] += next(loads)
-        return object()
-
-    engine._load = load
-    engine._pipelines[("m", "t2i")] = engine._load_measured(manifest, "t2i")
-    # A second entry shares the weights; its own allocation is not the model's.
-    engine._pipelines[("m", "realtime")] = engine._load_measured(manifest, "realtime")
-    assert engine._resident_bytes == {"m": 4 * 1024**3}
-
-    engine._drop_pipeline(("m", "t2i"))
-    assert engine._resident_bytes == {"m": 4 * 1024**3}
-    engine._drop_pipeline(("m", "realtime"))
-    assert engine._resident_bytes == {}
-
+    assert engine._predicted_rung(vega) == "full"
 
 def _calibration_engine(rungs):
     engine = _resident_vram_engine({"cached": "full"})
@@ -1905,7 +1856,6 @@ def test_zero_vram_reserve_keeps_full_residency_choice():
         cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
     )
     engine._rungs = {}
-    engine._resident_bytes = {}
     manifest = Manifest(
         id="ssd-1b-lightning",
         name="SSD-1B Lightning",
@@ -1933,8 +1883,8 @@ def test_measured_manifests_respect_pinned_rungs():
     engine.memory_mode = "auto"
     engine._rungs = {"xl": "model_offload"}
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -1954,8 +1904,8 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
     engine.memory_mode = "auto"
     engine._rungs = {}
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
     engine._calibrated_slots = None
     manifest = Manifest(
         id="xl",
@@ -1974,8 +1924,8 @@ def test_diffusers_effective_realtime_slots_uses_calibration():
     engine.memory_mode = "auto"
     engine._rungs = {"rt": "full"}
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
     engine._calibrated_slots = 1
     manifest = Manifest(
         id="rt",
@@ -2088,7 +2038,6 @@ def test_load_quantizes_named_component_before_device_move():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cpu"
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._from_pretrained = MagicMock(return_value=pipeline)
     engine._pick_rung = MagicMock(return_value="full")
@@ -2188,7 +2137,6 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
     dtype = object()
     engine.dtype = dtype
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._gpu = asyncio.Lock()
     engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
@@ -2796,17 +2744,12 @@ def test_realtime_frame_load_oom_refuses_without_demoting():
     """
     oom_type = _fake_oom()
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.torch = SimpleNamespace(
-        OutOfMemoryError=oom_type,
-        cuda=SimpleNamespace(memory_allocated=lambda: 0),
-    )
-    engine.device = "cuda"
+    engine.torch = SimpleNamespace(OutOfMemoryError=oom_type)
     engine._gpu = asyncio.Lock()
     engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine.memory_mode = "auto"
     engine._rungs = {"vega-rt": "full"}
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._last_used = {}
     engine._ensure_vram = MagicMock()
@@ -2979,7 +2922,6 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {}
     engine._last_used = {}
@@ -3115,7 +3057,6 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"vega-rt": "full"}
     engine._last_used = {}
@@ -3157,7 +3098,6 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {}
     engine._last_used = {}
@@ -3193,7 +3133,6 @@ def test_calibrate_realtime_skips_cpu_without_frames():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {}
     engine._last_used = {}
@@ -3224,7 +3163,6 @@ def test_calibrate_realtime_skips_cpu_without_frames():
 def test_evict_cold_removes_oldest_first():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("a", "t2i"): object(), ("b", "t2i"): object()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"a": "full", "b": "full"}
     engine._last_used = {"a": 20.0, "b": 10.0}
@@ -3244,7 +3182,6 @@ def test_evicting_the_last_pipeline_forgets_the_cached_rung():
     that existed when the rung was chosen (issue #270)."""
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("m", "t2i"): object()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"m": "full"}
     engine._last_used = {"m": 1.0}
@@ -3262,7 +3199,6 @@ def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
     the truth; only the removal of the last entry may forget it."""
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("m", "t2i"): object(), ("m", "realtime"): object()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"m": "full"}
     engine._last_used = {"m": 1.0}
@@ -3281,7 +3217,6 @@ def test_ensure_realtime_resident_returns_true_without_evicting_when_full():
     engine._rungs = {"vega-rt": "full"}
     resident = object()
     engine._pipelines = {("vega-rt", "t2i"): resident}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine.load_model = MagicMock()
     manifest = Manifest(
@@ -3314,7 +3249,6 @@ def test_ensure_realtime_resident_reloads_full_when_the_rung_was_cached_offload(
     engine.torch_compile = False
     engine.attention_backend = ""
     engine._pipelines = {("other", "t2i"): object()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"vega-rt": "model_offload", "other": "full"}
     engine._last_used = {}
@@ -3358,7 +3292,6 @@ def test_ensure_realtime_resident_leaves_a_pinned_mode_alone():
     engine._rungs = {"vega-rt": "model_offload"}
     resident = object()
     engine._pipelines = {("vega-rt", "t2i"): resident}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine.load_model = MagicMock()
     manifest = Manifest(
@@ -3387,7 +3320,6 @@ def test_evict_detaches_preview_decoders():
     second = SimpleNamespace(**{attr: object()})
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine._pipelines = {("a", "i2i"): first, ("b", "i2i"): second}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"a": "full", "b": "full"}
     engine._last_used = {"a": 1.0, "b": 2.0}
@@ -3414,7 +3346,6 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     engine.memory_mode = "auto"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {}
     engine._last_used = {}
@@ -3509,7 +3440,6 @@ def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {(model_id, "t2i"): object()}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {model_id: "full"}
     engine._last_used = {model_id: 1.0}
@@ -3831,7 +3761,6 @@ def test_calibrate_failure_does_not_zero_a_sibling():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {}
     engine._last_used = {}
@@ -3881,7 +3810,6 @@ def test_calibrate_elapsed_includes_the_frame_call():
     engine.memory_mode = "full"
     engine.models_dir = ""
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     engine._rungs = {"vega-rt": "full"}
     engine._last_used = {}
@@ -4097,7 +4025,6 @@ def test_lora_fuse_pins_the_lora_repository():
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     pipeline = MagicMock()
     engine._pipeline_class = MagicMock(return_value=object())
@@ -4129,7 +4056,6 @@ def test_realtime_adapter_load_pins_the_adapter():
     engine.device = "cpu"
     engine.dtype = object()
     engine._pipelines = {}
-    engine._resident_bytes = {}
     engine.vram_reserve_mb = 0
     base = MagicMock()
     base.unet = object()
