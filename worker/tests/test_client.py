@@ -5,6 +5,7 @@ import io
 import json
 import threading
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 import websockets
@@ -18,6 +19,7 @@ from worker.client import (
     RegistrationRejected,
     SEED_BOUND,
     SessionRunner,
+    build_runtime,
     ensure_seed,
     frame_p95_payload,
     run,
@@ -29,6 +31,23 @@ from worker.engine import Cancelled, GeneratedFrame, NotResidentError, PromptCac
 from worker.manifests import SIMULATED_MANIFEST, Manifest
 from worker.settings import Settings
 from worker.protocol6 import canonical_bytes, decode_control, validate_message
+
+
+def test_build_runtime_passes_vram_reserve_to_diffusers_engine(monkeypatch):
+    manifests = [SIMULATED_MANIFEST]
+    engine_constructor = MagicMock()
+    monkeypatch.setattr("worker.client.load_manifests", lambda _directory: manifests)
+    monkeypatch.setattr("worker.client.enable_categorizer", lambda: None)
+    monkeypatch.setattr("worker.engine.DiffusersEngine", engine_constructor)
+    settings = Settings(
+        worker_id="reserve-test", models_dir="models", vram_reserve_mb=2048,
+    )
+
+    loaded, engine = build_runtime(settings)
+
+    assert loaded is manifests
+    assert engine is engine_constructor.return_value
+    assert engine_constructor.call_args.kwargs["vram_reserve_mb"] == 2048
 
 
 class FakeSocket:

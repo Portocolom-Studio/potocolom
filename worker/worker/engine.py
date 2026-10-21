@@ -566,12 +566,28 @@ class DiffusersEngine:
         # for a model that _frame would refuse.
         free = self._free_vram_bytes()
         on_cpu = self.device != "cuda"
+        manifests_by_id = {manifest.id: manifest for manifest in manifests}
+        # A model that is not loaded can have the others evicted first, as
+        # _ensure_vram does; only loaded pipelines hold that memory (an evicted
+        # model keeps its pinned rung but no longer holds VRAM).
+        loaded = {key[0] for key in self._pipelines}
         return [
             measured_wire_manifest(
                 manifest,
                 self._rungs.get(manifest.id)
-                or select_rung(manifest.min_vram_gb, free, self.memory_mode,
-                               on_cpu=on_cpu),
+                or select_rung(
+                    manifest.min_vram_gb,
+                    free + sum(
+                        rung_vram_bytes(
+                            manifests_by_id[model_id].min_vram_gb, rung,
+                        )
+                        for model_id, rung in self._rungs.items()
+                        if model_id != manifest.id and model_id in loaded
+                        and model_id in manifests_by_id
+                    ),
+                    self.memory_mode,
+                    on_cpu=on_cpu,
+                ),
             )
             for manifest in manifests
         ]

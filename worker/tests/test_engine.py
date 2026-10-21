@@ -1604,6 +1604,7 @@ def test_diffusers_measured_manifests_use_free_vram():
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine._rungs = {}
+    engine._pipelines = {}
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -1641,6 +1642,86 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
     assert engine.model_rung(manifest.id) == "model_offload"
 
 
+def _resident_vram_engine(rungs):
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.vram_reserve_mb = 1536
+    engine.torch = SimpleNamespace(
+        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
+    )
+    engine._rungs = rungs
+    engine._pipelines = {(model_id, "t2i"): object() for model_id in rungs}
+    return engine
+
+
+def test_measured_manifests_reclaim_loaded_models_for_unloaded_realtime_model():
+    engine = _resident_vram_engine({"cached": "full"})
+    cached = Manifest(
+        id="cached", name="Cached", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    wires = engine.measured_manifests([cached, vega])
+
+    assert "realtime" in wires[1]["capabilities"]
+
+
+def test_measured_manifests_do_not_reclaim_an_evicted_model():
+    # Eviction drops the pipelines but keeps the pinned rung; that model
+    # holds no VRAM, so it cannot make room for another.
+    engine = _resident_vram_engine({"cached": "full"})
+    engine._pipelines = {}
+    cached = Manifest(
+        id="cached", name="Cached", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    wires = engine.measured_manifests([cached, vega])
+
+    assert "realtime" not in wires[1]["capabilities"]
+
+
+def test_measured_manifests_reserve_still_blocks_without_reclaimable_vram():
+    engine = _resident_vram_engine({})
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    wire = engine.measured_manifests([vega])[0]
+
+    assert "realtime" not in wire["capabilities"]
+
+
+def test_measured_manifests_keep_loaded_model_pinned_rung_with_reclaimable_vram():
+    engine = _resident_vram_engine({"cached": "full", "vega-rt": "model_offload"})
+    cached = Manifest(
+        id="cached", name="Cached", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    wire = engine.measured_manifests([cached, vega])[1]
+
+    assert "realtime" not in wire["capabilities"]
+
+
 def test_zero_vram_reserve_keeps_full_residency_choice():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
@@ -1676,6 +1757,7 @@ def test_measured_manifests_respect_pinned_rungs():
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine._rungs = {"xl": "model_offload"}
+    engine._pipelines = {}
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -1694,6 +1776,7 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine._rungs = {}
+    engine._pipelines = {}
     engine._calibrated_slots = None
     manifest = Manifest(
         id="xl",
@@ -1711,6 +1794,7 @@ def test_diffusers_effective_realtime_slots_uses_calibration():
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine._rungs = {"rt": "full"}
+    engine._pipelines = {}
     engine._calibrated_slots = 1
     manifest = Manifest(
         id="rt",
