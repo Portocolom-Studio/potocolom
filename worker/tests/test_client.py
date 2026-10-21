@@ -1416,6 +1416,111 @@ def test_run_sends_the_fleet_token_as_a_handshake_header(monkeypatch):
     }, "max_size": FLEET_MAX_MESSAGE_BYTES})]
 
 
+def test_run_warms_before_the_first_connection_attempt(monkeypatch):
+    events = []
+
+    class Connection:
+        def __init__(self, _url, **_kwargs):
+            events.append("connect")
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    class StopReconnect(Exception):
+        pass
+
+    async def fake_warmup(*_args):
+        # Suspend once (asyncio.sleep is patched below), so a connect that
+        # started before warmup finished would land between the two events.
+        events.append("warmup")
+        loop = asyncio.get_running_loop()
+        resumed = loop.create_future()
+        loop.call_soon(resumed.set_result, None)
+        await resumed
+        events.append("warmed")
+
+    async def fake_serve_connection(*_args):
+        return None
+
+    async def stop_sleep(_delay):
+        raise StopReconnect
+
+    monkeypatch.setattr("worker.client.get_settings", lambda: Settings(worker_id="w-warm"))
+    monkeypatch.setattr("worker.client.build_runtime",
+                        lambda _settings: ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    monkeypatch.setattr("worker.client.warmup_realtime", fake_warmup)
+    monkeypatch.setattr("worker.client.websockets.connect", Connection)
+    monkeypatch.setattr("worker.client.serve_connection", fake_serve_connection)
+    monkeypatch.setattr("worker.client.asyncio.sleep", stop_sleep)
+
+    with pytest.raises(StopReconnect):
+        asyncio.run(run())
+
+    assert events == ["warmup", "warmed", "connect"]
+
+
+def test_run_remeasures_before_each_reconnect(monkeypatch):
+    events = []
+
+    class StopReconnect(Exception):
+        pass
+
+    class Connection:
+        def __init__(self, _url, **_kwargs):
+            events.append("connect")
+            if events.count("connect") == 1:
+                raise OSError("first connection refused")
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    async def fake_warmup(*_args):
+        # Suspend once (asyncio.sleep is patched below), so a connect that
+        # started before warmup finished would land between the two events.
+        events.append("warmup")
+        loop = asyncio.get_running_loop()
+        resumed = loop.create_future()
+        loop.call_soon(resumed.set_result, None)
+        await resumed
+        events.append("warmed")
+
+    async def fake_serve_connection(*_args):
+        raise StopReconnect
+
+    async def no_wait(_delay):
+        return None
+
+    monkeypatch.setattr("worker.client.get_settings", lambda: Settings(worker_id="w-retry"))
+    monkeypatch.setattr("worker.client.build_runtime",
+                        lambda _settings: ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    monkeypatch.setattr("worker.client.warmup_realtime", fake_warmup)
+    monkeypatch.setattr("worker.client.websockets.connect", Connection)
+    monkeypatch.setattr("worker.client.serve_connection", fake_serve_connection)
+    monkeypatch.setattr("worker.client.asyncio.sleep", no_wait)
+
+    with pytest.raises(StopReconnect):
+        asyncio.run(run())
+
+    assert events == ["warmup", "warmed", "connect", "warmup", "warmed", "connect"]
+
+
+def test_serve_connection_does_not_warmup(monkeypatch):
+    calls = []
+
+    async def record_warmup(*_args):
+        calls.append("warmup")
+
+    monkeypatch.setattr("worker.client.warmup_realtime", record_warmup)
+    drive_session_messages([open_msg(str(uuid.uuid4()))])
+    assert calls == []
+
+
 def test_the_fleet_socket_takes_the_largest_frame_the_api_forwards(monkeypatch):
     """The API forwards a canvas frame of 21 header bytes plus 1 MiB. The
     websockets default of exactly 1 MiB would close the fleet socket with 1009
