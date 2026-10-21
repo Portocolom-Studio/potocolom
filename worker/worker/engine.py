@@ -35,7 +35,6 @@ from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
     REALTIME_BAR_MS,
-    full_residency_bytes,
     measured_wire_manifest,
     measured_wire_manifests,
     rung_vram_bytes,
@@ -533,9 +532,10 @@ class DiffusersEngine:
         self.attention_backend = attention_backend
         self._pipelines: dict[tuple[str, str], Any] = {}
         self._rungs: dict[str, MemoryRung] = {}
-        # Per loaded model, for what evicting it would free (see
-        # _available_vram_bytes); a manifest's floor never changes.
-        self._min_vram_gb: dict[str, int] = {}
+        # Per loaded model: device memory its first pipeline allocated, which
+        # is what evicting it frees (_available_vram_bytes). Its other entries
+        # share those weights, so only the first load is measured.
+        self._resident_bytes: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
@@ -569,17 +569,17 @@ class DiffusersEngine:
 
     def _available_vram_bytes(self, manifest: Manifest) -> int:
         """What loading this model could have after _ensure_vram evicts the
-        others: raw free memory plus the other full-resident pipelines, less
-        the reserve. Offload rungs keep their weights on the CPU, so evicting
-        them frees nothing worth counting."""
+        others: raw free memory plus what the other loaded models measurably
+        allocated, less the reserve. A manifest floor includes generation
+        headroom, and an offloaded pipeline keeps most weights on the CPU, so
+        only the measured allocation says what eviction frees."""
         if self.device != "cuda":
             return 1 << 60
-        loaded = {key[0] for key in self._pipelines}
+        # _resident_bytes holds exactly the loaded models: _drop_pipeline
+        # clears an entry when its model's last pipeline goes.
         reclaimable = sum(
-            full_residency_bytes(self._min_vram_gb[model_id])
-            for model_id in loaded
-            if model_id != manifest.id and self._rungs.get(model_id) == "full"
-            and model_id in self._min_vram_gb
+            held for model_id, held in self._resident_bytes.items()
+            if model_id != manifest.id
         )
         return max(0, self._raw_free_vram_bytes() + reclaimable
                    - self.vram_reserve_mb * 1024**2)
@@ -641,7 +641,7 @@ class DiffusersEngine:
         while key not in self._pipelines:
             self._ensure_vram(manifest)
             try:
-                self._pipelines[key] = self._load(manifest, mode)
+                self._pipelines[key] = self._load_measured(manifest, mode)
             except self.torch.OutOfMemoryError as error:
                 # Retry OUTSIDE this block: while the except frame is alive,
                 # its traceback pins the half-moved weights of the failed
@@ -655,7 +655,7 @@ class DiffusersEngine:
                 raise load_error
             self._evict_cold(except_model_id=manifest.id)
             try:
-                self._pipelines[key] = self._load(manifest, mode)
+                self._pipelines[key] = self._load_measured(manifest, mode)
             except self.torch.OutOfMemoryError as error:
                 load_error = error.with_traceback(None)
             if key not in self._pipelines:
@@ -663,8 +663,20 @@ class DiffusersEngine:
         self._touch(manifest.id)
         return self._pipelines[key]
 
+    def _load_measured(self, manifest: Manifest, mode: str) -> Any:
+        first = not any(key[0] == manifest.id for key in self._pipelines)
+        before = self._allocated_bytes()
+        pipeline = self._load(manifest, mode)
+        if first:
+            self._resident_bytes[manifest.id] = max(0, self._allocated_bytes() - before)
+        return pipeline
+
+    def _allocated_bytes(self) -> int:
+        if self.device != "cuda":
+            return 0
+        return int(self.torch.cuda.memory_allocated())
+
     def _pick_rung(self, manifest: Manifest) -> MemoryRung:
-        self._min_vram_gb[manifest.id] = manifest.min_vram_gb
         if manifest.id in self._rungs:
             return self._rungs[manifest.id]
         rung = self._select_rung(manifest)
@@ -1069,6 +1081,15 @@ class DiffusersEngine:
             elapsed_ms = (time.monotonic() - start) * 1000.0
             if index > 0:
                 samples.append(elapsed_ms)
+        if self._rungs.get(manifest.id) != "full":
+            # The prediction let it in, but loading chose an offload rung:
+            # its timing is not a realtime frame time.
+            self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._recompute_calibrated_slots()
+            logger.info("realtime calibration discarded for %s (loaded %s)",
+                        manifest.id, self._rungs.get(manifest.id))
+            return 0
         p95 = _percentile_nearest(samples, 95.0)
         self._realtime_p95_ms[manifest.id] = round(p95)
         slots = self._recompute_calibrated_slots()
@@ -1701,6 +1722,7 @@ class DiffusersEngine:
         """
         if not any(key[0] == model_id for key in self._pipelines):
             self._rungs.pop(model_id, None)
+            self._resident_bytes.pop(model_id, None)
 
     def _drop_pipeline(self, key: tuple[str, str]) -> None:
         # Detach here rather than at each caller: a preview decoder outliving the
