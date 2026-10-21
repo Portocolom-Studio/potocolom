@@ -35,6 +35,7 @@ from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
     REALTIME_BAR_MS,
+    full_residency_bytes,
     measured_wire_manifest,
     measured_wire_manifests,
     rung_vram_bytes,
@@ -532,6 +533,9 @@ class DiffusersEngine:
         self.attention_backend = attention_backend
         self._pipelines: dict[tuple[str, str], Any] = {}
         self._rungs: dict[str, MemoryRung] = {}
+        # Per loaded model, for what evicting it would free (see
+        # _available_vram_bytes); a manifest's floor never changes.
+        self._min_vram_gb: dict[str, int] = {}
         self._last_used: dict[str, float] = {}
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
@@ -557,37 +561,47 @@ class DiffusersEngine:
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
             return 1 << 60
+        return max(0, self._raw_free_vram_bytes() - self.vram_reserve_mb * 1024**2)
+
+    def _raw_free_vram_bytes(self) -> int:
         free, _total = self.torch.cuda.mem_get_info()
-        return max(0, int(free) - self.vram_reserve_mb * 1024**2)
+        return int(free)
+
+    def _available_vram_bytes(self, manifest: Manifest) -> int:
+        """What loading this model could have after _ensure_vram evicts the
+        others: raw free memory plus the other full-resident pipelines, less
+        the reserve. Offload rungs keep their weights on the CPU, so evicting
+        them frees nothing worth counting."""
+        if self.device != "cuda":
+            return 1 << 60
+        loaded = {key[0] for key in self._pipelines}
+        reclaimable = sum(
+            full_residency_bytes(self._min_vram_gb[model_id])
+            for model_id in loaded
+            if model_id != manifest.id and self._rungs.get(model_id) == "full"
+            and model_id in self._min_vram_gb
+        )
+        return max(0, self._raw_free_vram_bytes() + reclaimable
+                   - self.vram_reserve_mb * 1024**2)
+
+    def _predicted_rung(self, manifest: Manifest) -> MemoryRung:
+        """The rung a model that is not loaded would get once _ensure_vram has
+        evicted the others, as _select_rung would then choose it."""
+        if "upscale" in manifest.capabilities:
+            return "full"
+        return select_rung(
+            manifest.min_vram_gb, self._available_vram_bytes(manifest),
+            self.memory_mode, on_cpu=self.device != "cuda",
+        )
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
         # Loaded models keep their pinned rung: an offloaded pipeline leaves
         # VRAM looking free, and a reconnect must not re-advertise realtime
         # for a model that _frame would refuse.
-        free = self._free_vram_bytes()
-        on_cpu = self.device != "cuda"
-        manifests_by_id = {manifest.id: manifest for manifest in manifests}
-        # A model that is not loaded can have the others evicted first, as
-        # _ensure_vram does; only loaded pipelines hold that memory (an evicted
-        # model keeps its pinned rung but no longer holds VRAM).
-        loaded = {key[0] for key in self._pipelines}
         return [
             measured_wire_manifest(
                 manifest,
-                self._rungs.get(manifest.id)
-                or select_rung(
-                    manifest.min_vram_gb,
-                    free + sum(
-                        rung_vram_bytes(
-                            manifests_by_id[model_id].min_vram_gb, rung,
-                        )
-                        for model_id, rung in self._rungs.items()
-                        if model_id != manifest.id and model_id in loaded
-                        and model_id in manifests_by_id
-                    ),
-                    self.memory_mode,
-                    on_cpu=on_cpu,
-                ),
+                self._rungs.get(manifest.id) or self._predicted_rung(manifest),
             )
             for manifest in manifests
         ]
@@ -650,6 +664,7 @@ class DiffusersEngine:
         return self._pipelines[key]
 
     def _pick_rung(self, manifest: Manifest) -> MemoryRung:
+        self._min_vram_gb[manifest.id] = manifest.min_vram_gb
         if manifest.id in self._rungs:
             return self._rungs[manifest.id]
         rung = self._select_rung(manifest)
@@ -1035,7 +1050,7 @@ class DiffusersEngine:
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
-        if self._select_rung(manifest) != "full":
+        if (self._rungs.get(manifest.id) or self._predicted_rung(manifest)) != "full":
             self._realtime_p95_ms.pop(manifest.id, None)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
