@@ -1616,6 +1616,61 @@ def test_diffusers_measured_manifests_use_free_vram():
     assert "realtime" not in wires[0]["capabilities"]
 
 
+def test_vram_reserve_evicts_cold_model_before_picking_rung():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.vram_reserve_mb = 1536
+    engine.torch = SimpleNamespace(
+        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
+    )
+    engine._rungs = {"cold": "full"}
+    engine._pipelines = {("cold", "t2i"): object()}
+    engine._last_used = {"cold": 0.0}
+    engine._free_gpu_cache = MagicMock()
+    manifest = Manifest(
+        id="ssd-1b-lightning",
+        name="SSD-1B Lightning",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    engine._ensure_vram(manifest)
+
+    assert ("cold", "t2i") not in engine._pipelines
+    assert engine.model_rung(manifest.id) == "model_offload"
+
+
+def test_zero_vram_reserve_keeps_full_residency_choice():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(
+        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
+    )
+    engine._rungs = {}
+    manifest = Manifest(
+        id="ssd-1b-lightning",
+        name="SSD-1B Lightning",
+        capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    assert engine._pick_rung(manifest) == "full"
+
+
+def test_free_vram_bytes_clamps_at_zero_after_reserve():
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.vram_reserve_mb = 1536
+    engine.torch = SimpleNamespace(
+        cuda=SimpleNamespace(mem_get_info=lambda: (1024, 16 * 1024**3)),
+    )
+
+    assert engine._free_vram_bytes() == 0
+
+
 def test_measured_manifests_respect_pinned_rungs():
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"

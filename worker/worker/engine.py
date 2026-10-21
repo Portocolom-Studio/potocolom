@@ -510,6 +510,7 @@ class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
+                 vram_reserve_mb: int = 1536,
                  models_dir: str = "", torch_compile: bool = False,
                  attention_backend: str = ""):
         if device == "rocm":
@@ -525,6 +526,7 @@ class DiffusersEngine:
         self.device = "cuda" if device in ("cuda", "rocm") else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.memory_mode = memory_mode
+        self.vram_reserve_mb = vram_reserve_mb
         self.models_dir = models_dir
         self.torch_compile = torch_compile
         self.attention_backend = attention_backend
@@ -556,7 +558,7 @@ class DiffusersEngine:
         if self.device != "cuda":
             return 1 << 60
         free, _total = self.torch.cuda.mem_get_info()
-        return int(free)
+        return max(0, int(free) - self.vram_reserve_mb * 1024**2)
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
         # Loaded models keep their pinned rung: an offloaded pipeline leaves

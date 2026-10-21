@@ -451,6 +451,7 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
         return load_manifests(settings.models_dir), DiffusersEngine(
             settings.device,
             memory_mode=settings.memory_mode,
+            vram_reserve_mb=settings.vram_reserve_mb,
             models_dir=settings.models_dir,
             torch_compile=settings.torch_compile,
             attention_backend=settings.attention_backend,

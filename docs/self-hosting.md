@@ -33,6 +33,10 @@ below the floor you get working stills, but not the live draw-and-render loop
 the product is built around. `scripts/preflight.sh` prints which shipped
 models clear the bar on your card.
 
+The worker reserves 1536 MiB of measured free VRAM before choosing a residency
+rung. Raise `VRAM_RESERVE_MB` when the GPU also drives a display, or set it to
+`0` for a dedicated server GPU.
+
 Measured on a 4 GB RTX 3050 Laptop (well under every text-to-image floor, so
 every model lands on the bottom rung): `ssd-1b-lightning` at 768 px, 8 steps
 takes about 7.7 s of GPU time per still, plus a one-off multi-minute weight
