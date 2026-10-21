@@ -43,5 +43,5 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body"
-          bash scripts/check-commit-msg.sh "$RUNNER_TEMP/pr-body"
+          bash scripts/check-commit-msg.sh --pr-body "$RUNNER_TEMP/pr-body"
         timeout-minutes: 5

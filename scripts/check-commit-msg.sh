@@ -4,12 +4,20 @@
 # so the two gates apply the same rules.
 set -euo pipefail
 
+# --pr-body drops the block a review bot maintains between its own markers
+# (Macroscope's summary, which it rewrites with emoji on every push); the
+# rules still apply to everything the author wrote around it.
+pr_body=0
+if [ "$#" -eq 2 ] && [ "$1" = "--pr-body" ]; then
+	pr_body=1
+	shift
+fi
 if [ "$#" -ne 1 ]; then
-	echo "usage: check-commit-msg.sh <message-file>" >&2
+	echo "usage: check-commit-msg.sh [--pr-body] <message-file>" >&2
 	exit 2
 fi
 
-exec python3 - "$1" <<'PY'
+exec python3 - "$1" "$pr_body" <<'PY'
 import re
 import sys
 
@@ -54,6 +62,19 @@ try:
 except (OSError, UnicodeDecodeError) as error:
     print(f"check-commit-msg: cannot read {path} as UTF-8: {error}", file=sys.stderr)
     sys.exit(2)
+
+BOT_START = "<!-- Macroscope's pull request summary starts here -->"
+BOT_END = "<!-- Macroscope's pull request summary ends here -->"
+if sys.argv[2] == "1":
+    # Only a complete block is dropped, so a stray start marker cannot hide
+    # the rest of the body; blanking keeps the reported line numbers true.
+    start = None
+    for number, line in enumerate(lines):
+        if line.strip() == BOT_START and start is None:
+            start = number
+        elif line.strip() == BOT_END and start is not None:
+            lines[start:number + 1] = [""] * (number + 1 - start)
+            start = None
 
 problems = []
 for number, line in enumerate(lines, 1):

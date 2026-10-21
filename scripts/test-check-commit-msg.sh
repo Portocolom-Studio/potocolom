@@ -11,11 +11,11 @@ trap 'rm -rf "$dir"' EXIT
 
 failures=0
 
-# expect <pass|fail> <case-name> <message printf %b text>
+# expect <pass|fail> <case-name> <message printf %b text> [--pr-body]
 expect() {
 	local want="$1" name="$2" file="$dir/$2.txt" code=0 err
 	printf '%b' "$3" >"$file"
-	err=$(bash "$check" "$file" 2>&1 >/dev/null) || code=$?
+	err=$(bash "$check" ${4:+"$4"} "$file" 2>&1 >/dev/null) || code=$?
 	if [ "$want" = pass ] && [ "$code" -eq 0 ]; then
 		echo "PASS: $name"
 	elif [ "$want" = fail ] && [ "$code" -eq 1 ] && grep -q '^check-commit-msg: line ' <<<"$err"; then
@@ -25,6 +25,15 @@ expect() {
 		failures=$((failures + 1))
 	fi
 }
+
+
+bot_start="<!-- Macroscope's pull request summary starts here -->"
+bot_end="<!-- Macroscope's pull request summary ends here -->"
+bot_block="$bot_start\n> <summary>\xf0\x9f\x93\x8a summarized</summary>\n$bot_end\n"
+expect pass pr-body-bot-block "# Description\n\nPlain words.\n\n$bot_block" --pr-body
+expect fail pr-body-bot-block-without-flag "# Description\n\nPlain words.\n\n$bot_block"
+expect fail pr-body-emoji-outside-block "# Description \xf0\x9f\x9a\x80\n\n$bot_block" --pr-body
+expect fail pr-body-unclosed-block "# Description\n\n$bot_start\n\xf0\x9f\x93\x8a\n" --pr-body
 
 expect pass clean 'Fix the ruleset mirror\n\nExplain the change in plain words.\n\nSigned-off-by: Leon Fuller <l.elliottfuller@gmail.com>\n'
 expect pass accented-name 'Add the importer\n\nSigned-off-by: Jos\xc3\xa9 Garc\xc3\xada <jose@example.com>\n'
