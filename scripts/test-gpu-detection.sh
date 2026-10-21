@@ -42,6 +42,16 @@ EOF
 	for utility in bash dirname uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed; do
 		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(type -P "$utility")" "$case_dir/bin/$utility"
 	done
+	rm -f "$case_dir/bin/id"
+	cat >"$case_dir/bin/id" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+	-u) printf '1000\n' ;;
+	-nG) printf '%s\n' "${FAKE_GROUPS:-video render}" ;;
+	*) exit 1 ;;
+esac
+EOF
+	chmod +x "$case_dir/bin/id"
 }
 
 # The repository layout preflight reads, so ensure-env writes only in the case.
@@ -67,15 +77,17 @@ expect_profile() {
 }
 
 # expect_preflight_gpu NAME EXPECTED [key=value...]
-# keys: vendor (PCI vendor, default 0x10de), kfd (present|absent), id, id_like
+# keys: vendor (PCI vendor, default 0x10de), kfd (present|absent), topology
+# (comma-separated gfx_target_version values), id, id_like
 # (os-release; id=missing leaves no file, crlf=yes writes CRLF line ends), nvidia (ok|fail), docker (ok|fail
 # for run --gpus), toolkit (none|ctk|runtime|cli), rc (exit code, or any),
 # absent (text that must not appear), mode (contributor|selfhost; default
 # contributor without a working NVIDIA GPU, selfhost with one), profile
-# (POTOCOLOM_PROFILE).
+# (POTOCOLOM_PROFILE), groups (what id -nG prints), render (readable|unreadable
+# for a fake /dev/dri/renderD128).
 expect_preflight_gpu() {
-	local name="$1" expected="$2" vendor=0x10de kfd=absent id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no profile=""
-	local slot="0000:01:00.0" output code kfd_path option tool
+	local name="$1" expected="$2" vendor=0x10de kfd=absent topology="" id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no profile="" groups="video render" render=readable
+	local slot="0000:01:00.0" output code kfd_path option tool node=0 value
 	shift 2
 	for option in "$@"; do
 		local "$option"
@@ -93,6 +105,25 @@ expect_preflight_gpu() {
 	if [[ "$kfd" == present ]]; then
 		kfd_path="$case_dir/kfd"
 		: >"$kfd_path"
+	fi
+	if [[ -n "$topology" ]]; then
+		mkdir -p "$case_dir/topology"
+		IFS=',' read -ra values <<<"$topology"
+		for value in "${values[@]}"; do
+			mkdir -p "$case_dir/topology/$node"
+			printf 'gfx_target_version %s\n' "$value" >"$case_dir/topology/$node/properties"
+			node=$((node + 1))
+		done
+	fi
+	mkdir -p "$case_dir/dri"
+	if [[ "$render" == unreadable && "$EUID" -eq 0 ]]; then
+		# Root reads a mode 000 file, so this case cannot be staged.
+		printf 'skip %s (running as root)\n' "$name"
+		return
+	fi
+	if [[ "$render" == unreadable ]]; then
+		: >"$case_dir/dri/renderD128"
+		chmod 000 "$case_dir/dri/renderD128"
 	fi
 	cat >"$case_dir/bin/docker" <<EOF
 #!/usr/bin/env bash
@@ -124,7 +155,7 @@ EOF
 	local args=()
 	[[ "$mode" == contributor ]] && args=(--contributor)
 	# Port 9 (discard) is never served here, so the selfhost port check passes.
-	output="$(env POTOCOLOM_PROFILE="$profile" FAKE_NVIDIA="$nvidia" POTOCOLOM_OS_RELEASE="$case_dir/os-release" POTOCOLOM_KFD="$kfd_path" \
+	output="$(env FAKE_GROUPS="$groups" POTOCOLOM_PROFILE="$profile" FAKE_NVIDIA="$nvidia" POTOCOLOM_OS_RELEASE="$case_dir/os-release" POTOCOLOM_KFD="$kfd_path" POTOCOLOM_KFD_TOPOLOGY="$case_dir/topology" POTOCOLOM_DRI="$case_dir/dri" \
 		POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_PORT=9 TMPDIR="$case_dir" PATH="$case_dir/bin" \
 		bash "$case_dir/repo/scripts/preflight.sh" "${args[@]}" 2>&1)"
 	code=$?
@@ -203,6 +234,13 @@ expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0
 expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
 expect_preflight_gpu preflight-rocm-override-without-kfd 'POTOCOLOM_PROFILE=rocm but /dev/kfd is missing' vendor=0x8086 profile=rocm rc=1
 expect_preflight_gpu preflight-amd-without-kfd 'AMD GPU found at 0000:01:00.0' vendor=0x1002
+expect_preflight_gpu amd-supported-dgpu 'gfx1102 supported by the ROCm worker' vendor=0x1002 kfd=present topology=110002 rc=0
+expect_preflight_gpu amd-supported-plus-unsupported-igpu 'gfx1036 is not supported by the ROCm worker' vendor=0x1002 kfd=present topology=110002,100306 rc=0
+expect_preflight_gpu amd-unsupported-only 'no AMD GPU supported by the ROCm worker' vendor=0x1002 kfd=present topology=100306 rc=1
+expect_preflight_gpu amd-gfx90a-encoding 'gfx90a supported by the ROCm worker' vendor=0x1002 kfd=present topology=90010 rc=0
+expect_preflight_gpu amd-video-without-render 'not in the '"'"'render'"'"' group and cannot read' vendor=0x1002 kfd=present topology=110002 groups=video render=unreadable rc=0
+expect_preflight_gpu amd-debian-firmware 'sudo apt-get update && sudo apt-get install -y firmware-amd-graphics' vendor=0x1002 id=debian
+expect_preflight_gpu amd-fedora-firmware 'sudo dnf install -y amd-gpu-firmware' vendor=0x1002 id=fedora
 expect_preflight_gpu preflight-unsupported-pci 'no NVIDIA or AMD compute GPU detected' vendor=0x8086
 
 expect_preflight_gpu distro-ubuntu 'sudo apt-get install -y ubuntu-drivers-common && sudo ubuntu-drivers install' id=ubuntu rc=0

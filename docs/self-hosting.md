@@ -110,7 +110,10 @@ AMD (ROCm):
 
 1. Install the ROCm kernel driver on the host so `/dev/kfd` and `/dev/dri`
    exist, and add your user to the `video` (and on some distributions
-   `render`) group.
+   `render`) group. When `/dev/kfd` is missing, preflight prints the distro's
+   firmware install command; it also checks GPU targets against the worker's
+   supported list: gfx900, gfx906, gfx908, gfx90a, gfx942, gfx1030, gfx1100,
+   gfx1101, gfx1102, gfx1200, gfx1201.
 2. `docker compose -f deploy/compose/compose.yml --profile rocm up -d --build`
    builds `deploy/docker/Dockerfile.worker-rocm` and passes the devices
    through; no editing of the compose file is needed.
