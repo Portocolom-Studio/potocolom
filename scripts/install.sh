@@ -20,6 +20,14 @@ main() {
 		echo "  this copy of install.sh was given VERSION=$VERSION" >&2
 		exit 1
 	fi
+	set_public_url=false
+	if [[ "${POTOCOLOM_PUBLIC_URL+x}" == x ]]; then
+		set_public_url=true
+		if [[ ! "$POTOCOLOM_PUBLIC_URL" =~ ^https?://([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$ ]]; then
+			echo 'error: POTOCOLOM_PUBLIC_URL must be http:// or https:// followed by a host and optional port, with no path, query, fragment, user info or trailing slash' >&2
+			exit 1
+		fi
+	fi
 
 	DIR="${POTOCOLOM_DIR:-$HOME/potocolom}"
 
@@ -110,11 +118,9 @@ main() {
 	# pull must not leave it naming a tag that was never pulled.
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
 
-	# One pass for both keys: the version is always the installed tag, the
-	# project name only when its line is absent or empty, so a name the
-	# operator set is left alone.
+	# Pin release metadata and apply an explicit public URL in one write.
 	env_tmp="$(mktemp)"
-	awk -v v="$VERSION" -v p="$PROJECT" '
+	awk -v v="$VERSION" -v p="$PROJECT" -v set_url="$set_public_url" -v url="${POTOCOLOM_PUBLIC_URL:-}" '
 		/^POTOCOLOM_VERSION=/ { print "POTOCOLOM_VERSION=" v; found_v = 1; next }
 		/^COMPOSE_PROJECT_NAME=/ {
 			found_p = 1
@@ -122,10 +128,18 @@ main() {
 			else print
 			next
 		}
+		/^PUBLIC_URL=/ {
+			if (set_url == "true") {
+				if (!found_url) print "PUBLIC_URL=" url
+				found_url = 1
+			} else print
+			next
+		}
 		{ print }
 		END {
 			if (!found_v) print "POTOCOLOM_VERSION=" v
 			if (!found_p) print "COMPOSE_PROJECT_NAME=" p
+			if (set_url == "true" && !found_url) print "PUBLIC_URL=" url
 		}
 	' "$ENV_FILE" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
@@ -138,11 +152,29 @@ main() {
 
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
-	public_url="$(sed -n 's/^PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1 | tr -d '"' | tr -d '\r')"
+	public_url="$(sed -n 's/^PUBLIC_URL=//p' "$ENV_FILE" | tail -n 1 | tr -d "\"'" | tr -d '\r')"
 	public_url="${public_url:-http://localhost:8080}"
 
 	echo
 	echo "potocolom $VERSION is running. Open $public_url"
+	if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
+		public_host="${BASH_REMATCH[1]}"
+		if [[ "$public_host" == localhost || "$public_host" == 127.0.0.1 || "$public_host" == '[::1]' ]]; then
+			if command -v hostname >/dev/null 2>&1; then
+				addresses="$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) { n = split($i, a, "."); ok = (n == 4); for (j = 1; j <= n; j++) if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok = 0; if (ok && a[1] + 0 != 127) { if (out != "") out = out " "; out = out $i } } } END { print out }')"
+			else
+				addresses=""
+			fi
+			echo "The studio only works from this machine. To reach it from another machine, rerun:"
+			echo "  curl -fsSL $BASE_URL/install.sh | POTOCOLOM_PUBLIC_URL=http://<address>:8080 bash"
+			if [[ -n "$addresses" ]]; then
+				echo "Use this machine's non-loopback IPv4 address: $addresses"
+			else
+				echo "Replace <address> with this machine's address."
+			fi
+			echo 'HTTPS needs a reverse proxy; see docs/self-hosting.md.'
+		fi
+	fi
 	echo "Secrets are in $ENV_FILE."
 	echo "bash \"$DIR/scripts/auth-enable.sh\" turns on accounts."
 	echo "Running the install.sh of a newer release upgrades this install in place."
