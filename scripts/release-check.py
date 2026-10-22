@@ -91,7 +91,7 @@ def run(args: list[str], *, env: dict[str, str] | None = None,
             except subprocess.TimeoutExpired:
                 if time.monotonic() >= deadline:
                     raise
-    except (subprocess.TimeoutExpired, CheckError) as exc:
+    except BaseException as exc:
         if process is not None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -105,18 +105,18 @@ def run(args: list[str], *, env: dict[str, str] | None = None,
             process.wait()
             output = process.communicate()[0]
         else:
-            output = exc.stdout or ""
+            output = getattr(exc, "stdout", "") or ""
         if log:
             if isinstance(output, bytes):
                 output = output.decode("utf-8", errors="replace")
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(output, encoding="utf-8")
             log.chmod(0o600)
-        if isinstance(exc, CheckError):
-            raise
-        raise CheckError(f"{Path(args[0]).name} timed out; private log: {log or 'unavailable'}") from exc
-    except OSError as exc:
-        raise CheckError(f"command failed to start: {Path(args[0]).name}") from exc
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise CheckError(f"{Path(args[0]).name} timed out; private log: {log or 'unavailable'}") from exc
+        if isinstance(exc, OSError) and process is None:
+            raise CheckError(f"command failed to start: {Path(args[0]).name}") from exc
+        raise
     if log:
         log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(output, encoding="utf-8")
@@ -271,7 +271,7 @@ def asset_digest(base: str, item: dict, *, limit: int = 512 * 1024 * 1024) -> st
     return digest.hexdigest()
 
 
-def local_asset(base: str, item: dict) -> bytes:
+def local_asset(base: str, item: dict, *, size: int = 768) -> bytes:
     """Download and validate only the newly generated test image."""
     request = Request(asset_url(base, item), headers={"Accept": "image/png"})
     try:
@@ -283,13 +283,13 @@ def local_asset(base: str, item: dict) -> bytes:
         raise CheckError("asset download failed") from exc
     if len(data) > 64 * 1024 * 1024:
         raise CheckError("asset response is not a non-empty PNG")
-    width, height = validate_png(data)
-    if (width, height) != (768, 768):
+    width, height = validate_png(data, size=size)
+    if (width, height) != (size, size):
         raise CheckError(f"PNG has unexpected dimensions {width}x{height}")
     return data
 
 
-def validate_png(data: bytes) -> tuple[int, int]:
+def validate_png(data: bytes, *, size: int = 768) -> tuple[int, int]:
     if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
         raise CheckError("asset response is not a non-empty PNG")
     offset = 8
@@ -320,12 +320,12 @@ def validate_png(data: bytes) -> tuple[int, int]:
         offset = end
     if dimensions is None or not image_data or not ended:
         raise CheckError("asset response is not a complete PNG")
-    if dimensions != (768, 768):
+    if dimensions != (size, size):
         return dimensions
     try:
         decoder = zlib.decompressobj()
-        stride = 1 + 768 * channels
-        expected = stride * 768
+        stride = 1 + size * channels
+        expected = stride * size
         decoded = decoder.decompress(image_data, expected + 1)
         if (len(decoded) != expected or not decoder.eof or decoder.unconsumed_tail
                 or decoder.unused_data or any(value > 4 for value in decoded[::stride])):
@@ -335,7 +335,7 @@ def validate_png(data: bytes) -> tuple[int, int]:
     return dimensions
 
 
-def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
+def generate(base: str, prompt: str, safety_check=None, *, size: int = 768) -> tuple[str, bytes]:
     worker_deadline = time.monotonic() + 1800
     while True:
         if safety_check is not None:
@@ -350,7 +350,7 @@ def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
         time.sleep(5)
     made = http_json(base, "/api/v1/generations", method="POST", body={
         "model_id": MODEL,
-        "params": {"prompt": prompt, "width": 768, "height": 768,
+        "params": {"prompt": prompt, "width": size, "height": size,
                     "steps": 8, "guidance": 0, "seed": 42},
     })
     if not isinstance(made, dict) or not isinstance(made.get("job_id"), str):
@@ -373,7 +373,7 @@ def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
             asset_id = assets[0].get("id")
             if not isinstance(asset_id, str) or not asset_id:
                 raise CheckError("successful generation returned no asset ID")
-            return asset_id, local_asset(base, assets[0])
+            return asset_id, local_asset(base, assets[0], size=size)
         time.sleep(2)
     raise CheckError("generation timed out after 30 minutes")
 
@@ -421,6 +421,27 @@ def compose_owned(install_dir: Path, project: str, args: list[str]) -> None:
          "-f", str(compose), "--profile", "*", *args], timeout=300)
 
 
+def cleanup_rehearsal(install_dir: Path) -> None:
+    claim = install_dir / ".release-check-project"
+    if not claim.is_file():
+        return
+    project = claim.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"release-check-[0-9a-f]{16}", project):
+        raise CheckError("invalid release-check project claim; refusing cleanup")
+    label = f"label=com.docker.compose.project={project}"
+    for listing, removal, pattern in (
+        (["docker", "ps", "-aq", "--filter", label], ["docker", "rm", "-f"], r"[0-9a-f]{12,64}"),
+        (["docker", "network", "ls", "-q", "--filter", label], ["docker", "network", "rm"], r"[0-9a-f]{12,64}"),
+        (["docker", "volume", "ls", "--format", "{{.Name}}", "--filter", label],
+         ["docker", "volume", "rm"], re.escape(project) + r"_[A-Za-z0-9_.-]+"),
+    ):
+        resources = run(listing, timeout=30).split()
+        if any(not re.fullmatch(pattern, item) for item in resources):
+            raise CheckError("unexpected owned Docker resource; refusing cleanup")
+        if resources:
+            run([*removal, *resources], timeout=300)
+
+
 def bundle_env_example(release_dir: Path, version: str) -> str:
     _, bundle = verify_release(release_dir, version)
     wanted = "deploy/compose/.env.example"
@@ -454,6 +475,32 @@ def prepare_fresh(directory: Path, project: str, release_dir: Path, version: str
     (compose / ".env").chmod(0o600)
 
 
+def legacy_model_config(install_dir: Path, project: str, profile: str, *, restore: bool = False) -> None:
+    script = r'''set -eu
+models="${MODELS_DIR:-/models}"
+stash="$models/.release-check-manifests"
+if [ "$2" = restore ]; then
+    [ -d "$stash" ] || exit 0
+    for file in "$stash"/*.json; do
+        if [ -f "$file" ]; then mv "$file" "$models/"; fi
+    done
+    rmdir "$stash"
+else
+    test -f "$models/$1.json"
+    mkdir -p "$stash"
+    for file in "$models"/*.json; do
+        if [ "${file##*/}" != "$1.json" ]; then mv "$file" "$stash/"; fi
+    done
+fi
+'''
+    compose = install_dir / "deploy/compose/compose.yml"
+    env_file = compose.with_name(".env")
+    service = "worker-rocm" if profile == "rocm" else "worker"
+    run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
+         "--profile", profile, "exec", "-T", service, "sh", "-c", script,
+         "sh", MODEL, "restore" if restore else "select"], timeout=30)
+
+
 def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
     previous_installer, _ = verify_release(args.previous_release_dir, args.previous_version)
     free_port_8080()
@@ -473,6 +520,9 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
             if _project_exists(project):
                 raise CheckError(f"owned test project already exists: {project}")
             owned.append((candidate_dir, project))
+            claim = candidate_dir / ".release-check-project"
+            claim.write_text(project + "\n", encoding="ascii")
+            claim.chmod(0o600)
             guard.start()
             run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
             if not project_owns_api_port(project):
@@ -480,14 +530,18 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
             api = api_base(candidate_dir)
             wait_ready(api)
             generate(api, "a red house on a green hill under a blue sky, clear illustration", guard.check)
+            legacy_model_config(candidate_dir, project, args.profile)
             compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
             remove_owned_data_volumes(project)
             run_installer(previous_installer, args.previous_version, candidate_dir,
                           None, args.profile, logs, abort=guard.failed)
             api = api_base(candidate_dir)
             wait_ready(api)
-            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check)
+            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check, size=512)
             env_before = parse_env(candidate_dir / "deploy/compose/.env")
+            legacy_model_config(candidate_dir, project, args.profile, restore=True)
+            service = "worker-rocm" if args.profile == "rocm" else "worker"
+            compose_owned(candidate_dir, project, ["stop", "--timeout", "0", service])
             run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
             env_after = parse_env(candidate_dir / "deploy/compose/.env")
             assert_env_preserved(env_before, env_after)
@@ -504,7 +558,7 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
             for directory, project in owned:
                 if _project_exists(project):
                     try:
-                        compose_owned(directory, project, ["down", "-v", "--remove-orphans"])
+                        cleanup_rehearsal(directory)
                     except CheckError as exc:
                         cleanup_error = exc
                         failed_cleanup.add(directory)
@@ -827,5 +881,29 @@ def main() -> int:
         return 1
 
 
+INTERRUPT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def interrupt_release_check(_signum, _frame) -> None:
+    for signum in INTERRUPT_SIGNALS:
+        signal.signal(signum, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def cli() -> int:
+    previous = {signum: signal.getsignal(signum) for signum in INTERRUPT_SIGNALS}
+    try:
+        for signum in INTERRUPT_SIGNALS:
+            signal.signal(signum, interrupt_release_check)
+        try:
+            return main()
+        except KeyboardInterrupt:
+            print("FAIL release check: interrupted", file=sys.stderr)
+            return 130
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())

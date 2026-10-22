@@ -22,10 +22,14 @@ Before publication, the workflow builds the exact installer, self-host bundle,
 and SHA256SUMS. It runs `scripts/release-check.py` on the trusted AMD runner
 under `/tmp/potocolom-release-check-gpu.lock`. The check installs those local
 artifacts, generates a 768 by 768 PNG, then installs the previous published
-release in the same test project. It saves an image, upgrades with the candidate
-installer, checks the saved bytes and settings, and generates another image.
-The installer uses `docker compose pull --policy missing`, so the check can use
-the exact locally built images before they reach GHCR.
+release in the same test project. The previous release uses only the test model
+and saves a 512 by 512 image, so an old warmup or decoder memory fault does not
+endanger the display GPU. Before the upgrade, the check restores every model
+manifest. The candidate uses all default models and generates at 768 by 768
+both before and after the upgrade. It checks the saved bytes and settings.
+The installer lists the required images with `docker compose config --images`
+and pulls only if an image is missing. This works with older Compose v2 and
+lets the check use the exact locally built images before they reach GHCR.
 
 The check refuses an occupied port 8080 and accounts mode without credentials.
 It creates a random Compose project and removes only that project's test data.
@@ -35,8 +39,11 @@ remain on the host after a failed check. A failed check blocks publication.
 The monitor covers installer startup, warmup, readiness, generation, and cleanup.
 It reads the reserve from the running worker and stops that worker by its
 verified Docker labels. Replacing installer files does not interrupt the monitor.
-An unsafe worker stops even before it connects to the API. Installer cancellation
-joins its child processes. New PNGs must contain every declared RGB or RGBA row
+An unsafe worker stops even before it connects to the API. Cancellation joins
+installer child processes. Fresh checks record their project in a private claim
+file. A separate workflow cleanup step runs even after cancellation and removes
+only resources with that project label; it does not need intact installer files.
+Checks with `--keep` preserve the install and its data. New PNGs must contain every declared RGB or RGBA row
 with valid filters. A valid header alone does not pass.
 
 After all checks pass, the workflow reserves the version with a draft GitHub

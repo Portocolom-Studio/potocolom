@@ -61,7 +61,10 @@ case "$*" in
 	'compose version') printf '2.30.0\n' ;;
 	'info') exit 0 ;;
 	'volume inspect'*) exit 1 ;;
-	*' pull --policy missing'* ) [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
+	*' config --images') printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\nghcr.io/portocolom-studio/potocolom-worker:%s-cuda\n' "$POTOCOLOM_VERSION" "$POTOCOLOM_VERSION" ;;
+	'image inspect'*) [[ "${DOCKER_IMAGES_CACHED:-}" == 1 ]] ;;
+	*' pull --policy'* ) exit 99 ;;
+	*' pull') [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
 	*' pull'|*' up -d --no-build'|*' rm -sf'|*' compose version'|*) exit 0 ;;
 esac
 EOF
@@ -95,13 +98,13 @@ EOF
 run_install() {
 	local case_dir="$1"
 	shift
-	env PATH="$case_dir/bin:$PATH" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" \
+	env PATH="$case_dir/bin:$PATH" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
 		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
 		POTOCOLOM_PROFILE=gpu "$@" bash "$repo/scripts/install.sh" 2>&1
 }
 
 check_case() {
-	local name="$1" expected="$2" env_mode="$3" output rc env_file curl_calls
+	local name="$1" expected="$2" env_mode="$3" output rc env_file
 	make_case "$name"
 	if [[ "$env_mode" == upgrade ]]; then
 		mkdir -p "$case_dir/install/deploy/compose"
@@ -116,15 +119,15 @@ check_case() {
 	env_file="$case_dir/install/deploy/compose/.env"
 	case "$name" in
 		install-writes-public-url)
-			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == http://192.168.1.10:8080 && "$output" != *'only works from this machine'* \
-				&& "$(grep -c ' pull --policy missing | ' "$case_dir/docker.log")" -ge 1 && "$(grep -c ' up -d --no-build | ' "$case_dir/docker.log")" -eq 1 \
+			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == "$expected" && "$output" != *'only works from this machine'* \
+				&& "$(grep -c ' pull | ' "$case_dir/docker.log")" -ge 1 && "$(grep -c ' up -d --no-build | ' "$case_dir/docker.log")" -eq 1 \
 				&& "$(sed -n 's/^POTOCOLOM_VERSION=//p' "$env_file")" == v9.9.9 ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
 			;;
 		fresh-default-and-help)
-			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == http://localhost:8080 && "$output" == *'/releases/download/v9.9.9/install.sh | POTOCOLOM_DIR='*' POTOCOLOM_PUBLIC_URL=http://ADDRESS:8080 bash'* && "$output" == *'192.168.1.10 10.0.0.2'* && "$output" == *'docs/self-hosting.md'* ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
+			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == "$expected" && "$output" == *'/releases/download/v9.9.9/install.sh | POTOCOLOM_DIR='*' POTOCOLOM_PUBLIC_URL=http://ADDRESS:8080 bash'* && "$output" == *'192.168.1.10 10.0.0.2'* && "$output" == *'docs/self-hosting.md'* ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
 			;;
 		upgrade-keeps-public-url)
-			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == https://studio.example.test:9443 ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
+			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == "$expected" ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
 			;;
 	esac
 }
@@ -139,6 +142,17 @@ fi
 check_case install-writes-public-url http://192.168.1.10:8080 set
 check_case fresh-default-and-help http://localhost:8080 unset
 check_case upgrade-keeps-public-url https://studio.example.test:9443 upgrade
+
+make_case cached-images-reused
+rc=0
+output="$(DOCKER_IMAGES_CACHED=1 run_install "$case_dir")" || rc=$?
+if [[ "$rc" -eq 0 && "$(grep -c 'image inspect' "$case_dir/docker.log")" -eq 3 \
+	&& "$(grep -c ' pull | ' "$case_dir/docker.log")" -eq 0 \
+	&& "$(sed -n 's/^POTOCOLOM_VERSION=//p' "$case_dir/install/deploy/compose/.env")" == v9.9.9 ]]; then
+	printf 'ok cached-images-reused\n'
+else
+	fail_case cached-images-reused
+fi
 
 make_case release-url-default
 output="$(run_install "$case_dir")" && rc=0 || rc=$?

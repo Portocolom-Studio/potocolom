@@ -10,6 +10,9 @@ on:
     paths:
       - "Makefile"
       - "scripts/gpu-profile.sh"
+      - "scripts/ensure-env.sh"
+      - "deploy/compose/compose.yml"
+      - "deploy/compose/.env.example"
       - "scripts/preflight.sh"
       - "scripts/install.sh"
       - "scripts/test-gpu-detection.sh"
@@ -33,6 +36,9 @@ jobs:
       paths: |
         Makefile
         scripts/gpu-profile.sh
+        scripts/ensure-env.sh
+        deploy/compose/compose.yml
+        deploy/compose/.env.example
         scripts/preflight.sh
         scripts/install.sh
         scripts/test-gpu-detection.sh

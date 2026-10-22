@@ -166,7 +166,21 @@ main() {
 	# The shell env beats the env file, so the pull runs against this tag
 	# before .env names it, and .env is pinned only afterwards: a failed
 	# pull must not leave it naming a tag that was never pulled.
-	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull --policy missing
+	images="$(POTOCOLOM_VERSION="$VERSION" "${compose[@]}" config --images)"
+	if [[ -z "$images" ]]; then
+		echo 'error: Compose did not list any release images' >&2
+		exit 1
+	fi
+	missing_images=false
+	while IFS= read -r image; do
+		if ! docker image inspect -- "$image" >/dev/null 2>&1; then
+			missing_images=true
+			break
+		fi
+	done <<<"$images"
+	if [[ "$missing_images" == true ]]; then
+		POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
+	fi
 
 	# Pin release metadata and apply an explicit public URL in one write.
 	env_tmp="$(mktemp)"

@@ -58,6 +58,95 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 class ReleaseCheckTests(unittest.TestCase):
 
+    def test_generation_requests_keep_candidate_and_legacy_sizes_separate(self):
+        requests = []
+        def api(_base, path, **kwargs):
+            if path == "/api/v1/models":
+                return [{"id": check.MODEL}]
+            if path == "/api/v1/generations":
+                requests.append(kwargs["body"])
+                return {"job_id": "made"}
+            return {"state": "succeeded", "assets": [{"id": "asset", "url": "/asset"}]}
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.headers.get_content_type.return_value = "image/png"
+        response.read.side_effect = lambda *_: png(requests[-1]["params"]["width"], requests[-1]["params"]["height"])
+        with patch.object(check, "http_json", side_effect=api), patch.object(check, "urlopen", return_value=response):
+            check.generate("http://localhost:8080", "candidate")
+            check.generate("http://localhost:8080", "legacy", size=512)
+        self.assertEqual([(r["params"]["width"], r["params"]["height"]) for r in requests], [(768, 768), (512, 512)])
+        self.assertTrue(all(r["params"]["steps"] == 8 for r in requests))
+
+    def test_cleanup_refuses_unexpected_resource_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".release-check-project").write_text("release-check-0123456789abcdef")
+            for kind, bad in (("ps", "not-an-id"), ("network", "not-an-id"), ("volume", "potocolom_assets")):
+                def command(args, **_kwargs):
+                    return bad if args[1] == kind else ""
+                with self.subTest(kind=kind), patch.object(check, "run", side_effect=command) as docker:
+                    with self.assertRaisesRegex(check.CheckError, "refusing cleanup"):
+                        check.cleanup_rehearsal(root)
+                self.assertFalse(any(c.args[0][1] == "rm" or c.args[0][2:3] == ["rm"] for c in docker.call_args_list))
+
+    def test_png_legacy_size_is_complete_and_candidate_default_stays_768(self):
+        self.assertEqual(check.validate_png(png(512, 512), size=512), (512, 512))
+        with self.assertRaisesRegex(check.CheckError, "scanlines"):
+            check.validate_png(png(512, 512, raw=b"\x00"), size=512)
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = png(512, 512)
+        response.headers.get_content_type.return_value = "image/png"
+        with patch.object(check, "urlopen", return_value=response), self.assertRaisesRegex(
+                check.CheckError, "unexpected dimensions"):
+            check.local_asset("http://localhost:8080", {"url": "/asset"})
+
+    def test_upgrade_restores_default_models_and_candidate_image_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            release = release_fixture(root / "candidate")
+            previous = release_fixture(root / "previous", "v1.2.2")
+            args = argparse.Namespace(install_dir=root / "install", version="v1.2.3",
+                                      release_dir=release, previous_release_dir=previous,
+                                      previous_version="v1.2.2", profile="gpu")
+            events = []
+            def installer(_file, version, *_args, **_kwargs):
+                events.append(("install", version))
+            def generated(_base, _prompt, _guard, *, size=768):
+                events.append(("generate", size))
+                return "saved", png(size, size)
+            def model_config(*_args, restore=False):
+                events.append(("models", "restore" if restore else "select"))
+            with patch.object(check, "free_port_8080"), \
+                    patch.object(check, "_project_exists", side_effect=[False, True]), \
+                    patch.object(check, "run_installer", side_effect=installer), \
+                    patch.object(check, "legacy_model_config", side_effect=model_config), \
+                    patch.object(check, "compose_owned"), patch.object(check, "remove_owned_data_volumes"), \
+                    patch.object(check, "cleanup_rehearsal"), \
+                    patch.object(check, "project_owns_api_port", return_value=True), \
+                    patch.object(check, "api_base", return_value="http://localhost:8080"), \
+                    patch.object(check, "wait_ready"), patch.object(check, "parse_env", return_value={}), \
+                    patch.object(check, "generate", side_effect=generated), \
+                    patch.object(check, "verify_assets") as saved:
+                check.fresh_rehearsal(args, release / "install.sh")
+            self.assertEqual(events, [("install", "v1.2.3"), ("generate", 768),
+                                     ("models", "select"), ("install", "v1.2.2"),
+                                     ("generate", 512), ("models", "restore"),
+                                     ("install", "v1.2.3"), ("generate", 768)])
+            saved.assert_called_once_with("http://localhost:8080", {"saved": hashlib.sha256(png(512, 512)).hexdigest()})
+
+    def test_cleanup_refuses_user_projects_before_docker_access(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for project in ("potocolom", "release-check-short", "release-check-0123456789abcdef\nother"):
+                (root / ".release-check-project").write_text(project)
+                with self.subTest(project=project), patch.object(check, "run", return_value="") as command:
+                    with self.assertRaisesRegex(check.CheckError, "refusing cleanup"):
+                        check.cleanup_rehearsal(root)
+                    command.assert_not_called()
+
     def test_worker_disappearance_is_safe_during_each_read_only_probe(self):
         with tempfile.TemporaryDirectory() as tmp:
             for stage in ("inspect", "logs", "exec"):
@@ -780,13 +869,11 @@ class ReleaseCheckTests(unittest.TestCase):
                     patch.object(check, "_project_exists", side_effect=[False, True]), \
                     patch.object(check, "run_installer", side_effect=check.CheckError("candidate failed")), \
                     patch.object(check.tempfile, "mkdtemp", return_value=str(root / "private-logs")), \
-                    patch.object(check, "compose_owned") as compose, \
+                    patch.object(check, "cleanup_rehearsal") as cleanup, \
                     redirect_stderr(io.StringIO()), \
                     self.assertRaisesRegex(check.CheckError, "candidate failed"):
                 check.fresh_rehearsal(args, root / "candidate/install.sh")
-            compose.assert_called_once()
-            self.assertRegex(compose.call_args.args[1], r"release-check-[0-9a-f]+")
-            self.assertEqual(compose.call_args.args[2], ["down", "-v", "--remove-orphans"])
+            cleanup.assert_called_once_with(install)
             self.assertFalse(install.exists())
 
 

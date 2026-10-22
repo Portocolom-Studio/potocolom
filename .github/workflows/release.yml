@@ -155,6 +155,7 @@ jobs:
           exit-code: "1"
           output: trivy-worker-rocm.txt
       - name: Rehearse exact installer and previous release on GPU
+        timeout-minutes: 60
         run: |
           python3 - "$VERSION" <<'PY' > previous-version.txt
           import json, re, subprocess, sys
@@ -182,6 +183,19 @@ jobs:
             python3 scripts/release-check.py --version "$VERSION" --release-dir release-candidate \
               --install-dir "$RUNNER_TEMP/release-check-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
               --previous-release-dir previous-release --previous-version "$previous" --profile rocm
+      - name: Remove owned installer test resources
+        if: always()
+        timeout-minutes: 5
+        env:
+          CHECK_DIR: ${{ runner.temp }}/release-check-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          python3 - "$CHECK_DIR" <<'PY'
+          import importlib.util, pathlib, sys
+          spec = importlib.util.spec_from_file_location("release_check", "scripts/release-check.py")
+          check = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(check)
+          check.cleanup_rehearsal(pathlib.Path(sys.argv[1]))
+          PY
       - name: Publish the tested images and create a draft release
         env:
           REGISTRY: ${{ steps.images.outputs.registry }}
