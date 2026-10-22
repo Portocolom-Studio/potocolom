@@ -138,6 +138,10 @@ def test_wrong_ack_identity_or_shape_leaves_command_pending(
 
 @pytest.mark.db
 def test_exact_duplicate_is_retained_but_conflicting_outcome_is_refused(monkeypatch):
+    async def parked():
+        return
+
+    monkeypatch.setattr(jobs, "dispatch_step", parked)
     root_keys(monkeypatch)
     worker_id = f"s1-ack-outcome-{uuid.uuid4()}"
     incarnation = uuid.uuid4()
