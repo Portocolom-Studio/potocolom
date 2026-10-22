@@ -28,7 +28,7 @@
 	auth-clear-factor \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
-	site-build site-preview site-deploy worker-deploy
+	site-build site-preview site-deploy worker-deploy release-check-nvidia
 
 # Interpreter used only to create backend/.venv and worker/.venv. A system
 # python3 of 3.10 creates a venv that sends pip backtracking against
@@ -592,3 +592,6 @@ site-deploy: site-build ## build and deploy the site to Cloudflare Pages
 worker-deploy: ## deploy the waitlist worker (operator only, config in .local)
 	@test -d .local/waitlist-worker || { echo "no .local/waitlist-worker on this machine"; exit 1; }
 	cd .local/waitlist-worker && npx wrangler deploy
+
+release-check-nvidia: ## rehearse a release on HOST=user@host VERSION=vX.Y.Z
+	bash "$(CURDIR)/scripts/release-check-nvidia.sh"
