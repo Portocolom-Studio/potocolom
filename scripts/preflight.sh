@@ -463,7 +463,7 @@ fi
 if [[ "$contributor" != true && -z "${POTOCOLOM_PUBLIC_URL:-}" ]]; then
   env_file="$ROOT/deploy/compose/.env"
   # Compose syntax: an optional export, and an unquoted value ends at a comment.
-  public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL=["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$env_file" 2>/dev/null | tail -n 1)"
+  public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$env_file" 2>/dev/null | tail -n 1)"
   if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
     public_host="${BASH_REMATCH[1]}"
     if [[ "$public_host" == localhost || "$public_host" == '[::1]' \

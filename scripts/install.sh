@@ -153,7 +153,7 @@ main() {
 			else print
 			next
 		}
-		/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*=/ {
+		/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=]/ {
 			if (set_url == "true") {
 				if (!found_url) print "PUBLIC_URL=" url
 				found_url = 1
@@ -178,7 +178,7 @@ main() {
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
 	# Compose syntax: an optional export, and an unquoted value ends at a comment.
-	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL=["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
+	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
 	public_url="${public_url:-http://localhost:8080}"
 
 	echo

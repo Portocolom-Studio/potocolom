@@ -182,15 +182,47 @@ make_case replaces-every-line-form
 mkdir -p "$case_dir/install/deploy/compose"
 {
 	cat "$repo/deploy/compose/.env.example"
-	printf 'export PUBLIC_URL=http://old2:8080\n  PUBLIC_URL=http://old3:8080 # an old comment\n'
+	printf 'export PUBLIC_URL = "http://old2:8080" # old export\nPUBLIC_URL= http://old3:8080 # value spacing\n  PUBLIC_URL = http://old4:8080 # lhs spacing\nPUBLIC_URL: http://old5:8080\n'
 } >"$case_dir/install/deploy/compose/.env"
 output="$(run_install "$case_dir" POTOCOLOM_PUBLIC_URL=http://192.168.1.10:8080)" && rc=0 || rc=$?
-forms="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*=' "$case_dir/install/deploy/compose/.env")"
+forms="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=]' "$case_dir/install/deploy/compose/.env")"
 if [[ "$rc" -eq 0 && "$forms" == 'PUBLIC_URL=http://192.168.1.10:8080' ]]; then
 	printf 'ok replaces-every-line-form\n'
 else
 	fail_case replaces-every-line-form
 fi
+
+# The final message follows Compose syntax with spaces, either separator,
+# optional export, comments, and quoted values.
+make_case reads-spaced-colon-remote-url
+mkdir -p "$case_dir/install/deploy/compose"
+sed '/^PUBLIC_URL=/d' "$repo/deploy/compose/.env.example" >"$case_dir/install/deploy/compose/.env"
+printf 'export PUBLIC_URL :  "https://studio.example.com" # operator value\r\n' >>"$case_dir/install/deploy/compose/.env"
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'Open https://studio.example.com'$'\n'* ]]; then
+	printf 'ok reads-spaced-colon-remote-url\n'
+else
+	fail_case reads-spaced-colon-remote-url
+fi
+
+# Preflight reads the last assignment from either separator form.
+for format in colon spaced-equals; do
+	name="preflight-loopback-$format"
+	make_case "$name"
+	mkdir -p "$case_dir/install/deploy/compose"
+	sed '/^PUBLIC_URL=/d' "$repo/deploy/compose/.env.example" >"$case_dir/install/deploy/compose/.env"
+	if [[ "$format" == colon ]]; then
+		printf 'PUBLIC_URL: "http://localhost:8080" # local only\r\n' >>"$case_dir/install/deploy/compose/.env"
+	else
+		printf 'PUBLIC_URL = '\''http://127.0.0.1:8080'\'' # local only\r\n' >>"$case_dir/install/deploy/compose/.env"
+	fi
+	output="$(run_install "$case_dir")" && rc=0 || rc=$?
+	if [[ "$rc" -eq 0 && "$output" == *'PUBLIC_URL is http://'*'the studio only works from this machine'* ]]; then
+		printf 'ok %s\n' "$name"
+	else
+		fail_case "$name"
+	fi
+done
 
 # Compose prefers a shell variable over .env, so the installer drops it.
 make_case inherited-public-url-dropped
