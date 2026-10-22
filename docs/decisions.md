@@ -1910,6 +1910,34 @@ Rejected alternatives:
 - Guessing the original owner of released protocol 6 history, or refusing every installation with such history. Explicit unknown metadata preserves the history without granting authority.
 - A separate delivery queue, manager, wire field or generic outcome layer. The existing journal and Worker owner hold the required state.
 
+## Release tags test the exact installer on the reference AMD GPU
+
+Implements issue #757. Pull request jobs retain simulated and CPU workers.
+A version tag also runs the exact candidate installer and bundle on the trusted
+AMD desktop before GHCR publication. This narrows the earlier decision that no
+CI job uses the GPU. The release job takes a host lock, refuses an occupied API
+port, and uses a random Compose project. It proves fresh generation, then an
+upgrade from the previous published release with saved image bytes and settings
+preserved. Cleanup includes all Compose profiles and only the owned project.
+
+The installer accepts `POTOCOLOM_RELEASE_URL` as an HTTPS artifact directory or
+an absolute `file://` directory. The published GitHub release remains the default.
+Checksums are required for the bundle and the check driver verifies both artifacts.
+The installer pulls missing images. Immutable version tags let the release check
+use locally built candidate images before publication. A new host still pulls
+the images from GHCR. AMD checks stop their own worker on disk group offload or
+a VRAM reserve breach. They do not stop another stack to make room.
+
+Rejected alternatives:
+- Relying on simulated workers to prove the released GPU stack. They do not
+  load model weights or use the installed worker image for inference.
+- Testing a source checkout instead of the installer. It misses bundle, pin,
+  download, and upgrade faults.
+- Publishing images before this check. A failed candidate would already have
+  public image tags.
+- Forcing a pull of a locally present immutable tag. A candidate cannot be pulled
+  before publication.
+
 ## An ordinary protocol 6 canvas close is a command, not a fence
 
 Implements issue #743. When the browser ends its own live session, the API commits a terminal `close_session` before any erasure: the session row moves from `live` to `ending`, the worker closes its runner and answers `session_closed` with `physical_complete`, and that receipt ends the attempt and the row. The outcome is proved, so nothing is erased without proof and the worker incarnation stays open: its grant renews and its other jobs and sessions continue. A close that is committed but not answered within `CLOSE_RECEIPT_TIMEOUT` (30 s; its delivery may be refused, for example after the browser binding expired, or the worker may never report) is erased and fenced like any unproven outcome, and losing the worker ends a row still `ending`. Rows orphaned by an API crash are not covered yet (#747).

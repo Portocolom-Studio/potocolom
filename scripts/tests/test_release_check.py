@@ -208,12 +208,14 @@ class ReleaseCheckTests(unittest.TestCase):
             events.append(request.full_url)
             state = len(events)
             if state == 1:
+                raise ConnectionResetError("API is starting")
+            if state == 2:
                 raise check.URLError("connection refused")
             response = Mock()
             response.__enter__ = Mock(return_value=response)
             response.__exit__ = Mock(return_value=False)
-            response.status = 503 if state == 2 else 200
-            response.read.return_value = b"" if state == 4 else b"not ready"
+            response.status = 503 if state == 3 else 200
+            response.read.return_value = b"" if state == 5 else b"not ready"
             return response
 
         ticks = iter([0, 0, 0, 0, 0, 0, 10])
@@ -221,7 +223,7 @@ class ReleaseCheckTests(unittest.TestCase):
                 patch.object(check.time, "monotonic", side_effect=lambda: next(ticks)), \
                 patch.object(check.time, "sleep"):
             check.wait_ready("https://studio.example")
-        self.assertEqual(len(events), 4)
+        self.assertEqual(len(events), 5)
         self.assertTrue(all(url.endswith("/api/v1/ready") for url in events))
 
     def test_compose_environment_is_read_from_explicit_env_file(self) -> None:

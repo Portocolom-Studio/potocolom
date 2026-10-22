@@ -11,11 +11,27 @@ worker is killed. The browser must see `interrupted`, then `resumed`, and keep
 the same session ID. The same stack tests a
 populated schema upgrade from revision 0023 to head, then a PostgreSQL dump and
 restore. These checks use temporary containers and volumes. They do not test
-GPU execution or a previous released worker image.
+GPU execution. A separate installer gate tests the real AMD worker and the
+previous published release.
 
 Trivy blocks publication when it finds a HIGH or CRITICAL vulnerability with
 an available fix. Scan reports are retained. Vulnerabilities without an available patch
 still need release review; a green scan does not prove that an image is safe.
+
+Before publication, the workflow builds the exact installer, self-host bundle,
+and SHA256SUMS. It runs `scripts/release-check.py` on the trusted AMD runner
+under `/tmp/potocolom-release-check-gpu.lock`. The check installs those local
+artifacts, generates a 768 by 768 PNG, then installs the previous published
+release in the same test project. It saves an image, upgrades with the candidate
+installer, checks the saved bytes and settings, and generates another image.
+The installer uses `docker compose pull --policy missing`, so the check can use
+the exact locally built images before they reach GHCR.
+
+The check refuses an occupied port 8080 and accounts mode without credentials.
+It creates a random Compose project and removes only that project's test data.
+Model caches stay between phases. On AMD, it stops the owned worker if free
+VRAM falls below `VRAM_RESERVE_MB` or disk group offload starts. Private logs
+remain on the host after a failed check. A failed check blocks publication.
 
 After all checks pass, the workflow reserves the version with a draft GitHub
 release before pushing any image. An existing draft or published release stops
@@ -59,4 +75,6 @@ release in an empty POTOCOLOM_DIR.
 
 The workflow needs Docker, Python 3.11, Node 24 and Chrome on the trusted
 self-hosted runner. Both GPU base images are large; check free disk space
-before creating the tag. No GPU device is passed to CI containers.
+before creating the tag. Pull request jobs use simulated or CPU workers.
+The release installer gate requires the AMD GPU, `/dev/kfd`, `/dev/dri`, and
+free host port 8080. It runs only on a version tag.

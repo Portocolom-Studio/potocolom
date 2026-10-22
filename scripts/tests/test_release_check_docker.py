@@ -21,13 +21,14 @@ class ReleaseGuardDockerTests(unittest.TestCase):
                     compose.mkdir(parents=True)
                     (compose / "compose.yml").write_text(
                         'services:\n  worker-rocm:\n    image: postgres:16\n'
+                        '    profiles: [rocm]\n'
                         '    entrypoint: ["sh", "-c", "exec sleep 120"]\n'
                     )
                     (compose / ".env").write_text(
                         f"COMPOSE_PROJECT_NAME={project}\nVRAM_RESERVE_MB=1536\n"
                     )
                     projects.append((directory, project))
-                    check.compose_owned(directory, project, ["up", "-d", "--no-build"])
+                    check.compose_owned(directory, project, ["up", "-d", "--no-build", "worker-rocm"])
                 owned, other = projects
                 own_ids = check.owned_rocm_worker_ids(owned[1])
                 other_ids = check.owned_rocm_worker_ids(other[1])
@@ -47,9 +48,15 @@ class ReleaseGuardDockerTests(unittest.TestCase):
                         ["docker", "inspect", "--format", "{{.State.Running}}", ids[0]], text=True
                     ).strip()
                     self.assertEqual(state, expected)
+                check.compose_owned(owned[0], owned[1], ["down", "--timeout", "0", "-v"])
+                self.assertFalse(check._project_exists(owned[1]))
+                self.assertEqual(check.owned_rocm_worker_ids(other[1]), other_ids)
             finally:
                 for directory, project in projects:
-                    check.compose_owned(directory, project, ["down", "--timeout", "0", "-v", "--remove-orphans"])
+                    check.run(["docker", "compose", "-p", project,
+                               "--env-file", str(directory / "deploy/compose/.env"),
+                               "-f", str(directory / "deploy/compose/compose.yml"),
+                               "--profile", "*", "down", "--timeout", "0", "-v", "--remove-orphans"])
 
 
 if __name__ == "__main__":

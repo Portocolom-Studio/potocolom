@@ -103,7 +103,7 @@ Release and migration checks:
 
 - Migration check (with Alembic, issues #14/#16): upgrade from empty to head against the postgres service container, plus a drift check so a model change without its migration fails CI.
 - Image build check on PRs touching Dockerfiles: build, do not push.
-- `release.yml` accepts a `vMAJOR.MINOR.PATCH` tag on `main`. The full gate and real CPU inference run before image builds. The exact API and worker images must pass generation, realtime failover, schema upgrade and restore checks, then Trivy scanning. A draft release reserves the version before GHCR publication; image digests and the SPA artifact are attached afterward. It ends at GHCR. See [release checks](release-checklist.md) for manual GPU checks and partial-publication recovery.
+- `release.yml` accepts a `vMAJOR.MINOR.PATCH` tag on `main`. The full gate and real CPU inference run before image builds. The exact API and worker images must pass generation, realtime failover, schema upgrade and restore checks, then Trivy scanning. The real installer must pass fresh AMD generation and an upgrade from the previous published release with saved image bytes preserved. A draft release reserves the version before GHCR publication; image digests and the SPA artifact are attached afterward. It ends at GHCR. See [release checks](release-checklist.md) for GPU checks and partial-publication recovery.
 - The ROCm rung stays a manual pre-release verification on the reference AMD desktop, as decided; CI does not pretend to cover it.
 
 ### CI in the private repository

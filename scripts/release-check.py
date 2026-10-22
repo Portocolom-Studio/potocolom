@@ -385,7 +385,7 @@ def compose_owned(install_dir: Path, project: str, args: list[str]) -> None:
     compose = install_dir / "deploy/compose/compose.yml"
     env_file = install_dir / "deploy/compose/.env"
     run(["docker", "compose", "-p", project, "--env-file", str(env_file),
-         "-f", str(compose), *args], timeout=300)
+         "-f", str(compose), "--profile", "*", *args], timeout=300)
 
 
 def bundle_env_example(release_dir: Path, version: str) -> str:
@@ -496,7 +496,7 @@ def wait_ready(base: str, timeout: int = 300) -> None:
             with urlopen(request, timeout=5) as response:
                 if response.status == 200 and response.read() == b"":
                     return
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
             pass
         time.sleep(2)
     raise CheckError("API store did not become ready before the deadline")
