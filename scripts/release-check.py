@@ -187,13 +187,15 @@ def api_base(install_dir: Path) -> str:
 
 
 def compose_environment(env_file: Path, compose_file: Path) -> dict[str, str]:
-    """Ask Compose to evaluate its own interpolation rules without starting services."""
+    """Ask Compose to evaluate the declared settings without starting services."""
+    declared = set(re.findall(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*(?:=|:|$)",
+                              env_file.read_text(encoding="utf-8"), re.MULTILINE))
     output = run(["docker", "compose", "--env-file", str(env_file), "-f", str(compose_file),
                   "config", "--environment"], timeout=30)
     values: dict[str, str] = {}
     for line in output.splitlines():
         key, sep, value = line.partition("=")
-        if sep and re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        if sep and key in declared:
             values[key] = value
     return values
 

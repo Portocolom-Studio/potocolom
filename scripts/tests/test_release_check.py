@@ -233,11 +233,12 @@ class ReleaseCheckTests(unittest.TestCase):
             env.write_text("export PUBLIC_URL = https://studio.example\nAUTH_MODE: none\n", encoding="utf-8")
             compose = root / "compose.yml"
             compose.write_text("services: {}\n", encoding="utf-8")
-            output = "PUBLIC_URL=https://studio.example\nAUTH_MODE=none\n"
+            output = "PUBLIC_URL=https://studio.example\nAUTH_MODE=none\nDOCKER_CLI_PLUGIN_SOCKET=/tmp/one-call.sock\n"
             with patch.object(check, "run", return_value=output) as command:
                 values = check.compose_environment(env, compose)
             self.assertEqual(values["PUBLIC_URL"], "https://studio.example")
             self.assertEqual(values["AUTH_MODE"], "none")
+            self.assertNotIn("DOCKER_CLI_PLUGIN_SOCKET", values)
             self.assertIn("--env-file", command.call_args.args[0])
             self.assertIn("config", command.call_args.args[0])
 
@@ -336,6 +337,9 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_rocm_guard_ignores_small_igpu_and_stops_only_owned_worker_on_breach(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env = root / "install/deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             sysfs = root / "sys"
             for name, total in (("card0", 512 * 1024 * 1024), ("card1", 8 * 1024 * 1024 * 1024)):
                 device = sysfs / name / "device"
@@ -359,6 +363,9 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_rocm_group_offload_stops_verified_worker_immediately(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env = root / "install/deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             device = root / "sys/card0/device"
             device.mkdir(parents=True)
             (device / "vendor").write_text("0x1002", encoding="ascii")
@@ -375,6 +382,9 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_initial_disk_offload_is_stopped_without_a_demotion_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env = root / "install/deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             response = Mock(returncode=0, stdout="0123456789ab\n")
             with patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]), \
                     patch.object(check.subprocess, "run", return_value=response), \
@@ -388,6 +398,9 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_rocm_guard_reads_the_install_reserve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env = root / "install/deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=3072\n", encoding="utf-8")
             with patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 14 * 1024**3)]), \
                     patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                     patch.object(check, "run", side_effect=["VRAM_RESERVE_MB=3072\n", "", ""]), \
@@ -400,6 +413,9 @@ class ReleaseCheckTests(unittest.TestCase):
     def test_rocm_guard_does_not_charge_the_small_igpu_reserve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            env = root / "install/deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             for name, total, used in (("card0", 512 * 1024**2, 256 * 1024**2),
                                       ("card1", 16 * 1024**3, 2 * 1024**3)):
                 device = root / "sys" / name / "device"
