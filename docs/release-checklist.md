@@ -99,7 +99,7 @@ free host port 8080. It runs only on a version tag.
 ## NVIDIA check over SSH
 
 `make release-check-nvidia` downloads the release artifacts and runs the same
-check driver on an SSH host with Docker and the NVIDIA Container Toolkit.
+check driver on an SSH host with key-based login, Docker, and the NVIDIA Container Toolkit.
 The default install directory is the remote `~/potocolom`.
 
 ```sh

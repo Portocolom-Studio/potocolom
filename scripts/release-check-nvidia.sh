@@ -58,7 +58,9 @@ fi
 remote_cmd="mkdir -m 700 -- $quoted_remote_dir && { tar -C $quoted_remote_dir -xf -; rc=\$?; if [ \$rc -eq 0 ]; then python3 $quoted_remote_dir/release-check.py --version $(printf '%q' "$version") --release-dir $quoted_remote_dir $install_argument --profile gpu --keep; rc=\$?; fi; rm -rf -- $quoted_remote_dir; exit \$rc; }"
 remote_cmd="bash -c $(python3 -c 'import shlex, sys; print(shlex.quote(sys.argv[1]))' "$remote_cmd")"
 if tar -C "$tmp/release" -cf - install.sh "potocolom-$version-selfhost.tar.gz" SHA256SUMS release-check.py \
-	| env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN ssh -- "$host" "$remote_cmd"; then
+	| env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
+		ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+		-o ServerAliveCountMax=2 -- "$host" "$remote_cmd"; then
 	printf 'PASS NVIDIA release check %s on %s\n' "$version" "$host"
 else
 	printf 'FAIL NVIDIA release check %s on %s\n' "$version" "$host" >&2
