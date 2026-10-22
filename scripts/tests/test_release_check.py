@@ -58,6 +58,33 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 class ReleaseCheckTests(unittest.TestCase):
 
+    def test_disk_probe_retries_a_worker_restart_and_bounds_persistent_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = root / "deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n")
+            env.with_name("compose.yml").write_text("services: {}\n")
+            for persistent in (False, True):
+                probes = []
+
+                def command(args, **_kwargs):
+                    if args[:2] == ["docker", "exec"]:
+                        probes.append(True)
+                        if len(probes) == 1 or persistent:
+                            raise check.CheckError("worker restarted during probe")
+                    return "VRAM_RESERVE_MB=1536\n" if "config" in args else ""
+
+                with patch.object(check, "run", side_effect=command), \
+                        patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
+                        patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
+                    if persistent:
+                        with self.assertRaisesRegex(check.CheckError, "restarted"):
+                            check.rocm_safety_check(root, "owned", root / "logs")
+                    else:
+                        check.rocm_safety_check(root, "owned", root / "logs")
+                self.assertEqual(len(probes), 2)
+
     def test_png_requires_all_pixels_and_valid_filters(self):
         complete = bytes((1 + 768 * 3) * 768)
         for raw in (b"\x00", complete[:-1], complete + b"\x00", b"\x05" + complete[1:]):

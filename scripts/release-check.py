@@ -587,11 +587,19 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
     group_offload = re.search(r"(?:to\s+|rung[=: ]+)group_offload", worker_log, re.IGNORECASE)
     disk_offloads = ""
     for worker_id in worker_ids:
-        disk_offloads += run([
-            "docker", "exec", worker_id, "sh", "-c",
-            "if [ -d /models/.offload ]; then "
-            "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
-        ], timeout=15)
+        for attempt in range(2):
+            try:
+                disk_offloads += run([
+                    "docker", "exec", worker_id, "sh", "-c",
+                    "if [ -d /models/.offload ]; then "
+                    "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
+                ], timeout=15)
+                break
+            except CheckError:
+                if worker_id not in owned_rocm_worker_ids(project):
+                    break
+                if attempt:
+                    raise
     breached = any(total - used < reserve_mb * 1024 * 1024 for _, total, used in cards)
     if group_offload or disk_offloads.strip() or breached:
         evidence = evidence_dir / "rocm-safety-evidence.log"
