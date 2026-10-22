@@ -188,7 +188,7 @@ main() {
 		if [[ "$public_host" == localhost || "$public_host" == '[::1]' \
 			|| "$public_host" =~ ^127(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}$ ]]; then
 			if command -v hostname >/dev/null 2>&1; then
-				addresses="$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) { n = split($i, a, "."); ok = (n == 4); for (j = 1; j <= n; j++) if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok = 0; if (ok && a[1] + 0 != 127) { if (out != "") out = out " "; out = out $i } } } END { print out }')"
+				addresses="$(hostname -I 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) { n = split($i, a, "."); ok = (n == 4); for (j = 1; j <= n; j++) if (a[j] !~ /^[0-9]+$/ || a[j] + 0 > 255) ok = 0; if (ok && a[1] + 0 != 127) { if (out != "") out = out " "; out = out $i } } } END { print out }' || true)"
 			else
 				addresses=""
 			fi

@@ -233,4 +233,13 @@ else
 	fail_case inherited-public-url-dropped
 fi
 
+make_case failed-optional-hostname-lookup
+printf '#!/usr/bin/env bash\nexit 1\n' >"$case_dir/bin/hostname"
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *"Replace ADDRESS with this machine's address."* ]]; then
+	printf 'ok failed-optional-hostname-lookup\n'
+else
+	fail_case failed-optional-hostname-lookup
+fi
+
 if ((failures > 0)); then exit 1; fi
