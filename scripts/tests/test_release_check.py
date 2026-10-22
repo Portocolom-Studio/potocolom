@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import tarfile
+import threading
 import time
 import unittest
 import zlib
@@ -24,14 +25,17 @@ sys.modules[SPEC.name] = check
 SPEC.loader.exec_module(check)
 
 
-def png(width: int = 768, height: int = 768) -> bytes:
+def png(width: int = 768, height: int = 768, *, raw: bytes | None = None,
+        color: int = 2, depth: int = 8, interlace: int = 0,
+        compressed: bytes | None = None) -> bytes:
     def chunk(kind: bytes, payload: bytes) -> bytes:
         return (struct.pack(">I", len(payload)) + kind + payload
                 + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
 
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    pixels = b"\x00" + b"\x00" * (width * 3)
-    compressed = zlib.compress(pixels * height)
+    ihdr = struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, interlace)
+    pixels = b"\x00" + b"\x00" * (width * (4 if color == 6 else 3))
+    if compressed is None:
+        compressed = zlib.compress(raw if raw is not None else pixels * height)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", compressed) + chunk(b"IEND", b""))
 
@@ -53,6 +57,148 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 
 class ReleaseCheckTests(unittest.TestCase):
+
+    def test_png_requires_all_pixels_and_valid_filters(self):
+        complete = bytes((1 + 768 * 3) * 768)
+        for raw in (b"\x00", complete[:-1], complete + b"\x00", b"\x05" + complete[1:]):
+            with self.subTest(length=len(raw)), self.assertRaisesRegex(check.CheckError, "scanlines"):
+                check.validate_png(png(raw=raw))
+        for encoding in ({"color": 0}, {"depth": 16}, {"interlace": 1}):
+            with self.subTest(encoding=encoding), self.assertRaisesRegex(check.CheckError, "8-bit RGB"):
+                check.validate_png(png(**encoding))
+        compressed = zlib.compress(complete)
+        for payload in (compressed[:-1], compressed + b"trailing"):
+            with self.subTest(payload=payload[-8:]), self.assertRaises(check.CheckError):
+                check.validate_png(png(compressed=payload))
+        self.assertEqual(check.validate_png(png(color=6)), (768, 768))
+
+    def test_guard_interrupts_an_installer_and_joins_its_children(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = root / "started"
+            late = root / "late"
+
+            def unsafe(*_args):
+                if started.exists():
+                    raise check.CheckError("ROCm safety stop: warmup")
+
+            child = "import pathlib,time; pathlib.Path(%r).touch(); time.sleep(1); pathlib.Path(%r).touch()" % (str(started), str(late))
+            parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1]]); time.sleep(20)"
+            with patch.object(check, "rocm_safety_check", side_effect=unsafe), \
+                    patch.object(check, "compose_owned") as stop, \
+                    self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
+                with check.RocmGuard("rocm", root, "owned-project", root / "logs") as guard:
+                    guard.start()
+                    check.run([sys.executable, "-c", parent, child], timeout=10, abort=guard.failed)
+            self.assertFalse(guard.thread.is_alive())
+            stop.assert_called_once_with(root, "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+            time.sleep(1.1)
+            self.assertFalse(late.exists())
+
+    def test_guard_covers_the_initial_model_wait(self):
+        waiting = threading.Event()
+        requests = []
+
+        def unsafe(*_args):
+            if waiting.is_set():
+                raise check.CheckError("ROCm safety stop: no hello")
+
+        def models(*_args, **_kwargs):
+            requests.append(True)
+            if waiting.is_set() and guard.failed.is_set():
+                raise RuntimeError("unsafe model wait was not interrupted")
+            waiting.set()
+            return []
+
+        with patch.object(check, "rocm_safety_check", side_effect=unsafe), \
+                patch.object(check, "compose_owned"), \
+                patch.object(check, "http_json", side_effect=models), \
+                self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
+            with check.RocmGuard("rocm", Path("unused"), "owned", Path("unused")) as guard:
+                guard.start()
+                with patch.object(check.time, "sleep", side_effect=lambda _: guard.failed.wait(2)):
+                    check.generate("http://localhost:8080", "test", guard.check)
+        self.assertEqual(len(requests), 1)
+
+    def test_guard_joins_a_check_in_progress_before_returning(self):
+        entered, release, finished = (threading.Event() for _ in range(3))
+
+        def checking(*_args):
+            entered.set()
+            release.wait(2)
+            finished.set()
+
+        guard = check.RocmGuard("rocm", Path("unused"), "owned", Path("unused"))
+        with patch.object(check, "rocm_safety_check", side_effect=checking):
+            try:
+                with guard:
+                    guard.start()
+                    self.assertTrue(entered.wait(2))
+                    timer = threading.Timer(0.1, release.set)
+                    timer.start()
+                self.assertTrue(finished.is_set())
+                self.assertFalse(guard.thread.is_alive())
+            finally:
+                release.set()
+                guard.thread.join()
+                timer.join()
+
+    def test_keep_guard_stops_unsafe_work_during_readiness_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = root / "install"
+            env = install / "deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("AUTH_MODE=none\n")
+            env.with_name("compose.yml").write_text("services: {}\n")
+            ready, stopped = threading.Event(), threading.Event()
+
+            def unsafe(*_args):
+                if ready.is_set():
+                    raise check.CheckError("ROCm safety stop: warmup")
+
+            def readiness(*_args):
+                ready.set()
+                self.assertTrue(stopped.wait(2))
+                raise check.CheckError("store unavailable")
+
+            args = argparse.Namespace(install_dir=install, profile="rocm")
+            with patch.object(check, "api_base", return_value="http://localhost:8080"), \
+                    patch.object(check, "compose_environment", return_value={"COMPOSE_PROJECT_NAME": "owned"}), \
+                    patch.object(check, "project_owns_api_port", return_value=True), \
+                    patch.object(check, "rocm_safety_check", side_effect=unsafe), \
+                    patch.object(check, "compose_owned", side_effect=lambda *_: stopped.set()), \
+                    patch.object(check, "wait_ready", side_effect=readiness), \
+                    patch.object(check, "run_installer") as installer, \
+                    patch.object(check.shutil, "rmtree") as remove, \
+                    redirect_stderr(io.StringIO()), self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
+                check.existing_install(args, root / "candidate.sh")
+            self.assertTrue(env.is_file())
+            installer.assert_not_called()
+            remove.assert_not_called()
+
+    def test_both_fresh_modes_start_the_guard_before_the_installer(self):
+        for keep in (False, True):
+            with self.subTest(keep=keep), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                release = release_fixture(root / "release")
+                previous = release_fixture(root / "previous", "v1.2.2")
+                args = argparse.Namespace(install_dir=root / "install", release_dir=release,
+                                          version="v1.2.3", profile="rocm", keep=keep,
+                                          previous_release_dir=previous, previous_version="v1.2.2")
+
+                def installer(*_args, abort=None):
+                    self.assertTrue(abort.wait(2), "guard did not cover installer startup")
+                    raise check.CheckError("installer interrupted")
+
+                with patch.object(check, "free_port_8080"), \
+                        patch.object(check, "_project_exists", return_value=False), \
+                        patch.object(check, "rocm_safety_check", side_effect=check.CheckError("ROCm safety stop")), \
+                        patch.object(check, "compose_owned"), \
+                        patch.object(check, "run_installer", side_effect=installer), \
+                        redirect_stderr(io.StringIO()), self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
+                    (check.fresh_keep_install if keep else check.fresh_rehearsal)(args, release / "install.sh")
+                self.assertEqual(args.install_dir.exists(), keep)
 
     def test_release_checksum_and_corruption(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,6 +485,7 @@ class ReleaseCheckTests(unittest.TestCase):
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
             env.parent.mkdir(parents=True)
+            env.with_name("compose.yml").write_text("services: {}\n", encoding="utf-8")
             env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             sysfs = root / "sys"
             for name, total in (("card0", 512 * 1024 * 1024), ("card1", 8 * 1024 * 1024 * 1024)):
@@ -365,6 +512,7 @@ class ReleaseCheckTests(unittest.TestCase):
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
             env.parent.mkdir(parents=True)
+            env.with_name("compose.yml").write_text("services: {}\n", encoding="utf-8")
             env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             device = root / "sys/card0/device"
             device.mkdir(parents=True)
@@ -384,6 +532,7 @@ class ReleaseCheckTests(unittest.TestCase):
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
             env.parent.mkdir(parents=True)
+            env.with_name("compose.yml").write_text("services: {}\n", encoding="utf-8")
             env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             response = Mock(returncode=0, stdout="0123456789ab\n")
             with patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]), \
@@ -400,6 +549,7 @@ class ReleaseCheckTests(unittest.TestCase):
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
             env.parent.mkdir(parents=True)
+            env.with_name("compose.yml").write_text("services: {}\n", encoding="utf-8")
             env.write_text("VRAM_RESERVE_MB=3072\n", encoding="utf-8")
             with patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 14 * 1024**3)]), \
                     patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
@@ -415,6 +565,7 @@ class ReleaseCheckTests(unittest.TestCase):
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
             env.parent.mkdir(parents=True)
+            env.with_name("compose.yml").write_text("services: {}\n", encoding="utf-8")
             env.write_text("VRAM_RESERVE_MB=1536\n", encoding="utf-8")
             for name, total, used in (("card0", 512 * 1024**2, 256 * 1024**2),
                                       ("card1", 16 * 1024**3, 2 * 1024**3)):
@@ -493,7 +644,7 @@ class ReleaseCheckTests(unittest.TestCase):
             candidate = release_fixture(Path(tmp) / "release") / "install.sh"
             events = []
 
-            def installer(*_args):
+            def installer(*_args, **_kwargs):
                 events.append("installer")
 
             def ready(*_args):

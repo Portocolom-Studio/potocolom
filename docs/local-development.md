@@ -303,7 +303,9 @@ flowchart LR
     BINT --> MAIN
 ```
 
-GPU inference is never in CI. The release checklist runs it manually twice: ROCm on this desktop, CUDA on a rented machine for an hour.
+Pull request jobs use CPU and simulated workers. Trusted release tags also run
+the real installer on the AMD desktop. The NVIDIA release check runs over SSH.
+See [release checks](release-checklist.md).
 
 ### Secret scanning
 

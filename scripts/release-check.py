@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 import zlib
 from urllib.error import HTTPError, URLError
@@ -64,15 +65,26 @@ def safe_environment() -> dict[str, str]:
 
 
 def run(args: list[str], *, env: dict[str, str] | None = None,
-        timeout: float = 1800, log: Path | None = None) -> str:
+        timeout: float = 1800, log: Path | None = None,
+        abort: threading.Event | None = None) -> str:
     """Run quietly to a private file when requested; expose only safe errors."""
     process = None
     try:
         process = subprocess.Popen(args, env=env or safe_environment(), text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    start_new_session=True)
-        output, _ = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
+        deadline = time.monotonic() + timeout
+        while True:
+            if abort is not None and abort.is_set():
+                raise CheckError("ROCm safety stop interrupted the installer")
+            remaining = deadline - time.monotonic()
+            try:
+                output, _ = process.communicate(timeout=min(remaining, 0.25) if abort is not None else remaining)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
+    except (subprocess.TimeoutExpired, CheckError) as exc:
         if process is not None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -93,6 +105,8 @@ def run(args: list[str], *, env: dict[str, str] | None = None,
             log.parent.mkdir(parents=True, exist_ok=True)
             log.write_text(output, encoding="utf-8")
             log.chmod(0o600)
+        if isinstance(exc, CheckError):
+            raise
         raise CheckError(f"{Path(args[0]).name} timed out; private log: {log or 'unavailable'}") from exc
     except OSError as exc:
         raise CheckError(f"command failed to start: {Path(args[0]).name}") from exc
@@ -130,14 +144,15 @@ def verify_release(directory: Path, version: str) -> tuple[Path, Path]:
 
 
 def run_installer(installer: Path, version: str, install_dir: Path,
-                  release_dir: Path | None, profile: str, log_dir: Path) -> None:
+                  release_dir: Path | None, profile: str, log_dir: Path,
+                  *, abort: threading.Event | None = None) -> None:
     env = safe_environment()
     env.update(POTOCOLOM_VERSION=version, POTOCOLOM_DIR=str(install_dir),
                POTOCOLOM_PROFILE=profile, DOCKER_BUILDKIT="0")
     if release_dir is not None:
         env["POTOCOLOM_RELEASE_URL"] = release_dir.resolve().as_uri()
     log = log_dir / f"installer-{version}-{int(time.time())}.log"
-    run(["bash", str(installer)], env=env, timeout=3600, log=log)
+    run(["bash", str(installer)], env=env, timeout=3600, log=log, abort=abort)
     if parse_env(install_dir / "deploy/compose/.env").get("POTOCOLOM_VERSION") != version:
         raise CheckError("installer did not pin the requested release")
 
@@ -272,6 +287,7 @@ def validate_png(data: bytes) -> tuple[int, int]:
         raise CheckError("asset response is not a non-empty PNG")
     offset = 8
     dimensions: tuple[int, int] | None = None
+    channels = 0
     image_data = bytearray()
     ended = False
     while offset + 12 <= len(data):
@@ -286,6 +302,9 @@ def validate_png(data: bytes) -> tuple[int, int]:
             break
         if kind == b"IHDR" and offset == 8 and length == 13:
             dimensions = (int.from_bytes(payload[:4], "big"), int.from_bytes(payload[4:8], "big"))
+            if payload[8] != 8 or payload[9] not in (2, 6) or payload[10:] != b"\x00\x00\x00":
+                raise CheckError("PNG must use non-interlaced 8-bit RGB or RGBA")
+            channels = 3 if payload[9] == 2 else 4
         elif kind == b"IDAT":
             image_data.extend(payload)
         elif kind == b"IEND" and length == 0:
@@ -298,9 +317,12 @@ def validate_png(data: bytes) -> tuple[int, int]:
         return dimensions
     try:
         decoder = zlib.decompressobj()
-        decoded = decoder.decompress(image_data, 768 * 768 * 8 + 768 + 1)
-        if not decoded or not decoder.eof or decoder.unconsumed_tail:
-            raise CheckError("PNG image data is empty")
+        stride = 1 + 768 * channels
+        expected = stride * 768
+        decoded = decoder.decompress(image_data, expected + 1)
+        if (len(decoded) != expected or not decoder.eof or decoder.unconsumed_tail
+                or decoder.unused_data or any(value > 4 for value in decoded[::stride])):
+            raise CheckError("PNG image data has invalid scanlines")
     except zlib.error as exc:
         raise CheckError("PNG image data is invalid") from exc
     return dimensions
@@ -309,6 +331,8 @@ def validate_png(data: bytes) -> tuple[int, int]:
 def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
     worker_deadline = time.monotonic() + 1800
     while True:
+        if safety_check is not None:
+            safety_check()
         models = http_json(base, "/api/v1/models")
         entries = models.get("models", models) if isinstance(models, dict) else models
         if isinstance(entries, list) and any(
@@ -433,61 +457,63 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
     prepared = False
-    safety_check = (lambda: rocm_safety_check(candidate_dir, project, logs)) if args.profile == "rocm" else None
-    try:
-        if candidate_dir.exists() and (not candidate_dir.is_dir() or any(candidate_dir.iterdir())):
-            raise CheckError(f"fresh install directory must be empty: {candidate_dir}")
-        prepared = True
-        prepare_fresh(candidate_dir, project, args.release_dir, args.version)
-        if _project_exists(project):
-            raise CheckError(f"owned test project already exists: {project}")
-        owned.append((candidate_dir, project))
-        run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs)
-        if not project_owns_api_port(project):
-            raise CheckError("fresh install does not own API port 8080")
-        api = api_base(candidate_dir)
-        wait_ready(api)
-        generate(api, "release install check fresh generation", safety_check)
-        compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
-        remove_owned_data_volumes(project)
-        run_installer(previous_installer, args.previous_version, candidate_dir,
-                      None, args.profile, logs)
-        api = api_base(candidate_dir)
-        wait_ready(api)
-        saved_id, saved = generate(api, "release upgrade check saved image", safety_check)
-        env_before = parse_env(candidate_dir / "deploy/compose/.env")
-        run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs)
-        env_after = parse_env(candidate_dir / "deploy/compose/.env")
-        assert_env_preserved(env_before, env_after)
-        if not project_owns_api_port(project):
-            raise CheckError("upgraded install does not own API port 8080")
-        after = api_base(candidate_dir)
-        wait_ready(after)
-        verify_assets(after, {saved_id: hashlib.sha256(saved).hexdigest()})
-        generate(after, "release upgrade check generation", safety_check)
-        passed = True
-    finally:
-        cleanup_error = None
-        failed_cleanup: set[Path] = set()
-        for directory, project in owned:
+    with RocmGuard(args.profile, candidate_dir, project, logs) as guard:
+        try:
+            if candidate_dir.exists() and (not candidate_dir.is_dir() or any(candidate_dir.iterdir())):
+                raise CheckError(f"fresh install directory must be empty: {candidate_dir}")
+            prepared = True
+            prepare_fresh(candidate_dir, project, args.release_dir, args.version)
             if _project_exists(project):
-                try:
-                    compose_owned(directory, project, ["down", "-v", "--remove-orphans"])
-                except CheckError as exc:
-                    cleanup_error = exc
-                    failed_cleanup.add(directory)
-                    continue
-        for directory, _ in owned:
-            if directory not in failed_cleanup:
-                shutil.rmtree(directory, ignore_errors=True)
-        if prepared and not owned:
-            shutil.rmtree(candidate_dir, ignore_errors=True)
-        if passed and cleanup_error is None:
-            shutil.rmtree(logs, ignore_errors=True)
-        else:
-            print(f"private installer logs retained at {logs}", file=sys.stderr)
-        if cleanup_error is not None:
-            raise CheckError(f"owned project cleanup failed: {cleanup_error}") from cleanup_error
+                raise CheckError(f"owned test project already exists: {project}")
+            owned.append((candidate_dir, project))
+            guard.start()
+            run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            if not project_owns_api_port(project):
+                raise CheckError("fresh install does not own API port 8080")
+            api = api_base(candidate_dir)
+            wait_ready(api)
+            generate(api, "release install check fresh generation", guard.check)
+            compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
+            remove_owned_data_volumes(project)
+            run_installer(previous_installer, args.previous_version, candidate_dir,
+                          None, args.profile, logs, abort=guard.failed)
+            api = api_base(candidate_dir)
+            wait_ready(api)
+            saved_id, saved = generate(api, "release upgrade check saved image", guard.check)
+            env_before = parse_env(candidate_dir / "deploy/compose/.env")
+            run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            env_after = parse_env(candidate_dir / "deploy/compose/.env")
+            assert_env_preserved(env_before, env_after)
+            if not project_owns_api_port(project):
+                raise CheckError("upgraded install does not own API port 8080")
+            after = api_base(candidate_dir)
+            wait_ready(after)
+            verify_assets(after, {saved_id: hashlib.sha256(saved).hexdigest()})
+            generate(after, "release upgrade check generation", guard.check)
+            passed = True
+        finally:
+            cleanup_error = None
+            failed_cleanup: set[Path] = set()
+            for directory, project in owned:
+                if _project_exists(project):
+                    try:
+                        compose_owned(directory, project, ["down", "-v", "--remove-orphans"])
+                    except CheckError as exc:
+                        cleanup_error = exc
+                        failed_cleanup.add(directory)
+                        continue
+            guard.close()
+            for directory, _ in owned:
+                if directory not in failed_cleanup:
+                    shutil.rmtree(directory, ignore_errors=True)
+            if prepared and not owned:
+                shutil.rmtree(candidate_dir, ignore_errors=True)
+            if passed and cleanup_error is None and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
+            if cleanup_error is not None:
+                raise CheckError(f"owned project cleanup failed: {cleanup_error}") from cleanup_error
 
 
 def wait_ready(base: str, timeout: int = 300) -> None:
@@ -538,6 +564,11 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
                       sysfs: Path = Path("/sys/class/drm")) -> None:
     compose = install_dir / "deploy/compose/compose.yml"
     env_file = install_dir / "deploy/compose/.env"
+    if not compose.is_file() or not env_file.is_file():
+        return
+    worker_ids = owned_rocm_worker_ids(project)
+    if not worker_ids:
+        return
     values = compose_environment(env_file, compose)
     try:
         reserve_mb = int(values.get("VRAM_RESERVE_MB", "1536"))
@@ -551,9 +582,6 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
     evidence_dir.mkdir(parents=True, exist_ok=True)
     stats = "\n".join(f"{name}: total={total} used={used} free={total - used}"
                        for name, total, used in cards)
-    worker_ids = owned_rocm_worker_ids(project)
-    if not worker_ids:
-        raise CheckError("cannot verify a running worker in the owned ROCm project")
     worker_log = run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
                       "logs", "--tail", "40", "worker-rocm"], timeout=15)
     group_offload = re.search(r"(?:to\s+|rung[=: ]+)group_offload", worker_log, re.IGNORECASE)
@@ -574,6 +602,55 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
         compose_owned(install_dir, project, ["stop", "--timeout", "0", "worker-rocm"])
         reason = "group offload rung detected" if group_offload or disk_offloads.strip() else "VRAM reserve breached"
         raise CheckError(f"ROCm safety stop: {reason}; private evidence: {evidence}")
+
+
+class RocmGuard:
+    """Watch the owned worker across installer, warmup, requests, and cleanup."""
+
+    def __init__(self, profile: str, install_dir: Path, project: str, logs: Path):
+        self.enabled = profile == "rocm"
+        self.install_dir, self.project, self.logs = install_dir, project, logs
+        self.failed = threading.Event()
+        self.stopped = threading.Event()
+        self.error: Exception | None = None
+        self.thread: threading.Thread | None = None
+
+    def __enter__(self):
+        return self
+
+    def start(self) -> None:
+        if self.enabled:
+            self.thread = threading.Thread(target=self._watch, name="rocm-release-guard")
+            self.thread.start()
+
+    def _watch(self) -> None:
+        while not self.stopped.is_set():
+            try:
+                rocm_safety_check(self.install_dir, self.project, self.logs)
+            except Exception as exc:
+                self.error = exc
+                self.failed.set()
+                try:
+                    compose_owned(self.install_dir, self.project, ["stop", "--timeout", "0", "worker-rocm"])
+                except CheckError:
+                    pass
+                return
+            self.stopped.wait(0.25)
+
+    def close(self) -> None:
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join()
+
+    def check(self) -> None:
+        if self.error is not None:
+            if isinstance(self.error, CheckError):
+                raise self.error
+            raise CheckError("ROCm safety monitor failed; inspect the owned worker") from self.error
+
+    def __exit__(self, *_exc):
+        self.close()
+        self.check()
 
 
 def _project_exists(project: str) -> bool:
@@ -621,28 +698,30 @@ def existing_install(args: argparse.Namespace, candidate: Path) -> None:
     project = values.get("COMPOSE_PROJECT_NAME", "").strip() or "potocolom"
     if not project_owns_api_port(project):
         raise CheckError("the configured install does not own API port 8080; refusing to attach to another service")
-    wait_ready(before)
-    saved = snapshot_assets(before)
     env_before = values
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
-    try:
-        run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs)
-        env_after = parse_env(env_file)
-        assert_env_preserved(env_before, env_after)
-        if not project_owns_api_port(project):
-            raise CheckError("upgraded install no longer owns API port 8080")
-        after = api_base(install_dir)
-        wait_ready(after)
-        verify_assets(after, saved)
-        safety_check = (lambda: rocm_safety_check(install_dir, project, logs)) if args.profile == "rocm" else None
-        generate(after, "release install check preserved existing library", safety_check)
-        passed = True
-    finally:
-        if passed:
-            shutil.rmtree(logs, ignore_errors=True)
-        else:
-            print(f"private installer logs retained at {logs}", file=sys.stderr)
+    with RocmGuard(args.profile, install_dir, project, logs) as guard:
+        try:
+            guard.start()
+            wait_ready(before)
+            saved = snapshot_assets(before)
+            run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            env_after = parse_env(env_file)
+            assert_env_preserved(env_before, env_after)
+            if not project_owns_api_port(project):
+                raise CheckError("upgraded install no longer owns API port 8080")
+            after = api_base(install_dir)
+            wait_ready(after)
+            verify_assets(after, saved)
+            generate(after, "release install check preserved existing library", guard.check)
+            passed = True
+        finally:
+            guard.close()
+            if passed and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
 
 
 def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
@@ -654,23 +733,25 @@ def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
     project = f"release-check-{stamp}"
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
-    try:
-        prepare_fresh(install_dir, project, args.release_dir, args.version)
-        if _project_exists(project):
-            raise CheckError(f"owned test project already exists: {project}")
-        run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs)
-        if not project_owns_api_port(project):
-            raise CheckError("fresh install does not own API port 8080")
-        base = api_base(install_dir)
-        wait_ready(base)
-        safety_check = (lambda: rocm_safety_check(install_dir, project, logs)) if args.profile == "rocm" else None
-        generate(base, "release install check first generation", safety_check)
-        passed = True
-    finally:
-        if passed:
-            shutil.rmtree(logs, ignore_errors=True)
-        else:
-            print(f"private installer logs retained at {logs}", file=sys.stderr)
+    with RocmGuard(args.profile, install_dir, project, logs) as guard:
+        try:
+            prepare_fresh(install_dir, project, args.release_dir, args.version)
+            if _project_exists(project):
+                raise CheckError(f"owned test project already exists: {project}")
+            guard.start()
+            run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            if not project_owns_api_port(project):
+                raise CheckError("fresh install does not own API port 8080")
+            base = api_base(install_dir)
+            wait_ready(base)
+            generate(base, "release install check first generation", guard.check)
+            passed = True
+        finally:
+            guard.close()
+            if passed and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
 
 
 def parser() -> argparse.ArgumentParser:

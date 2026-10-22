@@ -32,6 +32,10 @@ It creates a random Compose project and removes only that project's test data.
 Model caches stay between phases. On AMD, it stops the owned worker if free
 VRAM falls below `VRAM_RESERVE_MB` or disk group offload starts. Private logs
 remain on the host after a failed check. A failed check blocks publication.
+The monitor covers installer startup, warmup, readiness, generation, and cleanup.
+An unsafe worker stops even before it connects to the API. Installer cancellation
+joins its child processes. New PNGs must contain every declared RGB or RGBA row
+with valid filters. A valid header alone does not pass.
 
 After all checks pass, the workflow reserves the version with a draft GitHub
 release before pushing any image. An existing draft or published release stops
