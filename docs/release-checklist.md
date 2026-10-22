@@ -95,3 +95,26 @@ self-hosted runner. Both GPU base images are large; check free disk space
 before creating the tag. Pull request jobs use simulated or CPU workers.
 The release installer gate requires the AMD GPU, `/dev/kfd`, `/dev/dri`, and
 free host port 8080. It runs only on a version tag.
+
+## NVIDIA check over SSH
+
+`make release-check-nvidia` downloads the release artifacts and runs the same
+check driver on an SSH host with Docker and the NVIDIA Container Toolkit.
+The default install directory is the remote `~/potocolom`.
+
+```sh
+make release-check-nvidia HOST=leon@192.168.1.159 VERSION=v0.1.3
+```
+
+`INSTALL_DIR=/absolute/path` selects another remote install. `RELEASE_DIR` selects
+a local directory with `install.sh`, the self-host bundle, and `SHA256SUMS`.
+This option tests a candidate before a draft exists. The wrapper verifies the
+checksums and sends only those artifacts and the driver. GitHub credentials
+stay on the local host.
+
+The remote check keeps the install and its volumes, including on failure. An
+existing install must own port 8080 and use `AUTH_MODE=none`. The check hashes
+each saved asset before the upgrade, checks its bytes and the existing settings
+after the upgrade, then generates a 768 by 768 PNG. An empty or absent install
+directory starts a fresh stack and keeps it. The command reports `PASS` only
+after generation succeeds. A failed check needs review before publication.
