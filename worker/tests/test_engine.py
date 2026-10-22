@@ -1854,7 +1854,7 @@ def test_calibration_rejects_actual_offload_before_rendering():
     assert slots == 1
     engine._frame.assert_not_called()
     assert engine._pipelines == {}
-    free_gib[0] = 12.0
+    free_gib[0] = 9.18
     engine._predicted_rung = original_prediction
     assert "realtime" in engine.measured_manifests([vega])[0]["capabilities"]
     assert "vega-rt" not in engine._realtime_p95_ms
