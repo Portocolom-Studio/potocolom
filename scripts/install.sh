@@ -30,11 +30,13 @@ main() {
 		public_url_input="$(printf '%s' "$POTOCOLOM_PUBLIC_URL" | tr '[:upper:]' '[:lower:]')"
 		url_error=""
 		url_scheme=""; url_host=""; url_port=""
-		if [[ "$public_url_input" =~ ^(https?)://([a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:([1-9][0-9]{0,4}))?$ ]]; then
-			url_scheme="${BASH_REMATCH[1]}"; url_host="${BASH_REMATCH[2]}"; url_port="${BASH_REMATCH[5]}"
+		if [[ "$public_url_input" =~ ^(https?)://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*)(:([1-9][0-9]{0,4}))?$ ]]; then
+			url_scheme="${BASH_REMATCH[1]}"; url_host="${BASH_REMATCH[2]}"; url_port="${BASH_REMATCH[7]}"
 		fi
 		if [[ -z "$url_scheme" ]]; then
 			url_error="must be http:// or https:// followed by a hostname or IPv4 address and an optional port, with no path, query, fragment, user info or trailing slash (for IPv6, use a hostname)"
+		elif ((${#url_host} > 253)); then
+			url_error="has a hostname longer than 253 characters"
 		elif [[ -n "$url_port" ]] && ((url_port > 65535)); then
 			url_error="has a port above 65535"
 		elif [[ "$url_scheme:$url_port" == http:80 || "$url_scheme:$url_port" == https:443 ]]; then

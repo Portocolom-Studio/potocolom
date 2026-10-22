@@ -75,7 +75,7 @@ Everything below is the same stack built from a source checkout instead.
 
 Set `PUBLIC_URL` with `POTOCOLOM_PUBLIC_URL` during installation or in
 `deploy/compose/.env`, then apply it from the install directory with
-`docker compose -f deploy/compose/compose.yml --profile gpu up -d` (`rocm`
+`env -u PUBLIC_URL docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml --profile gpu up -d` (`rocm`
 on AMD). It must
 match the origin the browser sends exactly: lowercase scheme and host, the
 port only when it is not the default (no `:80` on http, no `:443` on https),

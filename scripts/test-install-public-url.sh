@@ -147,6 +147,19 @@ invalid_case invalid-ipv4-leading-zero http://192.168.001.10:8080
 invalid_case invalid-ipv4-hex http://0xc0.0xa8.1.10:8080
 invalid_case invalid-ipv4-integer http://3232235786:8080
 invalid_case invalid-ipv4-octet http://192.168.1.256:8080
+invalid_case invalid-empty-hostname-label http://studio..example.com:8080
+invalid_case invalid-hostname-label-hyphen http://studio-.example.com:8080
+label_63="$(printf 'a%.0s' {1..63})"
+invalid_case invalid-hostname-label-length "http://${label_63}a.example"
+invalid_case invalid-hostname-length "http://${label_63}.${label_63}.${label_63}.${label_63}"
+make_case longest-valid-hostname
+valid_host="${label_63}.${label_63}.${label_63}.${label_63:0:61}"
+output="$(run_install "$case_dir" "POTOCOLOM_PUBLIC_URL=http://$valid_host:8080")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *"Open http://$valid_host:8080"* ]]; then
+	printf 'ok longest-valid-hostname\n'
+else
+	fail_case longest-valid-hostname
+fi
 
 # A hostname that only starts with 127. is not loopback.
 make_case hostname-starting-127-is-not-loopback
