@@ -431,6 +431,25 @@ Hot-set models use `channels_last` memory format when loaded. `torch.compile` an
 
 Rejected alternatives: forcing compile on for all devices after the ROCm measurement (pays startup cost for noise-level realtime wins); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
+## GPU image decoders use bounded tiles
+
+GPU pipelines enable overlapping VAE tiles when the decoder supports them.
+Diffusers applies the checkpoint's tile threshold and blends the overlaps.
+The shipped SDXL fp16 VAE keeps 512-pixel realtime frames untiled; larger
+queued images decode in smaller pieces. This bounds temporary decode buffers
+while models remain resident. Large outputs can have small tone differences
+between tiles, as documented in the
+[Diffusers memory guide](https://huggingface.co/docs/diffusers/v0.41.0/optimization/memory#vae-tiling).
+
+The AMD release check exposed a 2.53 GiB decode allocation after the final
+denoise step while another model was still loaded. Waiting for allocation
+failure let the worker consume the display reserve. A bounded real decoder
+regression covers GPU tiles and the CPU's existing whole-image decode path.
+
+Rejected alternatives: wait for OOM recovery (the display can run out of
+memory first); evict every other model before a job (discards useful warm
+weights); increase every model's minimum VRAM (does not bound decode buffers).
+
 ## Image codecs off the event loop
 
 WebP and PNG encoding and decoding, the main per-frame CPU cost in both the worker and the API relay, always run in a thread executor, never on the asyncio loop. This keeps frame pacing and WebSocket heartbeats steady at the 2 to 4 fps bar. Binding for issues #15, #16 and #19.

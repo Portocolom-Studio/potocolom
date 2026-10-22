@@ -903,6 +903,10 @@ class DiffusersEngine:
                 )
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
+        if self.device.startswith("cuda"):
+            enable_tiling = getattr(getattr(pipeline, "vae", None), "enable_tiling", None)
+            if callable(enable_tiling):
+                enable_tiling()
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
 
