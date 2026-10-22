@@ -33,6 +33,8 @@ Model caches stay between phases. On AMD, it stops the owned worker if free
 VRAM falls below `VRAM_RESERVE_MB` or disk group offload starts. Private logs
 remain on the host after a failed check. A failed check blocks publication.
 The monitor covers installer startup, warmup, readiness, generation, and cleanup.
+It reads the reserve from the running worker and stops that worker by its
+verified Docker labels. Replacing installer files does not interrupt the monitor.
 An unsafe worker stops even before it connects to the API. Installer cancellation
 joins its child processes. New PNGs must contain every declared RGB or RGBA row
 with valid filters. A valid header alone does not pass.

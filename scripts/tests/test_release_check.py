@@ -58,6 +58,42 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 class ReleaseCheckTests(unittest.TestCase):
 
+    def test_worker_disappearance_is_safe_during_each_read_only_probe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for stage in ("inspect", "logs", "exec"):
+                alive = [True]
+
+                def command(args, **_kwargs):
+                    if args[1] == stage:
+                        alive[0] = False
+                    if not alive[0]:
+                        raise check.CommandFailed("docker", 1, "No such container", None)
+                    return "VRAM_RESERVE_MB=1536\n" if args[1] == "inspect" else ""
+
+                with self.subTest(stage=stage), patch.object(check, "run", side_effect=command), \
+                        patch.object(check, "owned_rocm_worker_ids", side_effect=lambda _: ["0123456789ab"] if alive[0] else []), \
+                        patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
+                    check.rocm_safety_check("owned", Path(tmp))
+                self.assertFalse(alive[0])
+
+    def test_live_reserve_values_have_finite_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for value, valid in (("", True), ("VRAM_RESERVE_MB=256", True),
+                                 ("VRAM_RESERVE_MB=65536", True), ("VRAM_RESERVE_MB=255", False),
+                                 ("VRAM_RESERVE_MB=65537", False), ("VRAM_RESERVE_MB=bad", False),
+                                 ("unexpected", False), ("OTHER=1536", False)):
+                def command(args, **_kwargs):
+                    return value if args[1] == "inspect" else ""
+
+                with self.subTest(value=value), patch.object(check, "run", side_effect=command), \
+                        patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
+                        patch.object(check, "rocm_vram_usage", return_value=[("card0", 128 * 1024**3, 1024**3)]):
+                    if valid:
+                        check.rocm_safety_check("owned", Path(tmp))
+                    else:
+                        with self.assertRaisesRegex(check.CheckError, "VRAM_RESERVE_MB"):
+                            check.rocm_safety_check("owned", Path(tmp))
+
     def test_disk_probe_retries_a_worker_restart_and_bounds_persistent_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -73,16 +109,16 @@ class ReleaseCheckTests(unittest.TestCase):
                         probes.append(True)
                         if len(probes) == 1 or persistent:
                             raise check.CommandFailed("docker", 128, "worker restarted during probe", None)
-                    return "VRAM_RESERVE_MB=1536\n" if "config" in args else ""
+                    return "VRAM_RESERVE_MB=1536\n" if "inspect" in args else ""
 
                 with patch.object(check, "run", side_effect=command), \
                         patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                         patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
                     if persistent:
                         with self.assertRaisesRegex(check.CheckError, "exited 128"):
-                            check.rocm_safety_check(root, "owned", root / "logs")
+                            check.rocm_safety_check("owned", root / "logs")
                     else:
-                        check.rocm_safety_check(root, "owned", root / "logs")
+                        check.rocm_safety_check("owned", root / "logs")
                 self.assertEqual(len(probes), 2)
 
     def test_stopped_process_wins_over_stale_docker_running_state(self):
@@ -100,17 +136,17 @@ class ReleaseCheckTests(unittest.TestCase):
                     if args[:2] == ["docker", "exec"]:
                         probes.append(True)
                         raise check.CommandFailed("docker", code, output, None)
-                    return "VRAM_RESERVE_MB=1536\n" if "config" in args else ""
+                    return "VRAM_RESERVE_MB=1536\n" if "inspect" in args else ""
 
                 with patch.object(check, "run", side_effect=command), \
                         patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                         patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
                     if code == 128 and output == message:
-                        check.rocm_safety_check(root, "owned", root / "logs")
+                        check.rocm_safety_check("owned", root / "logs")
                         self.assertEqual(len(probes), 1)
                     else:
                         with self.assertRaises(check.CommandFailed):
-                            check.rocm_safety_check(root, "owned", root / "logs")
+                            check.rocm_safety_check("owned", root / "logs")
                         self.assertEqual(len(probes), 2)
 
     def test_png_requires_all_pixels_and_valid_filters(self):
@@ -140,13 +176,13 @@ class ReleaseCheckTests(unittest.TestCase):
             child = "import pathlib,time; pathlib.Path(%r).touch(); time.sleep(1); pathlib.Path(%r).touch()" % (str(started), str(late))
             parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c',sys.argv[1]]); time.sleep(20)"
             with patch.object(check, "rocm_safety_check", side_effect=unsafe), \
-                    patch.object(check, "compose_owned") as stop, \
+                    patch.object(check, "stop_owned_rocm_workers") as stop, \
                     self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
-                with check.RocmGuard("rocm", root, "owned-project", root / "logs") as guard:
+                with check.RocmGuard("rocm", "owned-project", root / "logs") as guard:
                     guard.start()
                     check.run([sys.executable, "-c", parent, child], timeout=10, abort=guard.failed)
             self.assertFalse(guard.thread.is_alive())
-            stop.assert_called_once_with(root, "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+            stop.assert_called_once_with("owned-project", root / "logs")
             time.sleep(1.1)
             self.assertFalse(late.exists())
 
@@ -166,10 +202,10 @@ class ReleaseCheckTests(unittest.TestCase):
             return []
 
         with patch.object(check, "rocm_safety_check", side_effect=unsafe), \
-                patch.object(check, "compose_owned"), \
+                patch.object(check, "stop_owned_rocm_workers"), \
                 patch.object(check, "http_json", side_effect=models), \
                 self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
-            with check.RocmGuard("rocm", Path("unused"), "owned", Path("unused")) as guard:
+            with check.RocmGuard("rocm", "owned", Path("unused")) as guard:
                 guard.start()
                 with patch.object(check.time, "sleep", side_effect=lambda _: guard.failed.wait(2)):
                     check.generate("http://localhost:8080", "test", guard.check)
@@ -183,7 +219,7 @@ class ReleaseCheckTests(unittest.TestCase):
             release.wait(2)
             finished.set()
 
-        guard = check.RocmGuard("rocm", Path("unused"), "owned", Path("unused"))
+        guard = check.RocmGuard("rocm", "owned", Path("unused"))
         with patch.object(check, "rocm_safety_check", side_effect=checking):
             try:
                 with guard:
@@ -222,7 +258,7 @@ class ReleaseCheckTests(unittest.TestCase):
                     patch.object(check, "compose_environment", return_value={"COMPOSE_PROJECT_NAME": "owned"}), \
                     patch.object(check, "project_owns_api_port", return_value=True), \
                     patch.object(check, "rocm_safety_check", side_effect=unsafe), \
-                    patch.object(check, "compose_owned", side_effect=lambda *_: stopped.set()), \
+                    patch.object(check, "stop_owned_rocm_workers", side_effect=lambda *_: stopped.set()), \
                     patch.object(check, "wait_ready", side_effect=readiness), \
                     patch.object(check, "run_installer") as installer, \
                     patch.object(check.shutil, "rmtree") as remove, \
@@ -249,7 +285,7 @@ class ReleaseCheckTests(unittest.TestCase):
                 with patch.object(check, "free_port_8080"), \
                         patch.object(check, "_project_exists", return_value=False), \
                         patch.object(check, "rocm_safety_check", side_effect=check.CheckError("ROCm safety stop")), \
-                        patch.object(check, "compose_owned"), \
+                        patch.object(check, "stop_owned_rocm_workers"), \
                         patch.object(check, "run_installer", side_effect=installer), \
                         redirect_stderr(io.StringIO()), self.assertRaisesRegex(check.CheckError, "ROCm safety stop"):
                     (check.fresh_keep_install if keep else check.fresh_rehearsal)(args, release / "install.sh")
@@ -551,14 +587,13 @@ class ReleaseCheckTests(unittest.TestCase):
                 used = 7 * 1024 * 1024 * 1024 if name == "card1" else total // 2
                 (device / "mem_info_vram_used").write_text(str(used), encoding="ascii")
             docker = Mock(return_value=Mock(returncode=0, stdout="0123456789ab\n"))
-            install = root / "install"
             logs = root / "private"
             with patch.object(check.subprocess, "run", docker), \
                     patch.object(check, "run", return_value=""), \
-                    patch.object(check, "compose_owned") as stop, \
+                    patch.object(check, "stop_owned_rocm_workers") as stop, \
                     self.assertRaisesRegex(check.CheckError, "VRAM reserve breached"):
-                check.rocm_safety_check(install, "owned-project", logs, sysfs)
-            stop.assert_called_once_with(install, "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+                check.rocm_safety_check("owned-project", logs, sysfs)
+            stop.assert_called_once_with("owned-project", logs)
             self.assertIn("card1", (logs / "rocm-safety-evidence.log").read_text(encoding="utf-8"))
             self.assertIn("--filter", docker.call_args.args[0])
 
@@ -576,11 +611,11 @@ class ReleaseCheckTests(unittest.TestCase):
             (device / "mem_info_vram_used").write_text(str(1 * 1024**3), encoding="ascii")
             response = Mock(returncode=0, stdout="0123456789ab\n")
             with patch.object(check.subprocess, "run", return_value=response), \
-                    patch.object(check, "run", return_value="demoting from model_offload to group_offload"), \
-                    patch.object(check, "compose_owned") as stop, \
+                    patch.object(check, "run", side_effect=["", "demoting from model_offload to group_offload", ""]), \
+                    patch.object(check, "stop_owned_rocm_workers") as stop, \
                     self.assertRaisesRegex(check.CheckError, "group offload rung"):
-                check.rocm_safety_check(root / "install", "owned-project", root / "private", device.parent.parent)
-            stop.assert_called_once_with(root / "install", "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+                check.rocm_safety_check("owned-project", root / "private", device.parent.parent)
+            stop.assert_called_once_with("owned-project", root / "private")
 
     def test_initial_disk_offload_is_stopped_without_a_demotion_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -593,13 +628,13 @@ class ReleaseCheckTests(unittest.TestCase):
             with patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]), \
                     patch.object(check.subprocess, "run", return_value=response), \
                     patch.object(check, "run", side_effect=["", "", "/models/.offload/ssd-1b-lightning\n"]) as run, \
-                    patch.object(check, "compose_owned") as stop, \
+                    patch.object(check, "stop_owned_rocm_workers") as stop, \
                     self.assertRaisesRegex(check.CheckError, "group offload rung"):
-                check.rocm_safety_check(root / "install", "owned-project", root / "private")
+                check.rocm_safety_check("owned-project", root / "private")
             self.assertEqual(run.call_args.args[0][:3], ["docker", "exec", "0123456789ab"])
-            stop.assert_called_once_with(root / "install", "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+            stop.assert_called_once_with("owned-project", root / "private")
 
-    def test_rocm_guard_reads_the_install_reserve(self) -> None:
+    def test_rocm_guard_reads_the_live_worker_reserve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
@@ -610,10 +645,10 @@ class ReleaseCheckTests(unittest.TestCase):
                     patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                     patch.object(check, "run", side_effect=["VRAM_RESERVE_MB=3072\n", "", ""]), \
                     patch.dict(os.environ, {"VRAM_RESERVE_MB": "1536"}), \
-                    patch.object(check, "compose_owned") as stop, \
+                    patch.object(check, "stop_owned_rocm_workers") as stop, \
                     self.assertRaisesRegex(check.CheckError, "VRAM reserve breached"):
-                check.rocm_safety_check(root / "install", "owned-project", root / "private")
-            stop.assert_called_once_with(root / "install", "owned-project", ["stop", "--timeout", "0", "worker-rocm"])
+                check.rocm_safety_check("owned-project", root / "private")
+            stop.assert_called_once_with("owned-project", root / "private")
 
     def test_rocm_guard_does_not_charge_the_small_igpu_reserve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -631,8 +666,8 @@ class ReleaseCheckTests(unittest.TestCase):
                     (device / field).write_text(value, encoding="ascii")
             with patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                     patch.object(check, "run", return_value=""), \
-                    patch.object(check, "compose_owned") as stop:
-                check.rocm_safety_check(root / "install", "owned-project", root / "private", root / "sys")
+                    patch.object(check, "stop_owned_rocm_workers") as stop:
+                check.rocm_safety_check("owned-project", root / "private", root / "sys")
             stop.assert_not_called()
         with patch.object(check, "snapshot_assets", return_value={"asset-1": "changed"}):
             with self.assertRaisesRegex(check.CheckError, "missing or changed"):

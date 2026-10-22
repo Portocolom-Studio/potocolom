@@ -464,7 +464,7 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
     prepared = False
-    with RocmGuard(args.profile, candidate_dir, project, logs) as guard:
+    with RocmGuard(args.profile, project, logs) as guard:
         try:
             if candidate_dir.exists() and (not candidate_dir.is_dir() or any(candidate_dir.iterdir())):
                 raise CheckError(f"fresh install directory must be empty: {candidate_dir}")
@@ -568,57 +568,80 @@ def owned_rocm_worker_ids(project: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if re.fullmatch(r"[0-9a-fA-F]{12,64}", line)]
 
 
-def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
+def stop_owned_rocm_workers(project: str, logs: Path) -> None:
+    worker_ids = owned_rocm_worker_ids(project)
+    if worker_ids:
+        logs.mkdir(parents=True, exist_ok=True)
+        run(["docker", "stop", "--time", "0", *worker_ids],
+            timeout=30, log=logs / "rocm-worker-stop.log")
+
+
+def rocm_worker_probe(worker_id: str, project: str, args: list[str], log: Path) -> str | None:
+    for attempt in range(2):
+        try:
+            return run(args, timeout=15, log=log)
+        except CommandFailed as exc:
+            if (exc.returncode == 128 and exc.output.strip()
+                    == "OCI runtime exec failed: exec failed: cannot exec in a stopped container"):
+                return None
+            if worker_id not in owned_rocm_worker_ids(project):
+                return None
+            if attempt:
+                raise
+    raise AssertionError("unreachable probe retry")
+
+
+def rocm_safety_check(project: str, evidence_dir: Path,
                       sysfs: Path = Path("/sys/class/drm")) -> None:
-    compose = install_dir / "deploy/compose/compose.yml"
-    env_file = install_dir / "deploy/compose/.env"
-    if not compose.is_file() or not env_file.is_file():
-        return
     worker_ids = owned_rocm_worker_ids(project)
     if not worker_ids:
         return
-    values = compose_environment(env_file, compose)
-    try:
-        reserve_mb = int(values.get("VRAM_RESERVE_MB", "1536"))
-    except ValueError as exc:
-        raise CheckError("VRAM_RESERVE_MB must be between 256 and 65536") from exc
-    if not 256 <= reserve_mb <= 65536:
-        raise CheckError("VRAM_RESERVE_MB must be between 256 and 65536")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    reserves = []
+    worker_log, disk_offloads = "", ""
+    reserve_format = ('{{range .Config.Env}}'
+                      '{{if eq (index (split . "=") 0) "VRAM_RESERVE_MB"}}'
+                      '{{println .}}{{end}}{{end}}')
+    for worker_id in worker_ids:
+        setting = rocm_worker_probe(worker_id, project, [
+            "docker", "inspect", "--format", reserve_format, worker_id,
+        ], evidence_dir / "rocm-reserve-probe.log")
+        if setting is None:
+            continue
+        try:
+            raw = setting.strip()
+            if raw and not raw.startswith("VRAM_RESERVE_MB="):
+                raise ValueError("unexpected reserve setting")
+            reserve_mb = int(raw.partition("=")[2] if raw else "1536")
+            if not 256 <= reserve_mb <= 65536:
+                raise ValueError("reserve outside limits")
+        except ValueError as exc:
+            raise CheckError("VRAM_RESERVE_MB must be between 256 and 65536") from exc
+        reserves.append(reserve_mb)
+        worker_log += rocm_worker_probe(worker_id, project, [
+            "docker", "logs", "--tail", "40", worker_id,
+        ], evidence_dir / "rocm-worker-tail.log") or ""
+        disk_offloads += rocm_worker_probe(worker_id, project, [
+            "docker", "exec", worker_id, "sh", "-c",
+            "if [ -d /models/.offload ]; then "
+            "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
+        ], evidence_dir / "rocm-offload-probe.log") or ""
+    if not reserves:
+        return
     cards = rocm_vram_usage(sysfs)
     if not cards:
         raise CheckError("no physical AMD GPU with reportable VRAM was found")
-    evidence_dir.mkdir(parents=True, exist_ok=True)
     stats = "\n".join(f"{name}: total={total} used={used} free={total - used}"
                        for name, total, used in cards)
-    worker_log = run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
-                      "logs", "--tail", "40", "worker-rocm"], timeout=15)
     group_offload = re.search(r"(?:to\s+|rung[=: ]+)group_offload", worker_log, re.IGNORECASE)
-    disk_offloads = ""
-    for worker_id in worker_ids:
-        for attempt in range(2):
-            try:
-                disk_offloads += run([
-                    "docker", "exec", worker_id, "sh", "-c",
-                    "if [ -d /models/.offload ]; then "
-                    "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
-                ], timeout=15, log=evidence_dir / "rocm-offload-probe.log")
-                break
-            except CommandFailed as exc:
-                if (exc.returncode == 128 and exc.output.strip()
-                        == "OCI runtime exec failed: exec failed: cannot exec in a stopped container"):
-                    break
-                if worker_id not in owned_rocm_worker_ids(project):
-                    break
-                if attempt:
-                    raise
-    breached = any(total - used < reserve_mb * 1024 * 1024 for _, total, used in cards)
+    breached = any(total - used < max(reserves) * 1024 * 1024 for _, total, used in cards)
     if group_offload or disk_offloads.strip() or breached:
         evidence = evidence_dir / "rocm-safety-evidence.log"
         fd = os.open(evidence, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             stream.write(stats + "\n--- owned worker tail ---\n" + worker_log
                          + "\n--- disk offload paths ---\n" + disk_offloads)
-        compose_owned(install_dir, project, ["stop", "--timeout", "0", "worker-rocm"])
+        stop_owned_rocm_workers(project, evidence_dir)
         reason = "group offload rung detected" if group_offload or disk_offloads.strip() else "VRAM reserve breached"
         raise CheckError(f"ROCm safety stop: {reason}; private evidence: {evidence}")
 
@@ -626,9 +649,9 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
 class RocmGuard:
     """Watch the owned worker across installer, warmup, requests, and cleanup."""
 
-    def __init__(self, profile: str, install_dir: Path, project: str, logs: Path):
+    def __init__(self, profile: str, project: str, logs: Path):
         self.enabled = profile == "rocm"
-        self.install_dir, self.project, self.logs = install_dir, project, logs
+        self.project, self.logs = project, logs
         self.failed = threading.Event()
         self.stopped = threading.Event()
         self.error: Exception | None = None
@@ -645,12 +668,12 @@ class RocmGuard:
     def _watch(self) -> None:
         while not self.stopped.is_set():
             try:
-                rocm_safety_check(self.install_dir, self.project, self.logs)
+                rocm_safety_check(self.project, self.logs)
             except Exception as exc:
                 self.error = exc
                 self.failed.set()
                 try:
-                    compose_owned(self.install_dir, self.project, ["stop", "--timeout", "0", "worker-rocm"])
+                    stop_owned_rocm_workers(self.project, self.logs)
                 except CheckError:
                     pass
                 return
@@ -720,7 +743,7 @@ def existing_install(args: argparse.Namespace, candidate: Path) -> None:
     env_before = values
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
-    with RocmGuard(args.profile, install_dir, project, logs) as guard:
+    with RocmGuard(args.profile, project, logs) as guard:
         try:
             guard.start()
             wait_ready(before)
@@ -752,7 +775,7 @@ def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
     project = f"release-check-{stamp}"
     logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
     passed = False
-    with RocmGuard(args.profile, install_dir, project, logs) as guard:
+    with RocmGuard(args.profile, project, logs) as guard:
         try:
             prepare_fresh(install_dir, project, args.release_dir, args.version)
             if _project_exists(project):
