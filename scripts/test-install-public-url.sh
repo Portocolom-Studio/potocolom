@@ -4,6 +4,7 @@ set -uo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+REAL_CURL="$(command -v curl)"
 failures=0
 
 fail_case() {
@@ -18,6 +19,8 @@ stage_bundle() {
 	cp "$repo/scripts/preflight.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/gpu-profile.sh" "$stage/scripts/"
 	(cd "$stage" && tar -czf "$tmp/bundle.tar.gz" deploy scripts)
 	(cd "$tmp" && sha256sum bundle.tar.gz | sed 's#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#' >SHA256SUMS)
+	cp "$tmp/bundle.tar.gz" "$stage/potocolom-v9.9.9-selfhost.tar.gz"
+	cp "$tmp/SHA256SUMS" "$stage/SHA256SUMS"
 }
 
 make_case() {
@@ -30,6 +33,9 @@ while (($#)); do
 	if [[ "$1" == -o ]]; then
 		out="$2"
 		shift 2
+	elif [[ "$1" == http://* || "$1" == https://* || "$1" == file://* ]]; then
+		url="$1"
+		shift
 	else
 		shift
 	fi
@@ -37,7 +43,10 @@ done
 # Only downloads (-o) are served; anything else, such as preflight's health
 # probe of a studio that happens to be on port 8080, gets a refused connection.
 [[ -n "${out:-}" ]] || exit 7
-printf 'called\n' >>"${CURL_LOG:?}"
+printf '%s\n' "${url:-}" >>"${CURL_LOG:?}"
+if [[ "${url:-}" == file://* ]]; then
+	exec "$REAL_CURL" -fsSL -o "$out" "$url"
+fi
 case "$out" in
 	*SHA256SUMS) cp "$BUNDLE_DIR/SHA256SUMS" "$out" ;;
 	*) cp "$BUNDLE_DIR/bundle.tar.gz" "$out" ;;
@@ -51,6 +60,7 @@ case "$*" in
 	'compose version') printf '2.30.0\n' ;;
 	'info') exit 0 ;;
 	'volume inspect'*) exit 1 ;;
+	*' pull --policy missing'* ) [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
 	*' pull'|*' up -d --no-build'|*' rm -sf'|*' compose version'|*) exit 0 ;;
 esac
 EOF
@@ -84,7 +94,7 @@ EOF
 run_install() {
 	local case_dir="$1"
 	shift
-	env PATH="$case_dir/bin:$PATH" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" \
+	env PATH="$case_dir/bin:$PATH" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" \
 		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
 		POTOCOLOM_PROFILE=gpu "$@" bash "$repo/scripts/install.sh" 2>&1
 }
@@ -106,7 +116,7 @@ check_case() {
 	case "$name" in
 		install-writes-public-url)
 			if [[ "$rc" -eq 0 && "$(sed -n 's/^PUBLIC_URL=//p' "$env_file" | tail -n 1)" == http://192.168.1.10:8080 && "$output" != *'only works from this machine'* \
-				&& "$(grep -c ' pull | ' "$case_dir/docker.log")" -ge 1 && "$(grep -c ' up -d --no-build | ' "$case_dir/docker.log")" -eq 1 \
+				&& "$(grep -c ' pull --policy missing | ' "$case_dir/docker.log")" -ge 1 && "$(grep -c ' up -d --no-build | ' "$case_dir/docker.log")" -eq 1 \
 				&& "$(sed -n 's/^POTOCOLOM_VERSION=//p' "$env_file")" == v9.9.9 ]]; then printf 'ok %s\n' "$name"; else fail_case "$name"; fi
 			;;
 		fresh-default-and-help)
@@ -121,6 +131,40 @@ check_case() {
 check_case install-writes-public-url http://192.168.1.10:8080 set
 check_case fresh-default-and-help http://localhost:8080 unset
 check_case upgrade-keeps-public-url https://studio.example.test:9443 upgrade
+
+make_case release-url-default
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(head -n 1 "$case_dir/curl.log")" == https://github.com/Portocolom-Studio/potocolom/releases/download/v9.9.9/potocolom-v9.9.9-selfhost.tar.gz ]]; then
+	printf 'ok release-url-default\n'
+else
+	fail_case release-url-default
+fi
+
+make_case release-url-file
+output="$(run_install "$case_dir" POTOCOLOM_RELEASE_URL="file://$case_dir/source/")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(head -n 1 "$case_dir/curl.log")" == "file://$case_dir/source/potocolom-v9.9.9-selfhost.tar.gz" ]]; then
+	printf 'ok release-url-file\n'
+else
+	fail_case release-url-file
+fi
+
+make_case release-url-https
+output="$(run_install "$case_dir" POTOCOLOM_RELEASE_URL=https://releases.example.test/path/)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(head -n 1 "$case_dir/curl.log")" == https://releases.example.test/path/potocolom-v9.9.9-selfhost.tar.gz ]]; then
+	printf 'ok release-url-https\n'
+else
+	fail_case release-url-https
+fi
+
+make_case checksum-fails-before-extract
+printf '%064d  potocolom-v9.9.9-selfhost.tar.gz\n' 0 >"$tmp/SHA256SUMS"
+rc=0
+output="$(run_install "$case_dir")" || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'SHA256SUMS does not verify'* && ! -e "$case_dir/install/deploy/compose/.env" ]]; then
+	printf 'ok checksum-fails-before-extract\n'
+else
+	fail_case checksum-fails-before-extract
+fi
 
 invalid_case() {
 	local name="$1" value="$2" output rc
@@ -159,6 +203,35 @@ if [[ "$rc" -eq 0 && "$output" == *"Open http://$valid_host:8080"* ]]; then
 	printf 'ok longest-valid-hostname\n'
 else
 	fail_case longest-valid-hostname
+fi
+
+invalid_release_case() {
+	local name="$1" value="$2" output rc
+	make_case "$name"
+	rc=0
+	output="$(run_install "$case_dir" "POTOCOLOM_RELEASE_URL=$value")" || rc=$?
+	if [[ "$rc" -eq 1 && "$output" == *'POTOCOLOM_RELEASE_URL'* && ! -s "$case_dir/curl.log" ]]; then
+		printf 'ok %s\n' "$name"
+	else
+		fail_case "$name"
+	fi
+}
+invalid_release_case release-url-blank ''
+invalid_release_case release-url-relative 'bundle'
+invalid_release_case release-url-ftp 'ftp://example.test/release'
+invalid_release_case release-url-relative-file 'file://relative/path'
+invalid_release_case release-url-malformed-https 'https://'
+
+make_case pull-failure-keeps-version
+mkdir -p "$case_dir/install/deploy/compose"
+sed 's/^POTOCOLOM_VERSION=.*/POTOCOLOM_VERSION=v8.8.8/' "$repo/deploy/compose/.env.example" >"$case_dir/install/deploy/compose/.env"
+DOCKER_FAIL_PULL=1
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+unset DOCKER_FAIL_PULL
+if [[ "$rc" -ne 0 && "$(sed -n 's/^POTOCOLOM_VERSION=//p' "$case_dir/install/deploy/compose/.env")" == v8.8.8 ]]; then
+	printf 'ok pull-failure-keeps-version\n'
+else
+	fail_case pull-failure-keeps-version
 fi
 
 # A hostname that only starts with 127. is not loopback.

@@ -102,6 +102,29 @@ main() {
 
 	BASE_URL="https://github.com/Portocolom-Studio/potocolom/releases/download/$VERSION"
 	BUNDLE="potocolom-$VERSION-selfhost.tar.gz"
+	if [[ "${POTOCOLOM_RELEASE_URL+x}" == x ]]; then
+		release_url="$POTOCOLOM_RELEASE_URL"
+		if [[ -z "$release_url" || "$release_url" =~ [[:space:]] || "$release_url" == *\?* || "$release_url" == *\#* ]]; then
+			echo 'error: POTOCOLOM_RELEASE_URL must be an https:// URL or absolute file:// URL without query or fragment' >&2
+			exit 1
+		fi
+		case "$release_url" in
+			https://*)
+				if [[ ! "$release_url" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[^[:space:]\?#]*)?$ ]]; then
+					echo 'error: POTOCOLOM_RELEASE_URL must be a valid https:// location' >&2
+					exit 1
+				fi
+				;;
+			file:///*) ;;
+			*) echo 'error: POTOCOLOM_RELEASE_URL must use https:// or an absolute file:// URL' >&2; exit 1 ;;
+		esac
+		# file:// uses a local absolute path without an authority component.
+		if [[ "$release_url" == file://* && ! "$release_url" =~ ^file:///[^[:space:]\?#]*$ ]]; then
+			echo 'error: POTOCOLOM_RELEASE_URL file:// location must have an absolute path' >&2
+			exit 1
+		fi
+		BASE_URL="${release_url%/}"
+	fi
 	curl -fsSL -o "$TMP/$BUNDLE" "$BASE_URL/$BUNDLE"
 	curl -fsSL -o "$TMP/SHA256SUMS" "$BASE_URL/SHA256SUMS"
 
@@ -143,7 +166,7 @@ main() {
 	# The shell env beats the env file, so the pull runs against this tag
 	# before .env names it, and .env is pinned only afterwards: a failed
 	# pull must not leave it naming a tag that was never pulled.
-	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
+	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull --policy missing
 
 	# Pin release metadata and apply an explicit public URL in one write.
 	env_tmp="$(mktemp)"

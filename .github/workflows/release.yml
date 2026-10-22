@@ -106,6 +106,17 @@ jobs:
           bundle="$RUNNER_TEMP/selfhost-bundle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf "$bundle" && mkdir -p "$bundle"
           tar -xzf "potocolom-$VERSION-selfhost.tar.gz" -C "$bundle"
+          mkdir release-candidate
+          sed "s/__POTOCOLOM_VERSION__/$VERSION/" scripts/install.sh > release-candidate/install.sh
+          cp "potocolom-$VERSION-selfhost.tar.gz" release-candidate/
+          python3 - "$VERSION" <<'PY'
+          import hashlib, pathlib, sys
+          release = pathlib.Path("release-candidate")
+          bundle = f"potocolom-{sys.argv[1]}-selfhost.tar.gz"
+          lines = [f"{hashlib.sha256((release / name).read_bytes()).hexdigest()}  {name}"
+                   for name in ("install.sh", bundle)]
+          (release / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
           for image in worker-cuda worker-rocm; do
             docker run --rm --entrypoint python "$REGISTRY/potocolom-worker:$VERSION-${image#worker-}" \
               -c 'import torch, diffusers, transformers, torchao; print(torch.__version__, diffusers.__version__)'
@@ -143,6 +154,34 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           output: trivy-worker-rocm.txt
+      - name: Rehearse exact installer and previous release on GPU
+        run: |
+          python3 - "$VERSION" <<'PY' > previous-version.txt
+          import json, re, subprocess, sys
+          current = tuple(map(int, sys.argv[1][1:].split(".")))
+          output = subprocess.check_output([
+              "gh", "release", "list", "--limit", "100", "--json", "tagName,isDraft,isPrerelease"
+          ], text=True)
+          versions = []
+          for item in json.loads(output):
+              tag = item["tagName"]
+              if item["isDraft"] or item["isPrerelease"] or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+                  continue
+              parsed = tuple(map(int, tag[1:].split(".")))
+              if parsed < current:
+                  versions.append((parsed, tag))
+          if not versions:
+              raise SystemExit("no previous published release found")
+          print(max(versions)[1])
+          PY
+          previous="$(cat previous-version.txt)"
+          mkdir previous-release
+          gh release download "$previous" --dir previous-release \
+            --pattern install.sh --pattern "potocolom-$previous-selfhost.tar.gz" --pattern SHA256SUMS
+          flock /tmp/potocolom-release-check-gpu.lock \
+            python3 scripts/release-check.py --version "$VERSION" --release-dir release-candidate \
+              --install-dir "$RUNNER_TEMP/release-check-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+              --previous-release-dir previous-release --previous-version "$previous" --profile rocm
       - name: Publish the tested images and create a draft release
         env:
           REGISTRY: ${{ steps.images.outputs.registry }}
