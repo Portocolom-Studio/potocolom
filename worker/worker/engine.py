@@ -1049,6 +1049,14 @@ class DiffusersEngine:
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
             )
             return 0
+        self._ensure_vram(manifest)
+        if self._rungs.get(manifest.id) != "full":
+            self._realtime_p95_ms.pop(manifest.id, None)
+            logger.info(
+                "realtime calibration skipped for %s (loaded %s)",
+                manifest.id, self._rungs.get(manifest.id),
+            )
+            return 0
         params, canvas, strength = self._calibration_inputs(manifest)
         samples: list[float] = []
         # One discarded pass absorbs remaining compile/warmup cost.
@@ -1740,9 +1748,8 @@ class DiffusersEngine:
         return True
 
     def _evict_all(self) -> None:
-        for pipeline in self._pipelines.values():
-            self._detach_preview_decoder(pipeline)
-        self._pipelines.clear()
+        for key in list(self._pipelines):
+            self._drop_pipeline(key)
         self._rungs.clear()
         self._last_used.clear()
         self._free_gpu_cache()

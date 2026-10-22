@@ -4,6 +4,7 @@ import struct
 import sys
 import time
 import zlib
+import weakref
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1652,10 +1653,17 @@ def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
     engine.device = "cuda"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
-    held = 8 * len(rungs) if held_gib is None else held_gib
+    free = [free_gib]
+    held = [8 * len(rungs) if held_gib is None else held_gib]
+
+    def empty_cache():
+        free[0] += held[0]
+        held[0] = 0.0
+
     engine.torch = SimpleNamespace(cuda=SimpleNamespace(
-        mem_get_info=lambda: (int(free_gib * 1024**3), 16 * 1024**3),
-        memory_reserved=lambda: int(held * 1024**3),
+        mem_get_info=lambda: (int(free[0] * 1024**3), 16 * 1024**3),
+        memory_reserved=lambda: int(held[0] * 1024**3),
+        empty_cache=empty_cache,
     ))
     engine._rungs = rungs
     engine._pipelines = {(model_id, "t2i"): object() for model_id in rungs}
@@ -1765,6 +1773,90 @@ def test_prediction_counts_the_allocator_cache():
 
     assert engine._predicted_rung(vega) == "full"
 
+
+def test_evict_all_releases_last_pipeline_before_flushing_allocator_cache():
+    class ResidentPipeline:
+        pass
+
+    resident = ResidentPipeline()
+    resident_ref = weakref.ref(resident)
+    free_gib = [9.18]
+    reserved_gib = [6.6]
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = "auto"
+    engine.vram_reserve_mb = 1536
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(
+        mem_get_info=lambda: (int(free_gib[0] * 1024**3), 16 * 1024**3),
+        memory_reserved=lambda: int(reserved_gib[0] * 1024**3),
+    ))
+    engine._pipelines = {("cached", "t2i"): resident}
+    engine._rungs = {"cached": "full"}
+    engine._last_used = {"cached": 1.0}
+
+    def flush_allocator_cache():
+        assert resident_ref() is None
+        free_gib[0] += reserved_gib[0]
+        reserved_gib[0] = 0.0
+
+    engine._free_gpu_cache = flush_allocator_cache
+    del resident
+    engine._evict_all()
+
+    assert engine._pipelines == {}
+    assert engine._rungs == {}
+    assert engine._last_used == {}
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+    assert engine._select_rung(vega) == "full"
+
+
+def test_calibration_rejects_actual_offload_before_rendering():
+    engine = _resident_vram_engine({}, held_gib=6.6)
+    engine.memory_mode = "auto"
+    engine.vram_reserve_mb = 1536
+    engine.models_dir = ""
+    engine._last_used = {}
+    engine._calibration_cap = 4
+    engine._calibrated_slots = None
+    engine._calibration_failed = False
+    engine._realtime_p95_ms = {"vega-rt": 200, "sibling": 250}
+    engine._realtime_batch_ms = {"vega-rt": [200], "sibling": [250]}
+    engine._observed_frame_ms = {}
+    engine._gpu = asyncio.Lock()
+    engine._frame = MagicMock()
+    free_gib = [9.18]
+    engine.torch.cuda.mem_get_info = lambda: (
+        int(free_gib[0] * 1024**3), 16 * 1024**3,
+    )
+    original_prediction = engine._predicted_rung
+
+    def prediction_then_memory_drop(manifest):
+        rung = original_prediction(manifest)
+        free_gib[0] = 7.0
+        return rung
+
+    engine._predicted_rung = prediction_then_memory_drop
+    vega = Manifest(
+        id="vega-rt", name="VegaRT",
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    slots = asyncio.run(engine.calibrate_realtime(vega, configured=4))
+
+    assert engine.model_rung("vega-rt") == "model_offload"
+    assert slots == 1
+    engine._frame.assert_not_called()
+    assert engine._pipelines == {}
+    assert "vega-rt" not in engine._realtime_p95_ms
+    assert "vega-rt" not in engine._realtime_batch_ms
+    assert engine._realtime_p95_ms == {"sibling": 250}
+    assert engine._realtime_batch_ms == {"sibling": [250]}
+
 def _calibration_engine(rungs):
     engine = _resident_vram_engine({"cached": "full"})
     engine._rungs.update(rungs)
@@ -1781,7 +1873,7 @@ def test_calibration_discards_a_model_that_loaded_offloaded():
     engine = _calibration_engine({})
 
     def frame(manifest, *_args):
-        engine._rungs.setdefault(manifest.id, "model_offload")
+        engine._rungs[manifest.id] = "model_offload"
         return (Image.new("RGB", (32, 32)), 200)
 
     engine._frame = MagicMock(side_effect=frame)
@@ -2931,6 +3023,7 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
+    engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
     engine._frame = MagicMock(
         return_value=(Image.new("RGB", (32, 32)), 200),
         side_effect=_loads_full(engine),
@@ -3066,6 +3159,7 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
+    engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
     engine._frame = MagicMock(return_value=b"webp")
 
     manifest = Manifest(
@@ -3107,6 +3201,7 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
+    engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
     engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
 
     manifest = Manifest(
@@ -3771,6 +3866,7 @@ def test_calibrate_failure_does_not_zero_a_sibling():
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
+    engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
     engine._frame = MagicMock(side_effect=RuntimeError("hip boom"))
 
     boom = Manifest(
@@ -3820,6 +3916,7 @@ def test_calibrate_elapsed_includes_the_frame_call():
     engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
+    engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
 
     def slow_frame(*_args, **_kwargs):
         time.sleep(0.05)
