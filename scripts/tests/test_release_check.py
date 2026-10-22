@@ -72,18 +72,46 @@ class ReleaseCheckTests(unittest.TestCase):
                     if args[:2] == ["docker", "exec"]:
                         probes.append(True)
                         if len(probes) == 1 or persistent:
-                            raise check.CheckError("worker restarted during probe")
+                            raise check.CommandFailed("docker", 128, "worker restarted during probe", None)
                     return "VRAM_RESERVE_MB=1536\n" if "config" in args else ""
 
                 with patch.object(check, "run", side_effect=command), \
                         patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
                         patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
                     if persistent:
-                        with self.assertRaisesRegex(check.CheckError, "restarted"):
+                        with self.assertRaisesRegex(check.CheckError, "exited 128"):
                             check.rocm_safety_check(root, "owned", root / "logs")
                     else:
                         check.rocm_safety_check(root, "owned", root / "logs")
                 self.assertEqual(len(probes), 2)
+
+    def test_stopped_process_wins_over_stale_docker_running_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = root / "deploy/compose/.env"
+            env.parent.mkdir(parents=True)
+            env.write_text("VRAM_RESERVE_MB=1536\n")
+            env.with_name("compose.yml").write_text("services: {}\n")
+            message = "OCI runtime exec failed: exec failed: cannot exec in a stopped container"
+            for code, output in ((128, message), (1, message), (128, "permission denied")):
+                probes = []
+
+                def command(args, **_kwargs):
+                    if args[:2] == ["docker", "exec"]:
+                        probes.append(True)
+                        raise check.CommandFailed("docker", code, output, None)
+                    return "VRAM_RESERVE_MB=1536\n" if "config" in args else ""
+
+                with patch.object(check, "run", side_effect=command), \
+                        patch.object(check, "owned_rocm_worker_ids", return_value=["0123456789ab"]), \
+                        patch.object(check, "rocm_vram_usage", return_value=[("card0", 16 * 1024**3, 2 * 1024**3)]):
+                    if code == 128 and output == message:
+                        check.rocm_safety_check(root, "owned", root / "logs")
+                        self.assertEqual(len(probes), 1)
+                    else:
+                        with self.assertRaises(check.CommandFailed):
+                            check.rocm_safety_check(root, "owned", root / "logs")
+                        self.assertEqual(len(probes), 2)
 
     def test_png_requires_all_pixels_and_valid_filters(self):
         complete = bytes((1 + 768 * 3) * 768)

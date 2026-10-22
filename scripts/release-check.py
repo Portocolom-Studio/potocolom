@@ -60,6 +60,13 @@ class CheckError(RuntimeError):
     pass
 
 
+class CommandFailed(CheckError):
+    def __init__(self, program: str, returncode: int, output: str, log: Path | None):
+        super().__init__(f"{Path(program).name} exited {returncode}; private log: {log or 'unavailable'}")
+        self.returncode = returncode
+        self.output = output
+
+
 def safe_environment() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS}
 
@@ -115,7 +122,7 @@ def run(args: list[str], *, env: dict[str, str] | None = None,
         log.write_text(output, encoding="utf-8")
         log.chmod(0o600)
     if process.returncode:
-        raise CheckError(f"{Path(args[0]).name} exited {process.returncode}; private log: {log or 'unavailable'}")
+        raise CommandFailed(args[0], process.returncode, output, log)
     return output
 
 
@@ -596,7 +603,10 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
                     "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
                 ], timeout=15, log=evidence_dir / "rocm-offload-probe.log")
                 break
-            except CheckError:
+            except CommandFailed as exc:
+                if (exc.returncode == 128 and exc.output.strip()
+                        == "OCI runtime exec failed: exec failed: cannot exec in a stopped container"):
+                    break
                 if worker_id not in owned_rocm_worker_ids(project):
                     break
                 if attempt:
