@@ -344,7 +344,7 @@ def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
     made = http_json(base, "/api/v1/generations", method="POST", body={
         "model_id": MODEL,
         "params": {"prompt": prompt, "width": 768, "height": 768,
-                    "steps": 4, "guidance": 0, "seed": 42},
+                    "steps": 8, "guidance": 0, "seed": 42},
     })
     if not isinstance(made, dict) or not isinstance(made.get("job_id"), str):
         raise CheckError("API did not return a job_id")
@@ -472,14 +472,14 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
                 raise CheckError("fresh install does not own API port 8080")
             api = api_base(candidate_dir)
             wait_ready(api)
-            generate(api, "release install check fresh generation", guard.check)
+            generate(api, "a red house on a green hill under a blue sky, clear illustration", guard.check)
             compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
             remove_owned_data_volumes(project)
             run_installer(previous_installer, args.previous_version, candidate_dir,
                           None, args.profile, logs, abort=guard.failed)
             api = api_base(candidate_dir)
             wait_ready(api)
-            saved_id, saved = generate(api, "release upgrade check saved image", guard.check)
+            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check)
             env_before = parse_env(candidate_dir / "deploy/compose/.env")
             run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
             env_after = parse_env(candidate_dir / "deploy/compose/.env")
@@ -489,7 +489,7 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
             after = api_base(candidate_dir)
             wait_ready(after)
             verify_assets(after, {saved_id: hashlib.sha256(saved).hexdigest()})
-            generate(after, "release upgrade check generation", guard.check)
+            generate(after, "a red lighthouse beside the sea, clear illustration", guard.check)
             passed = True
         finally:
             cleanup_error = None
@@ -714,7 +714,7 @@ def existing_install(args: argparse.Namespace, candidate: Path) -> None:
             after = api_base(install_dir)
             wait_ready(after)
             verify_assets(after, saved)
-            generate(after, "release install check preserved existing library", guard.check)
+            generate(after, "a red fox in a green forest, clear illustration", guard.check)
             passed = True
         finally:
             guard.close()
@@ -744,7 +744,7 @@ def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
                 raise CheckError("fresh install does not own API port 8080")
             base = api_base(install_dir)
             wait_ready(base)
-            generate(base, "release install check first generation", guard.check)
+            generate(base, "a red house on a green hill under a blue sky, clear illustration", guard.check)
             passed = True
         finally:
             guard.close()
