@@ -40,9 +40,10 @@ while (($#)); do
 		shift
 	fi
 done
-# Only downloads (-o) are served; anything else, such as preflight's health
-# probe of a studio that happens to be on port 8080, gets a refused connection.
-[[ -n "${out:-}" ]] || exit 7
+if [[ -z "${out:-}" ]]; then
+	printf '{"status":"ok"}\n'
+	exit 0
+fi
 printf '%s\n' "${url:-}" >>"${CURL_LOG:?}"
 if [[ "${url:-}" == file://* ]]; then
 	exec "$REAL_CURL" -fsSL -o "$out" "$url"
@@ -127,6 +128,13 @@ check_case() {
 			;;
 	esac
 }
+
+make_case preflight-health-probe
+if "$case_dir/bin/curl" -sf --max-time 2 http://localhost:8080/api/v1/health | grep -q '"status"'; then
+	printf 'ok preflight-health-probe\n'
+else
+	fail_case preflight-health-probe
+fi
 
 check_case install-writes-public-url http://192.168.1.10:8080 set
 check_case fresh-default-and-help http://localhost:8080 unset
