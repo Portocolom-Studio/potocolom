@@ -453,7 +453,7 @@
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
-		<SiteFooter />
+		<SiteFooter horizon />
 	</div>
 </div>
 

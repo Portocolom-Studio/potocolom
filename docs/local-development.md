@@ -370,9 +370,10 @@ runs them after the unit tests.
 
 The frontend gate builds both modes. It first builds with
 `PUBLIC_SITE_MODE=landing` and checks that the built `/app` contains the studio
-preview. It then builds with an empty `PUBLIC_SITE_MODE` and runs the canvas
-and sign-in checks. The final `frontend/build` artifact is always the product,
-even if the shell had `PUBLIC_SITE_MODE=landing` set.
+preview. It then builds with an empty `PUBLIC_SITE_MODE` and checks the footer's
+image-failure contrast and keyboard focus, the canvas, and sign-in. The final
+`frontend/build` artifact is always the product, even if the shell had
+`PUBLIC_SITE_MODE=landing` set.
 
 The landing waitlist form never leaves the machine in development: the dev
 and preview servers answer a submit locally, and an address ending in
