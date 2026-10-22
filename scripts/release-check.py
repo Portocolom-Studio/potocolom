@@ -553,6 +553,7 @@ def rocm_vram_usage(sysfs: Path = Path("/sys/class/drm")) -> list[tuple[str, int
 def owned_rocm_worker_ids(project: str) -> list[str]:
     result = subprocess.run(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
                              "--filter", "label=com.docker.compose.service=worker-rocm",
+                             "--filter", "status=running",
                              "--format", "{{.ID}}"], text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, check=False, timeout=15, env=safe_environment())
     if result.returncode:
@@ -593,7 +594,7 @@ def rocm_safety_check(install_dir: Path, project: str, evidence_dir: Path,
                     "docker", "exec", worker_id, "sh", "-c",
                     "if [ -d /models/.offload ]; then "
                     "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
-                ], timeout=15)
+                ], timeout=15, log=evidence_dir / "rocm-offload-probe.log")
                 break
             except CheckError:
                 if worker_id not in owned_rocm_worker_ids(project):

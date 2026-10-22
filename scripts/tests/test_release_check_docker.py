@@ -35,6 +35,11 @@ class ReleaseGuardDockerTests(unittest.TestCase):
                 self.assertEqual(len(own_ids), 1)
                 self.assertEqual(len(other_ids), 1)
                 self.assertNotEqual(own_ids, other_ids)
+                subprocess.run(["docker", "pause", own_ids[0]], check=True, capture_output=True)
+                try:
+                    self.assertEqual(check.owned_rocm_worker_ids(owned[1]), [])
+                finally:
+                    subprocess.run(["docker", "unpause", own_ids[0]], check=True, capture_output=True)
                 device = root / "sys/card0/device"
                 device.mkdir(parents=True)
                 for key, value in (("vendor", "0x1002"),
