@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import struct
@@ -58,25 +59,33 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 class ReleaseCheckTests(unittest.TestCase):
 
-    def test_generation_requests_keep_candidate_and_legacy_sizes_separate(self):
+    def test_generation_request_matches_the_release_model_schema(self):
+        manifest_path = Path(check.__file__).resolve().parents[1] / "worker/models" / f"{check.MODEL}.json"
+        manifest = json.loads(manifest_path.read_text())
         requests = []
         def api(_base, path, **kwargs):
             if path == "/api/v1/models":
                 return [{"id": check.MODEL}]
             if path == "/api/v1/generations":
                 requests.append(kwargs["body"])
+                params = kwargs["body"]["params"]
+                schema = manifest["parameters"]["properties"]
+                for dimension in ("width", "height"):
+                    self.assertIn(params[dimension], schema[dimension]["enum"])
+                self.assertGreaterEqual(params["steps"], schema["steps"]["minimum"])
+                self.assertLessEqual(params["steps"], schema["steps"]["maximum"])
                 return {"job_id": "made"}
             return {"state": "succeeded", "assets": [{"id": "asset", "url": "/asset"}]}
         response = Mock()
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
         response.headers.get_content_type.return_value = "image/png"
-        response.read.side_effect = lambda *_: png(requests[-1]["params"]["width"], requests[-1]["params"]["height"])
+        response.read.return_value = png()
         with patch.object(check, "http_json", side_effect=api), patch.object(check, "urlopen", return_value=response):
-            check.generate("http://localhost:8080", "candidate")
-            check.generate("http://localhost:8080", "legacy", size=512)
-        self.assertEqual([(r["params"]["width"], r["params"]["height"]) for r in requests], [(768, 768), (512, 512)])
-        self.assertTrue(all(r["params"]["steps"] == 8 for r in requests))
+            check.generate("http://localhost:8080", "candidate or previous release")
+        self.assertEqual(requests[0]["params"]["width"], 768)
+        self.assertEqual(requests[0]["params"]["height"], 768)
+        self.assertEqual(requests[0]["params"]["steps"], 8)
 
     def test_cleanup_refuses_unexpected_resource_names(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -89,19 +98,6 @@ class ReleaseCheckTests(unittest.TestCase):
                     with self.assertRaisesRegex(check.CheckError, "refusing cleanup"):
                         check.cleanup_rehearsal(root)
                 self.assertFalse(any(c.args[0][1] == "rm" or c.args[0][2:3] == ["rm"] for c in docker.call_args_list))
-
-    def test_png_legacy_size_is_complete_and_candidate_default_stays_768(self):
-        self.assertEqual(check.validate_png(png(512, 512), size=512), (512, 512))
-        with self.assertRaisesRegex(check.CheckError, "scanlines"):
-            check.validate_png(png(512, 512, raw=b"\x00"), size=512)
-        response = Mock()
-        response.__enter__ = Mock(return_value=response)
-        response.__exit__ = Mock(return_value=False)
-        response.read.return_value = png(512, 512)
-        response.headers.get_content_type.return_value = "image/png"
-        with patch.object(check, "urlopen", return_value=response), self.assertRaisesRegex(
-                check.CheckError, "unexpected dimensions"):
-            check.local_asset("http://localhost:8080", {"url": "/asset"})
 
     def test_upgrade_restores_default_models_and_candidate_image_size(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,9 +129,9 @@ class ReleaseCheckTests(unittest.TestCase):
                 check.fresh_rehearsal(args, release / "install.sh")
             self.assertEqual(events, [("install", "v1.2.3"), ("generate", 768),
                                      ("models", "select"), ("install", "v1.2.2"),
-                                     ("generate", 512), ("models", "restore"),
+                                     ("generate", 768), ("models", "restore"),
                                      ("install", "v1.2.3"), ("generate", 768)])
-            saved.assert_called_once_with("http://localhost:8080", {"saved": hashlib.sha256(png(512, 512)).hexdigest()})
+            saved.assert_called_once_with("http://localhost:8080", {"saved": hashlib.sha256(png()).hexdigest()})
 
     def test_cleanup_refuses_user_projects_before_docker_access(self):
         with tempfile.TemporaryDirectory() as tmp:

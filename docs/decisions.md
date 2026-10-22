@@ -1918,7 +1918,7 @@ AMD desktop before GHCR publication. This narrows the earlier decision that no
 CI job uses the GPU. The release job takes a host lock, refuses an occupied API
 port, and uses a random Compose project. It proves fresh generation, then an
 upgrade from the previous published release with saved image bytes and settings
-preserved. The previous release uses one test model and a 512 by 512 image;
+preserved. The previous release uses one test model and a 768 by 768 image;
 the candidate uses every default model and a 768 by 768 image on both sides
 of the upgrade. All model manifests are restored before the candidate starts.
 This checks old data without repeating known unsafe legacy GPU workloads.

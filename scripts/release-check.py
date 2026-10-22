@@ -271,7 +271,7 @@ def asset_digest(base: str, item: dict, *, limit: int = 512 * 1024 * 1024) -> st
     return digest.hexdigest()
 
 
-def local_asset(base: str, item: dict, *, size: int = 768) -> bytes:
+def local_asset(base: str, item: dict) -> bytes:
     """Download and validate only the newly generated test image."""
     request = Request(asset_url(base, item), headers={"Accept": "image/png"})
     try:
@@ -283,13 +283,13 @@ def local_asset(base: str, item: dict, *, size: int = 768) -> bytes:
         raise CheckError("asset download failed") from exc
     if len(data) > 64 * 1024 * 1024:
         raise CheckError("asset response is not a non-empty PNG")
-    width, height = validate_png(data, size=size)
-    if (width, height) != (size, size):
+    width, height = validate_png(data)
+    if (width, height) != (768, 768):
         raise CheckError(f"PNG has unexpected dimensions {width}x{height}")
     return data
 
 
-def validate_png(data: bytes, *, size: int = 768) -> tuple[int, int]:
+def validate_png(data: bytes) -> tuple[int, int]:
     if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
         raise CheckError("asset response is not a non-empty PNG")
     offset = 8
@@ -320,12 +320,12 @@ def validate_png(data: bytes, *, size: int = 768) -> tuple[int, int]:
         offset = end
     if dimensions is None or not image_data or not ended:
         raise CheckError("asset response is not a complete PNG")
-    if dimensions != (size, size):
+    if dimensions != (768, 768):
         return dimensions
     try:
         decoder = zlib.decompressobj()
-        stride = 1 + size * channels
-        expected = stride * size
+        stride = 1 + 768 * channels
+        expected = stride * 768
         decoded = decoder.decompress(image_data, expected + 1)
         if (len(decoded) != expected or not decoder.eof or decoder.unconsumed_tail
                 or decoder.unused_data or any(value > 4 for value in decoded[::stride])):
@@ -335,7 +335,7 @@ def validate_png(data: bytes, *, size: int = 768) -> tuple[int, int]:
     return dimensions
 
 
-def generate(base: str, prompt: str, safety_check=None, *, size: int = 768) -> tuple[str, bytes]:
+def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
     worker_deadline = time.monotonic() + 1800
     while True:
         if safety_check is not None:
@@ -350,7 +350,7 @@ def generate(base: str, prompt: str, safety_check=None, *, size: int = 768) -> t
         time.sleep(5)
     made = http_json(base, "/api/v1/generations", method="POST", body={
         "model_id": MODEL,
-        "params": {"prompt": prompt, "width": size, "height": size,
+        "params": {"prompt": prompt, "width": 768, "height": 768,
                     "steps": 8, "guidance": 0, "seed": 42},
     })
     if not isinstance(made, dict) or not isinstance(made.get("job_id"), str):
@@ -373,7 +373,7 @@ def generate(base: str, prompt: str, safety_check=None, *, size: int = 768) -> t
             asset_id = assets[0].get("id")
             if not isinstance(asset_id, str) or not asset_id:
                 raise CheckError("successful generation returned no asset ID")
-            return asset_id, local_asset(base, assets[0], size=size)
+            return asset_id, local_asset(base, assets[0])
         time.sleep(2)
     raise CheckError("generation timed out after 30 minutes")
 
@@ -537,7 +537,7 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
                           None, args.profile, logs, abort=guard.failed)
             api = api_base(candidate_dir)
             wait_ready(api)
-            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check, size=512)
+            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check)
             env_before = parse_env(candidate_dir / "deploy/compose/.env")
             legacy_model_config(candidate_dir, project, args.profile, restore=True)
             service = "worker-rocm" if args.profile == "rocm" else "worker"

@@ -23,8 +23,8 @@ and SHA256SUMS. It runs `scripts/release-check.py` on the trusted AMD runner
 under `/tmp/potocolom-release-check-gpu.lock`. The check installs those local
 artifacts, generates a 768 by 768 PNG, then installs the previous published
 release in the same test project. The previous release uses only the test model
-and saves a 512 by 512 image, so an old warmup or decoder memory fault does not
-endanger the display GPU. Before the upgrade, the check restores every model
+and saves a 768 by 768 image. Limiting the old warmup prevents another resident
+model from taking the memory needed by its untiled decoder. Before the upgrade, the check restores every model
 manifest. The candidate uses all default models and generates at 768 by 768
 both before and after the upgrade. It checks the saved bytes and settings.
 The installer lists the required images with `docker compose config --images`
