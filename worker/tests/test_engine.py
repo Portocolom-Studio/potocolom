@@ -1848,10 +1848,13 @@ def test_calibration_rejects_actual_offload_before_rendering():
 
     slots = asyncio.run(engine.calibrate_realtime(vega, configured=4))
 
-    assert engine.model_rung("vega-rt") == "model_offload"
+    assert engine.model_rung("vega-rt") is None
     assert slots == 1
     engine._frame.assert_not_called()
     assert engine._pipelines == {}
+    free_gib[0] = 12.0
+    engine._predicted_rung = original_prediction
+    assert "realtime" in engine.measured_manifests([vega])[0]["capabilities"]
     assert "vega-rt" not in engine._realtime_p95_ms
     assert "vega-rt" not in engine._realtime_batch_ms
     assert engine._realtime_p95_ms == {"sibling": 250}

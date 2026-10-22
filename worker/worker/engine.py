@@ -1051,10 +1051,12 @@ class DiffusersEngine:
             return 0
         self._ensure_vram(manifest)
         if self._rungs.get(manifest.id) != "full":
+            selected = self._rungs.get(manifest.id)
+            self._forget_rung_if_unloaded(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
             logger.info(
-                "realtime calibration skipped for %s (loaded %s)",
-                manifest.id, self._rungs.get(manifest.id),
+                "realtime calibration skipped for %s (selected %s)",
+                manifest.id, selected,
             )
             return 0
         params, canvas, strength = self._calibration_inputs(manifest)
