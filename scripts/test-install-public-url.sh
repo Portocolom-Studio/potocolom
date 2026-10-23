@@ -42,6 +42,15 @@ while (($#)); do
 	fi
 done
 if [[ -z "${out:-}" ]]; then
+	if [[ "${url:-}" == */api/v1/ready ]]; then
+		printf '%s\n' "$url" >>"${CURL_LOG:?}"
+		count=0
+		[[ -f "${READY_COUNT_FILE:?}" ]] && count="$(cat "$READY_COUNT_FILE")"
+		count=$((count + 1))
+		printf '%s\n' "$count" >"$READY_COUNT_FILE"
+		if [[ "${READY_FAIL:-0}" == 1 || "$count" -le "${READY_AFTER:-0}" ]]; then exit 22; fi
+		exit 0
+	fi
 	printf '{"status":"ok"}\n'
 	exit 0
 fi
@@ -62,7 +71,9 @@ case "$*" in
 	'compose version') printf '2.30.0\n' ;;
 	'info') exit 0 ;;
 	'volume inspect'*) exit 1 ;;
-	*' config --images') printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\nghcr.io/portocolom-studio/potocolom-worker:%s-cuda\n' "$POTOCOLOM_VERSION" "$POTOCOLOM_VERSION" ;;
+	*' config --images')
+		if [[ "$*" == *'--profile api'* ]]; then printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\n' "$POTOCOLOM_VERSION"
+		else printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\nghcr.io/portocolom-studio/potocolom-worker:%s-cuda\n' "$POTOCOLOM_VERSION" "$POTOCOLOM_VERSION"; fi ;;
 	'image inspect'*) [[ "${DOCKER_IMAGES_CACHED:-}" == 1 ]] ;;
 	*' pull --policy'* ) exit 99 ;;
 	*' pull') [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
@@ -78,6 +89,7 @@ esac
 EOF
 	cat >"$case_dir/bin/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
+[[ "${FAKE_NVIDIA:-ok}" == fail ]] && exit 9
 if [[ "$*" == *'--query-gpu=name,memory.total,driver_version'* ]]; then
 	printf 'NVIDIA Test GPU, 8192 MiB, 595.91.07\n'
 elif [[ "$*" == *'--query-gpu=name'* ]]; then
@@ -118,10 +130,13 @@ EOF
 
 run_install() {
 	local case_dir="$1"
+	local profile="${TEST_PROFILE:-gpu}" fake_nvidia="${TEST_NVIDIA:-ok}"
+	local profile_env=()
 	shift
-	env PATH="$case_dir/bin:$PATH" RELEASE_TEST_AWK="$release_test_awk" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
-		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
-		POTOCOLOM_PROFILE=gpu "$@" bash "$repo/scripts/install.sh" 2>&1
+	[[ "$profile" == auto ]] || profile_env=(POTOCOLOM_PROFILE="$profile")
+	env PATH="$case_dir/bin:$PATH" RELEASE_TEST_AWK="$release_test_awk" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" READY_COUNT_FILE="$case_dir/ready-count" READY_AFTER="${READY_AFTER:-0}" READY_FAIL="${READY_FAIL:-0}" FAKE_NVIDIA="$fake_nvidia" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
+		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
+		"${profile_env[@]}" "$@" bash "$repo/scripts/install.sh" 2>&1
 }
 
 check_case() {
@@ -174,6 +189,54 @@ if [[ "$rc" -eq 0 && "$(grep -c 'image inspect' "$case_dir/docker.log")" -eq 3 \
 else
 	fail_case cached-images-reused
 fi
+
+make_case automatic-api-only-no-gpu
+TEST_PROFILE=auto TEST_NVIDIA=fail output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'API and database are ready'* && "$output" == *'Generation needs an attached GPU worker'* \
+	&& "$(grep -c 'config --images' "$case_dir/docker.log")" -eq 1 \
+	&& "$(grep 'config --images' "$case_dir/docker.log")" != *'worker' && "$(grep -c 'pull' "$case_dir/docker.log")" -eq 1 \
+	&& "$(grep ' up -d --no-build' "$case_dir/docker.log")" == *'--profile api'* \
+	&& "$(grep -c 'rm -sf worker ' "$case_dir/docker.log")" -eq 1 \
+	&& "$(grep -c 'rm -sf worker-rocm' "$case_dir/docker.log")" -eq 1 ]]; then
+	printf 'ok automatic-api-only-no-gpu\n'
+else fail_case automatic-api-only-no-gpu; printf '%s\n' "$output"; cat "$case_dir/docker.log"; fi
+
+make_case explicit-api-bypasses-gpu-detection
+TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'API and database are ready'* && "$(grep 'up -d --no-build' "$case_dir/docker.log")" == *'--profile api'* ]]; then
+	printf 'ok explicit-api-bypasses-gpu-detection\n'
+else fail_case explicit-api-bypasses-gpu-detection; fi
+
+make_case invalid-install-profile
+TEST_PROFILE=invalid output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'POTOCOLOM_PROFILE must be'* && "$(grep -c 'config --images\| pull\| up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	printf 'ok invalid-install-profile\n'
+else fail_case invalid-install-profile; printf '%s\n' "$output"; cat "$case_dir/docker.log"; fi
+
+make_case readiness-retries-then-succeeds
+READY_AFTER=2 TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && -f "$case_dir/ready-count" && "$(cat "$case_dir/ready-count")" == 3 ]]; then printf 'ok readiness-retries-then-succeeds\n'; else fail_case readiness-retries-then-succeeds; printf 'rc=%s count=%s\n%s\n' "$rc" "$(cat "$case_dir/ready-count" 2>/dev/null || true)" "$output"; cat "$case_dir/curl.log"; cat "$case_dir/docker.log"; fi
+
+make_case readiness-timeout-releases-lock
+printf '#!/usr/bin/env bash\nexit 0\n' >"$case_dir/bin/sleep"
+chmod +x "$case_dir/bin/sleep"
+READY_FAIL=1 TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'did not become ready within 120 seconds'* && "$output" == *'logs api postgres'* && "$(cat "$case_dir/ready-count")" == 30 \
+	&& -s "$case_dir/install/deploy/compose/.env" ]]; then
+	READY_FAIL=0 TEST_PROFILE=api output="$(run_install "$case_dir")" && retry_rc=0 || retry_rc=$?
+	if [[ "$retry_rc" -eq 0 ]]; then printf 'ok readiness-timeout-releases-lock\n'; else fail_case readiness-timeout-releases-lock; fi
+else fail_case readiness-timeout-releases-lock; fi
+
+make_case rejects-unsupported-release-architecture
+cat >"$case_dir/bin/uname" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in -s) printf 'Linux\n' ;; -m) printf 'aarch64\n' ;; *) exit 1 ;; esac
+EOF
+chmod +x "$case_dir/bin/uname"
+output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'release images support Linux x86_64 only (found Linux aarch64)'* && ! -s "$case_dir/curl.log" ]]; then
+	printf 'ok rejects-unsupported-release-architecture\n'
+else fail_case rejects-unsupported-release-architecture; fi
 
 make_case release-url-default
 output="$(run_install "$case_dir")" && rc=0 || rc=$?

@@ -63,13 +63,15 @@ copy_repo() {
 }
 
 expect_profile() {
-	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual
+	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual rc=0
 	new_case "$name"
 	if [[ "$kfd" == present ]]; then
 		: >"$case_dir/kfd"
 	fi
-	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
-	if [[ "$actual" == "$expected" ]]; then
+	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)" || rc=$?
+	if [[ "$expected" == error && "$rc" -ne 0 && "$actual" == *'POTOCOLOM_PROFILE must be'* ]]; then
+		printf 'ok %s\n' "$name"
+	elif [[ "$actual" == "$expected" && "$rc" -eq 0 ]]; then
 		printf 'ok %s\n' "$name"
 	else
 		fail_case "$name" "expected: $expected\nactual: $actual"
@@ -232,9 +234,11 @@ expect_profile profile-nvidia-kfd-wins ok present gpu
 expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
-expect_profile profile-smoke nvidia-fail absent smoke
+expect_profile profile-no-gpu-default nvidia-fail absent smoke
 expect_profile profile-override-rocm ok present rocm rocm
-expect_profile profile-override-invalid ok present gpu cuda
+expect_profile profile-override-api ok present api api
+expect_profile profile-override-invalid ok present error cuda
+expect_preflight_gpu preflight-api-only-command 'API and database only' profile=api mode=selfhost absent='NVIDIA Container Toolkit missing' rc=0
 expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' rc=0
 expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
 expect_preflight_gpu preflight-rocm-override-without-kfd 'POTOCOLOM_PROFILE=rocm but /dev/kfd is missing' vendor=0x8086 profile=rocm rc=1

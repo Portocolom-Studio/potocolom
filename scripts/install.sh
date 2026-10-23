@@ -20,6 +20,10 @@ main() {
 		echo "  this copy of install.sh was given VERSION=$VERSION" >&2
 		exit 1
 	fi
+	if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+		echo "error: release images support Linux x86_64 only (found $(uname -s) $(uname -m))" >&2
+		exit 1
+	fi
 	# PUBLIC_URL is the API's security origin: browsers send it back in
 	# Origin byte for byte, so only the canonical form (lowercase, no default
 	# port, no leading zero) is accepted, or every sign-in would be refused.
@@ -144,25 +148,24 @@ main() {
 		exit 1
 	fi
 
-	if ! bash "$DIR/scripts/preflight.sh"; then
-		echo "error: preflight failed; fix what it reports, then run this again" >&2
-		exit 1
-	fi
-
 	if [[ -n "${POTOCOLOM_PROFILE:-}" ]]; then
-		profile="$POTOCOLOM_PROFILE"
-	elif [[ ! -f "$DIR/scripts/gpu-profile.sh" ]]; then
-		echo "error: the $VERSION bundle predates scripts/gpu-profile.sh; set POTOCOLOM_PROFILE=gpu (NVIDIA) or rocm (AMD)" >&2
-		exit 1
+		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
 	else
-		profile="$(bash "$DIR/scripts/gpu-profile.sh")"
-		if [[ "$profile" == smoke ]]; then
-			echo "error: no NVIDIA or AMD GPU found. The released images need one. To try the stack with the simulated worker, clone the repository and run scripts/compose-smoke.sh. See the GPU section of the preflight output above." >&2
-			exit 1
-		fi
+		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
+		# Source commands keep smoke as the no-GPU default. A release contains
+		# no simulated-worker image, so its automatic no-GPU choice is API-only.
+		[[ "$profile" != smoke ]] || profile=api
 	fi
-	if [[ "$profile" != gpu && "$profile" != rocm ]]; then
-		echo "error: POTOCOLOM_PROFILE must be gpu or rocm, not $profile" >&2
+	if [[ "$profile" == smoke ]]; then
+		echo "error: the release installer does not support the simulated worker. Clone the repository and run scripts/compose-smoke.sh for source development." >&2
+		exit 1
+	fi
+	if [[ "$profile" != gpu && "$profile" != rocm && "$profile" != api ]]; then
+		echo "error: unsupported release profile: $profile" >&2
+		exit 1
+	fi
+	if ! POTOCOLOM_PROFILE="$profile" bash "$DIR/scripts/preflight.sh"; then
+		echo "error: preflight failed; fix what it reports, then run this again" >&2
 		exit 1
 	fi
 
@@ -213,20 +216,49 @@ main() {
 	' "$ENV_FILE" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
 
-	# A host that changed vendor since the last install (or one that older
-	# releases detected as AMD before NVIDIA) still runs the other worker.
-	if [[ "$profile" == gpu ]]; then other=(rocm worker-rocm); else other=(gpu worker); fi
+	# Stop only this project's worker containers that do not match the selected
+	# profile. API-only transitions remove both release workers.
+	case "$profile" in
+		gpu) obsolete=('--profile' rocm rm -sf worker-rocm) ;;
+		rocm) obsolete=('--profile' gpu rm -sf worker) ;;
+		api) obsolete=(--profile gpu rm -sf worker) ;;
+	esac
 	POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
-		-f "$DIR/deploy/compose/compose.yml" --profile "${other[0]}" rm -sf "${other[1]}"
+		-f "$DIR/deploy/compose/compose.yml" "${obsolete[@]}"
+	if [[ "$profile" == api ]]; then
+		POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
+			-f "$DIR/deploy/compose/compose.yml" --profile rocm rm -sf worker-rocm
+	fi
 
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
+
+	# Readiness covers the API and its store. It does not wait for model downloads
+	# or worker warmup. Each curl has a short timeout and the retry count is fixed.
+	ready=false
+	for attempt in {1..30}; do
+		if curl -fsS --connect-timeout 2 --max-time 2 http://127.0.0.1:8080/api/v1/ready >/dev/null 2>&1; then
+			ready=true
+			break
+		fi
+		sleep 2
+	done
+	if [[ "$ready" != true ]]; then
+		echo 'error: API did not become ready within 120 seconds; data is intact.' >&2
+		echo "  Diagnose with: docker compose -p $PROJECT --env-file \"$ENV_FILE\" -f \"$DIR/deploy/compose/compose.yml\" logs api postgres" >&2
+		exit 1
+	fi
 
 	# Compose syntax: an optional export, and an unquoted value ends at a comment.
 	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
 	public_url="${public_url:-http://localhost:8080}"
 
 	echo
-	echo "potocolom $VERSION is running. Open $public_url"
+	if [[ "$profile" == api ]]; then
+		echo "potocolom $VERSION API and database are ready. Open $public_url"
+		echo 'Generation needs an attached GPU worker. Remote worker authentication uses FLEET_SECRET in the env file.'
+	else
+		echo "potocolom $VERSION is running. Open $public_url"
+	fi
 	if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
 		public_host="${BASH_REMATCH[1]}"
 		if [[ "$public_host" == localhost || "$public_host" == '[::1]' \

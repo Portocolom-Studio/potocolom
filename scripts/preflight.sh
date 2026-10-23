@@ -255,7 +255,9 @@ fi
 
 head_ "GPU"
 
-profile="$(bash "$ROOT/scripts/gpu-profile.sh")"
+if ! profile="$(bash "$ROOT/scripts/gpu-profile.sh")"; then
+  exit 1
+fi
 vram_mb=0
 
 scan_unusable_gpus() {
@@ -287,7 +289,9 @@ toolkit_present() {
   command -v nvidia-ctk >/dev/null 2>&1 || command -v nvidia-container-runtime >/dev/null 2>&1 || command -v nvidia-container-cli >/dev/null 2>&1
 }
 
-if [[ "$profile" == rocm ]]; then
+if [[ "$profile" == api ]]; then
+  pass "API-only profile; no local GPU worker will start"
+elif [[ "$profile" == rocm ]]; then
   supported_gpus=0
   found_gfx=()
   topology="${POTOCOLOM_KFD_TOPOLOGY:-/sys/class/kfd/kfd/topology/nodes}"
@@ -410,7 +414,7 @@ fi
 
 # Hardware the chosen profile leaves unused. A gpu host is not scanned: an
 # AMD CPU's iGPU there is expected and not a problem.
-if [[ "$profile" != gpu ]]; then
+if [[ "$profile" != gpu && "$profile" != api ]]; then
   if [[ -r /proc/driver/nvidia/version ]] || command -v nvidia-smi >/dev/null 2>&1; then
     warn "NVIDIA driver files present but nvidia-smi did not report a GPU"
     note "the NVIDIA card stays unused until nvidia-smi lists it"
@@ -516,4 +520,5 @@ case "$profile" in
   gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
   rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
   smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    scripts/compose-smoke.sh\n' ;;
+  api)   printf '  Ready. API and database only; generation needs an attached GPU worker:\n\n    docker compose -f deploy/compose/compose.yml --profile api up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
 esac
