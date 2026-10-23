@@ -328,7 +328,7 @@ else
 	project_key="$(bash -c 'source "$1"; install_lock_key project "$2"' _ "$repo/scripts/install-lock.sh" "lock-spoof-$BASHPID")"
 	if POTOCOLOM_PROJECT_LOCK_KEY="$project_key" INSTALL_LOCK_HELPER="$repo/scripts/install-lock.sh" \
 		bash -c 'source "$INSTALL_LOCK_HELPER"; install_acquire_locks "$1" "$2" "$3" "$4"' _ \
-		"$case_dir/root" "$case_dir/root/.env" "$repo/deploy/compose/compose.yml" "lock-spoof-$BASHPID" \
+		"$case_dir/contender" "$case_dir/contender/.env" "$repo/deploy/compose/compose.yml" "lock-spoof-$BASHPID" \
 		>"$case_dir/spoof.out" 2>&1; then
 		spoof_rc=0
 	else
@@ -338,7 +338,7 @@ else
 	if POTOCOLOM_PROJECT_LOCK_FD=9 POTOCOLOM_PROJECT_LOCK_KEY="$project_key" \
 		INSTALL_LOCK_HELPER="$repo/scripts/install-lock.sh" bash -c \
 		'exec 9<"$5"; source "$INSTALL_LOCK_HELPER"; install_acquire_locks "$1" "$2" "$3" "$4"' _ \
-		"$case_dir/root" "$case_dir/root/.env" "$repo/deploy/compose/compose.yml" "lock-spoof-$BASHPID" \
+		"$case_dir/contender" "$case_dir/contender/.env" "$repo/deploy/compose/compose.yml" "lock-spoof-$BASHPID" \
 		"$case_dir/unrelated" >"$case_dir/stale-fd.out" 2>&1; then
 		stale_fd_rc=0
 	else
