@@ -475,7 +475,6 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     if (getattr(engine, "_calibrated_slots", None) is not None
             and not getattr(engine, "_calibration_failed", False)):
         return
-    setattr(engine, "_calibration_failed", False)
     wire = engine.measured_manifests(manifests)
     live_ids = {
         item["id"] for item in wire if "realtime" in item.get("capabilities", [])
@@ -484,6 +483,7 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                   if manifest.id in live_ids and not manifest.benchmark_only]
     if not candidates:
         return
+    setattr(engine, "_calibration_failed", False)
     declared = [manifest for manifest in candidates if manifest.default]
     if len(declared) > 1:
         # The studio's picker takes the first default in ITS order, which is by
@@ -510,6 +510,8 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     for manifest in ordered:
         slots = await engine.calibrate_realtime(manifest, configured_slots)
         logger.info("warmup realtime model=%s slots=%d", manifest.id, slots)
+    if getattr(engine, "_calibration_retry_models", set()):
+        setattr(engine, "_calibration_failed", True)
 
 
 class JobRun:
