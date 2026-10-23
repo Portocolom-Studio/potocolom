@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import threading
+import time
 import uuid
 from unittest.mock import MagicMock
 
@@ -951,7 +952,7 @@ def test_heartbeat_retries_after_a_failed_gpu_sample(caplog, monkeypatch):
 
     samples = 0
 
-    def flaky_gpu(device):
+    def flaky_gpu(device, _selected_device):
         nonlocal samples
         samples += 1
         if samples == 1:
@@ -1001,7 +1002,7 @@ def test_heartbeat_ends_quietly_when_the_socket_closed_while_it_slept(monkeypatc
     # on a socket that already closed; that is not a heartbeat failure.
     samples = 0
 
-    def counting_gpu(device):
+    def counting_gpu(device, _selected_device):
         nonlocal samples
         samples += 1
         return {}
@@ -1046,7 +1047,7 @@ def test_heartbeat_ends_on_a_closed_socket(monkeypatch):
     # run() reconnects, so the heartbeat task must stop sampling (issue #498).
     samples = 0
 
-    def counting_gpu(device):
+    def counting_gpu(device, _selected_device):
         nonlocal samples
         samples += 1
         return {}
@@ -2674,6 +2675,97 @@ def test_protocol6_heartbeat_omits_realtime_batch_ms(monkeypatch):
         expected_worker_id=worker_id,
         expected_incarnation=incarnation,
     )
+
+
+@pytest.mark.parametrize("sample_delay", [0, 0.2])
+def test_protocol5_heartbeat_and_gpu_status_sample_engine_device(monkeypatch, sample_delay):
+    sampled = []
+
+    def sample_gpu(vendor, selected):
+        time.sleep(sample_delay)
+        sampled.append((vendor, selected))
+        return {"device": vendor, "available": False}
+
+    monkeypatch.setattr("worker.client.sample_gpu", sample_gpu)
+
+    class DeviceEngine(SimulatedEngine):
+        def __init__(self):
+            super().__init__(0.01)
+            self.device = "cuda:1"
+
+    class HoldingSocket(RecordingSocket):
+        def __init__(self):
+            super().__init__([json.dumps({"type": "gpu_status", "request_id": "r1"})])
+            self.release = asyncio.Event()
+
+        async def __anext__(self):
+            if self.messages:
+                return self.messages.pop(0)
+            await self.release.wait()
+            raise StopAsyncIteration
+
+    socket = HoldingSocket()
+
+    async def scenario():
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id="w-device", device="rocm", heartbeat_seconds=0.01),
+            [SIMULATED_MANIFEST], DeviceEngine()))
+        deadline = time.monotonic() + 3
+        try:
+            while time.monotonic() < deadline:
+                types = {
+                    json.loads(message).get("type")
+                    for message in socket.sent if isinstance(message, str)
+                }
+                if {"gpu_status", "heartbeat"} <= types:
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            socket.release.set()
+            await task
+
+    asyncio.run(scenario())
+    assert sampled
+    assert all(item == ("rocm", "cuda:1") for item in sampled)
+    sent = [json.loads(message) for message in socket.sent if isinstance(message, str)]
+    assert any(message.get("type") == "gpu_status" for message in sent)
+    assert any(message.get("type") == "heartbeat" for message in sent)
+
+
+@pytest.mark.parametrize("sample_delay", [0, 0.2])
+def test_protocol6_heartbeat_samples_engine_device(monkeypatch, sample_delay):
+    sampled = []
+
+    def sample_gpu(vendor, selected):
+        time.sleep(sample_delay)
+        sampled.append((vendor, selected))
+        return {"device": vendor, "available": False}
+
+    monkeypatch.setattr("worker.client.sample_gpu", sample_gpu)
+    worker_id = "w-p6-device"
+    engine = SimulatedEngine(0.01)
+    engine.device = "cuda:1"
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=3.5)
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id, device="rocm", heartbeat_seconds=0.03),
+            [SIMULATED_MANIFEST], engine))
+        deadline = time.monotonic() + 3
+        try:
+            while time.monotonic() < deadline:
+                if any(m["type"] == "heartbeat" for m in _worker_controls(socket)):
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert any(m["type"] == "heartbeat" for m in _worker_controls(socket))
+
+    asyncio.run(scenario())
+    assert sampled
+    assert all(item == ("rocm", "cuda:1") for item in sampled)
 
 
 def test_protocol6_session_refused_validates():

@@ -7,8 +7,8 @@ packages). Inference is always tiled so VRAM stays bounded at 1024 x4 -> 4096.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
+import tempfile
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -78,17 +78,20 @@ def ensure_weights(source: str, models_dir: str, model_id: str, factor: int) -> 
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     url = weight_url(source, factor)
-    # Per-process temp name: workers sharing one models_dir (one process per
-    # GPU on the same host) must not clobber each other's partial download.
-    tmp = path.parent / f"{path.name}.{os.getpid()}.tmp"
+    tmp: Path | None = None
     logger.info("downloading upscale weights factor=%s from %s", factor, url)
     try:
         with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
-            with tmp.open("wb") as out:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", prefix=f"{path.name}.", suffix=".tmp",
+                dir=path.parent, delete=False,
+            ) as out:
+                tmp = Path(out.name)
                 shutil.copyfileobj(response, out)
         tmp.replace(path)
     finally:
-        tmp.unlink(missing_ok=True)
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
     return path
 
 

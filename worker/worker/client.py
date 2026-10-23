@@ -1100,7 +1100,8 @@ async def _serve_protocol5(
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
             try:
-                gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                selected_device = getattr(engine, "device", settings.device)
+                gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
                 await ws.send(json.dumps({
                     "type": "heartbeat",
                     "slots_in_use": sessions.active_count,
@@ -1148,7 +1149,10 @@ async def _serve_protocol5(
                             if job.stops(control):
                                 job.stop.set()
                     elif control["type"] == "gpu_status":
-                        gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                        selected_device = getattr(engine, "device", settings.device)
+                        gpu = await asyncio.to_thread(
+                            sample_gpu, settings.device, selected_device,
+                        )
                         await ws.send(json.dumps({
                             "type": "gpu_status",
                             "request_id": control["request_id"],
@@ -1219,7 +1223,8 @@ async def _serve_protocol6(
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
-            gpu = await asyncio.to_thread(sample_gpu, settings.device)
+            selected_device = getattr(engine, "device", settings.device)
+            gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
             message = {
                 "type": "heartbeat",
                 "worker_id": worker_id,

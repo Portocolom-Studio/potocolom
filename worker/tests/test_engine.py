@@ -5,6 +5,7 @@ import sys
 import time
 import zlib
 import weakref
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1605,12 +1606,12 @@ def test_simulated_upscale_requires_input():
 
 def test_diffusers_measured_manifests_use_free_vram():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {}
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
-    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda *, device: 0))
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -1625,11 +1626,11 @@ def test_diffusers_measured_manifests_use_free_vram():
 
 def test_vram_reserve_evicts_cold_model_before_picking_rung():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
     engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
+        cuda=SimpleNamespace(mem_get_info=lambda *, device: (int(9.18 * 1024**3), 16 * 1024**3)),
     )
     engine._rungs = {"cold": "full"}
     engine._pipelines = {("cold", "t2i"): object()}
@@ -1650,12 +1651,12 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
 
 def _admission_engine(free_bytes, *, memory_mode="auto"):
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = memory_mode
     engine.vram_reserve_mb = 0
     engine.torch = SimpleNamespace(cuda=SimpleNamespace(
-        mem_get_info=lambda: (free_bytes[0], 16 * 1024**3),
-        memory_reserved=lambda: 0,
+        mem_get_info=lambda *, device: (free_bytes[0], 16 * 1024**3),
+        memory_reserved=lambda *, device: 0,
         empty_cache=MagicMock(),
     ))
     engine._rungs = {}
@@ -2001,7 +2002,7 @@ def test_warmup_retries_after_capacity_refusal():
 
 def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
     free = [free_gib]
@@ -2012,9 +2013,10 @@ def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
         held[0] = 0.0
 
     engine.torch = SimpleNamespace(cuda=SimpleNamespace(
-        mem_get_info=lambda: (int(free[0] * 1024**3), 16 * 1024**3),
-        memory_reserved=lambda: int(held[0] * 1024**3),
+        mem_get_info=lambda *, device: (int(free[0] * 1024**3), 16 * 1024**3),
+        memory_reserved=lambda *, device: int(held[0] * 1024**3),
         empty_cache=empty_cache,
+        device=lambda device: nullcontext(),
     ))
     engine._rungs = rungs
     engine._pipelines = {(model_id, "t2i"): object() for model_id in rungs}
@@ -2134,12 +2136,12 @@ def test_evict_all_releases_last_pipeline_before_flushing_allocator_cache():
     free_gib = [9.18]
     reserved_gib = [6.6]
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
     engine.torch = SimpleNamespace(cuda=SimpleNamespace(
-        mem_get_info=lambda: (int(free_gib[0] * 1024**3), 16 * 1024**3),
-        memory_reserved=lambda: int(reserved_gib[0] * 1024**3),
+        mem_get_info=lambda *, device: (int(free_gib[0] * 1024**3), 16 * 1024**3),
+        memory_reserved=lambda *, device: int(reserved_gib[0] * 1024**3),
     ))
     engine._pipelines = {("cached", "t2i"): resident}
     engine._rungs = {"cached": "full"}
@@ -2181,7 +2183,7 @@ def test_calibration_rejects_actual_offload_before_rendering():
     engine._frame = MagicMock()
     free_gib = [9.18]
     held_gib = [6.6]
-    engine.torch.cuda.mem_get_info = lambda device=None: (
+    engine.torch.cuda.mem_get_info = lambda *, device: (
         int(free_gib[0] * 1024**3), 16 * 1024**3,
     )
     engine.torch.cuda.memory_reserved = lambda device=None: int(held_gib[0] * 1024**3)
@@ -2393,11 +2395,11 @@ def test_measured_manifests_keep_loaded_model_pinned_rung_with_reclaimable_vram(
 
 def test_zero_vram_reserve_keeps_full_residency_choice():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 0
     engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (int(9.18 * 1024**3), 16 * 1024**3)),
+        cuda=SimpleNamespace(mem_get_info=lambda *, device: (int(9.18 * 1024**3), 16 * 1024**3)),
     )
     engine._rungs = {}
     manifest = Manifest(
@@ -2412,10 +2414,10 @@ def test_zero_vram_reserve_keeps_full_residency_choice():
 
 def test_free_vram_bytes_clamps_at_zero_after_reserve():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.vram_reserve_mb = 1536
     engine.torch = SimpleNamespace(
-        cuda=SimpleNamespace(mem_get_info=lambda: (1024, 16 * 1024**3)),
+        cuda=SimpleNamespace(mem_get_info=lambda *, device: (1024, 16 * 1024**3)),
     )
 
     assert engine._free_vram_bytes() == 0
@@ -2423,12 +2425,12 @@ def test_free_vram_bytes_clamps_at_zero_after_reserve():
 
 def test_measured_manifests_respect_pinned_rungs():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {"xl": "model_offload"}
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
-    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda *, device: 0))
     manifest = Manifest(
         id="xl",
         name="XL",
@@ -2444,12 +2446,12 @@ def test_measured_manifests_respect_pinned_rungs():
 
 def test_diffusers_effective_realtime_slots_zero_without_realtime():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {}
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
-    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda *, device: 0))
     engine._calibrated_slots = None
     manifest = Manifest(
         id="xl",
@@ -2464,12 +2466,12 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
 
 def test_diffusers_effective_realtime_slots_uses_calibration():
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {"rt": "full"}
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
-    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda: 0))
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(memory_reserved=lambda *, device: 0))
     engine._calibrated_slots = 1
     manifest = Manifest(
         id="rt",

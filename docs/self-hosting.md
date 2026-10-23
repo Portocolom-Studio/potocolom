@@ -142,7 +142,13 @@ AMD (ROCm):
 3. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
    natively by the torch ROCm 6.3+ wheels the image installs; do not set
    `HSA_OVERRIDE_GFX_VERSION`.
-4. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
+4. With no visibility mask, the worker picks the first visible GPU whose base
+   `gcnArchName` target is supported by its PyTorch build. Unsupported cards are
+   skipped; startup explains the targets if none match. Setting
+   `HIP_VISIBLE_DEVICES` or `CUDA_VISIBLE_DEVICES` keeps the operator's device
+   selection and logical ordering, including an empty mask (which exposes no
+   GPU and therefore cannot start the real worker).
+5. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
 
 The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
 run one or the other, never both, since they share the model volumes.

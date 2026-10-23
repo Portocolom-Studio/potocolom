@@ -43,6 +43,7 @@ from worker.memory_ladder import (
     slots_from_frame_ms,
 )
 from worker.region_composite import composite_rgb, keep_unchanged_pixels, selection_alpha
+from worker.gpu_device import select_device
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -525,10 +526,10 @@ class DiffusersEngine:
         import torch
 
         self.torch = torch
-        # ROCm builds of torch expose the cuda API; DEVICE=rocm differs only
-        # in which image variant and driver stack surrounds this process.
-        self.device = "cuda" if device in ("cuda", "rocm") else "cpu"
-        self.dtype = torch.float16 if self.device == "cuda" else torch.float32
+        # ROCm builds of torch expose the cuda API; keep its selected logical
+        # ordinal explicit so inference threads do not fall back to device 0.
+        self.device = select_device(torch, device)
+        self.dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
         self.memory_mode = memory_mode
         self.vram_reserve_mb = vram_reserve_mb
         self.models_dir = models_dir
@@ -560,12 +561,12 @@ class DiffusersEngine:
         return collector
 
     def _free_vram_bytes(self) -> int:
-        if self.device != "cuda":
+        if not self.device.startswith("cuda"):
             return 1 << 60
         return max(0, self._raw_free_vram_bytes() - self.vram_reserve_mb * 1024**2)
 
     def _raw_free_vram_bytes(self) -> int:
-        free, _total = self.torch.cuda.mem_get_info()
+        free, _total = self.torch.cuda.mem_get_info(device=self.device)
         return int(free)
 
     def _available_vram_bytes(self) -> int:
@@ -576,9 +577,9 @@ class DiffusersEngine:
         reserve. Small non-model allocations make this a slight overstatement,
         which eats into the reserve, never into the card; calibration checks
         the rung a model actually loaded at."""
-        if self.device != "cuda":
+        if not self.device.startswith("cuda"):
             return 1 << 60
-        held = int(self.torch.cuda.memory_reserved())
+        held = int(self.torch.cuda.memory_reserved(device=self.device))
         return max(0, self._raw_free_vram_bytes() + held - self.vram_reserve_mb * 1024**2)
 
     def _predicted_rung(self, manifest: Manifest) -> MemoryRung:
@@ -588,7 +589,7 @@ class DiffusersEngine:
             return "full"
         return select_rung(
             manifest.min_vram_gb, self._available_vram_bytes(),
-            self.memory_mode, on_cpu=self.device != "cuda",
+            self.memory_mode, on_cpu=not self.device.startswith("cuda"),
         )
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
@@ -724,15 +725,17 @@ class DiffusersEngine:
             return "full"
         return select_rung(
             manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
-            on_cpu=self.device != "cuda",
+            on_cpu=not self.device.startswith("cuda"),
         )
 
     def _apply_rung(self, pipeline: Any, manifest: Manifest, rung: MemoryRung) -> Any:
         if rung == "full":
             return pipeline.to(self.device)
         if rung == "model_offload":
-            if self.device == "cuda":
-                pipeline.enable_model_cpu_offload(gpu_id=0)
+            if self.device.startswith("cuda"):
+                pipeline.enable_model_cpu_offload(
+                    gpu_id=int(self.device.split(":", 1)[1]),
+                )
             else:
                 pipeline.enable_model_cpu_offload()
             return pipeline
@@ -832,7 +835,7 @@ class DiffusersEngine:
         or an attention backend was applied, so a bad backend is not first
         discovered by a user frame.
         """
-        if self.device != "cuda":
+        if not self.device.startswith("cuda"):
             return
         applied = self._set_attention_backend(pipeline)
         originals: list[tuple[str, Any]] = []
@@ -919,12 +922,12 @@ class DiffusersEngine:
                 )
                 pipeline.fuse_lora()
             rung = self._pick_rung(manifest)
-            # NHWC helps full-resident GPU UNets. self.device is "cuda" for both
-            # NVIDIA and ROCm (mapped in __init__); channels_last makes tensors
+            # NHWC helps full-resident GPU UNets. NVIDIA and ROCm use indexed
+            # CUDA devices internally; channels_last makes tensors
             # non-contiguous in the NCHW sense. Group-offload may write them
             # through safetensors, which refuses non-contiguous params
             # ("You are trying to save a non contiguous tensor").
-            if self.device == "cuda" and rung == "full":
+            if self.device.startswith("cuda") and rung == "full":
                 for name in ("unet", "vae"):
                     module = getattr(pipeline, name, None)
                     if module is not None:
@@ -1076,7 +1079,7 @@ class DiffusersEngine:
         Batch calibration runs after this single-frame measurement.
         """
         self._calibration_cap = configured
-        if self.device != "cuda":
+        if not self.device.startswith("cuda"):
             # CPU diffusion cannot hold the bar; skip the frames, advertise
             # nothing for this model. Sibling measurements stay.
             self._realtime_p95_ms.pop(manifest.id, None)
@@ -1735,8 +1738,9 @@ class DiffusersEngine:
         import gc
 
         gc.collect()
-        if self.device == "cuda":
-            self.torch.cuda.empty_cache()
+        if self.device.startswith("cuda"):
+            with self.torch.cuda.device(self.device):
+                self.torch.cuda.empty_cache()
 
     def _evict_cold(self, except_model_id: str, *, required_bytes: int = 0) -> None:
         loaded = sorted({key[0] for key in self._pipelines})
@@ -2316,12 +2320,12 @@ class DiffusersEngine:
         return GeneratedImage(encode_png(image), image.width, image.height, gpu_ms, load_ms)
 
     def _sync_cuda(self) -> None:
-        if self.device != "cuda":
+        if not self.device.startswith("cuda"):
             return
         cuda = getattr(self.torch, "cuda", None)
         synchronize = getattr(cuda, "synchronize", None)
         if callable(synchronize):
-            synchronize()
+            synchronize(device=self.device)
 
     def _timed_prompt_kwargs(
         self,

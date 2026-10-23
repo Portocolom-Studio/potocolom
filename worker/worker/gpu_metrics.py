@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import shutil
@@ -62,7 +64,43 @@ def _parse_power(text: str) -> float | None:
     return None
 
 
-def _torch_vram_bytes() -> tuple[int, int] | None:
+def _torch_device_pci(device: str) -> str | None:
+    try:
+        import torch
+        properties = torch.cuda.get_device_properties(device)
+        domain = _pci_component(getattr(properties, "pci_domain_id", None), 0xFFFF)
+        bus = _pci_component(getattr(properties, "pci_bus_id", None), 0xFF)
+        slot = _pci_component(getattr(properties, "pci_device_id", None), 0xFF)
+    except Exception:
+        return None
+    if domain is None or bus is None or slot is None:
+        return None
+    return f"{domain:04x}:{bus:02x}:{slot:02x}.0"
+
+
+def _pci_component(value: Any, maximum: int) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 0 <= value <= maximum:
+        return None
+    return value
+
+
+def _normalize_pci(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    match = re.search(
+        r"(?:(?:0x)?([0-9a-f]{1,8}):)?(?:0x)?([0-9a-f]{1,2}):"
+        r"(?:0x)?([0-9a-f]{1,2})(?:\.([0-7]))?",
+        value.strip(), re.IGNORECASE,
+    )
+    if not match:
+        return None
+    domain, bus, slot, function = match.groups()
+    return f"{int(domain or '0', 16):04x}:{int(bus, 16):02x}:{int(slot, 16):02x}.{function or '0'}"
+
+
+def _torch_vram_bytes(device: str) -> tuple[int, int] | None:
     try:
         import torch
     except ImportError:
@@ -70,41 +108,54 @@ def _torch_vram_bytes() -> tuple[int, int] | None:
     try:
         if not torch.cuda.is_available():
             return None
-        free, total = torch.cuda.mem_get_info()
+        free, total = torch.cuda.mem_get_info(device=device)
     except Exception:
         return None
     used = int(total) - int(free)
     return used, int(total)
 
 
-def _nvidia_metrics() -> dict[str, Any]:
+def _number_or_none(value: str) -> float | None:
+    try:
+        return float(value.strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _nvidia_metrics(selected_pci: str | None) -> dict[str, Any]:
+    if selected_pci is None:
+        return {}
     text = _run_smi(
         [
             "nvidia-smi",
-            "--query-gpu=utilization.gpu,temperature.gpu,power.draw,memory.used,memory.total",
+            "--query-gpu=pci.bus_id,utilization.gpu,temperature.gpu,power.draw,memory.used,memory.total",
             "--format=csv,noheader,nounits",
         ]
     )
     if not text.strip():
         return {}
-    parts = [part.strip() for part in text.split(",")]
-    if len(parts) < 5:
+    selected_rows = [
+        [part.strip() for part in row] for row in csv.reader(io.StringIO(text))
+        if len(row) >= 6 and _normalize_pci(row[0]) == _normalize_pci(selected_pci)
+    ]
+    if len(selected_rows) != 1:
         return {}
-    util = _parse_util(parts[0])
-    temp = _parse_temperature(parts[1])
-    power = _parse_power(parts[2] + " w")
-    used_mib = int(float(parts[3])) if parts[3] not in ("", "[N/A]") else None
-    total_mib = int(float(parts[4])) if parts[4] not in ("", "[N/A]") else None
+    selected_row = selected_rows[0]
+    util_value = _number_or_none(selected_row[1])
+    temp_value = _number_or_none(selected_row[2])
+    power = _number_or_none(selected_row[3])
+    used_value = _number_or_none(selected_row[4])
+    total_value = _number_or_none(selected_row[5])
     metrics: dict[str, Any] = {}
-    if util is not None:
-        metrics["util_pct"] = util
-    if temp is not None:
-        metrics["temperature_c"] = temp
+    if util_value is not None:
+        metrics["util_pct"] = int(util_value)
+    if temp_value is not None:
+        metrics["temperature_c"] = temp_value
     if power is not None:
         metrics["power_w"] = power
-    if used_mib is not None and total_mib is not None and total_mib > 0:
-        metrics["vram_used_bytes"] = used_mib * 1024 * 1024
-        metrics["vram_total_bytes"] = total_mib * 1024 * 1024
+    if used_value is not None and total_value is not None and total_value > 0:
+        metrics["vram_used_bytes"] = int(used_value * 1024 * 1024)
+        metrics["vram_total_bytes"] = int(total_value * 1024 * 1024)
     return metrics
 
 
@@ -138,14 +189,28 @@ def _json_number(value: Any) -> float | None:
     return None
 
 
-def _parse_rocm_json(text: str) -> dict[str, Any]:
+def _parse_rocm_json(text: str, selected_pci: str | None = None) -> dict[str, Any]:
     try:
         payload = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return {}
     if not isinstance(payload, dict):
         return {}
-    card = next((value for value in payload.values() if isinstance(value, dict)), payload)
+    cards = [(key, value) for key, value in payload.items() if isinstance(value, dict)]
+    if selected_pci is None:
+        card = cards[0][1] if cards else payload
+    else:
+        matches = []
+        for _key, candidate in cards:
+            identity = next((value for key, value in candidate.items()
+                             if "pci" in str(key).lower() and "bus" in str(key).lower()), None)
+            if _normalize_pci(identity) == _normalize_pci(selected_pci):
+                matches.append(candidate)
+        if len(matches) != 1:
+            return {}
+        card = matches[0]
+    if not isinstance(card, dict):
+        return {}
     metrics: dict[str, Any] = {}
     for key, value in card.items():
         name = str(key).lower()
@@ -204,16 +269,21 @@ def _parse_rocm_text(text: str) -> dict[str, Any]:
     return metrics
 
 
-def _parse_rocm_metrics(text: str) -> dict[str, Any]:
-    metrics = _parse_rocm_json(text)
+def _parse_rocm_metrics(text: str, selected_pci: str | None = None) -> dict[str, Any]:
+    metrics = _parse_rocm_json(text, selected_pci)
+    if selected_pci is not None:
+        return metrics
     for key, value in _parse_rocm_text(text).items():
         metrics.setdefault(key, value)
     return metrics
 
 
-def _rocm_metrics() -> dict[str, Any]:
+def _rocm_metrics(selected_pci: str | None = None) -> dict[str, Any]:
+    if selected_pci is None:
+        return {}
     text = _run_smi([
         "rocm-smi",
+        "--showbus",
         "--showuse",
         "--showtemp",
         "--showpower",
@@ -221,7 +291,7 @@ def _rocm_metrics() -> dict[str, Any]:
         "vram",
         "--json",
     ])
-    return _parse_rocm_metrics(text)
+    return _parse_rocm_metrics(text, selected_pci)
 
 
 def _attach_vram_pct(metrics: dict[str, Any]) -> None:
@@ -231,7 +301,7 @@ def _attach_vram_pct(metrics: dict[str, Any]) -> None:
         metrics["vram_used_pct"] = round(used * 100 / total)
 
 
-def sample_gpu(device: str) -> dict[str, Any]:
+def sample_gpu(device: str, selected_device: str | None = None) -> dict[str, Any]:
     """Return a JSON-serializable GPU snapshot for the configured device."""
     metrics: dict[str, Any] = {"device": device}
 
@@ -239,16 +309,21 @@ def sample_gpu(device: str) -> dict[str, Any]:
         metrics["available"] = False
         return metrics
 
+    if not selected_device or (
+        selected_device == device and device in {"cuda", "rocm"}
+    ):
+        selected_device = "cuda:0" if device in {"cuda", "rocm"} else device
+    selected_pci = _torch_device_pci(selected_device)
     try:
         if device == "rocm" and shutil.which("rocm-smi"):
-            metrics.update(_rocm_metrics())
+            metrics.update(_rocm_metrics(selected_pci))
         elif device == "cuda" and shutil.which("nvidia-smi"):
-            metrics.update(_nvidia_metrics())
+            metrics.update(_nvidia_metrics(selected_pci))
     except Exception:
         pass
 
     try:
-        vram = _torch_vram_bytes()
+        vram = _torch_vram_bytes(selected_device)
     except Exception:
         vram = None
     if vram is not None:
