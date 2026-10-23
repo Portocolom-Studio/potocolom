@@ -204,7 +204,7 @@ heartbeat. Torch VRAM queries use that logical device index. Vendor queries
 match its PCI identity, so visibility masks and a supported discrete GPU at
 index 1 do not select another card's counters. CUDA uses one `nvidia-smi`
 subprocess; ROCm uses one combined `rocm-smi --json` subprocess when that tool
-is present. Unknown or unmatched identity leaves vendor counters absent.
+is present. Unknown, unmatched or ambiguous identity leaves vendor counters absent. The ROCm query includes `--showbus` so its JSON carries the PCI identity used for matching. [ROCm SMI documents this field](https://rocmdocs.amd.com/projects/rocm_smi_lib/en/latest/how-to/use-python.html).
 Torch can still provide VRAM counters for the selected device.
 
 The blocking query runs through `asyncio.to_thread`, off the event loop.
