@@ -37,6 +37,10 @@ def test_select_rung_group_offload_when_tight():
     assert select_rung(10, free, "auto", on_cpu=False) == "group_offload"
 
 
+def test_group_offload_has_a_two_gibibyte_admission_floor():
+    assert group_offload_bytes() == 2 * GB
+
+
 def test_select_rung_respects_pin():
     assert select_rung(8, 100 * GB, "group_offload", on_cpu=False) == "group_offload"
     assert select_rung(8, 1, "full", on_cpu=False) == "full"

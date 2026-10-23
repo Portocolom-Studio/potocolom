@@ -431,6 +431,55 @@ Hot-set models use `channels_last` memory format when loaded. `torch.compile` an
 
 Rejected alternatives: forcing compile on for all devices after the ROCm measurement (pays startup cost for noise-level realtime wins); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
+## Model loading refuses a rung that cannot fit after the display reserve
+
+The memory ladder still predicts the best available rung and removes
+realtime below full residency. Before a new allocation, the worker evicts
+cold models and checks the selected rung against free VRAM minus
+`VRAM_RESERVE_MB`. It refuses the load if the estimate does not fit. A pinned
+`MEMORY_MODE` does not bypass this check. Group offload has a 2 GiB estimate;
+a manifest with no estimate still needs a positive GPU budget. CPU operation
+is unchanged.
+
+Diffusion modes can share weights with an already resident mode. They do not pay
+the whole model estimate twice, but need a positive budget for added
+components. Upscale factors load independent models and each need their full
+estimate. They cannot demote into diffusion offload rungs. A refused first
+load clears its unused rung, so a later retry
+can choose again. Warmup retains calibration retries until memory permits a
+measurement. The reserve is an admission margin, not a continuous allocation
+limit against other GPU users or underestimated peaks.
+
+This narrows "Low VRAM operation: the diffusers offloading ladder, not
+airLLM". Its lowest rung is not permission to load with no usable memory.
+
+Rejected alternatives:
+- Always loading group offload below its own estimate. It can spend the
+  configured display margin before inference starts.
+- Requiring the whole model estimate again for a shared mode. It rejects
+  valid realtime and image-to-image transitions with resident weights.
+- A test-only external monitor as runtime protection. Ordinary installs do
+  not run that monitor.
+
+## GPU image decoders use bounded tiles
+
+GPU pipelines enable overlapping VAE tiles when the decoder supports them.
+Diffusers applies the checkpoint's tile threshold and blends the overlaps.
+The shipped SDXL fp16 VAE keeps 512-pixel realtime frames untiled; larger
+queued images decode in smaller pieces. This bounds temporary decode buffers
+while models remain resident. Large outputs can have small tone differences
+between tiles, as documented in the
+[Diffusers memory guide](https://huggingface.co/docs/diffusers/v0.41.0/optimization/memory#vae-tiling).
+
+The AMD release check exposed a 2.53 GiB decode allocation after the final
+denoise step while another model was still loaded. Waiting for allocation
+failure let the worker consume the display reserve. A bounded real decoder
+regression covers GPU tiles and the CPU's existing whole-image decode path.
+
+Rejected alternatives: wait for OOM recovery (the display can run out of
+memory first); evict every other model before a job (discards useful warm
+weights); increase every model's minimum VRAM (does not bound decode buffers).
+
 ## Image codecs off the event loop
 
 WebP and PNG encoding and decoding, the main per-frame CPU cost in both the worker and the API relay, always run in a thread executor, never on the asyncio loop. This keeps frame pacing and WebSocket heartbeats steady at the 2 to 4 fps bar. Binding for issues #15, #16 and #19.

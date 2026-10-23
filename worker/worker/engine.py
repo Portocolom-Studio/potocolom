@@ -149,6 +149,10 @@ class NotResidentError(ValueError):
     """The model is not on the full realtime rung, so a frame cannot run."""
 
 
+class VRAMCapacityError(ValueError):
+    """The selected model rung cannot fit while preserving the VRAM reserve."""
+
+
 class Cancelled(Exception):
     """The job was asked to stop, and the work aborted where it stood.
 
@@ -510,6 +514,7 @@ class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
+                 vram_reserve_mb: int = 1536,
                  models_dir: str = "", torch_compile: bool = False,
                  attention_backend: str = ""):
         if device == "rocm":
@@ -525,6 +530,7 @@ class DiffusersEngine:
         self.device = "cuda" if device in ("cuda", "rocm") else "cpu"
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         self.memory_mode = memory_mode
+        self.vram_reserve_mb = vram_reserve_mb
         self.models_dir = models_dir
         self.torch_compile = torch_compile
         self.attention_backend = attention_backend
@@ -534,6 +540,7 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._calibration_retry_models: set[str] = set()
         self._calibration_failed = False
         self._calibration_cap: int = 0
         self._realtime_p95_ms: dict[str, int] = {}
@@ -555,21 +562,43 @@ class DiffusersEngine:
     def _free_vram_bytes(self) -> int:
         if self.device != "cuda":
             return 1 << 60
+        return max(0, self._raw_free_vram_bytes() - self.vram_reserve_mb * 1024**2)
+
+    def _raw_free_vram_bytes(self) -> int:
         free, _total = self.torch.cuda.mem_get_info()
         return int(free)
+
+    def _available_vram_bytes(self) -> int:
+        """What a model that is not loaded could have once _ensure_vram has
+        evicted the others: each eviction ends in empty_cache, which returns
+        all of PyTorch's memory (weights, adapters, decoders, allocator cache)
+        to the device, so it is raw free plus memory_reserved, less the
+        reserve. Small non-model allocations make this a slight overstatement,
+        which eats into the reserve, never into the card; calibration checks
+        the rung a model actually loaded at."""
+        if self.device != "cuda":
+            return 1 << 60
+        held = int(self.torch.cuda.memory_reserved())
+        return max(0, self._raw_free_vram_bytes() + held - self.vram_reserve_mb * 1024**2)
+
+    def _predicted_rung(self, manifest: Manifest) -> MemoryRung:
+        """The rung a model that is not loaded would get once _ensure_vram has
+        evicted the others, as _select_rung would then choose it."""
+        if "upscale" in manifest.capabilities:
+            return "full"
+        return select_rung(
+            manifest.min_vram_gb, self._available_vram_bytes(),
+            self.memory_mode, on_cpu=self.device != "cuda",
+        )
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
         # Loaded models keep their pinned rung: an offloaded pipeline leaves
         # VRAM looking free, and a reconnect must not re-advertise realtime
         # for a model that _frame would refuse.
-        free = self._free_vram_bytes()
-        on_cpu = self.device != "cuda"
         return [
             measured_wire_manifest(
                 manifest,
-                self._rungs.get(manifest.id)
-                or select_rung(manifest.min_vram_gb, free, self.memory_mode,
-                               on_cpu=on_cpu),
+                self._rungs.get(manifest.id) or self._predicted_rung(manifest),
             )
             for manifest in manifests
         ]
@@ -591,6 +620,28 @@ class DiffusersEngine:
         self._last_used[model_id] = time.monotonic()
 
     def _ensure_vram(self, manifest: Manifest) -> None:
+        resident = any(key[0] == manifest.id for key in self._pipelines)
+        shared = resident and "upscale" not in manifest.capabilities
+        target_rung: MemoryRung = (
+            "full" if self.memory_mode == "auto" or "upscale" in manifest.capabilities
+            else self.memory_mode
+        )
+        target = 1 if shared else max(1, rung_vram_bytes(manifest.min_vram_gb, target_rung))
+        if self._free_vram_bytes() < target:
+            self._free_gpu_cache()
+        if shared:
+            # A new mode may add a small adapter or decoder while sharing the
+            # resident model weights. Do not charge the whole model rung again,
+            # but require some usable VRAM before starting that allocation.
+            if self._free_vram_bytes() <= 0:
+                self._evict_cold(except_model_id=manifest.id, required_bytes=1)
+            available = self._free_vram_bytes()
+            if available <= 0:
+                raise VRAMCapacityError(
+                    f"cannot load another pipeline mode for {manifest.id}: "
+                    "no usable VRAM remains after reserve"
+                )
+            return
         if self.memory_mode == "auto" and manifest.id not in self._rungs:
             # Prefer evicting cold residents over degrading the new model to
             # an offload rung: make room for full residency before picking.
@@ -598,9 +649,18 @@ class DiffusersEngine:
             if self._free_vram_bytes() < wanted:
                 self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
         rung = self._pick_rung(manifest)
-        required = rung_vram_bytes(manifest.min_vram_gb, rung)
+        required = max(1, rung_vram_bytes(manifest.min_vram_gb, rung))
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
+        available = self._free_vram_bytes()
+        if available < required:
+            if not any(key[0] == manifest.id for key in self._pipelines):
+                self._rungs.pop(manifest.id, None)
+            raise VRAMCapacityError(
+                f"cannot load {manifest.id} on the {rung} rung: "
+                f"requires {required} bytes of usable VRAM, "
+                f"but only {available} are available after reserve"
+            )
 
     def _pipeline(
         self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
@@ -639,7 +699,7 @@ class DiffusersEngine:
         return rung
 
     def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
-        if self.memory_mode != "auto":
+        if self.memory_mode != "auto" or "upscale" in manifest.capabilities:
             return False
         rung = self._pick_rung(manifest)
         lower: dict[MemoryRung, MemoryRung] = {
@@ -876,6 +936,10 @@ class DiffusersEngine:
                 )
         if manifest.scheduler:
             pipeline.scheduler = self._scheduler(manifest.scheduler, pipeline.scheduler.config)
+        if self.device.startswith("cuda"):
+            enable_tiling = getattr(getattr(pipeline, "vae", None), "enable_tiling", None)
+            if callable(enable_tiling):
+                enable_tiling()
         pipeline.set_progress_bar_config(disable=True)
         return pipeline
 
@@ -932,6 +996,11 @@ class DiffusersEngine:
         )
         return self._calibrated_slots
 
+    def _defer_calibration(self, model_id: str) -> None:
+        self._calibration_failed = True
+        self._calibration_retry_models = getattr(self, "_calibration_retry_models", set())
+        self._calibration_retry_models.add(model_id)
+
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
         self._calibration_cap = configured
         try:
@@ -948,8 +1017,10 @@ class DiffusersEngine:
             # next hello advertises no capacity it never timed; the flag is
             # what lets that reconnect try again (None would advertise the
             # uncalibrated estimate instead).
-            self._calibration_failed = True
+            self._defer_calibration(manifest.id)
             return 0
+        if manifest.id in self._realtime_p95_ms:
+            getattr(self, "_calibration_retry_models", set()).discard(manifest.id)
         slots = self._recompute_calibrated_slots()
         if slots <= 0:
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
@@ -960,7 +1031,7 @@ class DiffusersEngine:
             logger.exception("realtime batch calibration failed for %s", manifest.id)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
-            self._calibration_failed = True
+            self._defer_calibration(manifest.id)
         return self._calibrated_slots or 0
 
     def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
@@ -1017,12 +1088,25 @@ class DiffusersEngine:
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
-        if self._select_rung(manifest) != "full":
+        if (self._rungs.get(manifest.id) or self._predicted_rung(manifest)) != "full":
+            if self.memory_mode == "auto":
+                self._defer_calibration(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
+            )
+            return 0
+        self._ensure_vram(manifest)
+        if self._rungs.get(manifest.id) != "full":
+            selected = self._rungs.get(manifest.id)
+            self._forget_rung_if_unloaded(manifest.id)
+            self._realtime_p95_ms.pop(manifest.id, None)
+            self._defer_calibration(manifest.id)
+            logger.info(
+                "realtime calibration skipped for %s (selected %s)",
+                manifest.id, selected,
             )
             return 0
         params, canvas, strength = self._calibration_inputs(manifest)
@@ -1036,6 +1120,16 @@ class DiffusersEngine:
             elapsed_ms = (time.monotonic() - start) * 1000.0
             if index > 0:
                 samples.append(elapsed_ms)
+        if self._rungs.get(manifest.id) != "full":
+            self._defer_calibration(manifest.id)
+            # The prediction let it in, but loading chose an offload rung:
+            # its timing is not a realtime frame time.
+            self._realtime_p95_ms.pop(manifest.id, None)
+            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._recompute_calibrated_slots()
+            logger.info("realtime calibration discarded for %s (loaded %s)",
+                        manifest.id, self._rungs.get(manifest.id))
+            return 0
         p95 = _percentile_nearest(samples, 95.0)
         self._realtime_p95_ms[manifest.id] = round(p95)
         slots = self._recompute_calibrated_slots()
@@ -1707,9 +1801,8 @@ class DiffusersEngine:
         return True
 
     def _evict_all(self) -> None:
-        for pipeline in self._pipelines.values():
-            self._detach_preview_decoder(pipeline)
-        self._pipelines.clear()
+        for key in list(self._pipelines):
+            self._drop_pipeline(key)
         self._rungs.clear()
         self._last_used.clear()
         self._free_gpu_cache()
