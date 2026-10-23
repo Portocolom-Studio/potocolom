@@ -451,6 +451,7 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
         return load_manifests(settings.models_dir), DiffusersEngine(
             settings.device,
             memory_mode=settings.memory_mode,
+            vram_reserve_mb=settings.vram_reserve_mb,
             models_dir=settings.models_dir,
             torch_compile=settings.torch_compile,
             attention_backend=settings.attention_backend,
@@ -474,7 +475,6 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     if (getattr(engine, "_calibrated_slots", None) is not None
             and not getattr(engine, "_calibration_failed", False)):
         return
-    setattr(engine, "_calibration_failed", False)
     wire = engine.measured_manifests(manifests)
     live_ids = {
         item["id"] for item in wire if "realtime" in item.get("capabilities", [])
@@ -483,6 +483,7 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
                   if manifest.id in live_ids and not manifest.benchmark_only]
     if not candidates:
         return
+    setattr(engine, "_calibration_failed", False)
     declared = [manifest for manifest in candidates if manifest.default]
     if len(declared) > 1:
         # The studio's picker takes the first default in ITS order, which is by
@@ -509,6 +510,8 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
     for manifest in ordered:
         slots = await engine.calibrate_realtime(manifest, configured_slots)
         logger.info("warmup realtime model=%s slots=%d", manifest.id, slots)
+    if getattr(engine, "_calibration_retry_models", set()):
+        setattr(engine, "_calibration_failed", True)
 
 
 class JobRun:
@@ -1097,7 +1100,8 @@ async def _serve_protocol5(
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
             try:
-                gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                selected_device = getattr(engine, "device", settings.device)
+                gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
                 await ws.send(json.dumps({
                     "type": "heartbeat",
                     "slots_in_use": sessions.active_count,
@@ -1145,7 +1149,10 @@ async def _serve_protocol5(
                             if job.stops(control):
                                 job.stop.set()
                     elif control["type"] == "gpu_status":
-                        gpu = await asyncio.to_thread(sample_gpu, settings.device)
+                        selected_device = getattr(engine, "device", settings.device)
+                        gpu = await asyncio.to_thread(
+                            sample_gpu, settings.device, selected_device,
+                        )
                         await ws.send(json.dumps({
                             "type": "gpu_status",
                             "request_id": control["request_id"],
@@ -1216,7 +1223,8 @@ async def _serve_protocol6(
     async def heartbeats() -> None:
         while True:
             await asyncio.sleep(settings.heartbeat_seconds)
-            gpu = await asyncio.to_thread(sample_gpu, settings.device)
+            selected_device = getattr(engine, "device", settings.device)
+            gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
             message = {
                 "type": "heartbeat",
                 "worker_id": worker_id,

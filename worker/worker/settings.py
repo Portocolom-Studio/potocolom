@@ -13,6 +13,9 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     device: Literal["cuda", "rocm", "cpu"] = "cpu"
     memory_mode: Literal["auto", "full", "model_offload", "group_offload"] = "auto"
+    # Above the 1.18 GiB margin a resident realtime model left for an 8 GiB load
+    # on a 16 GB card that also drives a display, measured in issue #753.
+    vram_reserve_mb: int = Field(default=1536, ge=0)
     api_url: str = "ws://localhost:8000/api/v1/fleet"
     fleet_token: str = ""
     log_format: Literal["plain", "json"] = "plain"

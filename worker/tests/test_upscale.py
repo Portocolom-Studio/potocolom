@@ -1,6 +1,7 @@
 import pytest
 
 from worker.upscale import (
+    ensure_weights,
     is_direct_weight_source,
     iter_tiles,
     weight_cache_path,
@@ -32,6 +33,149 @@ def test_weight_helpers_reject_unknown_factor():
         weight_url("https://example.com", 3)
     with pytest.raises(ValueError, match="unsupported upscale factor"):
         weight_cache_path("/models", "realesrgan", 3)
+
+
+def test_concurrent_weight_downloads_use_private_temporary_files(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    gate = Barrier(2)
+
+    class Response:
+        def __init__(self, content):
+            self.content = content
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            if self.reads == 0:
+                self.reads += 1
+                gate.wait(timeout=3)
+                return self.content
+            return b""
+
+    contents = iter((b"complete writer one", b"complete writer two"))
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen",
+        lambda *_args, **_kwargs: Response(next(contents)),
+    )
+
+    def download():
+        return ensure_weights("https://example.test/weights.pth", str(tmp_path), "model", 2)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: download(), range(2)))
+
+    assert results[0] == results[1]
+    assert results[0].read_bytes() in {
+        b"complete writer one", b"complete writer two",
+    }
+    assert not list(results[0].parent.glob("*.tmp"))
+
+
+def test_completed_download_does_not_remove_another_writers_temporary_file(tmp_path, monkeypatch):
+    import io
+
+    source = "https://example.test/weights.pth"
+    target = weight_cache_path(str(tmp_path), "model", 2, source)
+    target.parent.mkdir(parents=True)
+    other = target.parent / f"{target.name}.other-writer.tmp"
+    other.write_bytes(b"another writer is still downloading")
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(b"complete weights"),
+    )
+
+    assert ensure_weights(source, str(tmp_path), "model", 2).read_bytes() == b"complete weights"
+    assert other.read_bytes() == b"another writer is still downloading"
+
+
+def test_interrupted_weight_download_leaves_no_partial_cache_file(tmp_path, monkeypatch):
+    class InterruptedResponse:
+        def __init__(self):
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            self.reads += 1
+            if self.reads == 1:
+                return b"partial"
+            raise OSError("connection interrupted")
+
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen",
+        lambda *_args, **_kwargs: InterruptedResponse(),
+    )
+    path = weight_cache_path(str(tmp_path), "model", 2, "https://example.test/weights.pth")
+
+    with pytest.raises(OSError, match="connection interrupted"):
+        ensure_weights("https://example.test/weights.pth", str(tmp_path), "model", 2)
+
+    assert not path.exists()
+    assert not list(path.parent.glob("*.tmp"))
+
+
+def test_failed_weight_download_preserves_existing_cached_bytes(tmp_path, monkeypatch):
+    source = "https://example.test/weights.pth"
+    path = weight_cache_path(str(tmp_path), "model", 2, source)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"existing complete weights")
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("download started")),
+    )
+
+    assert ensure_weights(source, str(tmp_path), "model", 2) == path
+    assert path.read_bytes() == b"existing complete weights"
+
+
+def test_readers_cannot_observe_partial_final_weight_file(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    partial_written = Event()
+    finish_download = Event()
+
+    class Response:
+        def __init__(self):
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            self.reads += 1
+            if self.reads == 1:
+                return b"complete"
+            if self.reads == 2:
+                partial_written.set()
+                assert finish_download.wait(timeout=3)
+            return b""
+
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen", lambda *_args, **_kwargs: Response(),
+    )
+    source = "https://example.test/weights.pth"
+    path = weight_cache_path(str(tmp_path), "model", 2, source)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(ensure_weights, source, str(tmp_path), "model", 2)
+        assert partial_written.wait(timeout=3)
+        assert not path.exists()
+        finish_download.set()
+        assert future.result(timeout=3).read_bytes() == b"complete"
 
 
 def test_iter_tiles_covers_small_image_as_single_tile():

@@ -51,6 +51,15 @@ advertises `realtime`. Offload can run still jobs on smaller cards, with less
 speed, when that rung fits. `scripts/preflight.sh` prints which shipped
 models clear the bar on your card.
 
+The worker reserves 1536 MiB of measured free VRAM before choosing a residency
+rung. Raise `VRAM_RESERVE_MB` when the GPU also drives a display, or set it to
+`0` for a dedicated server GPU. If the selected rung cannot fit after cold
+models are evicted, the worker refuses the load. Group offload needs an
+estimated 2 GiB after the reserve. Free memory, then retry the job or model
+load. New modes that share resident weights do not need room for the whole
+model again, but still need a positive memory budget. These checks use
+estimates; they do not set a hard runtime memory limit.
+
 Measured on a 4 GB RTX 3050 Laptop (well under every text-to-image floor, so
 every model lands on the bottom rung): `ssd-1b-lightning` at 768 px, 8 steps
 takes about 7.7 s of GPU time per still, plus a one-off multi-minute weight
@@ -165,7 +174,13 @@ AMD (ROCm):
 3. RDNA3 consumer cards (gfx1102 class, RX 7600 XT and similar) are supported
    natively by the torch ROCm 6.3+ wheels the image installs; do not set
    `HSA_OVERRIDE_GFX_VERSION`.
-4. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
+4. With no visibility mask, the worker picks the first visible GPU whose base
+   `gcnArchName` target is supported by its PyTorch build. Unsupported cards are
+   skipped; startup explains the targets if none match. Setting
+   `HIP_VISIBLE_DEVICES` or `CUDA_VISIBLE_DEVICES` keeps the operator's device
+   selection and logical ordering, including an empty mask (which exposes no
+   GPU and therefore cannot start the real worker).
+5. Verify: `docker compose -f deploy/compose/compose.yml --profile rocm exec worker-rocm python -c "import torch; print(torch.cuda.is_available())"`.
 
 The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
 run one or the other, never both, since they share the model volumes.
