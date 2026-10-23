@@ -1877,7 +1877,7 @@ def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has
     engine._frame = MagicMock()
     engine._calibrate_batch_curve = AsyncMock()
     free_gib = [12]
-    engine.torch.cuda.mem_get_info = lambda: (int(free_gib[0] * 1024**3), 16 * 1024**3)
+    engine.torch.cuda.mem_get_info = lambda *args, **kwargs: (int(free_gib[0] * 1024**3), 16 * 1024**3)
     ensure = engine._ensure_vram
     attempts = []
 
