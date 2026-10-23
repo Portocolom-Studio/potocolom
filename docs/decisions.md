@@ -431,6 +431,36 @@ Hot-set models use `channels_last` memory format when loaded. `torch.compile` an
 
 Rejected alternatives: forcing compile on for all devices after the ROCm measurement (pays startup cost for noise-level realtime wins); TensorRT or similar vendor toolchains (real gains, but a per-vendor build matrix against our CUDA plus ROCm promise, revisit if fleet economics demand it).
 
+## Model loading refuses a rung that cannot fit after the display reserve
+
+The memory ladder still predicts the best available rung and removes
+realtime below full residency. Before a new allocation, the worker evicts
+cold models and checks the selected rung against free VRAM minus
+`VRAM_RESERVE_MB`. It refuses the load if the estimate does not fit. A pinned
+`MEMORY_MODE` does not bypass this check. Group offload has a 2 GiB estimate;
+a manifest with no estimate still needs a positive GPU budget. CPU operation
+is unchanged.
+
+Diffusion modes can share weights with an already resident mode. They do not pay
+the whole model estimate twice, but need a positive budget for added
+components. Upscale factors load independent models and each need their full
+estimate. They cannot demote into diffusion offload rungs. A refused first
+load clears its unused rung, so a later retry
+can choose again. Warmup retains calibration retries until memory permits a
+measurement. The reserve is an admission margin, not a continuous allocation
+limit against other GPU users or underestimated peaks.
+
+This narrows "Low VRAM operation: the diffusers offloading ladder, not
+airLLM". Its lowest rung is not permission to load with no usable memory.
+
+Rejected alternatives:
+- Always loading group offload below its own estimate. It can spend the
+  configured display margin before inference starts.
+- Requiring the whole model estimate again for a shared mode. It rejects
+  valid realtime and image-to-image transitions with resident weights.
+- A test-only external monitor as runtime protection. Ordinary installs do
+  not run that monitor.
+
 ## GPU image decoders use bounded tiles
 
 GPU pipelines enable overlapping VAE tiles when the decoder supports them.

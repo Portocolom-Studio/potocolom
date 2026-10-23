@@ -150,6 +150,10 @@ class NotResidentError(ValueError):
     """The model is not on the full realtime rung, so a frame cannot run."""
 
 
+class VRAMCapacityError(ValueError):
+    """The selected model rung cannot fit while preserving the VRAM reserve."""
+
+
 class Cancelled(Exception):
     """The job was asked to stop, and the work aborted where it stood.
 
@@ -617,6 +621,20 @@ class DiffusersEngine:
         self._last_used[model_id] = time.monotonic()
 
     def _ensure_vram(self, manifest: Manifest) -> None:
+        resident = any(key[0] == manifest.id for key in self._pipelines)
+        if resident and "upscale" not in manifest.capabilities:
+            # A new mode may add a small adapter or decoder while sharing the
+            # resident model weights. Do not charge the whole model rung again,
+            # but require some usable VRAM before starting that allocation.
+            if self._free_vram_bytes() <= 0:
+                self._evict_cold(except_model_id=manifest.id, required_bytes=1)
+            available = self._free_vram_bytes()
+            if available <= 0:
+                raise VRAMCapacityError(
+                    f"cannot load another pipeline mode for {manifest.id}: "
+                    "no usable VRAM remains after reserve"
+                )
+            return
         if self.memory_mode == "auto" and manifest.id not in self._rungs:
             # Prefer evicting cold residents over degrading the new model to
             # an offload rung: make room for full residency before picking.
@@ -624,9 +642,18 @@ class DiffusersEngine:
             if self._free_vram_bytes() < wanted:
                 self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
         rung = self._pick_rung(manifest)
-        required = rung_vram_bytes(manifest.min_vram_gb, rung)
+        required = max(1, rung_vram_bytes(manifest.min_vram_gb, rung))
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
+        available = self._free_vram_bytes()
+        if available < required:
+            if not any(key[0] == manifest.id for key in self._pipelines):
+                self._rungs.pop(manifest.id, None)
+            raise VRAMCapacityError(
+                f"cannot load {manifest.id} on the {rung} rung: "
+                f"requires {required} bytes of usable VRAM, "
+                f"but only {available} are available after reserve"
+            )
 
     def _pipeline(
         self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
@@ -665,7 +692,7 @@ class DiffusersEngine:
         return rung
 
     def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
-        if self.memory_mode != "auto":
+        if self.memory_mode != "auto" or "upscale" in manifest.capabilities:
             return False
         rung = self._pick_rung(manifest)
         lower: dict[MemoryRung, MemoryRung] = {

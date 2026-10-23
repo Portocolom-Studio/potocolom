@@ -35,7 +35,12 @@ models clear the bar on your card.
 
 The worker reserves 1536 MiB of measured free VRAM before choosing a residency
 rung. Raise `VRAM_RESERVE_MB` when the GPU also drives a display, or set it to
-`0` for a dedicated server GPU.
+`0` for a dedicated server GPU. If the selected rung cannot fit after cold
+models are evicted, the worker refuses the load. Group offload needs an
+estimated 2 GiB after the reserve. Free memory, then retry the job or model
+load. New modes that share resident weights do not need room for the whole
+model again, but still need a positive memory budget. These checks use
+estimates; they do not set a hard runtime memory limit.
 
 Measured on a 4 GB RTX 3050 Laptop (well under every text-to-image floor, so
 every model lands on the bottom rung): `ssd-1b-lightning` at 768 px, 8 steps
