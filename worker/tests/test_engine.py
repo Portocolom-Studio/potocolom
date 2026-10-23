@@ -1732,6 +1732,28 @@ def test_shared_pipeline_mode_reuses_resident_weights_with_limited_free_vram():
     engine._load.assert_called_once_with(manifest, "realtime")
 
 
+def test_shared_pipeline_mode_releases_cached_memory_before_evicting_residents():
+    free = [1536 * 1024**2]
+    engine = _admission_engine(free)
+    engine.vram_reserve_mb = 1536
+    resident, cold, shared = object(), object(), object()
+    engine._pipelines = {("shared", "t2i"): resident, ("cold", "t2i"): cold}
+    engine._rungs = {"shared": "full", "cold": "full"}
+    engine._load = MagicMock(return_value=shared)
+    engine._evict_cold = MagicMock()
+    engine._free_gpu_cache = MagicMock(side_effect=lambda: free.__setitem__(0, free[0] + 1024**3))
+    manifest = Manifest(
+        id="shared", name="Shared", capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    assert engine._pipeline(manifest, "realtime") is shared
+    assert engine._pipelines[("shared", "t2i")] is resident
+    assert engine._pipelines[("cold", "t2i")] is cold
+    engine._free_gpu_cache.assert_called_once_with()
+    engine._evict_cold.assert_not_called()
+
+
 def test_shared_pipeline_mode_refuses_new_allocation_at_zero_usable_vram():
     engine = _admission_engine([1536 * 1024**2])
     engine.vram_reserve_mb = 1536

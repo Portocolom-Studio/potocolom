@@ -627,7 +627,9 @@ class DiffusersEngine:
             # resident model weights. Do not charge the whole model rung again,
             # but require some usable VRAM before starting that allocation.
             if self._free_vram_bytes() <= 0:
-                self._evict_cold(except_model_id=manifest.id, required_bytes=1)
+                self._free_gpu_cache()
+                if self._free_vram_bytes() <= 0:
+                    self._evict_cold(except_model_id=manifest.id, required_bytes=1)
             available = self._free_vram_bytes()
             if available <= 0:
                 raise VRAMCapacityError(
