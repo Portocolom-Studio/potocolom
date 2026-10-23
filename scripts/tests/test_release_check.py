@@ -87,6 +87,28 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertEqual(requests[0]["params"]["height"], 768)
         self.assertEqual(requests[0]["params"]["steps"], 8)
 
+    def test_cleanup_stops_owned_containers_before_removing_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = "release-check-0123456789abcdef"
+            (root / ".release-check-project").write_text(project)
+            stopped = []
+            removed = []
+            worker = "0123456789ab"
+            def docker(args, **_kwargs):
+                if args[1] == "ps":
+                    return worker
+                if args[1] == "stop":
+                    stopped.extend(args[4:])
+                if args[1] == "rm":
+                    self.assertIn(worker, stopped, "removing a live worker races its safety monitor")
+                    removed.extend(args[2:])
+                return ""
+            with patch.object(check, "run", side_effect=docker):
+                check.cleanup_rehearsal(root)
+            self.assertEqual(stopped, [worker])
+            self.assertEqual(removed, [worker])
+
     def test_cleanup_refuses_unexpected_resource_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

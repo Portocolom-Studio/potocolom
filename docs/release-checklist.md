@@ -42,7 +42,8 @@ verified Docker labels. Replacing installer files does not interrupt the monitor
 An unsafe worker stops even before it connects to the API. Cancellation joins
 installer child processes. Fresh checks record their project in a private claim
 file. A separate workflow cleanup step runs even after cancellation and removes
-only resources with that project label; it does not need intact installer files.
+only resources with that project label. It stops containers before removal so
+the live monitor can finish its probes. Cleanup does not need intact installer files.
 Checks with `--keep` preserve the install and its data. New PNGs must contain every declared RGB or RGBA row
 with valid filters. A valid header alone does not pass.
 

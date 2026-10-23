@@ -1924,7 +1924,10 @@ of the upgrade. All model manifests are restored before the candidate starts.
 This checks old data without repeating known unsafe legacy GPU workloads.
 Cleanup uses a private project claim and Docker labels, independent of mutable
 installer files. Cancellation joins installer children, and an always-run workflow
-step repeats cleanup after an interrupted fresh check. Kept installs retain data.
+step repeats cleanup after an interrupted fresh check. Cleanup first stops
+containers, then removes them without force; the monitor can observe stopped
+workers instead of racing the force-removal of a live worker. Kept installs
+retain data.
 
 The installer accepts `POTOCOLOM_RELEASE_URL` as an HTTPS artifact directory or
 an absolute `file://` directory. The published GitHub release remains the default.

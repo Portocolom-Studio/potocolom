@@ -430,7 +430,7 @@ def cleanup_rehearsal(install_dir: Path) -> None:
         raise CheckError("invalid release-check project claim; refusing cleanup")
     label = f"label=com.docker.compose.project={project}"
     for listing, removal, pattern in (
-        (["docker", "ps", "-aq", "--filter", label], ["docker", "rm", "-f"], r"[0-9a-f]{12,64}"),
+        (["docker", "ps", "-aq", "--filter", label], ["docker", "rm"], r"[0-9a-f]{12,64}"),
         (["docker", "network", "ls", "-q", "--filter", label], ["docker", "network", "rm"], r"[0-9a-f]{12,64}"),
         (["docker", "volume", "ls", "--format", "{{.Name}}", "--filter", label],
          ["docker", "volume", "rm"], re.escape(project) + r"_[A-Za-z0-9_.-]+"),
@@ -439,6 +439,8 @@ def cleanup_rehearsal(install_dir: Path) -> None:
         if any(not re.fullmatch(pattern, item) for item in resources):
             raise CheckError("unexpected owned Docker resource; refusing cleanup")
         if resources:
+            if listing[1] == "ps":
+                run(["docker", "stop", "--time", "0", *resources], timeout=300)
             run([*removal, *resources], timeout=300)
 
 
