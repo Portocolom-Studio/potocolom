@@ -6,6 +6,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 REAL_CURL="$(command -v curl)"
 failures=0
+release_test_awk="$(type -P awk)"
 
 fail_case() {
 	printf 'FAIL %s\n' "$1"
@@ -78,6 +79,19 @@ else
 	printf 'CUDA Version: 13.2\n'
 fi
 EOF
+	cat >"$case_dir/bin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Avail\n100G\n'
+EOF
+	cat >"$case_dir/bin/awk" <<'EOF'
+#!/usr/bin/env bash
+if [[ $# == 2 && "$2" == /proc/meminfo ]]; then
+	printf '33554432\n'
+else
+	exec "${RELEASE_TEST_AWK:?}" "$@"
+fi
+EOF
+	chmod +x "$case_dir/bin/df" "$case_dir/bin/awk"
 	for utility in bash dirname sed tail tr awk grep sha256sum tar mktemp mkdir cp; do
 		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(type -P "$utility")" "$case_dir/bin/$utility"
 	done
@@ -98,7 +112,7 @@ EOF
 run_install() {
 	local case_dir="$1"
 	shift
-	env PATH="$case_dir/bin:$PATH" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
+	env PATH="$case_dir/bin:$PATH" RELEASE_TEST_AWK="$release_test_awk" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
 		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
 		POTOCOLOM_PROFILE=gpu "$@" bash "$repo/scripts/install.sh" 2>&1
 }
