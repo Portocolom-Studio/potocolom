@@ -310,7 +310,7 @@ See [release checks](release-checklist.md).
 
 ### Secret scanning
 
-`secret-scan.yml` runs on every pull request (no path filter) and on every push to `main`, on the self-hosted runner like the other workflows. Each run downloads gitleaks v8.30.1 from the pinned release URL, checks the tarball against a pinned SHA-256 and refuses to run on a mismatch, and then starts with a canary self-test: a GitHub-token-shaped fake value generated at run time is planted in a temp directory, and the job fails unless the scanner catches it and never prints it. The self-test also checks that a token added only while resolving a merge conflict is caught. The scan itself covers the commits the pull request adds (`base..head`, including each merge commit's diff against its first parent) on pull requests, and the pushed working tree on `main`.
+`secret-scan.yml` runs on every pull request (no path filter) and on every push to `main`, on the self-hosted runner like the other workflows. Each run downloads gitleaks v8.30.1 from the pinned release URL, checks the tarball against a pinned SHA-256 and refuses to run on a mismatch, and then starts with a canary self-test: a GitHub-token-shaped fake value generated at run time is planted in a temp directory, and the job fails unless the scanner catches it and never prints it. The self-test also checks that a token added only while resolving a merge conflict is caught. On pull requests, the scan covers both the commits the pull request adds (`base..head`, including each merge commit's diff against its first parent) and the checked-out working tree. Pushes to `main` scan the working tree. This catches interactions between settings that were added in separate pull requests before they reach `main`.
 
 Locally:
 
