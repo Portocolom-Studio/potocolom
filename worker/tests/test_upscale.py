@@ -78,6 +78,23 @@ def test_concurrent_weight_downloads_use_private_temporary_files(tmp_path, monke
     assert not list(results[0].parent.glob("*.tmp"))
 
 
+def test_completed_download_does_not_remove_another_writers_temporary_file(tmp_path, monkeypatch):
+    import io
+
+    source = "https://example.test/weights.pth"
+    target = weight_cache_path(str(tmp_path), "model", 2, source)
+    target.parent.mkdir(parents=True)
+    other = target.parent / f"{target.name}.other-writer.tmp"
+    other.write_bytes(b"another writer is still downloading")
+    monkeypatch.setattr(
+        "worker.upscale.urllib.request.urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(b"complete weights"),
+    )
+
+    assert ensure_weights(source, str(tmp_path), "model", 2).read_bytes() == b"complete weights"
+    assert other.read_bytes() == b"another writer is still downloading"
+
+
 def test_interrupted_weight_download_leaves_no_partial_cache_file(tmp_path, monkeypatch):
     class InterruptedResponse:
         def __init__(self):

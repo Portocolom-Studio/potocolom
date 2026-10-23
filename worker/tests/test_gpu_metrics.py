@@ -208,3 +208,27 @@ def test_vendor_metrics_are_unknown_when_selected_identity_cannot_be_proven(monk
     ))
 
     assert _nvidia_metrics(None) == {}
+
+
+def test_invalid_selected_pci_keeps_vendor_counters_unknown(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    vendor_calls = []
+    properties = SimpleNamespace(pci_domain_id=-1, pci_bus_id=2, pci_device_id=0)
+    torch = SimpleNamespace(cuda=SimpleNamespace(
+        get_device_properties=lambda _device: properties,
+        is_available=lambda: True,
+        mem_get_info=lambda *, device: (1024, 4096),
+    ))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr("worker.gpu_metrics.shutil.which", lambda _name: "nvidia-smi")
+    monkeypatch.setattr("worker.gpu_metrics._run_smi", lambda command: vendor_calls.append(command) or "")
+
+    for invalid in [(-1, 2, 0), (True, 2, 0), (0, None, 0), (0, 2, 256)]:
+        properties.pci_domain_id, properties.pci_bus_id, properties.pci_device_id = invalid
+        snapshot = sample_gpu("cuda", "cuda:1")
+        assert snapshot["available"] is True
+        assert snapshot["vram_total_bytes"] == 4096
+        assert "util_pct" not in snapshot
+    assert vendor_calls == []
