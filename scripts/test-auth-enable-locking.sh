@@ -294,15 +294,24 @@ for format in canonical export-quoted; do
 	else fail_case "root-key-$format" "$(cat "$case_dir/auth.out") temp=$(cat "$case_dir/mktemp.log") move=$(cat "$case_dir/mv.log")"; fi
 done
 
-new_case compose-read-failure
+new_case compose-project-read-failure
 printf 'ROOT_KEYS=existing-ring\n' >>"$case_dir/root/deploy/compose/.env"
 printf 'ROOT_KEYS=existing-ring\n' >>"$case_dir/values"
 cp "$case_dir/root/deploy/compose/.env" "$case_dir/before.env"
 if env "${case_env[@]}" COMPOSE_FAIL=1 bash "$case_dir/root/scripts/auth-enable.sh" >"$case_dir/auth.out" 2>&1; then
-	fail_case compose-read-failure 'auth-enable accepted a failed Compose read'
+	fail_case compose-project-read-failure 'auth-enable accepted a failed Compose project read'
 elif cmp -s "$case_dir/before.env" "$case_dir/root/deploy/compose/.env" && [[ ! -e "$case_dir/enable-started" ]]; then
-	printf 'ok failed-compose-read-changes-nothing\n'
-else fail_case compose-read-failure 'the environment changed or app.enable ran'; fi
+	printf 'ok failed-compose-project-read-changes-nothing\n'
+else fail_case compose-project-read-failure 'the environment changed or app.enable ran'; fi
+
+new_case compose-key-read-failure
+case_env+=(COMPOSE_PROJECT_NAME=ambient-compose)
+cp "$case_dir/root/deploy/compose/.env" "$case_dir/before.env"
+if env "${case_env[@]}" COMPOSE_FAIL=1 bash "$case_dir/root/scripts/auth-enable.sh" >"$case_dir/auth.out" 2>&1; then
+	fail_case compose-key-read-failure 'auth-enable accepted a failed Compose value read'
+elif cmp -s "$case_dir/before.env" "$case_dir/root/deploy/compose/.env" && [[ ! -e "$case_dir/enable-started" ]]; then
+	printf 'ok failed-compose-key-read-changes-nothing\n'
+else fail_case compose-key-read-failure 'the environment changed or app.enable ran'; fi
 
 
 for failure in awk mv; do
