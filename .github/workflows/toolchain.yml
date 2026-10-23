@@ -18,6 +18,7 @@ on:
       - "scripts/test-gpu-detection.sh"
       - "scripts/test-install-public-url.sh"
       - "scripts/test-install-resilience.sh"
+      - "scripts/test-install-host-profiles.sh"
       - "scripts/install-lock.sh"
       - "scripts/backup.sh"
       - "scripts/restore.sh"
@@ -46,6 +47,7 @@ jobs:
         scripts/test-gpu-detection.sh
         scripts/test-install-public-url.sh
         scripts/test-install-resilience.sh
+        scripts/test-install-host-profiles.sh
         scripts/install-lock.sh
         scripts/backup.sh
         scripts/restore.sh

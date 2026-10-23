@@ -213,6 +213,12 @@ if [[ "$rc" -ne 0 && "$output" == *'POTOCOLOM_PROFILE must be'* && "$(grep -c 'c
 	printf 'ok invalid-install-profile\n'
 else fail_case invalid-install-profile; printf '%s\n' "$output"; cat "$case_dir/docker.log"; fi
 
+make_case explicit-smoke-release-rejected
+TEST_PROFILE=smoke output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'release installer does not support the simulated worker'* && "$(grep -c 'config --images\| pull\| up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	printf 'ok explicit-smoke-release-rejected\n'
+else fail_case explicit-smoke-release-rejected; fi
+
 make_case readiness-retries-then-succeeds
 READY_AFTER=2 TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 && -f "$case_dir/ready-count" && "$(cat "$case_dir/ready-count")" == 3 ]]; then printf 'ok readiness-retries-then-succeeds\n'; else fail_case readiness-retries-then-succeeds; printf 'rc=%s count=%s\n%s\n' "$rc" "$(cat "$case_dir/ready-count" 2>/dev/null || true)" "$output"; cat "$case_dir/curl.log"; cat "$case_dir/docker.log"; fi

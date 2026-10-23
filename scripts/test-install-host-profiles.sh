@@ -40,6 +40,16 @@ rc=$?
 set -e
 if [[ "$rc" -eq 0 && "$config" != *'CUDA_VISIBLE_DEVICES: ""'* && "$config" != *'HIP_VISIBLE_DEVICES: ""'* ]]; then printf 'ok absent-device-masks\n'; else fail_case absent-device-masks; fi
 
+docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile rocm config >"$tmp/unset-rocm-config" 2>&1
+if ! rg 'HIP_VISIBLE_DEVICES:' "$tmp/unset-rocm-config" | rg -qv ': null$'; then printf 'ok absent-rocm-mask\n'; else fail_case absent-rocm-mask; fi
+if ! rg 'CUDA_VISIBLE_DEVICES:' <<<"$config" | rg -qv ': null$'; then printf 'ok absent-cuda-mask\n'; else fail_case absent-cuda-mask; fi
+images="$(docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile api config --images)"
+if [[ "$(wc -l <<<"$images")" -eq 2 && "$images" == *'postgres:16'* && "$images" == *'potocolom-api:'* && "$images" != *'potocolom-worker'* ]]; then printf 'ok api-profile-has-no-worker-image\n'; else fail_case api-profile-has-no-worker-image; fi
+if rg -q 'INTERNAL_URL: http://api:8080' <<<"$config"; then printf 'ok default-internal-url\n'; else fail_case default-internal-url; fi
+CUDA_VISIBLE_DEVICES= docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile gpu config >"$tmp/empty-cuda-config" 2>&1
+HIP_VISIBLE_DEVICES= docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile rocm config >"$tmp/empty-rocm-config" 2>&1
+if rg -q 'CUDA_VISIBLE_DEVICES: ""' "$tmp/empty-cuda-config" && rg -q 'HIP_VISIBLE_DEVICES: ""' "$tmp/empty-rocm-config"; then printf 'ok explicit-empty-masks-hide-gpus\n'; else fail_case explicit-empty-masks-hide-gpus; fi
+
 printf 'HIP_VISIBLE_DEVICES=3\nINTERNAL_URL=https://dotenv-api.example.test\n' >>"$env_file"
 CUDA_VISIBLE_DEVICES=2 INTERNAL_URL=https://api.example.test docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile gpu config >"$tmp/shell-config" 2>&1
 docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile rocm config >"$tmp/dotenv-rocm-config" 2>&1
