@@ -537,6 +537,7 @@ class DiffusersEngine:
         self._poison_evicted_at: dict[str, float] = {}
         self._poison_evict_count: dict[str, int] = {}
         self._calibrated_slots: int | None = None
+        self._calibration_retry_models: set[str] = set()
         self._calibration_failed = False
         self._calibration_cap: int = 0
         self._realtime_p95_ms: dict[str, int] = {}
@@ -963,7 +964,13 @@ class DiffusersEngine:
         )
         return self._calibrated_slots
 
+    def _defer_calibration(self, model_id: str) -> None:
+        self._calibration_failed = True
+        self._calibration_retry_models = getattr(self, "_calibration_retry_models", set())
+        self._calibration_retry_models.add(model_id)
+
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
+        getattr(self, "_calibration_retry_models", set()).discard(manifest.id)
         self._calibration_cap = configured
         try:
             async with self._gpu:
@@ -979,7 +986,7 @@ class DiffusersEngine:
             # next hello advertises no capacity it never timed; the flag is
             # what lets that reconnect try again (None would advertise the
             # uncalibrated estimate instead).
-            self._calibration_failed = True
+            self._defer_calibration(manifest.id)
             return 0
         slots = self._recompute_calibrated_slots()
         if slots <= 0:
@@ -991,7 +998,7 @@ class DiffusersEngine:
             logger.exception("realtime batch calibration failed for %s", manifest.id)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
-            self._calibration_failed = True
+            self._defer_calibration(manifest.id)
         return self._calibrated_slots or 0
 
     def observe_frame_ms(self, model_id: str, gpu_ms: float) -> None:
@@ -1061,7 +1068,7 @@ class DiffusersEngine:
             selected = self._rungs.get(manifest.id)
             self._forget_rung_if_unloaded(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
-            self._calibration_failed = True
+            self._defer_calibration(manifest.id)
             logger.info(
                 "realtime calibration skipped for %s (selected %s)",
                 manifest.id, selected,

@@ -1863,7 +1863,8 @@ def test_calibration_rejects_actual_offload_before_rendering():
     assert engine._realtime_batch_ms == {"sibling": [250]}
 
 @pytest.mark.parametrize("has_sibling", [False, True])
-def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has_sibling):
+@pytest.mark.parametrize("deferred_reconnect", [False, True])
+def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has_sibling, deferred_reconnect):
     from worker.client import warmup_realtime
 
     engine = _resident_vram_engine({}, free_gib=12)
@@ -1896,21 +1897,29 @@ def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has
     engine._run_to_completion = synchronous_calibration
     manifest = Manifest(id="vega-rt", name="VegaRT", default=True,
                         capabilities=["text_to_image", "image_to_image", "realtime"], min_vram_gb=8)
+    sibling = Manifest(id="sibling", name="Sibling", capabilities=["text_to_image", "realtime"], min_vram_gb=4)
+    manifests = [manifest, sibling] if has_sibling else [manifest]
     clock = [0.0]
     def measured_time():
         clock[0] += 0.2
         return clock[0]
 
     async def reconnects():
-        await warmup_realtime(engine, [manifest], 1)
+        await warmup_realtime(engine, manifests, 1)
         assert engine._calibrated_slots == (1 if has_sibling else 0)
-        engine._frame.assert_not_called()
+        assert not any(call.args[0].id == manifest.id for call in engine._frame.call_args_list)
+        if deferred_reconnect:
+            await warmup_realtime(engine, manifests, 1)
+            assert not any(call.args[0].id == manifest.id for call in engine._frame.call_args_list)
         free_gib[0] = 12
-        await warmup_realtime(engine, [manifest], 1)
+        await warmup_realtime(engine, manifests, 1)
+        completed = engine._frame.call_count
+        await warmup_realtime(engine, manifests, 1)
+        assert engine._frame.call_count == completed
 
     with patch("worker.engine.time.monotonic", side_effect=measured_time):
         asyncio.run(reconnects())
-    assert engine._frame.call_count == CALIBRATION_SAMPLES + 1
+    assert sum(call.args[0].id == manifest.id for call in engine._frame.call_args_list) == CALIBRATION_SAMPLES + 1
     assert engine._calibrated_slots == 1
     assert engine.realtime_p95_ms(manifest.id) == 200
     assert engine._calibration_failed is False
