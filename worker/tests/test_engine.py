@@ -1651,12 +1651,12 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
 
 def _admission_engine(free_bytes, *, memory_mode="auto"):
     engine = DiffusersEngine.__new__(DiffusersEngine)
-    engine.device = "cuda"
+    engine.device = "cuda:0"
     engine.memory_mode = memory_mode
     engine.vram_reserve_mb = 0
     engine.torch = SimpleNamespace(cuda=SimpleNamespace(
-        mem_get_info=lambda: (free_bytes[0], 16 * 1024**3),
-        memory_reserved=lambda: 0,
+        mem_get_info=lambda *, device: (free_bytes[0], 16 * 1024**3),
+        memory_reserved=lambda *, device: 0,
         empty_cache=MagicMock(),
     ))
     engine._rungs = {}
