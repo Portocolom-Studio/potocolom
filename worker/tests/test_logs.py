@@ -107,3 +107,38 @@ def test_malformed_signed_url_cannot_bypass_log_redaction(
     assert secret not in output.getvalue()
     assert "job-canary-8" in output.getvalue()
     assert "worker-input" in output.getvalue()
+
+
+@pytest.mark.parametrize("log_format", ["plain", "json"])
+@pytest.mark.parametrize("field", ["userinfo", "query"])
+def test_apostrophes_cannot_expose_url_credentials(log_format: str, field: str) -> None:
+    canaries = ["quoted-" + uuid.uuid4().hex for _ in range(3)]
+    credential = "'".join(canaries[:2])
+    authority = f"user:{credential}@storage.invalid" if field == "userinfo" else "storage.invalid"
+    token = credential if field == "query" else canaries[2]
+    url = f"https://{authority}/worker-assets/quoted.webp?token={token}#frag-{canaries[2]}"
+    output = io.StringIO()
+    setup_logging(log_format)
+    handler = logging.getLogger().handlers[0]
+    assert isinstance(handler, logging.StreamHandler)
+    old_stream = handler.stream
+    handler.setStream(output)
+    try:
+        logger = logging.getLogger("potocolom.worker.jobs")
+        logger.warning("job job-quoted-1 request %s status=403", url)
+        try:
+            raise RuntimeError(f"request failed: {url}")
+        except RuntimeError:
+            logger.exception("job job-quoted-1 upload failed")
+    finally:
+        handler.setStream(old_stream)
+    lines = output.getvalue()
+    for canary in canaries:
+        assert canary not in lines
+    assert "storage.invalid/worker-assets/quoted.webp" in lines
+    assert "job-quoted-1" in lines
+    assert "status=403" in lines
+    assert "request failed" in lines
+    if log_format == "json":
+        entries = [json.loads(line) for line in lines.splitlines()]
+        assert any("exception" in entry for entry in entries)

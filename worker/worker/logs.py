@@ -11,7 +11,7 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 
-_URL_RE = re.compile(r"(?i)https?://[^\s<>\"']+")
+_URL_RE = re.compile(r"(?i)https?://[^\s<>\"]+")
 
 
 def _redact_url(match: re.Match[str]) -> str:
