@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import threading
+import time
 import uuid
 from unittest.mock import MagicMock
 
@@ -2676,14 +2677,16 @@ def test_protocol6_heartbeat_omits_realtime_batch_ms(monkeypatch):
     )
 
 
-def test_protocol5_heartbeat_and_gpu_status_sample_engine_device(monkeypatch):
+@pytest.mark.parametrize("sample_delay", [0, 0.2])
+def test_protocol5_heartbeat_and_gpu_status_sample_engine_device(monkeypatch, sample_delay):
     sampled = []
-    monkeypatch.setattr(
-        "worker.client.sample_gpu",
-        lambda vendor, selected: sampled.append((vendor, selected)) or {
-            "device": vendor, "available": False,
-        },
-    )
+
+    def sample_gpu(vendor, selected):
+        time.sleep(sample_delay)
+        sampled.append((vendor, selected))
+        return {"device": vendor, "available": False}
+
+    monkeypatch.setattr("worker.client.sample_gpu", sample_gpu)
 
     class DeviceEngine(SimulatedEngine):
         def __init__(self):
@@ -2707,9 +2710,19 @@ def test_protocol5_heartbeat_and_gpu_status_sample_engine_device(monkeypatch):
         task = asyncio.create_task(serve_connection(
             socket, Settings(worker_id="w-device", device="rocm", heartbeat_seconds=0.01),
             [SIMULATED_MANIFEST], DeviceEngine()))
-        await asyncio.sleep(0.05)
-        socket.release.set()
-        await task
+        deadline = time.monotonic() + 3
+        try:
+            while time.monotonic() < deadline:
+                types = {
+                    json.loads(message).get("type")
+                    for message in socket.sent if isinstance(message, str)
+                }
+                if {"gpu_status", "heartbeat"} <= types:
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            socket.release.set()
+            await task
 
     asyncio.run(scenario())
     assert sampled
@@ -2719,27 +2732,36 @@ def test_protocol5_heartbeat_and_gpu_status_sample_engine_device(monkeypatch):
     assert any(message.get("type") == "heartbeat" for message in sent)
 
 
-def test_protocol6_heartbeat_samples_engine_device(monkeypatch):
+@pytest.mark.parametrize("sample_delay", [0, 0.2])
+def test_protocol6_heartbeat_samples_engine_device(monkeypatch, sample_delay):
     sampled = []
-    monkeypatch.setattr(
-        "worker.client.sample_gpu",
-        lambda vendor, selected: sampled.append((vendor, selected)) or {
-            "device": vendor, "available": False,
-        },
-    )
+
+    def sample_gpu(vendor, selected):
+        time.sleep(sample_delay)
+        sampled.append((vendor, selected))
+        return {"device": vendor, "available": False}
+
+    monkeypatch.setattr("worker.client.sample_gpu", sample_gpu)
     worker_id = "w-p6-device"
     engine = SimulatedEngine(0.01)
     engine.device = "cuda:1"
 
     async def scenario():
-        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=0.2)
+        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=3.5)
         task = asyncio.create_task(serve_connection(
             socket, Settings(worker_id=worker_id, device="rocm", heartbeat_seconds=0.03),
             [SIMULATED_MANIFEST], engine))
-        await asyncio.sleep(0.12)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        deadline = time.monotonic() + 3
+        try:
+            while time.monotonic() < deadline:
+                if any(m["type"] == "heartbeat" for m in _worker_controls(socket)):
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert any(m["type"] == "heartbeat" for m in _worker_controls(socket))
 
     asyncio.run(scenario())
     assert sampled
