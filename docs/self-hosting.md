@@ -71,6 +71,19 @@ into it, and add the line `COMPOSE_PROJECT_NAME=compose` to that copy; the
 script keeps a project name it finds in `.env` and reads none from the shell.
 Everything below is the same stack built from a source checkout instead.
 
+## Reaching the studio from other machines
+
+Set `PUBLIC_URL` with `POTOCOLOM_PUBLIC_URL` during installation or in
+`deploy/compose/.env`, then apply it from the install directory with
+`env -u PUBLIC_URL docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml --profile gpu up -d` (`rocm`
+on AMD). It must
+match the origin the browser sends exactly: lowercase scheme and host, the
+port only when it is not the default (no `:80` on http, no `:443` on https),
+no path. The installer stores that form and asks for a hostname instead of an
+IPv6 literal. For
+anything beyond a trusted LAN, put an [HTTPS reverse proxy](#tls-and-hsts)
+in front of the API.
+
 ## Checking a machine before you start
 
 `scripts/preflight.sh` (or `make preflight`) checks everything on this page
