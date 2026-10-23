@@ -621,14 +621,20 @@ class DiffusersEngine:
 
     def _ensure_vram(self, manifest: Manifest) -> None:
         resident = any(key[0] == manifest.id for key in self._pipelines)
-        if resident and "upscale" not in manifest.capabilities:
+        shared = resident and "upscale" not in manifest.capabilities
+        target_rung: MemoryRung = (
+            "full" if self.memory_mode == "auto" or "upscale" in manifest.capabilities
+            else self.memory_mode
+        )
+        target = 1 if shared else max(1, rung_vram_bytes(manifest.min_vram_gb, target_rung))
+        if self._free_vram_bytes() < target:
+            self._free_gpu_cache()
+        if shared:
             # A new mode may add a small adapter or decoder while sharing the
             # resident model weights. Do not charge the whole model rung again,
             # but require some usable VRAM before starting that allocation.
             if self._free_vram_bytes() <= 0:
-                self._free_gpu_cache()
-                if self._free_vram_bytes() <= 0:
-                    self._evict_cold(except_model_id=manifest.id, required_bytes=1)
+                self._evict_cold(except_model_id=manifest.id, required_bytes=1)
             available = self._free_vram_bytes()
             if available <= 0:
                 raise VRAMCapacityError(
