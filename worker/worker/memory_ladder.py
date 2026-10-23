@@ -42,8 +42,11 @@ def select_rung(
     *,
     on_cpu: bool,
 ) -> MemoryRung:
-    """Pick the highest rung that fits (group offload is the floor even when
-    free memory is below its working set), or the pinned rung when not auto."""
+    """Predict a rung; loading code must still check its VRAM estimate.
+
+    Group offload is the lowest predicted rung even below its 2 GiB estimate,
+    so manifests can drop realtime honestly while admission refuses the load.
+    """
     if on_cpu:
         return "full"
     if memory_mode == "full":

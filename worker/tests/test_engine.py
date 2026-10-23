@@ -1648,6 +1648,252 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
     assert engine.model_rung(manifest.id) == "model_offload"
 
 
+def _admission_engine(free_bytes, *, memory_mode="auto"):
+    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine.device = "cuda"
+    engine.memory_mode = memory_mode
+    engine.vram_reserve_mb = 0
+    engine.torch = SimpleNamespace(cuda=SimpleNamespace(
+        mem_get_info=lambda: (free_bytes[0], 16 * 1024**3),
+        memory_reserved=lambda: 0,
+        empty_cache=MagicMock(),
+    ))
+    engine._rungs = {}
+    engine._pipelines = {}
+    engine._last_used = {}
+    engine._free_gpu_cache = MagicMock()
+    return engine
+
+
+@pytest.mark.parametrize("free_bytes", [0, 2 * 1024**3 - 1])
+def test_pipeline_refuses_when_group_offload_floor_does_not_fit(free_bytes):
+    engine = _admission_engine([free_bytes])
+    engine.models_dir = "/unused"
+    engine._load = MagicMock()
+    engine._apply_rung = MagicMock()
+    manifest = Manifest(
+        id="too-large", name="Too Large", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+
+    engine._load.assert_not_called()
+    engine._apply_rung.assert_not_called()
+    assert engine.model_rung(manifest.id) is None
+
+
+def test_pipeline_refuses_zero_floor_manifest_at_zero_usable_vram():
+    engine = _admission_engine([0])
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="zero-floor", name="Zero Floor", capabilities=["text_to_image"],
+        min_vram_gb=0,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+
+    engine._load.assert_not_called()
+    assert engine.model_rung(manifest.id) is None
+
+
+def test_pipeline_admits_group_offload_at_exact_floor():
+    engine = _admission_engine([2 * 1024**3])
+    pipeline = object()
+    engine._load = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="boundary", name="Boundary", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    assert engine._pipeline(manifest, "t2i") is pipeline
+    assert engine.model_rung(manifest.id) == "group_offload"
+    engine._load.assert_called_once_with(manifest, "t2i")
+
+
+def test_shared_pipeline_mode_reuses_resident_weights_with_limited_free_vram():
+    engine = _admission_engine([3 * 1024**3])
+    engine.vram_reserve_mb = 1536
+    resident = object()
+    shared = object()
+    engine._pipelines[("shared", "t2i")] = resident
+    engine._rungs["shared"] = "full"
+    engine._load = MagicMock(return_value=shared)
+    manifest = Manifest(
+        id="shared", name="Shared", capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    assert engine._pipeline(manifest, "realtime") is shared
+    assert engine.model_rung(manifest.id) == "full"
+    engine._load.assert_called_once_with(manifest, "realtime")
+
+
+def test_shared_pipeline_mode_refuses_new_allocation_at_zero_usable_vram():
+    engine = _admission_engine([1536 * 1024**2])
+    engine.vram_reserve_mb = 1536
+    engine._pipelines[("shared", "t2i")] = object()
+    engine._rungs["shared"] = "full"
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="shared", name="Shared", capabilities=["text_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="no usable VRAM"):
+        engine._pipeline(manifest, "realtime")
+
+    engine._load.assert_not_called()
+    assert engine.model_rung(manifest.id) == "full"
+
+
+def test_capacity_refusal_clears_rung_and_retries_when_vram_returns():
+    free = [1024**3]
+    engine = _admission_engine(free)
+    pipeline = object()
+    engine._load = MagicMock(return_value=pipeline)
+    manifest = Manifest(
+        id="retry", name="Retry", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+    assert engine.model_rung(manifest.id) is None
+
+    free[0] = 2 * 1024**3
+    assert engine._pipeline(manifest, "t2i") is pipeline
+    assert engine.model_rung(manifest.id) == "group_offload"
+    assert engine._load.call_count == 1
+
+
+@pytest.mark.parametrize("memory_mode", ["full", "model_offload", "group_offload"])
+def test_pinned_rung_does_not_override_vram_reserve(memory_mode):
+    engine = _admission_engine([2 * 1024**3 - 1], memory_mode=memory_mode)
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id=f"pinned-{memory_mode}", name="Pinned", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+
+    engine._load.assert_not_called()
+    assert engine.model_rung(manifest.id) is None
+
+
+def test_upscaler_refuses_when_its_known_full_residency_floor_does_not_fit():
+    engine = _admission_engine([8 * 1024**3 - 1])
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="upscaler", name="Upscaler", capabilities=["upscale"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "upscale-2")
+
+    engine._load.assert_not_called()
+    assert engine.model_rung(manifest.id) is None
+
+
+def test_capacity_refusal_evicts_cold_pipeline_before_reporting_failure():
+    free = [1024**3]
+    engine = _admission_engine(free)
+    engine._pipelines[("cold", "t2i")] = object()
+    engine._rungs["cold"] = "full"
+    engine._last_used["cold"] = 0
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="blocked", name="Blocked", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+
+    assert engine.loaded_models() == []
+    engine._free_gpu_cache.assert_called_once()
+    engine._load.assert_not_called()
+
+
+def test_cold_eviction_makes_room_for_the_selected_rung():
+    free = [int(1.5 * 1024**3)]
+    engine = _admission_engine(free)
+    engine.vram_reserve_mb = 1536
+    engine._pipelines[("cold", "t2i")] = object()
+    engine._rungs["cold"] = "full"
+    engine._last_used["cold"] = 0
+
+    def release_cold_model():
+        free[0] += 8 * 1024**3
+
+    engine._free_gpu_cache = release_cold_model
+    manifest = Manifest(
+        id="new", name="New", capabilities=["text_to_image"], min_vram_gb=8,
+    )
+
+    engine._ensure_vram(manifest)
+
+    assert engine.loaded_models() == []
+    assert engine.model_rung(manifest.id) == "full"
+
+
+def test_reserve_is_subtracted_before_admission():
+    engine = _admission_engine([1536 * 1024**2 + 2 * 1024**3 - 1])
+    engine.vram_reserve_mb = 1536
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="reserved", name="Reserved", capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "t2i")
+
+    engine._load.assert_not_called()
+
+
+def test_warmup_retries_after_capacity_refusal():
+    from worker.client import warmup_realtime
+
+    free = [1024**3]
+    engine = _admission_engine(free)
+    engine.models_dir = ""
+    engine.torch_compile = False
+    engine._gpu = asyncio.Lock()
+    engine._calibration_cap = 1
+    engine._calibrated_slots = None
+    engine._calibration_failed = False
+    engine._calibration_retry_models = set()
+    engine._realtime_p95_ms = {}
+    engine._realtime_batch_ms = {}
+    engine._observed_frame_ms = {}
+    engine._calibrate_batch_curve = AsyncMock()
+    engine._frame = MagicMock(return_value=(Image.new("RGB", (8, 8)), 200, None))
+    manifest = Manifest(
+        id="warmup-retry", name="Warmup Retry", default=True,
+        capabilities=["text_to_image", "image_to_image", "realtime"],
+        min_vram_gb=8,
+    )
+
+    async def run():
+        first = await engine.calibrate_realtime(manifest, 1)
+        assert first == 0
+        assert manifest.id in engine._calibration_retry_models
+        assert engine._frame.call_count == 0
+
+        free[0] = 8 * 1024**3
+        await warmup_realtime(engine, [manifest], 1)
+        assert manifest.id not in engine._calibration_retry_models
+
+    asyncio.run(run())
+    assert engine._frame.call_count == CALIBRATION_SAMPLES + 1
+
+
 def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
     engine = DiffusersEngine.__new__(DiffusersEngine)
     engine.device = "cuda"
