@@ -1862,6 +1862,63 @@ def test_calibration_rejects_actual_offload_before_rendering():
     assert engine._realtime_p95_ms == {"sibling": 250}
     assert engine._realtime_batch_ms == {"sibling": [250]}
 
+@pytest.mark.parametrize("has_sibling", [False, True])
+def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has_sibling):
+    from worker.client import warmup_realtime
+
+    engine = _resident_vram_engine({}, free_gib=12)
+    engine.models_dir = ""
+    engine.torch_compile = False
+    engine._last_used = {}
+    engine._calibrated_slots = None
+    engine._calibration_failed = False
+    engine._realtime_p95_ms = {"sibling": 200} if has_sibling else {}
+    engine._realtime_batch_ms = {"sibling": [200]} if has_sibling else {}
+    engine._observed_frame_ms = {}
+    engine._gpu = asyncio.Lock()
+    engine._frame = MagicMock()
+    engine._calibrate_batch_curve = AsyncMock()
+    free_gib = [12]
+    engine.torch.cuda.mem_get_info = lambda: (int(free_gib[0] * 1024**3), 16 * 1024**3)
+    ensure = engine._ensure_vram
+    attempts = []
+
+    def pressure_during_first_load(manifest):
+        if not attempts:
+            free_gib[0] = 7
+        attempts.append(manifest.id)
+        ensure(manifest)
+
+    async def synchronous_calibration(function, *args):
+        return function(*args)
+
+    engine._ensure_vram = pressure_during_first_load
+    engine._run_to_completion = synchronous_calibration
+    manifest = Manifest(id="vega-rt", name="VegaRT", default=True,
+                        capabilities=["text_to_image", "image_to_image", "realtime"], min_vram_gb=8)
+    clock = [0.0]
+    def measured_time():
+        clock[0] += 0.2
+        return clock[0]
+
+    async def reconnects():
+        await warmup_realtime(engine, [manifest], 1)
+        assert engine._calibrated_slots == (1 if has_sibling else 0)
+        engine._frame.assert_not_called()
+        free_gib[0] = 12
+        await warmup_realtime(engine, [manifest], 1)
+
+    with patch("worker.engine.time.monotonic", side_effect=measured_time):
+        asyncio.run(reconnects())
+    assert engine._frame.call_count == CALIBRATION_SAMPLES + 1
+    assert engine._calibrated_slots == 1
+    assert engine.realtime_p95_ms(manifest.id) == 200
+    assert engine._calibration_failed is False
+    if has_sibling:
+        assert engine._realtime_p95_ms["sibling"] == 200
+        assert engine._realtime_batch_ms["sibling"] == [200]
+
+
 def _calibration_engine(rungs):
     engine = _resident_vram_engine({"cached": "full"})
     engine._rungs.update(rungs)
