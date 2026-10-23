@@ -11,7 +11,9 @@ on:
       - "Makefile"
       - "scripts/gpu-profile.sh"
       - "scripts/preflight.sh"
+      - "scripts/install.sh"
       - "scripts/test-gpu-detection.sh"
+      - "scripts/test-install-public-url.sh"
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
@@ -32,7 +34,9 @@ jobs:
         Makefile
         scripts/gpu-profile.sh
         scripts/preflight.sh
+        scripts/install.sh
         scripts/test-gpu-detection.sh
+        scripts/test-install-public-url.sh
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-guards.sh
