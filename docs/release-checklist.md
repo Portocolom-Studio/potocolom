@@ -37,7 +37,10 @@ Model caches stay between phases. On AMD, it stops the owned worker if free
 VRAM falls below `VRAM_RESERVE_MB` or disk group offload starts. Private logs
 remain on the host after a failed check. A failed check blocks publication.
 The monitor covers installer startup, warmup, readiness, generation, and cleanup.
-It reads the reserve from the running worker and stops that worker by its
+It reads the reserve and selected GPU from the running worker. The worker GPU
+is matched to host VRAM counters by PCI address, with one cached match per
+container ID. A small secondary card does not count against that GPU. Missing
+or ambiguous matches fail the check. The monitor stops workers by their
 verified Docker labels. Replacing installer files does not interrupt the monitor.
 An unsafe worker stops even before it connects to the API. Cancellation joins
 installer child processes. Fresh checks record their project in a private claim

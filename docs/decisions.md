@@ -1935,7 +1935,12 @@ Checksums are required for the bundle and the check driver verifies both artifac
 The installer pulls missing images. Immutable version tags let the release check
 use locally built candidate images before publication. A new host still pulls
 the images from GHCR. AMD checks stop their own worker on disk group offload or
-a VRAM reserve breach. They do not stop another stack to make room.
+a VRAM reserve breach. The monitor uses the same GPU selector as the worker,
+matches its PCI address to host VRAM counters, and caches that match by container
+ID. Legacy workers without that selector report their default CUDA device. Each
+selected card uses its own worker reserve; unrelated cards do not affect it.
+Missing or ambiguous GPU identity fails the check. They do not stop another
+stack to make room.
 
 Rejected alternatives:
 - Relying on simulated workers to prove the released GPU stack. They do not

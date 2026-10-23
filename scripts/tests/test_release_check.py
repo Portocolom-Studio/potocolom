@@ -58,6 +58,11 @@ def release_fixture(directory: Path, version: str = "v1.2.3") -> Path:
 
 
 class ReleaseCheckTests(unittest.TestCase):
+    def setUp(self):
+        identity = patch.object(check, "rocm_worker_card", return_value="card0")
+        self.worker_card = identity.start()
+        self.addCleanup(identity.stop)
+
 
     def test_generation_request_matches_the_release_model_schema(self):
         manifest_path = Path(check.__file__).resolve().parents[1] / "worker/models" / f"{check.MODEL}.json"
@@ -679,6 +684,7 @@ class ReleaseCheckTests(unittest.TestCase):
             self.assertFalse(marker.exists(), "timed-out descendants must not survive cleanup")
 
     def test_rocm_guard_ignores_small_igpu_and_stops_only_owned_worker_on_breach(self) -> None:
+        self.worker_card.return_value = "card1"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"
@@ -758,6 +764,7 @@ class ReleaseCheckTests(unittest.TestCase):
             stop.assert_called_once_with("owned-project", root / "private")
 
     def test_rocm_guard_does_not_charge_the_small_igpu_reserve(self) -> None:
+        self.worker_card.return_value = "card1"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             env = root / "install/deploy/compose/.env"

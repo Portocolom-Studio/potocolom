@@ -8,11 +8,17 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.tests.test_release_check import check, release_fixture
 
 
 class ReleaseGuardDockerTests(unittest.TestCase):
+    def setUp(self):
+        identity = patch.object(check, "rocm_worker_card", return_value="card0")
+        self.worker_card = identity.start()
+        self.addCleanup(identity.stop)
+
     def test_interrupt_joins_installer_children_and_removes_its_project(self):
         program = r'''import argparse, importlib.util, pathlib, sys
 source, root, candidate, previous = map(pathlib.Path, sys.argv[1:5])

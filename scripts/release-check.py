@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -647,13 +648,67 @@ def rocm_worker_probe(worker_id: str, project: str, args: list[str], log: Path) 
     raise AssertionError("unreachable probe retry")
 
 
+ROCM_GPU_ID_SCRIPT = r"""
+import os
+import torch
+if not getattr(torch.version, "hip", None):
+    raise RuntimeError("ROCm worker requires a HIP build")
+requested = os.environ.get("DEVICE", "rocm")
+try:
+    from worker.gpu_device import select_device
+except ModuleNotFoundError as error:
+    if error.name != "worker.gpu_device":
+        raise
+    device = "cuda" if requested == "rocm" else requested
+else:
+    device = select_device(torch, requested)
+if not device.startswith("cuda"):
+    raise RuntimeError("ROCm release check requires GPU inference")
+properties = torch.cuda.get_device_properties(device)
+print("POTOCOLOM_GPU_PCI=%04x:%02x:%02x" % (
+    properties.pci_domain_id, properties.pci_bus_id, properties.pci_device_id))
+"""
+
+
+class _WorkerStopped(Exception):
+    pass
+
+
+@lru_cache(maxsize=32)
+def rocm_worker_card(worker_id: str, project: str, log: Path, sysfs: Path) -> str:
+    output = rocm_worker_probe(worker_id, project, [
+        "docker", "exec", worker_id, "python", "-c", ROCM_GPU_ID_SCRIPT,
+    ], log)
+    if output is None:
+        raise _WorkerStopped
+    markers = [line.removeprefix("POTOCOLOM_GPU_PCI=") for line in output.splitlines()
+               if line.startswith("POTOCOLOM_GPU_PCI=")]
+    if len(markers) != 1 or not re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}", markers[0]):
+        raise CheckError("worker did not report one valid GPU PCI address")
+    matches = []
+    for device in sorted(sysfs.glob("card[0-9]*/device")):
+        try:
+            lines = (device / "uevent").read_text(encoding="ascii").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            if line.startswith("PCI_SLOT_NAME="):
+                slot = line.removeprefix("PCI_SLOT_NAME=").lower()
+                if (re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", slot)
+                        and slot.startswith(markers[0] + ".")):
+                    matches.append(device.parent.name)
+    if len(matches) != 1:
+        raise CheckError("cannot match the worker GPU to one physical AMD card")
+    return matches[0]
+
+
 def rocm_safety_check(project: str, evidence_dir: Path,
                       sysfs: Path = Path("/sys/class/drm")) -> None:
     worker_ids = owned_rocm_worker_ids(project)
     if not worker_ids:
         return
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    reserves = []
+    reserves: dict[str, int] = {}
     worker_log, disk_offloads = "", ""
     reserve_format = ('{{range .Config.Env}}'
                       '{{if eq (index (split . "=") 0) "VRAM_RESERVE_MB"}}'
@@ -673,7 +728,11 @@ def rocm_safety_check(project: str, evidence_dir: Path,
                 raise ValueError("reserve outside limits")
         except ValueError as exc:
             raise CheckError("VRAM_RESERVE_MB must be between 256 and 65536") from exc
-        reserves.append(reserve_mb)
+        try:
+            card = rocm_worker_card(worker_id, project, evidence_dir / "rocm-gpu-probe.log", sysfs)
+        except _WorkerStopped:
+            continue
+        reserves[card] = max(reserves.get(card, 0), reserve_mb)
         worker_log += rocm_worker_probe(worker_id, project, [
             "docker", "logs", "--tail", "40", worker_id,
         ], evidence_dir / "rocm-worker-tail.log") or ""
@@ -684,13 +743,13 @@ def rocm_safety_check(project: str, evidence_dir: Path,
         ], evidence_dir / "rocm-offload-probe.log") or ""
     if not reserves:
         return
-    cards = rocm_vram_usage(sysfs)
-    if not cards:
-        raise CheckError("no physical AMD GPU with reportable VRAM was found")
+    cards = [card for card in rocm_vram_usage(sysfs) if card[0] in reserves]
+    if {card[0] for card in cards} != set(reserves):
+        raise CheckError("selected AMD GPU has no reportable physical VRAM")
     stats = "\n".join(f"{name}: total={total} used={used} free={total - used}"
                        for name, total, used in cards)
     group_offload = re.search(r"(?:to\s+|rung[=: ]+)group_offload", worker_log, re.IGNORECASE)
-    breached = any(total - used < max(reserves) * 1024 * 1024 for _, total, used in cards)
+    breached = any(total - used < reserves[name] * 1024 * 1024 for name, total, used in cards)
     if group_offload or disk_offloads.strip() or breached:
         evidence = evidence_dir / "rocm-safety-evidence.log"
         fd = os.open(evidence, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
