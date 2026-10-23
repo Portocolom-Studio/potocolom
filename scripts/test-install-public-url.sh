@@ -30,6 +30,7 @@ make_case() {
 	mkdir -p "$case_dir/bin" "$case_dir/source"
 	cat >"$case_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${CURL_LOG:-}" ]]; then printf '%s\n' "$*" >>"$CURL_LOG.args"; fi
 while (($#)); do
 	if [[ "$1" == -o ]]; then
 		out="$2"
@@ -221,7 +222,7 @@ else fail_case explicit-smoke-release-rejected; fi
 
 make_case readiness-retries-then-succeeds
 READY_AFTER=2 TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
-if [[ "$rc" -eq 0 && -f "$case_dir/ready-count" && "$(cat "$case_dir/ready-count")" == 3 ]]; then printf 'ok readiness-retries-then-succeeds\n'; else fail_case readiness-retries-then-succeeds; printf 'rc=%s count=%s\n%s\n' "$rc" "$(cat "$case_dir/ready-count" 2>/dev/null || true)" "$output"; cat "$case_dir/curl.log"; cat "$case_dir/docker.log"; fi
+if [[ "$rc" -eq 0 && -f "$case_dir/ready-count" && "$(cat "$case_dir/ready-count")" == 3 && "$(grep /api/v1/ready "$case_dir/curl.log.args" | head -n 1)" == *'--connect-timeout 2 --max-time 2'* ]]; then printf 'ok readiness-retries-then-succeeds\n'; else fail_case readiness-retries-then-succeeds; printf 'rc=%s count=%s\n%s\n' "$rc" "$(cat "$case_dir/ready-count" 2>/dev/null || true)" "$output"; cat "$case_dir/curl.log"; cat "$case_dir/docker.log"; fi
 
 make_case readiness-timeout-releases-lock
 printf '#!/usr/bin/env bash\nexit 0\n' >"$case_dir/bin/sleep"
