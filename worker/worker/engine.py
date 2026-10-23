@@ -967,7 +967,6 @@ class DiffusersEngine:
         self._calibration_retry_models.add(model_id)
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
-        getattr(self, "_calibration_retry_models", set()).discard(manifest.id)
         self._calibration_cap = configured
         try:
             async with self._gpu:
@@ -985,6 +984,8 @@ class DiffusersEngine:
             # uncalibrated estimate instead).
             self._defer_calibration(manifest.id)
             return 0
+        if manifest.id in self._realtime_p95_ms:
+            getattr(self, "_calibration_retry_models", set()).discard(manifest.id)
         slots = self._recompute_calibrated_slots()
         if slots <= 0:
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
@@ -1053,6 +1054,8 @@ class DiffusersEngine:
             self._recompute_calibrated_slots()
             return 0
         if (self._rungs.get(manifest.id) or self._predicted_rung(manifest)) != "full":
+            if self.memory_mode == "auto":
+                self._defer_calibration(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
             getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
             self._recompute_calibrated_slots()
@@ -1083,6 +1086,7 @@ class DiffusersEngine:
             if index > 0:
                 samples.append(elapsed_ms)
         if self._rungs.get(manifest.id) != "full":
+            self._defer_calibration(manifest.id)
             # The prediction let it in, but loading chose an offload rung:
             # its timing is not a realtime frame time.
             self._realtime_p95_ms.pop(manifest.id, None)

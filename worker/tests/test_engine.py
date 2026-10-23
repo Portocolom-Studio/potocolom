@@ -1862,7 +1862,8 @@ def test_calibration_rejects_actual_offload_before_rendering():
 
 @pytest.mark.parametrize("has_sibling", [False, True])
 @pytest.mark.parametrize("deferred_reconnect", [False, True])
-def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has_sibling, deferred_reconnect):
+@pytest.mark.parametrize("pressure_at", ["prediction", "load", "frame"])
+def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has_sibling, deferred_reconnect, pressure_at):
     from worker.client import warmup_realtime
 
     engine = _resident_vram_engine({}, free_gib=12)
@@ -1875,23 +1876,40 @@ def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has
     engine._realtime_batch_ms = {"sibling": [200]} if has_sibling else {}
     engine._observed_frame_ms = {}
     engine._gpu = asyncio.Lock()
-    engine._frame = MagicMock()
     engine._calibrate_batch_curve = AsyncMock()
     free_gib = [12]
     engine.torch.cuda.mem_get_info = lambda *args, **kwargs: (int(free_gib[0] * 1024**3), 16 * 1024**3)
+    pressure = [False]
+    predictions = []
+    predict = engine._predicted_rung
     ensure = engine._ensure_vram
-    attempts = []
 
-    def pressure_during_first_load(manifest):
-        if not attempts:
+    def memory_prediction(target):
+        if target.id == "vega-rt":
+            if pressure_at == "prediction" and len(predictions) == 1:
+                free_gib[0] = 7
+                pressure[0] = True
+            predictions.append(target.id)
+        return predict(target)
+
+    def memory_load(target):
+        if target.id == "vega-rt" and pressure_at == "load" and not pressure[0]:
             free_gib[0] = 7
-        attempts.append(manifest.id)
-        ensure(manifest)
+            pressure[0] = True
+        ensure(target)
+
+    def rendered_frame(target, *_args):
+        if target.id == "vega-rt" and pressure_at == "frame" and not pressure[0]:
+            engine._rungs[target.id] = "model_offload"
+            engine._pipelines[(target.id, "i2i")] = object()
+            pressure[0] = True
 
     async def synchronous_calibration(function, *args):
         return function(*args)
 
-    engine._ensure_vram = pressure_during_first_load
+    engine._predicted_rung = memory_prediction
+    engine._ensure_vram = memory_load
+    engine._frame = MagicMock(side_effect=rendered_frame)
     engine._run_to_completion = synchronous_calibration
     manifest = Manifest(id="vega-rt", name="VegaRT", default=True,
                         capabilities=["text_to_image", "image_to_image", "realtime"], min_vram_gb=8)
@@ -1902,22 +1920,28 @@ def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has
         clock[0] += 0.2
         return clock[0]
 
+    def target_frames():
+        return sum(call.args[0].id == manifest.id for call in engine._frame.call_args_list)
+
     async def reconnects():
         await warmup_realtime(engine, manifests, 1)
         assert engine._calibrated_slots == (1 if has_sibling else 0)
-        assert not any(call.args[0].id == manifest.id for call in engine._frame.call_args_list)
+        failed_frames = CALIBRATION_SAMPLES + 1 if pressure_at == "frame" else 0
+        assert target_frames() == failed_frames
         if deferred_reconnect:
             await warmup_realtime(engine, manifests, 1)
-            assert not any(call.args[0].id == manifest.id for call in engine._frame.call_args_list)
+            assert target_frames() == failed_frames
         free_gib[0] = 12
+        if pressure_at == "frame":
+            await engine.unload_model(manifest.id)
         await warmup_realtime(engine, manifests, 1)
+        assert target_frames() == failed_frames + CALIBRATION_SAMPLES + 1
         completed = engine._frame.call_count
         await warmup_realtime(engine, manifests, 1)
         assert engine._frame.call_count == completed
 
     with patch("worker.engine.time.monotonic", side_effect=measured_time):
         asyncio.run(reconnects())
-    assert sum(call.args[0].id == manifest.id for call in engine._frame.call_args_list) == CALIBRATION_SAMPLES + 1
     assert engine._calibrated_slots == 1
     assert engine.realtime_p95_ms(manifest.id) == 200
     assert engine._calibration_failed is False
