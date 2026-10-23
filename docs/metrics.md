@@ -199,7 +199,18 @@ The cardinality rule that keeps CloudWatch cheap: aggregates become metrics, det
 
 ## GPU fleet metrics
 
-The worker samples its card once per heartbeat - GPU utilization, VRAM used and total, temperature, power - with one `nvidia-smi` subprocess on CUDA or one combined `rocm-smi --json` subprocess on ROCm. The blocking hardware query runs through `asyncio.to_thread`, off the async event loop that relays realtime frames and dispatches jobs. The ROCm parser prefers structured output and retains the human-readable regex parsers as defensive fallbacks. Self-hosted, the API writes `gpu_samples` in PostgreSQL. Designed cloud fan-out: the `worker:{id}` Redis hash (admin fleet view and autoscaler), fleet-level CloudWatch aggregates, and one JSON log line for history.
+The worker samples the device selected by its inference engine once per
+heartbeat. Torch VRAM queries use that logical device index. Vendor queries
+match its PCI identity, so visibility masks and a supported discrete GPU at
+index 1 do not select another card's counters. CUDA uses one `nvidia-smi`
+subprocess; ROCm uses one combined `rocm-smi --json` subprocess when that tool
+is present. Unknown or unmatched identity leaves vendor counters absent.
+Torch can still provide VRAM counters for the selected device.
+
+The blocking query runs through `asyncio.to_thread`, off the event loop.
+Each vendor subprocess has a three-second timeout. Self-hosted, the API
+writes `gpu_samples` in PostgreSQL. Designed cloud fan-out remains the
+`worker:{id}` Redis hash, fleet-level CloudWatch aggregates, and JSON logs.
 
 In-process NVML and amd-smi bindings remain a possible future optimization with no licensing obstacle. They are not adopted here because each GPU family would add a new vendor dependency, while the single subprocess per heartbeat captures most of the benefit.
 
