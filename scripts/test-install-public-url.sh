@@ -196,7 +196,8 @@ make_case automatic-api-only-no-gpu
 TEST_PROFILE=auto TEST_NVIDIA=fail output="$(run_install "$case_dir")" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 && "$output" == *'API and database are ready'* && "$output" == *'Generation needs an attached GPU worker'* \
 	&& "$(grep -c 'config --images' "$case_dir/docker.log")" -eq 1 \
-	&& "$(grep 'config --images' "$case_dir/docker.log")" != *'worker' && "$(grep -c 'pull' "$case_dir/docker.log")" -eq 1 \
+	&& "$(grep 'config --images' "$case_dir/docker.log")" == *'--profile api'* \
+	&& "$(grep -c 'pull' "$case_dir/docker.log")" -eq 1 \
 	&& "$(grep ' up -d --no-build' "$case_dir/docker.log")" == *'--profile api'* \
 	&& "$(grep -c 'rm -sf worker ' "$case_dir/docker.log")" -eq 1 \
 	&& "$(grep -c 'rm -sf worker-rocm' "$case_dir/docker.log")" -eq 1 ]]; then

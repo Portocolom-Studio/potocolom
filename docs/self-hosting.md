@@ -70,7 +70,9 @@ that already have `make`; they are a shortcut and never a requirement.
 curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
 ```
 
-It needs Docker with Compose v2, `curl`, `tar`, `sha256sum`, `openssl`,
+It needs Docker with Compose v2.27.2 or newer ([`config --environment` was
+added in v2.27.2](https://github.com/docker/compose/releases/tag/v2.27.2)),
+`curl`, `tar`, `sha256sum`, `openssl`,
 `flock` (util-linux), and GNU coreutils (`cksum`, `stat`, `readlink`). It installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
 stack. Rerun the install script of a newer release to upgrade in place. The
@@ -243,7 +245,8 @@ source fetch. SSH is not part of this deployment path.
 
 ```bash
 scripts/preflight.sh
-docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
+profile="$(bash scripts/gpu-profile.sh)"
+docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
 # With make: make selfhost
 ```
 

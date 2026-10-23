@@ -59,6 +59,20 @@ EOF
 	chmod +x "$case_dir/bin/docker"
 }
 
+fake_compose_environment_failure() {
+	cat >"$case_dir/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == compose && "$2" == version ]]; then exit 0; fi
+if [[ "$1" == compose && "$*" == *'config --environment'* ]]; then exit 1; fi
+if [[ "$1" == compose && "$*" == *'config --help'* ]]; then
+	[[ "${COMPOSE_HELP_HAS_ENVIRONMENT:-0}" != 1 ]] || printf '  --environment  Print environment used for interpolation\n'
+	exit 0
+fi
+exit 1
+EOF
+	chmod +x "$case_dir/bin/docker"
+}
+
 for format in plain export spaced duplicates crlf; do
 	env_file="$tmp/$format/.env"
 	make_env "$env_file" "$format"
@@ -143,6 +157,37 @@ elif [[ "$(cat "$case_dir/offline/.env")" == "$before_file" && "$(cat "$case_dir
 	printf 'ok offline-compose-uncertain-value-refused\n'
 else
 	fail_case offline-compose-uncertain-value "the file changed or no clear error was printed: $(cat "$case_dir/output")"
+fi
+
+new_case compose-config-environment-unsupported
+cp "$repo/deploy/compose/.env.example" "$case_dir/envdir/.env"
+fake_compose_environment_failure
+cp "$case_dir/envdir/.env" "$case_dir/before.env"
+if PATH="$case_dir/bin:$PATH" ENV_FILE="$case_dir/envdir/.env" ENV_EXAMPLE="$repo/deploy/compose/.env.example" \
+	bash "$repo/scripts/ensure-env.sh" >"$case_dir/output" 2>&1; then
+	fail_case compose-config-environment-unsupported 'ensure-env accepted a Compose config read failure'
+elif cmp -s "$case_dir/before.env" "$case_dir/envdir/.env" \
+	&& [[ "$(cat "$case_dir/output")" == *'upgrade the Docker Compose plugin'* ]] \
+	&& [[ "$(cat "$case_dir/output")" == *'Compose could not read'* ]]; then
+	printf 'ok unsupported-compose-config-environment-refused-with-upgrade-hint\n'
+else
+	fail_case compose-config-environment-unsupported 'the env file changed or the upgrade hint was missing'
+fi
+
+new_case compose-invalid-env-with-supported-config
+cp "$repo/deploy/compose/.env.example" "$case_dir/envdir/.env"
+sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD="unterminated/' "$case_dir/envdir/.env"
+fake_compose_environment_failure
+cp "$case_dir/envdir/.env" "$case_dir/before.env"
+if PATH="$case_dir/bin:$PATH" COMPOSE_HELP_HAS_ENVIRONMENT=1 ENV_FILE="$case_dir/envdir/.env" \
+	ENV_EXAMPLE="$repo/deploy/compose/.env.example" bash "$repo/scripts/ensure-env.sh" >"$case_dir/output" 2>&1; then
+	fail_case compose-invalid-env-with-supported-config 'ensure-env accepted a failed Compose config read'
+elif cmp -s "$case_dir/before.env" "$case_dir/envdir/.env" \
+	&& [[ "$(cat "$case_dir/output")" == *'Compose could not read'* ]] \
+	&& [[ "$(cat "$case_dir/output")" != *'upgrade the Docker Compose plugin'* ]]; then
+	printf 'ok invalid-compose-env-remains-refused-without-unsupported-hint\n'
+else
+	fail_case compose-invalid-env-with-supported-config 'the env file changed or the capability hint was wrong'
 fi
 
 new_case missing-password-next-to-db

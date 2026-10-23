@@ -38,9 +38,15 @@ install_lock_path_key() {
 }
 
 install_compose_value() {
-	local env_file="$1" compose_file="$2" key="$3" output
+	local env_file="$1" compose_file="$2" key="$3" output help
 	if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-		output="$(unset "$key" COMPOSE_PROJECT_NAME; docker compose --env-file "$env_file" -f "$compose_file" config --environment 2>/dev/null)" || return 2
+		if ! output="$(unset "$key" COMPOSE_PROJECT_NAME; docker compose --env-file "$env_file" -f "$compose_file" config --environment 2>/dev/null)"; then
+			if help="$(docker compose config --help 2>/dev/null)" \
+				&& [[ ! "$help" =~ (^|[[:space:]])--environment([,[:space:]=]|$) ]]; then
+				echo "error: Docker Compose does not support 'config --environment'; upgrade the Docker Compose plugin, then retry" >&2
+			fi
+			return 2
+		fi
 		printf '%s\n' "$output" | awk -F= -v key="$key" '$1 == key { value = substr($0, index($0, "=") + 1); found = 1 } END { if (found) print value }'
 		return 0
 	fi
