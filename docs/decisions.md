@@ -1966,3 +1966,29 @@ Rejected alternatives:
 - Fencing every ordinary close, as #729 shipped on main. Each canvas close cut the worker off at its next grant renewal, and its unrelated jobs entered worker-loss recovery.
 - Skipping the fence without sending anything. The worker would keep the closed session's runner and its memory until the connection ended.
 - Sending a courtesy `close_session` after erasure, as before #729. That creates a new sensitive command body after erasure.
+
+
+## Release installs support an API host without a local GPU
+
+PR #767 extends the release install contract from issue #667. Linux x86_64
+hosts select `gpu`, `rocm`, or `api`. Automatic detection without an NVIDIA
+or AMD GPU now starts the API and PostgreSQL only. This replaces the earlier
+release rule that refused a host without a GPU. The source `smoke` profile
+still serves development and tests; it is not a published CPU inference image.
+A switch to `api` removes both local worker types from that Compose project
+and preserves its volumes. An operator can attach a GPU worker on another
+host with the existing fleet protocol and secret. `INTERNAL_URL` is configurable
+so source downloads and result uploads can reach that API; its local Compose
+default stays `http://api:8080`.
+
+The install declares success after a bounded local API/store readiness check,
+independent of worker warmup. It holds per-user directory and Compose-project
+locks before changing live bundle files through readiness. Credential repairs
+use Compose's effective values, preserve existing assignments, and fail when
+a database password cannot be recovered safely. Env writes use destination-local
+private temporary files followed by an atomic rename.
+
+Rejected alternatives: a simulated worker in production (it cannot generate
+real images); a new CPU inference image without an issue or qualification;
+requiring a GPU on API-only servers; treating detached Compose startup as
+readiness; replacing an unknown database password with a new random value.

@@ -1,9 +1,27 @@
 # Self-hosting
 
-One machine, one compose file: PostgreSQL, the API (with the built studio
-embedded), and a GPU worker. This page covers what the [README quick
+One compose file runs PostgreSQL, the API (with the built studio embedded),
+and an optional GPU worker. This page covers what the [README quick
 start](../README.md#self-hosting) assumes: hardware, GPU passthrough, the
 first run, and what persists where.
+
+## Supported hosts
+
+The release images run on Linux x86_64. The same images serve laptops,
+desktops and servers. Select the profile for the work this host must do:
+
+| Host | Release profile | Local generation |
+|---|---|---|
+| NVIDIA GPU with the Container Toolkit | `gpu` | CUDA worker |
+| Supported AMD GPU with `/dev/kfd` and `/dev/dri` | `rocm` | ROCm worker |
+| No local GPU, or an API host with remote workers | `api` | Attach a GPU worker from another host |
+
+The installer detects NVIDIA before AMD. With no GPU it selects `api`.
+Set `POTOCOLOM_PROFILE=gpu`, `rocm` or `api` to choose. Use that override
+on each install or upgrade when the automatic choice is not suitable.
+The release does not provide CPU inference, ARM images, or Intel or Apple GPU
+support. Source development can use `scripts/compose-smoke.sh` for simulated
+images; the release installer rejects that test profile.
 
 ## Hardware requirements
 
@@ -25,12 +43,12 @@ the studio, so their floors are not capacity you can plan around.
 `dreamshaper-lcm` in particular declares 6 GB but is not selectable.
 `z-image-turbo` declares 20 GB.
 
-The floor is not a gate. A card below a model's floor still loads it: the
-worker measures free VRAM and steps down a memory ladder (full residency ->
-model offload -> group offload, `worker/worker/memory_ladder.py`). What you
-lose is the `realtime` capability, which only full residency advertises - so
-below the floor you get working stills, but not the live draw-and-render loop
-the product is built around. `scripts/preflight.sh` prints which shipped
+The floor is not a fixed hardware gate. The worker measures free VRAM and
+selects a memory rung (full residency -> model offload -> group offload,
+`worker/worker/memory_ladder.py`). A load proceeds only if the selected rung
+fits after the display reserve and cold-model eviction. Only full residency
+advertises `realtime`. Offload can run still jobs on smaller cards, with less
+speed, when that rung fits. `scripts/preflight.sh` prints which shipped
 models clear the bar on your card.
 
 Measured on a 4 GB RTX 3050 Laptop (well under every text-to-image floor, so
@@ -39,10 +57,6 @@ takes about 7.7 s of GPU time per still, plus a one-off multi-minute weight
 download on the first job for that model. Correct output, nowhere near the
 500 ms realtime bar - which is what dropping to group offload means in
 practice.
-
-A machine without a supported GPU can still run the full stack against the
-simulated worker (flat colored images, real protocol):
-`scripts/compose-smoke.sh`.
 
 Apart from the release install script, every command on this page is
 `docker compose`, because self-hosting requires Docker and nothing else.
@@ -56,27 +70,42 @@ that already have `make`; they are a shortcut and never a requirement.
 curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash
 ```
 
-It needs Docker with Compose v2, `curl`, `tar`, `sha256sum` and `openssl`, installs into `~/potocolom`
+It needs Docker with Compose v2, `curl`, `tar`, `sha256sum`, `openssl`,
+`flock` (util-linux), and GNU coreutils (`cksum`, `stat`, `readlink`). It installs into `~/potocolom`
 (`POTOCOLOM_DIR` overrides that), pulls the released images and starts the
 stack. Rerun the install script of a newer release to upgrade in place. The
 `latest` address always serves the newest release's script, and that script
 installs its own release; use `releases/download/vX.Y.Z/install.sh` to install
 a specific one. The script verifies the downloaded bundle against the
-release's `SHA256SUMS`, sets `POTOCOLOM_VERSION` in `deploy/compose/.env`, and
-refuses a machine with no GPU, because the released images need one.
+release's `SHA256SUMS` and sets `POTOCOLOM_VERSION` in `deploy/compose/.env`.
+An API-only install pulls no worker image. The installer waits for the local
+API and store to pass `/api/v1/ready`, with a limit of 120 seconds. This does
+not wait for GPU warmup or model downloads. If the API does not become ready,
+the script returns an error and gives a logs command; keep the data and retry
+after fixing the cause.
 A release install is Compose project `potocolom`, separate from a source
 checkout's project `compose`. To keep a checkout's data, before the first run
 create `~/potocolom/deploy/compose/`, copy the checkout's `deploy/compose/.env`
 into it, and add the line `COMPOSE_PROJECT_NAME=compose` to that copy; the
 script keeps a project name it finds in `.env` and reads none from the shell.
-Everything below is the same stack built from a source checkout instead.
+An install holds locks for its directory and Compose project until startup
+and the readiness check finish. A second install or preflight under the same
+OS user fails with a retry message. Run upgrades as the same user. The script
+keeps non-empty Compose secret values, including `export` lines and quoted
+values. It refuses to invent a database password when a database already
+exists or Docker cannot prove that it is absent. Env file writes use a private
+temporary file in the destination directory and an atomic rename, including
+when that directory is on another filesystem.
+
+Commands with `--build` below are for source checkouts. Release installs use
+the tagged images and `up -d --no-build`.
 
 ## Reaching the studio from other machines
 
 Set `PUBLIC_URL` with `POTOCOLOM_PUBLIC_URL` during installation or in
 `deploy/compose/.env`, then apply it from the install directory with
 `env -u PUBLIC_URL docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml --profile gpu up -d` (`rocm`
-on AMD). It must
+on AMD, or `api` without a local worker). It must
 match the origin the browser sends exactly: lowercase scheme and host, the
 port only when it is not the default (no `:80` on http, no `:443` on https),
 no path. The installer stores that form and asks for a hostname instead of an
@@ -91,8 +120,9 @@ against the machine you are on, names the compose profile it can run, and
 prints the fix for anything missing. It installs nothing; on an NVIDIA host
 with the Container Toolkit it runs one throwaway `docker run --gpus all`
 container to prove passthrough (skip it with `POTOCOLOM_SKIP_GPU_TEST=1`). When `deploy/compose/.env` is missing it writes one from the
-example with generated hex secrets. Empty `POSTGRES_PASSWORD` / `FLEET_SECRET`
-are filled; a non-empty value is left alone. The one exception is the
+example with generated hex secrets. An empty `FLEET_SECRET` is filled. An empty `POSTGRES_PASSWORD` is filled
+only when Docker proves that no database volume exists. A non-empty value is
+left alone. The one exception is the
 example's `POSTGRES_PASSWORD=change-me`: it is rotated when Docker answers and
 shows no database volume for this install, and otherwise reported with the
 command to change it. Run it first; everything below
@@ -138,6 +168,15 @@ AMD (ROCm):
 The `gpu` profile is the NVIDIA worker and the `rocm` profile is the AMD one;
 run one or the other, never both, since they share the model volumes.
 
+Set `CUDA_VISIBLE_DEVICES` for the NVIDIA Compose worker or
+`HIP_VISIBLE_DEVICES` for the AMD Compose worker in `deploy/compose/.env` to
+select visible devices. Leave the key absent for automatic selection. An
+explicit empty value hides all GPUs and prevents the real worker from
+starting. The worker uses one selected logical device for inference and
+memory reports. These settings select devices for the process; they do not
+restrict access to GPU device nodes. The default stack starts one worker;
+it does not start one worker per card.
+
 Checking whether an NVIDIA driver is installed: use `nvidia-smi`, or the
 presence of `/proc/driver/nvidia/version`. Do not use `lsmod | grep nvidia`.
 On laptops with switchable graphics the discrete GPU sits in `D3cold` with its
@@ -151,6 +190,55 @@ registration) works before you build anything:
 docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
 ```
 
+## An API host with remote GPU workers
+
+Install the API and database without a local worker:
+
+```bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | POTOCOLOM_PROFILE=api POTOCOLOM_PUBLIC_URL=https://studio.example.com bash
+```
+
+Set `INTERNAL_URL=https://studio.example.com` in the installed
+`deploy/compose/.env` and apply it:
+
+```bash
+env -u INTERNAL_URL docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml --profile api up -d --no-build
+```
+
+Both `PUBLIC_URL` and `INTERNAL_URL` must use addresses reachable from the
+remote worker. `INTERNAL_URL` supplies worker upload and source-image URLs;
+its default `http://api:8080` works only on the local Compose network. A
+successful fleet WebSocket connection alone does not prove image jobs work.
+Configure the HTTPS proxy before using this example. Keep `AUTH_MODE=none`
+on a trusted network; anyone who can reach that API has full access.
+
+On the GPU host, create a private `worker.env` file (mode `0600`):
+
+```dotenv
+DEVICE=cuda
+API_URL=wss://studio.example.com/api/v1/fleet
+FLEET_TOKEN=<copy FLEET_SECRET from the API host>
+MODELS_DIR=/models
+VRAM_RESERVE_MB=1536
+```
+
+Replace `vX.Y.Z` with the API host's release tag, then start the NVIDIA worker:
+
+```bash
+docker run -d --name potocolom-worker --restart unless-stopped \
+  --gpus all --env-file ./worker.env \
+  -v potocolom-models:/models \
+  -v potocolom-hf-cache:/root/.cache/huggingface \
+  ghcr.io/portocolom-studio/potocolom-worker:vX.Y.Z-cuda
+```
+
+For AMD, set `DEVICE=rocm`, use the `vX.Y.Z-rocm` image, and replace
+`--gpus all` with `--device /dev/kfd --device /dev/dri --group-add video`.
+Use the same driver checks and memory reserve guidance as for a local worker.
+Protect the fleet token as described below. Test a generation and an
+image-to-image job after attaching the worker to check both image upload and
+source fetch. SSH is not part of this deployment path.
+
 ## First run
 
 ```bash
@@ -160,8 +248,9 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 ```
 
 - Preflight writes `deploy/compose/.env` when that file is missing, with
-  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. Empty
-  values of those keys are filled; a non-empty value is left alone. The
+  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. A missing
+  database password is filled only when no database volume exists; otherwise
+  restore the saved password. A non-empty value is left alone. The
   example's `change-me` database password is rotated only when Docker answers
   and no database volume exists yet, because Postgres reads that password once,
   when it creates the volume; otherwise preflight warns and prints the
