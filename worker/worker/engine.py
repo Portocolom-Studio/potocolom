@@ -1058,6 +1058,7 @@ class DiffusersEngine:
             selected = self._rungs.get(manifest.id)
             self._forget_rung_if_unloaded(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
+            self._calibration_failed = True
             logger.info(
                 "realtime calibration skipped for %s (selected %s)",
                 manifest.id, selected,
