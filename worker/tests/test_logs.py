@@ -85,7 +85,10 @@ def test_http_logs_do_not_expose_signed_url_credentials(
 
 
 @pytest.mark.parametrize("log_format", ["plain", "json"])
-def test_malformed_signed_url_cannot_bypass_log_redaction(log_format: str) -> None:
+@pytest.mark.parametrize("extra_userinfo", [False, True])
+def test_malformed_signed_url_cannot_bypass_log_redaction(
+    log_format: str, extra_userinfo: bool
+) -> None:
     secret = "malformed-" + uuid.uuid4().hex
     output = io.StringIO()
     setup_logging(log_format)
@@ -96,7 +99,8 @@ def test_malformed_signed_url_cannot_bypass_log_redaction(log_format: str) -> No
     try:
         logging.getLogger("potocolom.worker").warning(
             "job job-canary-8 bad URL %s",
-            f"https://user:{secret}@[invalid/worker-input?token={secret}#frag-{secret}",
+            f"https://user:{secret}@{'extra-' + secret + '@' if extra_userinfo else ''}"
+            f"[invalid/worker-input?token={secret}#frag-{secret}",
         )
     finally:
         handler.setStream(old_stream)

@@ -22,7 +22,7 @@ def _redact_url(match: re.Match[str]) -> str:
         safe = urlunsplit((parts.scheme, host, parts.path, "", ""))
     except ValueError:
         # Keep malformed URL text from bypassing the log boundary.
-        safe = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1", value)
+        safe = re.sub(r"(?i)(https?://)[^/\s]*@", r"\1", value)
         safe = safe.split("?", 1)[0].split("#", 1)[0]
     return safe
 
