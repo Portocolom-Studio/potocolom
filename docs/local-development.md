@@ -304,7 +304,8 @@ flowchart LR
 ```
 
 Pull request jobs use CPU and simulated workers. Trusted release tags also run
-the real installer on the AMD desktop. The NVIDIA release check runs over SSH.
+the real installer on the AMD desktop. NVIDIA checks run the same driver on a
+host with an NVIDIA GPU.
 See [release checks](release-checklist.md).
 
 ### Secret scanning

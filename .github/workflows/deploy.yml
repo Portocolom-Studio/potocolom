@@ -18,7 +18,6 @@ on:
       - "scripts/restore.sh"
       - "scripts/test-backup-restore.sh"
       - "scripts/release-check.py"
-      - "scripts/release-check-nvidia.sh"
       - "scripts/tests/test_release_check*.py"
       - "Makefile"
       - ".github/workflows/deploy.yml"
@@ -41,7 +40,6 @@ jobs:
         scripts/restore.sh
         scripts/test-backup-restore.sh
         scripts/release-check.py
-        scripts/release-check-nvidia.sh
         scripts/tests/test_release_check*.py
         Makefile
         .github/workflows/deploy.yml
