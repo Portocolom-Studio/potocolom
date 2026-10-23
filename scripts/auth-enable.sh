@@ -22,9 +22,14 @@ test -f "$ENV_FILE" || {
 
 project="${COMPOSE_PROJECT_NAME:-}"
 if [[ -z "$project" ]]; then
-	if ! project="$(install_compose_project "$ENV_FILE" "$COMPOSE_FILE")"; then
+	if ! project="$(install_compose_value "$ENV_FILE" "$COMPOSE_FILE" COMPOSE_PROJECT_NAME)"; then
 		echo "error: Compose could not read $ENV_FILE; refusing to change accounts configuration" >&2
 		exit 1
+	fi
+	if [[ -z "$project" ]]; then
+		project_dir="$(dirname "$COMPOSE_FILE")"
+		project="$(basename "$project_dir")"
+		[[ "$project" != . ]] || project="$(basename "$PWD")"
 	fi
 fi
 install_acquire_locks "$ROOT" "$ENV_FILE" "$COMPOSE_FILE" "$project"

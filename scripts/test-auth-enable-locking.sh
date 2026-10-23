@@ -25,21 +25,38 @@ new_case() {
 	cp "$repo/deploy/compose/compose.yml" "$case_dir/root/deploy/compose/compose.yml"
 	cat >"$case_dir/bin/docker" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == compose && "$2" == version ]]; then exit 0; fi
+if [[ "$1" == compose && "$2" == version ]]; then [[ "${NO_COMPOSE:-0}" != 1 ]]; exit; fi
+if [[ "$1" == compose && "${NO_COMPOSE:-0}" == 1 ]]; then exit 1; fi
 if [[ "$1" == compose ]]; then
 	shift
 	project=''
+	compose_file=''
 	while [[ "$1" == -p || "$1" == --env-file || "$1" == -f ]]; do
 		if [[ "$1" == -p ]]; then project="$2"; fi
+		if [[ "$1" == -f ]]; then compose_file="$2"; fi
 		shift 2
 	done
 	if [[ "$1" == config && "$2" == --environment ]]; then
 		[[ "${COMPOSE_FAIL:-0}" != 1 ]] || exit 1
 		cat "${COMPOSE_VALUES:?}"
+		project="$(awk -F= '$1 == "COMPOSE_PROJECT_NAME" { value = substr($0, index($0, "=") + 1) } END { print value }' "$COMPOSE_VALUES")"
+		if [[ -z "$project" ]]; then
+			project="$(awk -F: '/^name:[[:space:]]*/ { sub(/^name:[[:space:]]*/, ""); gsub(/[[:space:]\047\"]/, ""); print; exit }' "$compose_file")"
+		fi
+		if [[ -z "$project" ]]; then project="$(basename "$(dirname "$compose_file")")"; fi
+		printf 'COMPOSE_PROJECT_NAME=%s\n' "$project"
 		exit 0
 	fi
-	if [[ "$1" == ps ]]; then printf '%s\n' "$project" >"${DOCKER_PROJECT:?}"; exit 0; fi
-	if [[ "$1" == run ]]; then exit 0; fi
+	if [[ "$1" == ps ]]; then
+		printf '%s\n' "$project" >"${DOCKER_PROJECT:?}"
+		[[ "$project" != "${RUNNING_PROJECT:-__none__}" ]] || printf 'api\n'
+		exit 0
+	fi
+	if [[ "$1" == run ]]; then
+		printf '%s\n' "$project" >"${DOCKER_RUN_PROJECT:?}"
+		touch "${CONTAINER_ENABLE_STARTED:?}"
+		exit 0
+	fi
 fi
 if [[ "$1" == info ]]; then exit 0; fi
 exit 1
@@ -89,7 +106,6 @@ PUBLIC_URL=http://localhost:8080
 AUTH_MODE=none
 EOF
 	cat >"$case_dir/values" <<'EOF'
-COMPOSE_PROJECT_NAME=potocolom
 ROOT_KEYS=
 PUBLIC_URL=http://localhost:8080
 DATABASE_URL=postgresql://potocolom:pw@postgres/potocolom
@@ -101,7 +117,8 @@ EOF
 	case_env=(PATH="$case_dir/bin:$PATH" REAL_MKTEMP="$REAL_MKTEMP" REAL_MV="$REAL_MV" REAL_AWK="$REAL_AWK"
 		ENV_FILE="$case_dir/root/deploy/compose/.env" COMPOSE_FILE="$case_dir/root/deploy/compose/compose.yml"
 		ENV_EXAMPLE="$case_dir/root/deploy/compose/.env.example" COMPOSE_VALUES="$case_dir/values"
-		DOCKER_PROJECT="$case_dir/docker-project"
+		DOCKER_PROJECT="$case_dir/docker-project" DOCKER_RUN_PROJECT="$case_dir/docker-run-project"
+		CONTAINER_ENABLE_STARTED="$case_dir/container-enable-started"
 		PY="$case_dir/bin/python" ENABLE_STARTED="$case_dir/enable-started" ENABLE_FINISHED="$case_dir/enable-finished"
 		ENABLE_ROOT_KEYS="$case_dir/enable-root-keys" ENABLE_PUBLIC_URL="$case_dir/enable-public-url"
 		ENABLE_DATABASE_URL="$case_dir/enable-database-url" ENABLE_RELEASE="$case_dir/enable-release"
@@ -150,6 +167,33 @@ expect_auth_refused() {
 		fail_case "$label" 'the environment changed or app.enable ran'
 	fi
 }
+
+for target in default-project top-level-name; do
+	new_case "$target"
+	if [[ "$target" == default-project ]]; then
+		expected_project=compose
+		case_name=compose-default
+	else
+		expected_project=explicit-top-level
+		case_name=top-level-name
+		sed -i "1i name: $expected_project" "$case_dir/root/deploy/compose/compose.yml"
+	fi
+	case_env+=(RUNNING_PROJECT="$expected_project")
+	if run_auth >"$case_dir/auth.out" 2>&1 \
+		&& [[ "$(cat "$case_dir/docker-project")" == "$expected_project" ]] \
+		&& [[ "$(cat "$case_dir/docker-run-project")" == "$expected_project" ]] \
+		&& [[ -e "$case_dir/container-enable-started" && ! -e "$case_dir/enable-started" ]]; then
+		printf 'ok running-api-uses-%s\n' "$case_name"
+	else fail_case "$target" 'auth-enable did not use the Compose project and container enable path'; fi
+done
+
+new_case no-compose-host-enable
+case_env+=(NO_COMPOSE=1)
+if run_auth >"$case_dir/auth.out" 2>&1 \
+	&& [[ -e "$case_dir/enable-started" && ! -e "$case_dir/container-enable-started" ]] \
+	&& grep -qx 'AUTH_MODE=accounts' "$case_dir/root/deploy/compose/.env"; then
+	printf 'ok missing-compose-uses-host-enable\n'
+else fail_case no-compose-host-enable 'auth-enable did not keep the host enable path'; fi
 
 new_case directory-lock
 printf 'COMPOSE_PROJECT_NAME=different-project\n' >>"$case_dir/values"
@@ -225,7 +269,7 @@ for format in canonical export-quoted; do
 	if [[ "$format" == canonical ]]; then
 		root_line='ROOT_KEYS=canonical-ring'
 		root_value=canonical-ring
-		expected_project=potocolom
+		expected_project=compose
 	else
 		root_line='export ROOT_KEYS = "quoted-ring" # operator comment'
 		root_value=quoted-ring
