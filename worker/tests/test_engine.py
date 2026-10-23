@@ -1772,6 +1772,38 @@ def test_shared_pipeline_mode_refuses_new_allocation_at_zero_usable_vram():
     assert engine.model_rung(manifest.id) == "full"
 
 
+def test_fresh_model_reclaims_allocator_cache_before_selecting_its_rung():
+    free = [2 * 1024**3]
+    engine = _admission_engine(free)
+    engine._free_gpu_cache = MagicMock(side_effect=lambda: free.__setitem__(0, 8 * 1024**3))
+    pipeline = object()
+    engine._load = MagicMock(return_value=pipeline)
+    engine._evict_cold = MagicMock()
+    manifest = Manifest(id="fresh", name="Fresh", capabilities=["text_to_image"], min_vram_gb=8)
+
+    assert engine._pipeline(manifest, "t2i") is pipeline
+    assert engine.model_rung(manifest.id) == "full"
+    engine._evict_cold.assert_not_called()
+
+
+@pytest.mark.parametrize("memory_mode", ["auto", "group_offload"])
+def test_upscale_mode_reclaims_allocator_cache_without_evicting_its_resident(memory_mode):
+    free = [6 * 1024**3]
+    engine = _admission_engine(free, memory_mode=memory_mode)
+    resident, added = object(), object()
+    engine._pipelines[("upscaler", "upscale-2")] = resident
+    engine._rungs["upscaler"] = "full"
+    engine._free_gpu_cache = MagicMock(side_effect=lambda: free.__setitem__(0, 8 * 1024**3))
+    engine._load = MagicMock(return_value=added)
+    engine._evict_cold = MagicMock()
+    manifest = Manifest(id="upscaler", name="Upscaler", capabilities=["upscale"], min_vram_gb=8)
+
+    assert engine._pipeline(manifest, "upscale-4") is added
+    assert engine._pipelines[("upscaler", "upscale-2")] is resident
+    assert engine.model_rung(manifest.id) == "full"
+    engine._evict_cold.assert_not_called()
+
+
 def test_first_upscale_factor_records_full_rung():
     engine = _admission_engine([8 * 1024**3])
     engine._load = MagicMock(return_value=object())
@@ -1889,7 +1921,7 @@ def test_capacity_refusal_evicts_cold_pipeline_before_reporting_failure():
         engine._pipeline(manifest, "t2i")
 
     assert engine.loaded_models() == []
-    engine._free_gpu_cache.assert_called_once()
+    assert engine.model_rung("cold") is None
     engine._load.assert_not_called()
 
 
@@ -1902,7 +1934,8 @@ def test_cold_eviction_makes_room_for_the_selected_rung():
     engine._last_used["cold"] = 0
 
     def release_cold_model():
-        free[0] += 8 * 1024**3
+        if ("cold", "t2i") not in engine._pipelines:
+            free[0] += 8 * 1024**3
 
     engine._free_gpu_cache = release_cold_model
     manifest = Manifest(
@@ -2149,14 +2182,22 @@ def test_calibration_rejects_actual_offload_before_rendering():
     engine._gpu = asyncio.Lock()
     engine._frame = MagicMock()
     free_gib = [9.18]
+    held_gib = [6.6]
     engine.torch.cuda.mem_get_info = lambda *, device: (
         int(free_gib[0] * 1024**3), 16 * 1024**3,
     )
+    engine.torch.cuda.memory_reserved = lambda device=None: int(held_gib[0] * 1024**3)
+
+    def release_allocator_cache():
+        free_gib[0] += held_gib[0]
+        held_gib[0] = 0.0
+
+    engine.torch.cuda.empty_cache = release_allocator_cache
     original_prediction = engine._predicted_rung
 
     def prediction_then_memory_drop(manifest):
         rung = original_prediction(manifest)
-        free_gib[0] = 7.0
+        free_gib[0] = 1.5
         return rung
 
     engine._predicted_rung = prediction_then_memory_drop
@@ -2172,7 +2213,7 @@ def test_calibration_rejects_actual_offload_before_rendering():
     assert slots == 1
     engine._frame.assert_not_called()
     assert engine._pipelines == {}
-    free_gib[0] = 9.18
+    free_gib[0] = 12.0
     engine._predicted_rung = original_prediction
     assert "realtime" in engine.measured_manifests([vega])[0]["capabilities"]
     assert "vega-rt" not in engine._realtime_p95_ms
