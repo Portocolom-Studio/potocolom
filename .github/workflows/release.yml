@@ -101,7 +101,7 @@ jobs:
           # The self-host bundle is built here so the recovery proof below
           # runs the exact scripts a release install receives.
           tar -czf "potocolom-$VERSION-selfhost.tar.gz" deploy/compose/compose.yml deploy/compose/.env.example \
-            scripts/preflight.sh scripts/gpu-profile.sh scripts/ensure-env.sh scripts/auth-enable.sh \
+            scripts/preflight.sh scripts/gpu-profile.sh scripts/ensure-env.sh scripts/install-lock.sh scripts/auth-enable.sh \
             scripts/backup.sh scripts/restore.sh worker/models/*.json
           bundle="$RUNNER_TEMP/selfhost-bundle-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           rm -rf "$bundle" && mkdir -p "$bundle"

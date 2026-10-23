@@ -77,26 +77,6 @@ main() {
 		exit 1
 	fi
 
-	ENV_FILE="$DIR/deploy/compose/.env"
-	# The project a release install owns is potocolom; a name the operator
-	# already set in .env wins, so reruns and upgrades stay on the
-	# containers and volumes that name belongs to.
-	PROJECT="potocolom"
-	if [[ -f "$ENV_FILE" ]]; then
-		existing="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$ENV_FILE" | tail -n 1)"
-		PROJECT="${existing:-potocolom}"
-	fi
-
-	# Preflight is what creates .env: a fresh .env brings a fresh database
-	# password, which a pre-existing volume does not accept.
-	if [[ ! -e "$ENV_FILE" ]] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
-		echo "error: the database volume ${PROJECT}_pgdata already exists, but $ENV_FILE does not." >&2
-		echo "  A new .env would get a new database password that this volume does not accept." >&2
-		echo "  Restore the .env from the earlier install into that path, or, to start over and" >&2
-		echo "  delete that data, run: docker volume rm ${PROJECT}_pgdata" >&2
-		exit 1
-	fi
-
 	TMP="$(mktemp -d)"
 	trap 'rm -rf "$TMP"' EXIT
 
@@ -136,9 +116,33 @@ main() {
 		exit 1
 	fi
 
+	STAGE="$TMP/stage"
+	mkdir -m 700 "$STAGE"
+	tar -xzf "$TMP/$BUNDLE" -C "$STAGE"
+	# Resolve the Compose project against the saved env file and verified staged
+	# compose file, then lock before replacing any live bundle file.
+	ENV_FILE="$DIR/deploy/compose/.env"
+	source "$STAGE/scripts/install-lock.sh"
+	PROJECT="potocolom"
+	if [[ -f "$ENV_FILE" ]]; then
+		if existing="$(install_compose_project "$ENV_FILE" "$STAGE/deploy/compose/compose.yml")"; then
+			PROJECT="$existing"
+		else
+			echo "error: Compose could not read $ENV_FILE; refusing to inspect or change this install" >&2
+			exit 1
+		fi
+	fi
+	install_acquire_locks "$DIR" "$ENV_FILE" "$STAGE/deploy/compose/compose.yml" "$PROJECT"
 	mkdir -p "$DIR"
 	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
 	# The bundle carries no .env, so an existing install keeps its secrets.
+	if [[ ! -e "$ENV_FILE" ]] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
+		echo "error: the database volume ${PROJECT}_pgdata already exists, but $ENV_FILE does not." >&2
+		echo "  A new .env would get a new database password that this volume does not accept." >&2
+		echo "  Restore the .env from the earlier install into that path, or, to start over and" >&2
+		echo "  delete that data, run: docker volume rm ${PROJECT}_pgdata" >&2
+		exit 1
+	fi
 
 	if ! bash "$DIR/scripts/preflight.sh"; then
 		echo "error: preflight failed; fix what it reports, then run this again" >&2
@@ -183,7 +187,8 @@ main() {
 	fi
 
 	# Pin release metadata and apply an explicit public URL in one write.
-	env_tmp="$(mktemp)"
+	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
+	chmod 600 "$env_tmp"
 	awk -v v="$VERSION" -v p="$PROJECT" -v set_url="$set_public_url" -v url="$public_url_input" '
 		/^POTOCOLOM_VERSION=/ { print "POTOCOLOM_VERSION=" v; found_v = 1; next }
 		/^COMPOSE_PROJECT_NAME=/ {

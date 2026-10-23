@@ -17,7 +17,7 @@ stage_bundle() {
 	local stage="$1"
 	mkdir -p "$stage/deploy/compose" "$stage/scripts"
 	cp "$repo/deploy/compose/compose.yml" "$repo/deploy/compose/.env.example" "$stage/deploy/compose/"
-	cp "$repo/scripts/preflight.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/gpu-profile.sh" "$stage/scripts/"
+	cp "$repo/scripts/preflight.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/install-lock.sh" "$repo/scripts/gpu-profile.sh" "$stage/scripts/"
 	(cd "$stage" && tar -czf "$tmp/bundle.tar.gz" deploy scripts)
 	(cd "$tmp" && sha256sum bundle.tar.gz | sed 's#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#' >SHA256SUMS)
 	cp "$tmp/bundle.tar.gz" "$stage/potocolom-v9.9.9-selfhost.tar.gz"
@@ -66,6 +66,13 @@ case "$*" in
 	'image inspect'*) [[ "${DOCKER_IMAGES_CACHED:-}" == 1 ]] ;;
 	*' pull --policy'* ) exit 99 ;;
 	*' pull') [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
+	*' up -d --no-build')
+		if [[ -n "${INSTALL_UP_STARTED:-}" ]]; then
+			touch "$INSTALL_UP_STARTED"
+			while [[ ! -e "$INSTALL_UP_RELEASE" ]]; do sleep 0.02; done
+		fi
+		exit 0
+		;;
 	*' pull'|*' up -d --no-build'|*' rm -sf'|*' compose version'|*) exit 0 ;;
 esac
 EOF
@@ -363,5 +370,51 @@ if [[ "$rc" -eq 0 && "$output" == *"Replace ADDRESS with this machine's address.
 else
 	fail_case failed-optional-hostname-lookup
 fi
+
+# Hold the first installer at startup so a second process must hit the same
+# directory lock while the database and secret file are still in one session.
+make_case concurrent-install-lock
+REAL_MKTEMP="$(type -P mktemp)"
+export REAL_MKTEMP
+unlink "$case_dir/bin/mktemp"
+cat >"$case_dir/bin/mktemp" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+	[[ "$arg" == */.env.XXXXXX ]] && printf '%s\n' "$arg" >>"${INSTALL_MKTEMP_LOG:?}"
+done
+exec "$REAL_MKTEMP" "$@"
+EOF
+chmod +x "$case_dir/bin/mktemp"
+export INSTALL_MKTEMP_LOG="$case_dir/mktemp.log"
+export INSTALL_UP_STARTED="$case_dir/up-started" INSTALL_UP_RELEASE="$case_dir/up-release"
+run_install "$case_dir" >"$case_dir/first.out" 2>&1 &
+first_install_pid=$!
+for _ in {1..400}; do [[ -e "$INSTALL_UP_STARTED" ]] && break; sleep 0.02; done
+if [[ ! -e "$INSTALL_UP_STARTED" ]]; then
+	touch "$INSTALL_UP_RELEASE"
+	wait "$first_install_pid" || true
+	fail_case concurrent-install-lock 'first installer did not reach startup'
+else
+	# A contender receives a different verified helper and compose file. It must
+	# not extract those files into the live install before it gets the locks.
+	mkdir -p "$case_dir/replacement"
+	tar -xzf "$tmp/bundle.tar.gz" -C "$case_dir/replacement"
+	printf '# staged-contender-marker\n' >>"$case_dir/replacement/scripts/gpu-profile.sh"
+	(cd "$case_dir/replacement" && tar -czf "$tmp/bundle.tar.gz" deploy scripts)
+	(cd "$tmp" && sha256sum bundle.tar.gz | sed 's#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#' >SHA256SUMS)
+	if run_install "$case_dir" >"$case_dir/second.out" 2>&1; then second_install_rc=0; else second_install_rc=$?; fi
+	touch "$INSTALL_UP_RELEASE"
+	if wait "$first_install_pid"; then first_install_rc=0; else first_install_rc=$?; fi
+	if [[ "$first_install_rc" -eq 0 && "$second_install_rc" -ne 0 \
+		&& "$(cat "$case_dir/second.out")" == *'another potocolom install or preflight'* \
+		&& "$(grep -c 'staged-contender-marker' "$case_dir/install/scripts/gpu-profile.sh" || true)" -eq 0 \
+		&& "$(grep -c "$case_dir/install/deploy/compose/.env.XXXXXX" "$INSTALL_MKTEMP_LOG")" -ge 2 \
+		&& "$(stat -c '%a' "$case_dir/install/deploy/compose/.env")" == 600 ]]; then
+		printf 'ok concurrent-install-lock-held-through-startup-and-before-live-extract\n'
+	else
+		fail_case concurrent-install-lock "first=$first_install_rc second=$second_install_rc marker=$(grep -c 'staged-contender-marker' "$case_dir/install/scripts/gpu-profile.sh" || true) $(cat "$case_dir/second.out")"
+	fi
+fi
+unset INSTALL_UP_STARTED INSTALL_UP_RELEASE INSTALL_MKTEMP_LOG REAL_MKTEMP
 
 if ((failures > 0)); then exit 1; fi

@@ -39,7 +39,7 @@ fi
 exit 9
 EOF
 	chmod +x "$case_dir/bin/nvidia-smi"
-	for utility in bash dirname uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed; do
+	for utility in bash dirname basename mkdir chmod uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed flock cksum stat readlink; do
 		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(type -P "$utility")" "$case_dir/bin/$utility"
 	done
 	rm -f "$case_dir/bin/id"
@@ -57,7 +57,7 @@ EOF
 # The repository layout preflight reads, so ensure-env writes only in the case.
 copy_repo() {
 	mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models"
-	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
+	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/install-lock.sh" "$case_dir/repo/scripts/"
 	cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
 	cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
 }
@@ -132,6 +132,7 @@ expect_preflight_gpu() {
 #!/usr/bin/env bash
 if [[ "\$1" == --version ]]; then printf 'Docker version 28.0.0, build test\\n'; exit 0; fi
 if [[ "\$1" == compose ]]; then printf '2.30.0\\n'; exit 0; fi
+if [[ "\$1" == volume && "\$2" == inspect ]]; then exit 1; fi
 if [[ "\$1" == run && '$docker' == fail ]]; then exit 1; fi
 exit 0
 EOF
@@ -207,6 +208,7 @@ if [[ "$1" == --version ]]; then printf 'Docker version 28.0.0, build test\n'; e
 if [[ "$1" == compose ]]; then
 	if [[ "$2" == version ]]; then printf '2.30.0\n'; exit 0; fi
 fi
+if [[ "$1" == volume && "$2" == inspect ]]; then exit 1; fi
 exit 0
 EOF
 	if [[ "$npm_present" == true ]]; then
@@ -273,7 +275,7 @@ expect_toolchain toolchain-all-present v24.0.0 true 'ok node v24.0.0' 0
 
 new_case preflight-unknown-argument
 mkdir -p "$case_dir/repo/scripts"
-cp "$repo/scripts/preflight.sh" "$case_dir/repo/scripts/"
+cp "$repo/scripts/preflight.sh" "$repo/scripts/install-lock.sh" "$case_dir/repo/scripts/"
 code=0
 output="$(bash "$case_dir/repo/scripts/preflight.sh" --bogus 2>&1)" || code=$?
 if [[ "$code" -eq 2 && "$output" == *"usage: preflight.sh [--contributor]"* ]]; then

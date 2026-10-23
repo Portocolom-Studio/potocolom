@@ -10,6 +10,19 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${POTOCOLOM_PORT:-8080}"
+ENV_FILE="${ENV_FILE:-$ROOT/deploy/compose/.env}"
+COMPOSE_FILE="$ROOT/deploy/compose/compose.yml"
+source "$ROOT/scripts/install-lock.sh"
+project="potocolom"
+if [[ -f "$ENV_FILE" ]]; then
+  if project_value="$(install_compose_project "$ENV_FILE" "$COMPOSE_FILE")"; then
+    project="$project_value"
+  else
+    printf 'error: Compose could not read %s; refusing to run preflight\n' "$ENV_FILE" >&2
+    exit 1
+  fi
+fi
+install_acquire_locks "$ROOT" "$ENV_FILE" "$COMPOSE_FILE" "$project"
 contributor=false
 if (($# > 0)); then
   if (($# == 1)) && [[ "$1" == --contributor ]]; then

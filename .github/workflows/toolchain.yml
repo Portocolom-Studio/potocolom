@@ -17,6 +17,8 @@ on:
       - "scripts/install.sh"
       - "scripts/test-gpu-detection.sh"
       - "scripts/test-install-public-url.sh"
+      - "scripts/test-install-resilience.sh"
+      - "scripts/install-lock.sh"
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
@@ -43,6 +45,8 @@ jobs:
         scripts/install.sh
         scripts/test-gpu-detection.sh
         scripts/test-install-public-url.sh
+        scripts/test-install-resilience.sh
+        scripts/install-lock.sh
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-guards.sh
