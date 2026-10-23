@@ -342,6 +342,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-install-public-url.sh
 	@bash scripts/test-install-host-profiles.sh
 	@bash scripts/test-install-resilience.sh
+	@bash scripts/test-auth-enable-locking.sh
 	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)

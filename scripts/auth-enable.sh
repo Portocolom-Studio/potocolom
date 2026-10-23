@@ -13,39 +13,72 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-$ROOT/deploy/compose/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/deploy/compose/compose.yml}"
 PY="${PY:-$ROOT/backend/.venv/bin/python}"
+source "$ROOT/scripts/install-lock.sh"
 
 command -v openssl >/dev/null 2>&1 || {
 	echo "error: openssl is required to generate ROOT_KEYS" >&2; exit 1; }
 test -f "$ENV_FILE" || {
 	echo "error: $ENV_FILE is missing; run make preflight first" >&2; exit 1; }
 
-# Read one key without sourcing the file: .env is data, and sourcing it would
-# run whatever anyone who can write it puts there.
-read_key() { sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1; }
+project="${COMPOSE_PROJECT_NAME:-}"
+if [[ -z "$project" ]]; then
+	if ! project="$(install_compose_project "$ENV_FILE" "$COMPOSE_FILE")"; then
+		echo "error: Compose could not read $ENV_FILE; refusing to change accounts configuration" >&2
+		exit 1
+	fi
+fi
+install_acquire_locks "$ROOT" "$ENV_FILE" "$COMPOSE_FILE" "$project"
 
-set_key() {
-	local key="$1" value="$2" tmp
-	tmp="$(mktemp)"
-	if grep -q "^${key}=" "$ENV_FILE"; then
-		awk -v k="$key" -v v="$value" -F= '$1 == k { print k "=" v; next } { print }' \
-			"$ENV_FILE" >"$tmp"
-		mv "$tmp" "$ENV_FILE"
+read_key() {
+	local value
+	if value="$(install_compose_value "$ENV_FILE" "$COMPOSE_FILE" "$1")"; then
+		printf '%s' "$value"
 	else
-		rm -f "$tmp"
-		printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
+		echo "error: Compose could not read $ENV_FILE; refusing to change accounts configuration" >&2
+		return 1
 	fi
 }
 
-if [[ -n "$(read_key ROOT_KEYS)" ]]; then
+set_key() {
+	local key="$1" value="$2" tmp dir
+	dir="$(dirname "$ENV_FILE")"
+	tmp="$(mktemp "$dir/.env.XXXXXX")"
+	if ! awk -v k="$key" -v v="$value" '
+		function is_key(line) {
+			return line ~ "^[[:space:]]*(export[[:space:]]+)?" k "[[:space:]]*[:=]"
+		}
+		{
+			if (is_key($0)) {
+				if (!seen++) print k "=" v
+				next
+			}
+			print
+		}
+		END { if (!seen) print k "=" v }
+	' "$ENV_FILE" >"$tmp"; then
+		rm -f -- "$tmp"
+		return 1
+	fi
+	if ! chmod 600 "$tmp" || ! mv -f -- "$tmp" "$ENV_FILE"; then
+		rm -f -- "$tmp"
+		return 1
+	fi
+}
+
+root_keys="$(read_key ROOT_KEYS)"
+current_url="$(read_key PUBLIC_URL)"
+database_url="$(read_key DATABASE_URL)"
+
+if [[ -n "$root_keys" ]]; then
 	echo "ROOT_KEYS is already set in $ENV_FILE; keeping it."
 else
 	# Version 1, base64 of 32 random bytes. Newest first, so a later rotation
 	# prepends a version and every older one stays readable.
-	set_key ROOT_KEYS "1:$(openssl rand -base64 32)"
+	root_keys="1:$(openssl rand -base64 32)"
+	set_key ROOT_KEYS "$root_keys"
 	echo "wrote ROOT_KEYS to $ENV_FILE"
 fi
 
-current_url="$(read_key PUBLIC_URL)"
 printf 'Where do browsers reach this install? [%s] ' "${current_url:-http://localhost:8080}"
 read -r answer || answer=""
 public_url="${answer:-${current_url:-http://localhost:8080}}"
@@ -64,7 +97,7 @@ set_key PUBLIC_URL "$public_url"
 # --env-file matters: without it compose reads its own default .env, so an
 # operator who overrides ENV_FILE would mint a link against one database while
 # writing ROOT_KEYS and AUTH_MODE into another.
-compose=(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
+compose=(docker compose -p "$project" --env-file "$ENV_FILE" -f "$COMPOSE_FILE")
 if "${compose[@]}" ps --status running api 2>/dev/null | grep -q api; then
 	echo "running the enable step inside the api container"
 	"${compose[@]}" run --rm --no-deps \
@@ -74,8 +107,7 @@ else
 	test -x "$PY" || { echo "error: $PY is missing; run make setup first" >&2; exit 1; }
 	# Passed one by one rather than by sourcing the file. An empty
 	# DATABASE_URL would override the application default with nothing.
-	vars=(ROOT_KEYS="$(read_key ROOT_KEYS)" PUBLIC_URL="$public_url")
-	database_url="$(read_key DATABASE_URL)"
+	vars=(ROOT_KEYS="$root_keys" PUBLIC_URL="$public_url")
 	[[ -n "$database_url" ]] && vars+=(DATABASE_URL="$database_url")
 	(cd "$ROOT/backend" && env "${vars[@]}" "$PY" -m app.enable)
 fi

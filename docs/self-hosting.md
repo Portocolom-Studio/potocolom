@@ -310,6 +310,11 @@ in PostgreSQL, and prints a one-use call that claims the administrator account. 
 claimant adopts the implicit local user, so every job and asset made before accounts
 existed belongs to them; nothing is stranded and nothing is copied.
 
+Account setup keeps existing root keys, including quoted or `export` assignments
+in `.env`. Account setup and upgrades use the same locks. If either command is
+already running, the other stops before it changes the configuration. Let the
+first command finish, then run the second command again.
+
 Enabling accounts is one way. An install that has enabled them refuses to start in
 `none` mode again, because falling back would return a multi-user install to answering
 every request as an administrator. Undoing it needs an offline destructive reset:
