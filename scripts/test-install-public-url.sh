@@ -26,6 +26,7 @@ stage_bundle() {
 
 make_case() {
 	local name="$1"
+	READY_AFTER=0 READY_FAIL=0 TEST_PROFILE=gpu TEST_NVIDIA=ok
 	case_dir="$tmp/$name"
 	mkdir -p "$case_dir/bin" "$case_dir/source"
 	cat >"$case_dir/bin/curl" <<'EOF'
@@ -233,7 +234,6 @@ if [[ "$rc" -ne 0 && "$output" == *'did not become ready within 120 seconds'* &&
 	READY_FAIL=0 TEST_PROFILE=api output="$(run_install "$case_dir")" && retry_rc=0 || retry_rc=$?
 	if [[ "$retry_rc" -eq 0 ]]; then printf 'ok readiness-timeout-releases-lock\n'; else fail_case readiness-timeout-releases-lock; fi
 else fail_case readiness-timeout-releases-lock; fi
-READY_FAIL=0
 
 make_case rejects-unsupported-release-architecture
 cat >"$case_dir/bin/uname" <<'EOF'
