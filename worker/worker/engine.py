@@ -621,7 +621,7 @@ class DiffusersEngine:
 
     def _ensure_vram(self, manifest: Manifest) -> None:
         resident = any(key[0] == manifest.id for key in self._pipelines)
-        if resident:
+        if resident and "upscale" not in manifest.capabilities:
             # A new mode may add a small adapter or decoder while sharing the
             # resident model weights. Do not charge the whole model rung again,
             # but require some usable VRAM before starting that allocation.
@@ -646,7 +646,8 @@ class DiffusersEngine:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
         available = self._free_vram_bytes()
         if available < required:
-            self._rungs.pop(manifest.id, None)
+            if not any(key[0] == manifest.id for key in self._pipelines):
+                self._rungs.pop(manifest.id, None)
             raise VRAMCapacityError(
                 f"cannot load {manifest.id} on the {rung} rung: "
                 f"requires {required} bytes of usable VRAM, "
@@ -690,7 +691,7 @@ class DiffusersEngine:
         return rung
 
     def _demote_rung(self, manifest: Manifest, *, phase: str) -> bool:
-        if self.memory_mode != "auto":
+        if self.memory_mode != "auto" or "upscale" in manifest.capabilities:
             return False
         rung = self._pick_rung(manifest)
         lower: dict[MemoryRung, MemoryRung] = {

@@ -1749,6 +1749,56 @@ def test_shared_pipeline_mode_refuses_new_allocation_at_zero_usable_vram():
     assert engine.model_rung(manifest.id) == "full"
 
 
+def test_first_upscale_factor_records_full_rung():
+    engine = _admission_engine([8 * 1024**3])
+    engine._load = MagicMock(return_value=object())
+    manifest = Manifest(id="upscaler", name="Upscaler", capabilities=["upscale"], min_vram_gb=8)
+
+    engine._pipeline(manifest, "upscale-2")
+
+    assert engine.model_rung("upscaler") == "full"
+
+
+def test_upscaler_oom_cannot_demote_into_a_diffusion_offload_rung():
+    engine = _admission_engine([8 * 1024**3])
+    engine._rungs["upscaler"] = "full"
+    engine._evict_model = MagicMock()
+    manifest = Manifest(id="upscaler", name="Upscaler", capabilities=["upscale"], min_vram_gb=8)
+
+    assert engine._demote_rung(manifest, phase="load") is False
+    assert engine.model_rung("upscaler") == "full"
+    engine._evict_model.assert_not_called()
+
+
+def test_second_upscale_factor_requires_its_full_rung_and_can_retry():
+    full_rung_bytes = 8 * 1024**3
+    free = [full_rung_bytes - 1]
+    engine = _admission_engine(free)
+    resident = object()
+    engine._pipelines[("upscaler", "upscale-2")] = resident
+    engine._rungs["upscaler"] = "full"
+    engine._load = MagicMock()
+    manifest = Manifest(
+        id="upscaler", name="Upscaler", capabilities=["upscale"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._pipeline(manifest, "upscale-4")
+
+    engine._load.assert_not_called()
+    assert engine._pipelines[("upscaler", "upscale-2")] is resident
+    assert engine.model_rung("upscaler") == "full"
+
+    free[0] = full_rung_bytes
+    second_factor = object()
+    engine._load.return_value = second_factor
+    assert engine._pipeline(manifest, "upscale-4") is second_factor
+    engine._load.assert_called_once_with(manifest, "upscale-4")
+    assert engine._pipelines[("upscaler", "upscale-2")] is resident
+    assert engine.model_rung("upscaler") == "full"
+
+
 def test_capacity_refusal_clears_rung_and_retries_when_vram_returns():
     free = [1024**3]
     engine = _admission_engine(free)

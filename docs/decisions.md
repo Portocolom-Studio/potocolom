@@ -441,9 +441,11 @@ cold models and checks the selected rung against free VRAM minus
 a manifest with no estimate still needs a positive GPU budget. CPU operation
 is unchanged.
 
-A new mode can share weights with an already resident mode. It does not pay
-the whole model estimate twice, but needs a positive budget for added
-components. A refused first load clears its unused rung, so a later retry
+Diffusion modes can share weights with an already resident mode. They do not pay
+the whole model estimate twice, but need a positive budget for added
+components. Upscale factors load independent models and each need their full
+estimate. They cannot demote into diffusion offload rungs. A refused first
+load clears its unused rung, so a later retry
 can choose again. Warmup retains calibration retries until memory permits a
 measurement. The reserve is an admission margin, not a continuous allocation
 limit against other GPU users or underestimated peaks.
