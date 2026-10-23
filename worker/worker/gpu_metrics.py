@@ -134,13 +134,13 @@ def _nvidia_metrics(selected_pci: str | None) -> dict[str, Any]:
     )
     if not text.strip():
         return {}
-    selected_row = None
-    for row in csv.reader(io.StringIO(text)):
-        if len(row) >= 6 and _normalize_pci(row[0]) == _normalize_pci(selected_pci):
-            selected_row = [part.strip() for part in row]
-            break
-    if selected_row is None:
+    selected_rows = [
+        [part.strip() for part in row] for row in csv.reader(io.StringIO(text))
+        if len(row) >= 6 and _normalize_pci(row[0]) == _normalize_pci(selected_pci)
+    ]
+    if len(selected_rows) != 1:
         return {}
+    selected_row = selected_rows[0]
     util_value = _number_or_none(selected_row[1])
     temp_value = _number_or_none(selected_row[2])
     power = _number_or_none(selected_row[3])
@@ -200,15 +200,15 @@ def _parse_rocm_json(text: str, selected_pci: str | None = None) -> dict[str, An
     if selected_pci is None:
         card = cards[0][1] if cards else payload
     else:
-        card = None
+        matches = []
         for _key, candidate in cards:
             identity = next((value for key, value in candidate.items()
                              if "pci" in str(key).lower() and "bus" in str(key).lower()), None)
             if _normalize_pci(identity) == _normalize_pci(selected_pci):
-                card = candidate
-                break
-        if card is None:
+                matches.append(candidate)
+        if len(matches) != 1:
             return {}
+        card = matches[0]
     if not isinstance(card, dict):
         return {}
     metrics: dict[str, Any] = {}
@@ -283,6 +283,7 @@ def _rocm_metrics(selected_pci: str | None = None) -> dict[str, Any]:
         return {}
     text = _run_smi([
         "rocm-smi",
+        "--showbus",
         "--showuse",
         "--showtemp",
         "--showpower",

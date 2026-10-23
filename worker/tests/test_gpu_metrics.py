@@ -232,3 +232,39 @@ def test_invalid_selected_pci_keeps_vendor_counters_unknown(monkeypatch):
         assert snapshot["vram_total_bytes"] == 4096
         assert "util_pct" not in snapshot
     assert vendor_calls == []
+
+
+def test_rocm_query_requests_the_pci_identity_needed_to_select_counters(monkeypatch):
+    import json
+    from worker.gpu_metrics import _rocm_metrics
+
+    def query(command):
+        cards = {
+            "card0": {"GPU use (%)": "11"},
+            "card1": {"GPU use (%)": "73"},
+        }
+        if "--showbus" in command:
+            cards["card0"]["PCI Bus"] = "0000:01:00.0"
+            cards["card1"]["PCI Bus"] = "0000:02:00.0"
+        return json.dumps(cards)
+
+    monkeypatch.setattr("worker.gpu_metrics._run_smi", query)
+    assert _rocm_metrics("0000:02:00.0")["util_pct"] == 73
+
+
+def test_rocm_duplicate_pci_identity_does_not_pick_a_partition(monkeypatch):
+    from worker.gpu_metrics import _parse_rocm_metrics
+
+    captured = '{"card0":{"PCI Bus":"0000:01:00.0","GPU use (%)":"11"},' \
+               '"card1":{"PCI Bus":"0000:01:00.0","GPU use (%)":"73"}}'
+    assert _parse_rocm_metrics(captured, selected_pci="0000:01:00.0") == {}
+
+
+def test_nvidia_duplicate_pci_identity_does_not_pick_a_row(monkeypatch):
+    from worker.gpu_metrics import _nvidia_metrics
+
+    monkeypatch.setattr("worker.gpu_metrics._run_smi", lambda _command: (
+        "00000000:01:00.0, 11, 41, 90.0, 100, 8000\n"
+        "00000000:01:00.0, 73, 62, 125.5, 2048, 16384\n"
+    ))
+    assert _nvidia_metrics("0000:01:00.0") == {}
