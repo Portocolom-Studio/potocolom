@@ -1686,6 +1686,24 @@ The range was `>=12,<13`, which already admits 12.3. A local venv can still sit 
 Rejected alternatives: leaving `>=12,<13` (a stale venv stays on 12.2); raising only the Docker image (the worker extra is what `make setup` installs).
 
 
+## Worker images use the patched Pillow 13 line
+
+This supersedes "Worker Pillow floor is 12.3" for v0.1.3. The worker requires
+`pillow>=13,<14`. The release scan found fixed HIGH and CRITICAL findings in
+12.3, including the bundled OpenJPEG issue documented in
+[GHSA-78g4-xqwv-q3g8](https://github.com/advisories/GHSA-78g4-xqwv-q3g8).
+The shared package floor applies to native installs and both GPU images.
+
+The CUDA image also updates inherited certifi to at least 2026.10.19 and uv
+to at least 0.13.4 for
+[GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2) and
+[GHSA-hq85-5cpj-mr62](https://github.com/advisories/GHSA-hq85-5cpj-mr62).
+The existing HIGH/CRITICAL release scan, including secret detection, stays required.
+
+Rejected alternatives: keep the 12.3 floor (it cannot select the patched line);
+update only the images (native installs remain exposed); ignore the scan findings
+(the packages have fixes).
+
 ## An administrator may call off another account's job
 
 An administrator reads any account and changes none of its work, with one exception: cancelling a queued or running generation. A job that is stuck, runaway or abusive holds a GPU that other people are waiting for, and the owner may not be there to stop it. The job ends with the reason "cancelled by an administrator", and a call that stops it writes a high-severity audit row carrying the owner and the job id; a repeat on a job that already ended records nothing, because nothing changed. The route takes any role, so the audit hook for administrator routes never sees it, and the route records the row itself. Starring, sharing and deleting another account's work stay refused.

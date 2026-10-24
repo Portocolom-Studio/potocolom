@@ -8,13 +8,14 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -r
 
 WORKDIR /app
 
+RUN pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/rocm6.3
+
 COPY worker/pyproject.toml .
 COPY worker/worker ./worker
 # Default manifests seed the empty models volume on first boot.
 COPY worker/models /models
 
-RUN pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/rocm6.3 \
-	&& pip install --no-cache-dir ".[inference]" \
+RUN pip install --no-cache-dir ".[inference]" \
 	&& pip install --no-cache-dir --upgrade setuptools wheel
 
 ENV DEVICE=rocm
