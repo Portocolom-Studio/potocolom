@@ -1,0 +1,970 @@
+#!/usr/bin/env python3
+"""Exercise a released installer against an owned real GPU/ROCm stack."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+from functools import lru_cache
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+import zlib
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urljoin, urlsplit
+from urllib.request import (HTTPRedirectHandler, ProxyHandler, Request,
+                            build_opener)
+
+
+MODEL = "ssd-1b-lightning"
+TERMINAL = {"failed", "cancelled"}
+
+
+class SameOriginRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, file, code, message, headers, newurl):
+        old, new = urlsplit(request.full_url), urlsplit(newurl)
+        try:
+            same_origin = url_origin(old) == url_origin(new)
+        except ValueError:
+            same_origin = False
+        if not same_origin:
+            raise HTTPError(newurl, code, "cross-origin redirect refused", headers, file)
+        return super().redirect_request(request, file, code, message, headers, newurl)
+
+
+def url_origin(parts) -> tuple[str, str, int | None]:
+    scheme = parts.scheme.lower()
+    port = parts.port
+    if port is None:
+        port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    return scheme, (parts.hostname or "").lower(), port
+
+
+urlopen = build_opener(ProxyHandler({}), SameOriginRedirect()).open
+SAFE_ENV_KEYS = {"PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "DOCKER_CONFIG",
+                 "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY",
+                 "DOCKER_CERT_PATH", "DOCKER_API_VERSION"}
+
+
+class CheckError(RuntimeError):
+    pass
+
+
+class CommandFailed(CheckError):
+    def __init__(self, program: str, returncode: int, output: str, log: Path | None):
+        super().__init__(f"{Path(program).name} exited {returncode}; private log: {log or 'unavailable'}")
+        self.returncode = returncode
+        self.output = output
+
+
+def safe_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key in SAFE_ENV_KEYS}
+
+
+def run(args: list[str], *, env: dict[str, str] | None = None,
+        timeout: float = 1800, log: Path | None = None,
+        abort: threading.Event | None = None) -> str:
+    """Run quietly to a private file when requested; expose only safe errors."""
+    process = None
+    try:
+        process = subprocess.Popen(args, env=env or safe_environment(), text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        deadline = time.monotonic() + timeout
+        while True:
+            if abort is not None and abort.is_set():
+                raise CheckError("ROCm safety stop interrupted the installer")
+            remaining = deadline - time.monotonic()
+            try:
+                output, _ = process.communicate(timeout=min(remaining, 0.25) if abort is not None else remaining)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
+    except BaseException as exc:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=0.5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            output = process.communicate()[0]
+        else:
+            output = getattr(exc, "stdout", "") or ""
+        if log:
+            if isinstance(output, bytes):
+                output = output.decode("utf-8", errors="replace")
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(output, encoding="utf-8")
+            log.chmod(0o600)
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise CheckError(f"{Path(args[0]).name} timed out; private log: {log or 'unavailable'}") from exc
+        if isinstance(exc, OSError) and process is None:
+            raise CheckError(f"command failed to start: {Path(args[0]).name}") from exc
+        raise
+    if log:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text(output, encoding="utf-8")
+        log.chmod(0o600)
+    if process.returncode:
+        raise CommandFailed(args[0], process.returncode, output, log)
+    return output
+
+
+def verify_release(directory: Path, version: str) -> tuple[Path, Path]:
+    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version):
+        raise CheckError("version must be vX.Y.Z")
+    installer = directory / "install.sh"
+    bundle = directory / f"potocolom-{version}-selfhost.tar.gz"
+    sums = directory / "SHA256SUMS"
+    if not all(p.is_file() for p in (installer, bundle, sums)):
+        raise CheckError(f"release directory must contain install.sh, {bundle.name}, and SHA256SUMS")
+    lines = sums.read_text(encoding="utf-8").splitlines()
+    for artifact in (installer, bundle):
+        match = next((line.split()[0] for line in lines
+                      if re.search(rf"  {re.escape(artifact.name)}$", line)), None)
+        if match is None or not re.fullmatch(r"[0-9a-fA-F]{64}", match):
+            raise CheckError(f"SHA256SUMS has no valid entry for {artifact.name}")
+        hasher = hashlib.sha256()
+        with artifact.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                hasher.update(chunk)
+        digest = hasher.hexdigest()
+        if digest.lower() != match.lower():
+            raise CheckError(f"SHA256SUMS does not verify {artifact.name}")
+    return installer, bundle
+
+
+def run_installer(installer: Path, version: str, install_dir: Path,
+                  release_dir: Path | None, profile: str, log_dir: Path,
+                  *, abort: threading.Event | None = None) -> None:
+    env = safe_environment()
+    env.update(POTOCOLOM_VERSION=version, POTOCOLOM_DIR=str(install_dir),
+               POTOCOLOM_PROFILE=profile, DOCKER_BUILDKIT="0")
+    if release_dir is not None:
+        env["POTOCOLOM_RELEASE_URL"] = release_dir.resolve().as_uri()
+    log = log_dir / f"installer-{version}-{int(time.time())}.log"
+    run(["bash", str(installer)], env=env, timeout=3600, log=log, abort=abort)
+    if parse_env(install_dir / "deploy/compose/.env").get("POTOCOLOM_VERSION") != version:
+        raise CheckError("installer did not pin the requested release")
+
+
+def http_json(base: str, path: str, *, method: str = "GET",
+              body: dict | None = None, timeout: int = 15) -> object:
+    data = json.dumps(body).encode() if body is not None else None
+    request = Request(urljoin(base.rstrip("/") + "/", path.lstrip("/")), data=data,
+                      method=method, headers={"Accept": "application/json",
+                      "Content-Type": "application/json"})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.status in (401, 403):
+                raise CheckError("API requires accounts authentication; no auth was supplied")
+            return json.loads(response.read())
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise CheckError("API requires accounts authentication; no auth was supplied") from exc
+        raise CheckError(f"API returned HTTP {exc.code} for {path}") from exc
+    except (URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise CheckError(f"API request failed for {path}") from exc
+
+
+def api_base(install_dir: Path) -> str:
+    compose = install_dir / "deploy/compose/compose.yml"
+    env_file = install_dir / "deploy/compose/.env"
+    if not compose.is_file() or not env_file.is_file():
+        raise CheckError("install requires deploy/compose/.env and compose.yml")
+    values = compose_environment(env_file, compose)
+    if values.get("AUTH_MODE", "none") != "none":
+        raise CheckError("accounts mode requires supplied auth; refusing before install changes")
+    public = values.get("PUBLIC_URL", "http://localhost:8080")
+    try:
+        parts = urlsplit(public)
+        hostname = parts.hostname or ""
+        parts.port  # Validate the port even when the origin uses its default.
+        valid = (parts.scheme in {"http", "https"} and bool(parts.hostname)
+                 and re.fullmatch(r"[A-Za-z0-9.-]+|[0-9A-Fa-f:]+", hostname) is not None
+                 and parts.username is None and parts.password is None
+                 and not parts.netloc.endswith(":") and parts.path in {"", "/"}
+                 and not parts.query and not parts.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise CheckError("PUBLIC_URL must be an HTTP(S) origin without credentials")
+    return public.rstrip("/")
+
+
+def compose_environment(env_file: Path, compose_file: Path) -> dict[str, str]:
+    """Ask Compose to evaluate the declared settings without starting services."""
+    declared = set(re.findall(r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*(?:=|:|$)",
+                              env_file.read_text(encoding="utf-8"), re.MULTILINE))
+    output = run(["docker", "compose", "--env-file", str(env_file), "-f", str(compose_file),
+                  "config", "--environment"], timeout=30)
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in declared:
+            values[key] = value
+    return values
+
+
+def parse_env(path: Path) -> dict[str, str]:
+    """Return Compose's evaluated .env values, without exposing command output."""
+    return compose_environment(path, path.with_name("compose.yml"))
+
+
+def assert_env_preserved(before: dict[str, str], after: dict[str, str]) -> None:
+    for key, value in before.items():
+        if key == "POTOCOLOM_VERSION" or (key == "COMPOSE_PROJECT_NAME" and not value):
+            continue
+        if after.get(key) != value:
+            raise CheckError(f"upgrade changed existing .env key {key}")
+
+
+def asset_url(base: str, item: dict) -> str:
+    value = item.get("download_url") or item.get("url")
+    if not isinstance(value, str):
+        raise CheckError("generation returned no asset URL")
+    try:
+        absolute = urljoin(base.rstrip("/") + "/", value)
+        base_parts, asset_parts = urlsplit(base), urlsplit(absolute)
+        same_origin = url_origin(asset_parts) == url_origin(base_parts)
+    except ValueError:
+        same_origin = False
+    if not same_origin:
+        raise CheckError("API returned a non-local asset URL")
+    return absolute
+
+
+def asset_digest(base: str, item: dict, *, limit: int = 512 * 1024 * 1024) -> str:
+    request = Request(asset_url(base, item), headers={"Accept": "image/*"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            digest = hashlib.sha256()
+            total = 0
+            deadline = time.monotonic() + 120
+            while chunk := response.read(64 * 1024):
+                if time.monotonic() >= deadline:
+                    raise CheckError("saved asset download exceeded its deadline")
+                total += len(chunk)
+                if total > limit:
+                    raise CheckError("saved asset exceeds the 512 MiB download bound")
+                digest.update(chunk)
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise CheckError("asset download failed") from exc
+    if total == 0:
+        raise CheckError("saved asset is empty")
+    return digest.hexdigest()
+
+
+def local_asset(base: str, item: dict) -> bytes:
+    """Download and validate only the newly generated test image."""
+    request = Request(asset_url(base, item), headers={"Accept": "image/png"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            if response.headers.get_content_type() != "image/png":
+                raise CheckError("asset response is not a non-empty PNG")
+            data = response.read(64 * 1024 * 1024 + 1)
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise CheckError("asset download failed") from exc
+    if len(data) > 64 * 1024 * 1024:
+        raise CheckError("asset response is not a non-empty PNG")
+    width, height = validate_png(data)
+    if (width, height) != (768, 768):
+        raise CheckError(f"PNG has unexpected dimensions {width}x{height}")
+    return data
+
+
+def validate_png(data: bytes) -> tuple[int, int]:
+    if len(data) < 45 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise CheckError("asset response is not a non-empty PNG")
+    offset = 8
+    dimensions: tuple[int, int] | None = None
+    channels = 0
+    image_data = bytearray()
+    ended = False
+    while offset + 12 <= len(data):
+        length = int.from_bytes(data[offset:offset + 4], "big")
+        kind = data[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(data):
+            break
+        payload = data[offset + 8:offset + 8 + length]
+        crc = int.from_bytes(data[offset + 8 + length:end], "big")
+        if zlib.crc32(kind + payload) & 0xFFFFFFFF != crc:
+            break
+        if kind == b"IHDR" and offset == 8 and length == 13:
+            dimensions = (int.from_bytes(payload[:4], "big"), int.from_bytes(payload[4:8], "big"))
+            if payload[8] != 8 or payload[9] not in (2, 6) or payload[10:] != b"\x00\x00\x00":
+                raise CheckError("PNG must use non-interlaced 8-bit RGB or RGBA")
+            channels = 3 if payload[9] == 2 else 4
+        elif kind == b"IDAT":
+            image_data.extend(payload)
+        elif kind == b"IEND" and length == 0:
+            ended = end == len(data)
+            break
+        offset = end
+    if dimensions is None or not image_data or not ended:
+        raise CheckError("asset response is not a complete PNG")
+    if dimensions != (768, 768):
+        return dimensions
+    try:
+        decoder = zlib.decompressobj()
+        stride = 1 + 768 * channels
+        expected = stride * 768
+        decoded = decoder.decompress(image_data, expected + 1)
+        if (len(decoded) != expected or not decoder.eof or decoder.unconsumed_tail
+                or decoder.unused_data or any(value > 4 for value in decoded[::stride])):
+            raise CheckError("PNG image data has invalid scanlines")
+    except zlib.error as exc:
+        raise CheckError("PNG image data is invalid") from exc
+    return dimensions
+
+
+def generate(base: str, prompt: str, safety_check=None) -> tuple[str, bytes]:
+    worker_deadline = time.monotonic() + 1800
+    while True:
+        if safety_check is not None:
+            safety_check()
+        models = http_json(base, "/api/v1/models")
+        entries = models.get("models", models) if isinstance(models, dict) else models
+        if isinstance(entries, list) and any(
+                isinstance(m, dict) and m.get("id") == MODEL for m in entries):
+            break
+        if time.monotonic() >= worker_deadline:
+            raise CheckError(f"no real worker offered {MODEL} within 30 minutes")
+        time.sleep(5)
+    made = http_json(base, "/api/v1/generations", method="POST", body={
+        "model_id": MODEL,
+        "params": {"prompt": prompt, "width": 768, "height": 768,
+                    "steps": 8, "guidance": 0, "seed": 42},
+    })
+    if not isinstance(made, dict) or not isinstance(made.get("job_id"), str):
+        raise CheckError("API did not return a job_id")
+    job_id = made["job_id"]
+    deadline = time.monotonic() + 1800
+    while time.monotonic() < deadline:
+        if safety_check is not None:
+            safety_check()
+        job = http_json(base, f"/api/v1/generations/{quote(job_id, safe='')}")
+        if not isinstance(job, dict):
+            raise CheckError("API returned an invalid generation")
+        state = job.get("state")
+        if state in TERMINAL:
+            raise CheckError(f"generation {state}")
+        if state == "succeeded":
+            assets = job.get("assets")
+            if not isinstance(assets, list) or not assets or not isinstance(assets[0], dict):
+                raise CheckError("successful generation returned no assets")
+            asset_id = assets[0].get("id")
+            if not isinstance(asset_id, str) or not asset_id:
+                raise CheckError("successful generation returned no asset ID")
+            return asset_id, local_asset(base, assets[0])
+        time.sleep(2)
+    raise CheckError("generation timed out after 30 minutes")
+
+
+def snapshot_assets(base: str) -> dict[str, str]:
+    cursor = ""
+    found: dict[str, str] = {}
+    while True:
+        path = "/api/v1/generations?limit=200" + (f"&cursor={quote(cursor)}" if cursor else "")
+        page = http_json(base, path)
+        if not isinstance(page, list):
+            raise CheckError("generation listing did not return a list")
+        if not page:
+            return found
+        for job in page:
+            if not isinstance(job, dict):
+                continue
+            for asset in job.get("assets", []):
+                if isinstance(asset, dict) and isinstance(asset.get("id"), str):
+                    found[asset["id"]] = asset_digest(base, asset)
+        cursor = str(page[-1].get("id", ""))
+        if not cursor:
+            raise CheckError("generation page has no cursor ID")
+
+
+def verify_assets(base: str, expected: dict[str, str]) -> None:
+    current = snapshot_assets(base)
+    for asset_id, digest in expected.items():
+        if current.get(asset_id) != digest:
+            raise CheckError(f"saved asset missing or changed: {asset_id}")
+
+
+def free_port_8080() -> None:
+    try:
+        with socket.create_connection(("127.0.0.1", 8080), timeout=1):
+            raise CheckError("host port 8080 is occupied; refusing to stop another stack")
+    except OSError:
+        return
+
+
+def compose_owned(install_dir: Path, project: str, args: list[str]) -> None:
+    compose = install_dir / "deploy/compose/compose.yml"
+    env_file = install_dir / "deploy/compose/.env"
+    run(["docker", "compose", "-p", project, "--env-file", str(env_file),
+         "-f", str(compose), "--profile", "*", *args], timeout=300)
+
+
+def cleanup_rehearsal(install_dir: Path) -> None:
+    claim = install_dir / ".release-check-project"
+    if not claim.is_file():
+        return
+    project = claim.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"release-check-[0-9a-f]{16}", project):
+        raise CheckError("invalid release-check project claim; refusing cleanup")
+    label = f"label=com.docker.compose.project={project}"
+    for listing, removal, pattern in (
+        (["docker", "ps", "-aq", "--filter", label], ["docker", "rm"], r"[0-9a-f]{12,64}"),
+        (["docker", "network", "ls", "-q", "--filter", label], ["docker", "network", "rm"], r"[0-9a-f]{12,64}"),
+        (["docker", "volume", "ls", "--format", "{{.Name}}", "--filter", label],
+         ["docker", "volume", "rm"], re.escape(project) + r"_[A-Za-z0-9_.-]+"),
+    ):
+        resources = run(listing, timeout=30).split()
+        if any(not re.fullmatch(pattern, item) for item in resources):
+            raise CheckError("unexpected owned Docker resource; refusing cleanup")
+        if resources:
+            if listing[1] == "ps":
+                run(["docker", "stop", "--time", "0", *resources], timeout=300)
+            run([*removal, *resources], timeout=300)
+
+
+def bundle_env_example(release_dir: Path, version: str) -> str:
+    _, bundle = verify_release(release_dir, version)
+    wanted = "deploy/compose/.env.example"
+    try:
+        with tarfile.open(bundle, "r:gz") as archive:
+            member = next((item for item in archive.getmembers() if item.name == wanted), None)
+            if member is None or not member.isfile() or member.size > 128 * 1024:
+                raise CheckError("release bundle has no safe deploy/compose/.env.example")
+            stream = archive.extractfile(member)
+            if stream is None:
+                raise CheckError("release bundle has no readable .env.example")
+            return stream.read(128 * 1024 + 1).decode("utf-8")
+    except (tarfile.TarError, UnicodeError, OSError) as exc:
+        raise CheckError("cannot read .env.example from verified release bundle") from exc
+
+
+def prepare_fresh(directory: Path, project: str, release_dir: Path, version: str) -> None:
+    if directory.exists():
+        if not directory.is_dir() or any(directory.iterdir()):
+            raise CheckError(f"fresh install directory must be empty: {directory}")
+    else:
+        directory.mkdir(parents=True)
+    compose = directory / "deploy/compose"
+    compose.mkdir(parents=True, exist_ok=True)
+    template = bundle_env_example(release_dir, version)
+    values = {"COMPOSE_PROJECT_NAME": project, "POSTGRES_PASSWORD": secrets.token_hex(32),
+              "FLEET_SECRET": secrets.token_hex(32), "AUTH_MODE": "none"}
+    lines = [line for line in template.splitlines() if not any(line.startswith(k + "=") for k in values)]
+    lines.extend(f"{k}={v}" for k, v in values.items())
+    (compose / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (compose / ".env").chmod(0o600)
+
+
+def legacy_model_config(install_dir: Path, project: str, profile: str, *, restore: bool = False) -> None:
+    script = r'''set -eu
+models="${MODELS_DIR:-/models}"
+stash="$models/.release-check-manifests"
+if [ "$2" = restore ]; then
+    [ -d "$stash" ] || exit 0
+    for file in "$stash"/*.json; do
+        if [ -f "$file" ]; then mv "$file" "$models/"; fi
+    done
+    rmdir "$stash"
+else
+    test -f "$models/$1.json"
+    mkdir -p "$stash"
+    for file in "$models"/*.json; do
+        if [ "${file##*/}" != "$1.json" ]; then mv "$file" "$stash/"; fi
+    done
+fi
+'''
+    compose = install_dir / "deploy/compose/compose.yml"
+    env_file = compose.with_name(".env")
+    service = "worker-rocm" if profile == "rocm" else "worker"
+    run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
+         "--profile", profile, "exec", "-T", service, "sh", "-c", script,
+         "sh", MODEL, "restore" if restore else "select"], timeout=30)
+
+
+def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
+    previous_installer, _ = verify_release(args.previous_release_dir, args.previous_version)
+    free_port_8080()
+    stamp = secrets.token_hex(8)
+    candidate_dir = args.install_dir
+    project = f"release-check-{stamp}"
+    owned: list[tuple[Path, str]] = []
+    logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
+    passed = False
+    prepared = False
+    with RocmGuard(args.profile, project, logs) as guard:
+        try:
+            if candidate_dir.exists() and (not candidate_dir.is_dir() or any(candidate_dir.iterdir())):
+                raise CheckError(f"fresh install directory must be empty: {candidate_dir}")
+            prepared = True
+            prepare_fresh(candidate_dir, project, args.release_dir, args.version)
+            if _project_exists(project):
+                raise CheckError(f"owned test project already exists: {project}")
+            owned.append((candidate_dir, project))
+            claim = candidate_dir / ".release-check-project"
+            claim.write_text(project + "\n", encoding="ascii")
+            claim.chmod(0o600)
+            guard.start()
+            run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            if not project_owns_api_port(project):
+                raise CheckError("fresh install does not own API port 8080")
+            api = api_base(candidate_dir)
+            wait_ready(api)
+            generate(api, "a red house on a green hill under a blue sky, clear illustration", guard.check)
+            legacy_model_config(candidate_dir, project, args.profile)
+            compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
+            remove_owned_data_volumes(project)
+            run_installer(previous_installer, args.previous_version, candidate_dir,
+                          None, args.profile, logs, abort=guard.failed)
+            api = api_base(candidate_dir)
+            wait_ready(api)
+            saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check)
+            env_before = parse_env(candidate_dir / "deploy/compose/.env")
+            legacy_model_config(candidate_dir, project, args.profile, restore=True)
+            service = "worker-rocm" if args.profile == "rocm" else "worker"
+            compose_owned(candidate_dir, project, ["stop", "--timeout", "0", service])
+            run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            env_after = parse_env(candidate_dir / "deploy/compose/.env")
+            assert_env_preserved(env_before, env_after)
+            if not project_owns_api_port(project):
+                raise CheckError("upgraded install does not own API port 8080")
+            after = api_base(candidate_dir)
+            wait_ready(after)
+            verify_assets(after, {saved_id: hashlib.sha256(saved).hexdigest()})
+            generate(after, "a red lighthouse beside the sea, clear illustration", guard.check)
+            passed = True
+        finally:
+            cleanup_error = None
+            failed_cleanup: set[Path] = set()
+            for directory, project in owned:
+                if _project_exists(project):
+                    try:
+                        cleanup_rehearsal(directory)
+                    except CheckError as exc:
+                        cleanup_error = exc
+                        failed_cleanup.add(directory)
+                        continue
+            guard.close()
+            for directory, _ in owned:
+                if directory not in failed_cleanup:
+                    shutil.rmtree(directory, ignore_errors=True)
+            if prepared and not owned:
+                shutil.rmtree(candidate_dir, ignore_errors=True)
+            if passed and cleanup_error is None and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
+            if cleanup_error is not None:
+                raise CheckError(f"owned project cleanup failed: {cleanup_error}") from cleanup_error
+
+
+def wait_ready(base: str, timeout: int = 300) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            request = Request(urljoin(base.rstrip("/") + "/", "api/v1/ready"))
+            with urlopen(request, timeout=5) as response:
+                if response.status == 200 and response.read() == b"":
+                    return
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(2)
+    raise CheckError("API store did not become ready before the deadline")
+
+
+def remove_owned_data_volumes(project: str) -> None:
+    """Reset this run's database and assets, retaining its model caches."""
+    run(["docker", "volume", "rm", f"{project}_pgdata", f"{project}_assets"], timeout=60)
+
+
+def rocm_vram_usage(sysfs: Path = Path("/sys/class/drm")) -> list[tuple[str, int, int]]:
+    """Read physical AMD cards; ignore small APUs that expose only 512 MiB."""
+    cards = []
+    for device in sorted(sysfs.glob("card[0-9]*/device")):
+        try:
+            vendor = (device / "vendor").read_text(encoding="ascii").strip().lower()
+            total = int((device / "mem_info_vram_total").read_text(encoding="ascii").strip())
+            used = int((device / "mem_info_vram_used").read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            continue
+        if vendor == "0x1002" and total >= 1024 * 1024 * 1024 and 0 <= used <= total:
+            cards.append((device.parent.name, total, used))
+    return cards
+
+
+def owned_rocm_worker_ids(project: str) -> list[str]:
+    result = subprocess.run(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
+                             "--filter", "label=com.docker.compose.service=worker-rocm",
+                             "--filter", "status=running",
+                             "--format", "{{.ID}}"], text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, check=False, timeout=15, env=safe_environment())
+    if result.returncode:
+        raise CheckError("cannot verify owned ROCm worker")
+    return [line for line in result.stdout.splitlines() if re.fullmatch(r"[0-9a-fA-F]{12,64}", line)]
+
+
+def stop_owned_rocm_workers(project: str, logs: Path) -> None:
+    worker_ids = owned_rocm_worker_ids(project)
+    if worker_ids:
+        logs.mkdir(parents=True, exist_ok=True)
+        run(["docker", "stop", "--time", "0", *worker_ids],
+            timeout=30, log=logs / "rocm-worker-stop.log")
+
+
+def rocm_worker_probe(worker_id: str, project: str, args: list[str], log: Path) -> str | None:
+    for attempt in range(2):
+        try:
+            return run(args, timeout=15, log=log)
+        except CommandFailed as exc:
+            if (exc.returncode == 128 and exc.output.strip()
+                    == "OCI runtime exec failed: exec failed: cannot exec in a stopped container"):
+                return None
+            if worker_id not in owned_rocm_worker_ids(project):
+                return None
+            if attempt:
+                raise
+    raise AssertionError("unreachable probe retry")
+
+
+ROCM_GPU_ID_SCRIPT = r"""
+import os
+import torch
+if not getattr(torch.version, "hip", None):
+    raise RuntimeError("ROCm worker requires a HIP build")
+requested = os.environ.get("DEVICE", "rocm")
+try:
+    from worker.gpu_device import select_device
+except ModuleNotFoundError as error:
+    if error.name != "worker.gpu_device":
+        raise
+    device = "cuda" if requested == "rocm" else requested
+else:
+    device = select_device(torch, requested)
+if not device.startswith("cuda"):
+    raise RuntimeError("ROCm release check requires GPU inference")
+properties = torch.cuda.get_device_properties(device)
+print("POTOCOLOM_GPU_PCI=%04x:%02x:%02x" % (
+    properties.pci_domain_id, properties.pci_bus_id, properties.pci_device_id))
+"""
+
+
+class _WorkerStopped(Exception):
+    pass
+
+
+@lru_cache(maxsize=32)
+def rocm_worker_card(worker_id: str, project: str, log: Path, sysfs: Path) -> str:
+    output = rocm_worker_probe(worker_id, project, [
+        "docker", "exec", worker_id, "python", "-c", ROCM_GPU_ID_SCRIPT,
+    ], log)
+    if output is None:
+        raise _WorkerStopped
+    markers = [line.removeprefix("POTOCOLOM_GPU_PCI=") for line in output.splitlines()
+               if line.startswith("POTOCOLOM_GPU_PCI=")]
+    if len(markers) != 1 or not re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}", markers[0]):
+        raise CheckError("worker did not report one valid GPU PCI address")
+    matches = []
+    for device in sorted(sysfs.glob("card[0-9]*/device")):
+        try:
+            lines = (device / "uevent").read_text(encoding="ascii").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        for line in lines:
+            if line.startswith("PCI_SLOT_NAME="):
+                slot = line.removeprefix("PCI_SLOT_NAME=").lower()
+                if (re.fullmatch(r"[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", slot)
+                        and slot.startswith(markers[0] + ".")):
+                    matches.append(device.parent.name)
+    if len(matches) != 1:
+        raise CheckError("cannot match the worker GPU to one physical AMD card")
+    return matches[0]
+
+
+def rocm_safety_check(project: str, evidence_dir: Path,
+                      sysfs: Path = Path("/sys/class/drm")) -> None:
+    worker_ids = owned_rocm_worker_ids(project)
+    if not worker_ids:
+        return
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    reserves: dict[str, int] = {}
+    worker_log, disk_offloads = "", ""
+    reserve_format = ('{{range .Config.Env}}'
+                      '{{if eq (index (split . "=") 0) "VRAM_RESERVE_MB"}}'
+                      '{{println .}}{{end}}{{end}}')
+    for worker_id in worker_ids:
+        setting = rocm_worker_probe(worker_id, project, [
+            "docker", "inspect", "--format", reserve_format, worker_id,
+        ], evidence_dir / "rocm-reserve-probe.log")
+        if setting is None:
+            continue
+        try:
+            raw = setting.strip()
+            if raw and not raw.startswith("VRAM_RESERVE_MB="):
+                raise ValueError("unexpected reserve setting")
+            reserve_mb = int(raw.partition("=")[2] if raw else "1536")
+            if not 256 <= reserve_mb <= 65536:
+                raise ValueError("reserve outside limits")
+        except ValueError as exc:
+            raise CheckError("VRAM_RESERVE_MB must be between 256 and 65536") from exc
+        try:
+            card = rocm_worker_card(worker_id, project, evidence_dir / "rocm-gpu-probe.log", sysfs)
+        except _WorkerStopped:
+            continue
+        reserves[card] = max(reserves.get(card, 0), reserve_mb)
+        worker_log += rocm_worker_probe(worker_id, project, [
+            "docker", "logs", "--tail", "40", worker_id,
+        ], evidence_dir / "rocm-worker-tail.log") or ""
+        disk_offloads += rocm_worker_probe(worker_id, project, [
+            "docker", "exec", worker_id, "sh", "-c",
+            "if [ -d /models/.offload ]; then "
+            "find /models/.offload -mindepth 1 -maxdepth 1 -type d -print -quit; fi",
+        ], evidence_dir / "rocm-offload-probe.log") or ""
+    if not reserves:
+        return
+    cards = [card for card in rocm_vram_usage(sysfs) if card[0] in reserves]
+    if {card[0] for card in cards} != set(reserves):
+        raise CheckError("selected AMD GPU has no reportable physical VRAM")
+    stats = "\n".join(f"{name}: total={total} used={used} free={total - used}"
+                       for name, total, used in cards)
+    group_offload = re.search(r"(?:to\s+|rung[=: ]+)group_offload", worker_log, re.IGNORECASE)
+    breached = any(total - used < reserves[name] * 1024 * 1024 for name, total, used in cards)
+    if group_offload or disk_offloads.strip() or breached:
+        evidence = evidence_dir / "rocm-safety-evidence.log"
+        fd = os.open(evidence, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(stats + "\n--- owned worker tail ---\n" + worker_log
+                         + "\n--- disk offload paths ---\n" + disk_offloads)
+        stop_owned_rocm_workers(project, evidence_dir)
+        reason = "group offload rung detected" if group_offload or disk_offloads.strip() else "VRAM reserve breached"
+        raise CheckError(f"ROCm safety stop: {reason}; private evidence: {evidence}")
+
+
+class RocmGuard:
+    """Watch the owned worker across installer, warmup, requests, and cleanup."""
+
+    def __init__(self, profile: str, project: str, logs: Path):
+        self.enabled = profile == "rocm"
+        self.project, self.logs = project, logs
+        self.failed = threading.Event()
+        self.stopped = threading.Event()
+        self.error: Exception | None = None
+        self.thread: threading.Thread | None = None
+
+    def __enter__(self):
+        return self
+
+    def start(self) -> None:
+        if self.enabled:
+            self.thread = threading.Thread(target=self._watch, name="rocm-release-guard")
+            self.thread.start()
+
+    def _watch(self) -> None:
+        while not self.stopped.is_set():
+            try:
+                rocm_safety_check(self.project, self.logs)
+            except Exception as exc:
+                self.error = exc
+                self.failed.set()
+                try:
+                    stop_owned_rocm_workers(self.project, self.logs)
+                except CheckError:
+                    pass
+                return
+            self.stopped.wait(0.25)
+
+    def close(self) -> None:
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join()
+
+    def check(self) -> None:
+        if self.error is not None:
+            if isinstance(self.error, CheckError):
+                raise self.error
+            raise CheckError("ROCm safety monitor failed; inspect the owned worker") from self.error
+
+    def __exit__(self, *_exc):
+        self.close()
+        self.check()
+
+
+def _project_exists(project: str) -> bool:
+    try:
+        result = subprocess.run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+                                 "--format", "{{.ID}}"], text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, check=False, timeout=30,
+                                env=safe_environment())
+        volumes = subprocess.run(["docker", "volume", "ls", "--filter", f"label=com.docker.compose.project={project}",
+                                  "--format", "{{.Name}}"], text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, check=False, timeout=30,
+                                 env=safe_environment())
+        networks = subprocess.run(["docker", "network", "ls", "--filter", f"label=com.docker.compose.project={project}",
+                                   "--format", "{{.Name}}"], text=True, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, check=False, timeout=30,
+                                  env=safe_environment())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CheckError("cannot verify Docker project ownership") from exc
+    if result.returncode or volumes.returncode or networks.returncode:
+        raise CheckError("cannot verify Docker project ownership")
+    return bool(result.stdout.strip() or volumes.stdout.strip() or networks.stdout.strip())
+
+
+def project_owns_api_port(project: str) -> bool:
+    result = subprocess.run(["docker", "ps", "--filter", f"label=com.docker.compose.project={project}",
+                             "--format", "{{.Ports}}"], text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, check=False, timeout=30, env=safe_environment())
+    if result.returncode:
+        raise CheckError("cannot verify API port ownership")
+    return any(re.search(r"(?:^|, )(?:(?:0\.0\.0\.0|127\.0\.0\.1|\[::\]|::):)?8080->", line)
+               for line in result.stdout.splitlines())
+
+
+def existing_install(args: argparse.Namespace, candidate: Path) -> None:
+    install_dir = args.install_dir
+    env_file = install_dir / "deploy/compose/.env"
+    compose_file = install_dir / "deploy/compose/compose.yml"
+    if not install_dir.exists() or (install_dir.is_dir() and not any(install_dir.iterdir())):
+        fresh_keep_install(args, candidate)
+        return
+    if not install_dir.is_dir() or not env_file.is_file() or not compose_file.is_file():
+        raise CheckError("--keep requires a real existing .env/compose install pair or an empty directory")
+    before = api_base(install_dir)
+    values = compose_environment(env_file, compose_file)
+    project = values.get("COMPOSE_PROJECT_NAME", "").strip() or "potocolom"
+    if not project_owns_api_port(project):
+        raise CheckError("the configured install does not own API port 8080; refusing to attach to another service")
+    env_before = values
+    logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
+    passed = False
+    with RocmGuard(args.profile, project, logs) as guard:
+        try:
+            guard.start()
+            wait_ready(before)
+            saved = snapshot_assets(before)
+            run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            env_after = parse_env(env_file)
+            assert_env_preserved(env_before, env_after)
+            if not project_owns_api_port(project):
+                raise CheckError("upgraded install no longer owns API port 8080")
+            after = api_base(install_dir)
+            wait_ready(after)
+            verify_assets(after, saved)
+            generate(after, "a red fox in a green forest, clear illustration", guard.check)
+            passed = True
+        finally:
+            guard.close()
+            if passed and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
+
+
+def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
+    install_dir = args.install_dir
+    if install_dir.exists() and (not install_dir.is_dir() or any(install_dir.iterdir())):
+        raise CheckError("--keep install directory must be absent or empty")
+    free_port_8080()
+    stamp = secrets.token_hex(8)
+    project = f"release-check-{stamp}"
+    logs = Path(tempfile.mkdtemp(prefix="release-check-logs-"))
+    passed = False
+    with RocmGuard(args.profile, project, logs) as guard:
+        try:
+            prepare_fresh(install_dir, project, args.release_dir, args.version)
+            if _project_exists(project):
+                raise CheckError(f"owned test project already exists: {project}")
+            guard.start()
+            run_installer(candidate, args.version, install_dir, args.release_dir, args.profile, logs, abort=guard.failed)
+            if not project_owns_api_port(project):
+                raise CheckError("fresh install does not own API port 8080")
+            base = api_base(install_dir)
+            wait_ready(base)
+            generate(base, "a red house on a green hill under a blue sky, clear illustration", guard.check)
+            passed = True
+        finally:
+            guard.close()
+            if passed and not guard.failed.is_set():
+                shutil.rmtree(logs, ignore_errors=True)
+            else:
+                print(f"private installer logs retained at {logs}", file=sys.stderr)
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("--version", required=True)
+    result.add_argument("--release-dir", type=Path, required=True)
+    result.add_argument("--install-dir", type=Path, required=True)
+    result.add_argument("--previous-release-dir", type=Path)
+    result.add_argument("--previous-version")
+    result.add_argument("--profile", choices=("gpu", "rocm"), required=True)
+    result.add_argument("--keep", action="store_true", help="preserve and upgrade the supplied existing install")
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        candidate, _ = verify_release(args.release_dir, args.version)
+        if args.keep:
+            existing_install(args, candidate)
+        else:
+            if not args.previous_release_dir or not args.previous_version:
+                raise CheckError("fresh rehearsal requires --previous-release-dir and --previous-version")
+            if args.install_dir.exists() and any(args.install_dir.iterdir()):
+                raise CheckError("fresh install directory must be empty")
+            fresh_rehearsal(args, candidate)
+        print(f"PASS release check {args.version} profile={args.profile}")
+        return 0
+    except CheckError as exc:
+        print(f"FAIL release check: {exc}", file=sys.stderr)
+        return 1
+
+
+INTERRUPT_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def interrupt_release_check(_signum, _frame) -> None:
+    for signum in INTERRUPT_SIGNALS:
+        signal.signal(signum, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def cli() -> int:
+    previous = {signum: signal.getsignal(signum) for signum in INTERRUPT_SIGNALS}
+    try:
+        for signum in INTERRUPT_SIGNALS:
+            signal.signal(signum, interrupt_release_check)
+        try:
+            return main()
+        except KeyboardInterrupt:
+            print("FAIL release check: interrupted", file=sys.stderr)
+            return 130
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

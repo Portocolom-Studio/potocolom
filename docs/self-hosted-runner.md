@@ -16,7 +16,10 @@ The four path-filtered product workflows plus deploy, docs and toolchain:
 | docs | mermaid-cli + Chrome (`verify-mermaid`) |
 | toolchain | Python 3.11, Node (`verify-guards` + `make setup`) |
 
-GPU inference is not in CI. `make verify` locally matches what these jobs run.
+Pull request jobs do not run GPU inference. `make verify` matches their component
+gates. A version tag also runs the real installer on the AMD GPU after image
+builds and scans. That check requires free port 8080 and takes the release GPU
+lock. See [release checks](release-checklist.md).
 
 The frontend gate tests the built drawing canvas in headless Chrome, with
 GPU use disabled and test API and WebSocket adapters. Set

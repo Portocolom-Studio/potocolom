@@ -10,10 +10,18 @@ on:
     paths:
       - "Makefile"
       - "scripts/gpu-profile.sh"
+      - "scripts/ensure-env.sh"
+      - "deploy/compose/compose.yml"
+      - "deploy/compose/.env.example"
       - "scripts/preflight.sh"
       - "scripts/install.sh"
       - "scripts/test-gpu-detection.sh"
       - "scripts/test-install-public-url.sh"
+      - "scripts/test-install-resilience.sh"
+      - "scripts/auth-enable.sh"
+      - "scripts/test-auth-enable-locking.sh"
+      - "scripts/test-install-host-profiles.sh"
+      - "scripts/install-lock.sh"
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
@@ -33,10 +41,18 @@ jobs:
       paths: |
         Makefile
         scripts/gpu-profile.sh
+        scripts/ensure-env.sh
+        deploy/compose/compose.yml
+        deploy/compose/.env.example
         scripts/preflight.sh
         scripts/install.sh
         scripts/test-gpu-detection.sh
         scripts/test-install-public-url.sh
+        scripts/test-install-resilience.sh
+        scripts/auth-enable.sh
+        scripts/test-auth-enable-locking.sh
+        scripts/test-install-host-profiles.sh
+        scripts/install-lock.sh
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-guards.sh

@@ -11,6 +11,7 @@ import time
 import uuid
 import zlib
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
@@ -774,6 +775,10 @@ async def _seed_recover_jobs() -> tuple[uuid.UUID, uuid.UUID]:
     return queued_id, running_id
 
 
+def _stale_progress_stamp() -> float:
+    return jobs.time.monotonic() - jobs.get_settings().job_stall_seconds - 1.0
+
+
 def force_one_requeue(client, job_id: str, timeout=5.0) -> dict:
     """Stall this job once, on purpose, and wait for the attempt it produces.
 
@@ -787,7 +792,7 @@ def force_one_requeue(client, job_id: str, timeout=5.0) -> dict:
     once produces exactly one requeue, whatever the machine is doing.
     """
     key = uuid.UUID(job_id)
-    jobs.last_progress_at[key] = 0.0  # older than any stall the settings allow
+    jobs.last_progress_at[key] = _stale_progress_stamp()
     client.portal.call(jobs.sweep_stalled_jobs)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -922,7 +927,14 @@ class _SweepingFactory:
 
 
 @pytest.mark.db
-def test_stalled_job_requeues_once(monkeypatch):
+@pytest.mark.parametrize("uptime", [30, 3600])
+def test_stalled_job_requeues_once(monkeypatch, uptime):
+    started = time.monotonic()
+    monkeypatch.setattr(jobs, "time", SimpleNamespace(
+        monotonic=lambda: uptime + time.monotonic() - started,
+        time=time.time,
+        sleep=time.sleep,
+    ))
     monkeypatch.setenv("JOB_STALL_SECONDS", "600")
     from app.settings import get_settings
     get_settings.cache_clear()
@@ -1053,7 +1065,7 @@ def test_a_stalled_job_failed_past_its_retry_collects_its_uploads(monkeypatch):
                 assert storage.path(second_key).exists()
 
                 # Stall again: past the one retry, the sweeper fails the row.
-                jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
+                jobs.last_progress_at[uuid.UUID(job_id)] = _stale_progress_stamp()
                 client.portal.call(jobs.sweep_stalled_jobs)
                 poll_until(client, job_id, "failed")
 
@@ -1415,7 +1427,7 @@ def test_a_success_commit_failure_leaves_the_job_recoverable(monkeypatch):
 
             # Recovery: the entry is still tracked with a stale progress stamp,
             # so the sweeper requeues it and the retry reaches a terminal state.
-            jobs.last_progress_at[key] = 0.0
+            jobs.last_progress_at[key] = _stale_progress_stamp()
             client.portal.call(jobs.sweep_stalled_jobs)
             poll_until_attempt(client, job_id, 2, timeout=3.0)
             redispatch = worker.receive_json()
@@ -1458,7 +1470,7 @@ def test_a_failure_commit_failure_leaves_the_job_recoverable(monkeypatch):
             assert jobs.inflight.get(key) is entry
             assert realtime.workers["w-fail-commit"].jobs_in_flight == 1
 
-            jobs.last_progress_at[key] = 0.0
+            jobs.last_progress_at[key] = _stale_progress_stamp()
             client.portal.call(jobs.sweep_stalled_jobs)
             poll_until_attempt(client, job_id, 2, timeout=3.0)
             redispatch = worker.receive_json()
@@ -5067,7 +5079,7 @@ def test_a_failed_verdictless_collection_is_recorded_for_the_sweep(monkeypatch):
                         raise PermissionError(f"denied {storage_key}")
 
                 monkeypatch.setattr(jobs, "get_storage", lambda: RefusingDelete())
-                jobs.last_progress_at[uuid.UUID(job_id)] = 0.0
+                jobs.last_progress_at[uuid.UUID(job_id)] = _stale_progress_stamp()
                 client.portal.call(jobs.sweep_stalled_jobs)
                 poll_until(client, job_id, "failed")
 

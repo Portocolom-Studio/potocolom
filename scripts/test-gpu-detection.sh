@@ -39,7 +39,7 @@ fi
 exit 9
 EOF
 	chmod +x "$case_dir/bin/nvidia-smi"
-	for utility in bash dirname uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed; do
+	for utility in bash dirname basename mkdir chmod uname awk df tail tr sort head grep cut xargs echo id openssl mktemp mv sed flock cksum stat readlink; do
 		[[ -e "$case_dir/bin/$utility" ]] || ln -s "$(type -P "$utility")" "$case_dir/bin/$utility"
 	done
 	rm -f "$case_dir/bin/id"
@@ -57,19 +57,21 @@ EOF
 # The repository layout preflight reads, so ensure-env writes only in the case.
 copy_repo() {
 	mkdir -p "$case_dir/repo/scripts" "$case_dir/repo/deploy/compose" "$case_dir/repo/worker/models"
-	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$case_dir/repo/scripts/"
+	cp "$repo/scripts/preflight.sh" "$repo/scripts/gpu-profile.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/install-lock.sh" "$case_dir/repo/scripts/"
 	cp "$repo/deploy/compose/.env.example" "$case_dir/repo/deploy/compose/.env.example"
 	cp "$repo/worker/models/"*.json "$case_dir/repo/worker/models/"
 }
 
 expect_profile() {
-	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual
+	local name="$1" nvidia="$2" kfd="$3" expected="$4" override="${5:-}" actual rc=0
 	new_case "$name"
 	if [[ "$kfd" == present ]]; then
 		: >"$case_dir/kfd"
 	fi
-	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)"
-	if [[ "$actual" == "$expected" ]]; then
+	actual="$(POTOCOLOM_PROFILE="$override" FAKE_NVIDIA="$nvidia" POTOCOLOM_KFD="$case_dir/kfd" PATH="$case_dir/bin:/usr/bin:/bin" bash "$repo/scripts/gpu-profile.sh" 2>&1)" || rc=$?
+	if [[ "$expected" == error && "$rc" -ne 0 && "$actual" == *'POTOCOLOM_PROFILE must be'* ]]; then
+		printf 'ok %s\n' "$name"
+	elif [[ "$actual" == "$expected" && "$rc" -eq 0 ]]; then
 		printf 'ok %s\n' "$name"
 	else
 		fail_case "$name" "expected: $expected\nactual: $actual"
@@ -132,6 +134,7 @@ expect_preflight_gpu() {
 #!/usr/bin/env bash
 if [[ "\$1" == --version ]]; then printf 'Docker version 28.0.0, build test\\n'; exit 0; fi
 if [[ "\$1" == compose ]]; then printf '2.30.0\\n'; exit 0; fi
+if [[ "\$1" == volume && "\$2" == inspect ]]; then exit 1; fi
 if [[ "\$1" == run && '$docker' == fail ]]; then exit 1; fi
 exit 0
 EOF
@@ -207,6 +210,7 @@ if [[ "$1" == --version ]]; then printf 'Docker version 28.0.0, build test\n'; e
 if [[ "$1" == compose ]]; then
 	if [[ "$2" == version ]]; then printf '2.30.0\n'; exit 0; fi
 fi
+if [[ "$1" == volume && "$2" == inspect ]]; then exit 1; fi
 exit 0
 EOF
 	if [[ "$npm_present" == true ]]; then
@@ -230,9 +234,11 @@ expect_profile profile-nvidia-kfd-wins ok present gpu
 expect_profile profile-nvidia-without-kfd ok absent gpu
 expect_profile profile-two-nvidia-gpus two present gpu
 expect_profile profile-rocm nvidia-fail present rocm
-expect_profile profile-smoke nvidia-fail absent smoke
+expect_profile profile-no-gpu-default nvidia-fail absent smoke
 expect_profile profile-override-rocm ok present rocm rocm
-expect_profile profile-override-invalid ok present gpu cuda
+expect_profile profile-override-api ok present api api
+expect_profile profile-override-invalid ok present error cuda
+expect_preflight_gpu preflight-api-only-command 'API and database only' profile=api mode=selfhost absent='NVIDIA Container Toolkit missing' rc=0
 expect_preflight_gpu preflight-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' rc=0
 expect_preflight_gpu preflight-rocm-unusable-nvidia 'NVIDIA GPU found at 0000:01:00.0' kfd=present
 expect_preflight_gpu preflight-rocm-override-without-kfd 'POTOCOLOM_PROFILE=rocm but /dev/kfd is missing' vendor=0x8086 profile=rocm rc=1
@@ -273,7 +279,7 @@ expect_toolchain toolchain-all-present v24.0.0 true 'ok node v24.0.0' 0
 
 new_case preflight-unknown-argument
 mkdir -p "$case_dir/repo/scripts"
-cp "$repo/scripts/preflight.sh" "$case_dir/repo/scripts/"
+cp "$repo/scripts/preflight.sh" "$repo/scripts/install-lock.sh" "$case_dir/repo/scripts/"
 code=0
 output="$(bash "$case_dir/repo/scripts/preflight.sh" --bogus 2>&1)" || code=$?
 if [[ "$code" -eq 2 && "$output" == *"usage: preflight.sh [--contributor]"* ]]; then

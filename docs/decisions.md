@@ -1959,6 +1959,48 @@ Rejected alternatives:
 - Guessing the original owner of released protocol 6 history, or refusing every installation with such history. Explicit unknown metadata preserves the history without granting authority.
 - A separate delivery queue, manager, wire field or generic outcome layer. The existing journal and Worker owner hold the required state.
 
+## Release tags test the exact installer on the reference AMD GPU
+
+Implements issue #757. Pull request jobs retain simulated and CPU workers.
+A version tag also runs the exact candidate installer and bundle on the trusted
+AMD desktop before GHCR publication. This narrows the earlier decision that no
+CI job uses the GPU. The release job takes a host lock, refuses an occupied API
+port, and uses a random Compose project. It proves fresh generation, then an
+upgrade from the previous published release with saved image bytes and settings
+preserved. The previous release uses one test model and a 768 by 768 image;
+the candidate uses every default model and a 768 by 768 image on both sides
+of the upgrade. All model manifests are restored before the candidate starts.
+This checks old data without repeating known unsafe legacy GPU workloads.
+Cleanup uses a private project claim and Docker labels, independent of mutable
+installer files. Cancellation joins installer children, and an always-run workflow
+step repeats cleanup after an interrupted fresh check. Cleanup first stops
+containers, then removes them without force; the monitor can observe stopped
+workers instead of racing the force-removal of a live worker. Kept installs
+retain data.
+
+The installer accepts `POTOCOLOM_RELEASE_URL` as an HTTPS artifact directory or
+an absolute `file://` directory. The published GitHub release remains the default.
+Checksums are required for the bundle and the check driver verifies both artifacts.
+The installer pulls missing images. Immutable version tags let the release check
+use locally built candidate images before publication. A new host still pulls
+the images from GHCR. AMD checks stop their own worker on disk group offload or
+a VRAM reserve breach. The monitor uses the same GPU selector as the worker,
+matches its PCI address to host VRAM counters, and caches that match by container
+ID. Legacy workers without that selector report their default CUDA device. Each
+selected card uses its own worker reserve; unrelated cards do not affect it.
+Missing or ambiguous GPU identity fails the check. They do not stop another
+stack to make room.
+
+Rejected alternatives:
+- Relying on simulated workers to prove the released GPU stack. They do not
+  load model weights or use the installed worker image for inference.
+- Testing a source checkout instead of the installer. It misses bundle, pin,
+  download, and upgrade faults.
+- Publishing images before this check. A failed candidate would already have
+  public image tags.
+- Forcing a pull of a locally present immutable tag. A candidate cannot be pulled
+  before publication.
+
 ## An ordinary protocol 6 canvas close is a command, not a fence
 
 Implements issue #743. When the browser ends its own live session, the API commits a terminal `close_session` before any erasure: the session row moves from `live` to `ending`, the worker closes its runner and answers `session_closed` with `physical_complete`, and that receipt ends the attempt and the row. The outcome is proved, so nothing is erased without proof and the worker incarnation stays open: its grant renews and its other jobs and sessions continue. A close that is committed but not answered within `CLOSE_RECEIPT_TIMEOUT` (30 s; its delivery may be refused, for example after the browser binding expired, or the worker may never report) is erased and fenced like any unproven outcome, and losing the worker ends a row still `ending`. Rows orphaned by an API crash are not covered yet (#747).
@@ -1973,3 +2015,29 @@ Rejected alternatives:
 - Fencing every ordinary close, as #729 shipped on main. Each canvas close cut the worker off at its next grant renewal, and its unrelated jobs entered worker-loss recovery.
 - Skipping the fence without sending anything. The worker would keep the closed session's runner and its memory until the connection ended.
 - Sending a courtesy `close_session` after erasure, as before #729. That creates a new sensitive command body after erasure.
+
+
+## Release installs support an API host without a local GPU
+
+PR #767 extends the release install contract from issue #667. Linux x86_64
+hosts select `gpu`, `rocm`, or `api`. Automatic detection without an NVIDIA
+or AMD GPU now starts the API and PostgreSQL only. This replaces the earlier
+release rule that refused a host without a GPU. The source `smoke` profile
+still serves development and tests; it is not a published CPU inference image.
+A switch to `api` removes both local worker types from that Compose project
+and preserves its volumes. An operator can attach a GPU worker on another
+host with the existing fleet protocol and secret. `INTERNAL_URL` is configurable
+so source downloads and result uploads can reach that API; its local Compose
+default stays `http://api:8080`.
+
+The install declares success after a bounded local API/store readiness check,
+independent of worker warmup. It holds per-user directory and Compose-project
+locks before changing live bundle files through readiness. Credential repairs
+use Compose's effective values, preserve existing assignments, and fail when
+a database password cannot be recovered safely. Env writes use destination-local
+private temporary files followed by an atomic rename.
+
+Rejected alternatives: a simulated worker in production (it cannot generate
+real images); a new CPU inference image without an issue or qualification;
+requiring a GPU on API-only servers; treating detached Compose startup as
+readiness; replacing an unknown database password with a new random value.

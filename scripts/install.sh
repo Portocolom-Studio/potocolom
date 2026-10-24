@@ -20,6 +20,10 @@ main() {
 		echo "  this copy of install.sh was given VERSION=$VERSION" >&2
 		exit 1
 	fi
+	if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+		echo "error: release images support Linux x86_64 only (found $(uname -s) $(uname -m))" >&2
+		exit 1
+	fi
 	# PUBLIC_URL is the API's security origin: browsers send it back in
 	# Origin byte for byte, so only the canonical form (lowercase, no default
 	# port, no leading zero) is accepted, or every sign-in would be refused.
@@ -77,31 +81,34 @@ main() {
 		exit 1
 	fi
 
-	ENV_FILE="$DIR/deploy/compose/.env"
-	# The project a release install owns is potocolom; a name the operator
-	# already set in .env wins, so reruns and upgrades stay on the
-	# containers and volumes that name belongs to.
-	PROJECT="potocolom"
-	if [[ -f "$ENV_FILE" ]]; then
-		existing="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$ENV_FILE" | tail -n 1)"
-		PROJECT="${existing:-potocolom}"
-	fi
-
-	# Preflight is what creates .env: a fresh .env brings a fresh database
-	# password, which a pre-existing volume does not accept.
-	if [[ ! -e "$ENV_FILE" ]] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
-		echo "error: the database volume ${PROJECT}_pgdata already exists, but $ENV_FILE does not." >&2
-		echo "  A new .env would get a new database password that this volume does not accept." >&2
-		echo "  Restore the .env from the earlier install into that path, or, to start over and" >&2
-		echo "  delete that data, run: docker volume rm ${PROJECT}_pgdata" >&2
-		exit 1
-	fi
-
 	TMP="$(mktemp -d)"
 	trap 'rm -rf "$TMP"' EXIT
 
 	BASE_URL="https://github.com/Portocolom-Studio/potocolom/releases/download/$VERSION"
 	BUNDLE="potocolom-$VERSION-selfhost.tar.gz"
+	if [[ "${POTOCOLOM_RELEASE_URL+x}" == x ]]; then
+		release_url="$POTOCOLOM_RELEASE_URL"
+		if [[ -z "$release_url" || "$release_url" =~ [[:space:]] || "$release_url" == *\?* || "$release_url" == *\#* ]]; then
+			echo 'error: POTOCOLOM_RELEASE_URL must be an https:// URL or absolute file:// URL without query or fragment' >&2
+			exit 1
+		fi
+		case "$release_url" in
+			https://*)
+				if [[ ! "$release_url" =~ ^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[^[:space:]\?#]*)?$ ]]; then
+					echo 'error: POTOCOLOM_RELEASE_URL must be a valid https:// location' >&2
+					exit 1
+				fi
+				;;
+			file:///*) ;;
+			*) echo 'error: POTOCOLOM_RELEASE_URL must use https:// or an absolute file:// URL' >&2; exit 1 ;;
+		esac
+		# file:// uses a local absolute path without an authority component.
+		if [[ "$release_url" == file://* && ! "$release_url" =~ ^file:///[^[:space:]\?#]*$ ]]; then
+			echo 'error: POTOCOLOM_RELEASE_URL file:// location must have an absolute path' >&2
+			exit 1
+		fi
+		BASE_URL="${release_url%/}"
+	fi
 	curl -fsSL -o "$TMP/$BUNDLE" "$BASE_URL/$BUNDLE"
 	curl -fsSL -o "$TMP/SHA256SUMS" "$BASE_URL/SHA256SUMS"
 
@@ -113,29 +120,52 @@ main() {
 		exit 1
 	fi
 
+	STAGE="$TMP/stage"
+	mkdir -m 700 "$STAGE"
+	tar -xzf "$TMP/$BUNDLE" -C "$STAGE"
+	# Resolve the Compose project against the saved env file and verified staged
+	# compose file, then lock before replacing any live bundle file.
+	ENV_FILE="$DIR/deploy/compose/.env"
+	source "$STAGE/scripts/install-lock.sh"
+	PROJECT="potocolom"
+	if [[ -f "$ENV_FILE" ]]; then
+		if existing="$(install_compose_project "$ENV_FILE" "$STAGE/deploy/compose/compose.yml")"; then
+			PROJECT="$existing"
+		else
+			echo "error: Compose could not read $ENV_FILE; refusing to inspect or change this install" >&2
+			exit 1
+		fi
+	fi
+	install_acquire_locks "$DIR" "$ENV_FILE" "$STAGE/deploy/compose/compose.yml" "$PROJECT"
 	mkdir -p "$DIR"
 	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
 	# The bundle carries no .env, so an existing install keeps its secrets.
-
-	if ! bash "$DIR/scripts/preflight.sh"; then
-		echo "error: preflight failed; fix what it reports, then run this again" >&2
+	if [[ ! -e "$ENV_FILE" ]] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
+		echo "error: the database volume ${PROJECT}_pgdata already exists, but $ENV_FILE does not." >&2
+		echo "  A new .env would get a new database password that this volume does not accept." >&2
+		echo "  Restore the .env from the earlier install into that path, or, to start over and" >&2
+		echo "  delete that data, run: docker volume rm ${PROJECT}_pgdata" >&2
 		exit 1
 	fi
 
 	if [[ -n "${POTOCOLOM_PROFILE:-}" ]]; then
-		profile="$POTOCOLOM_PROFILE"
-	elif [[ ! -f "$DIR/scripts/gpu-profile.sh" ]]; then
-		echo "error: the $VERSION bundle predates scripts/gpu-profile.sh; set POTOCOLOM_PROFILE=gpu (NVIDIA) or rocm (AMD)" >&2
-		exit 1
+		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
 	else
-		profile="$(bash "$DIR/scripts/gpu-profile.sh")"
-		if [[ "$profile" == smoke ]]; then
-			echo "error: no NVIDIA or AMD GPU found. The released images need one. To try the stack with the simulated worker, clone the repository and run scripts/compose-smoke.sh. See the GPU section of the preflight output above." >&2
-			exit 1
-		fi
+		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
+		# Source commands keep smoke as the no-GPU default. A release contains
+		# no simulated-worker image, so its automatic no-GPU choice is API-only.
+		[[ "$profile" != smoke ]] || profile=api
 	fi
-	if [[ "$profile" != gpu && "$profile" != rocm ]]; then
-		echo "error: POTOCOLOM_PROFILE must be gpu or rocm, not $profile" >&2
+	if [[ "$profile" == smoke ]]; then
+		echo "error: the release installer does not support the simulated worker. Clone the repository and run scripts/compose-smoke.sh for source development." >&2
+		exit 1
+	fi
+	if [[ "$profile" != gpu && "$profile" != rocm && "$profile" != api ]]; then
+		echo "error: unsupported release profile: $profile" >&2
+		exit 1
+	fi
+	if ! POTOCOLOM_PROFILE="$profile" bash "$DIR/scripts/preflight.sh"; then
+		echo "error: preflight failed; fix what it reports, then run this again" >&2
 		exit 1
 	fi
 
@@ -143,10 +173,25 @@ main() {
 	# The shell env beats the env file, so the pull runs against this tag
 	# before .env names it, and .env is pinned only afterwards: a failed
 	# pull must not leave it naming a tag that was never pulled.
-	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
+	images="$(POTOCOLOM_VERSION="$VERSION" "${compose[@]}" config --images)"
+	if [[ -z "$images" ]]; then
+		echo 'error: Compose did not list any release images' >&2
+		exit 1
+	fi
+	missing_images=false
+	while IFS= read -r image; do
+		if ! docker image inspect -- "$image" >/dev/null 2>&1; then
+			missing_images=true
+			break
+		fi
+	done <<<"$images"
+	if [[ "$missing_images" == true ]]; then
+		POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
+	fi
 
 	# Pin release metadata and apply an explicit public URL in one write.
-	env_tmp="$(mktemp)"
+	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
+	chmod 600 "$env_tmp"
 	awk -v v="$VERSION" -v p="$PROJECT" -v set_url="$set_public_url" -v url="$public_url_input" '
 		/^POTOCOLOM_VERSION=/ { print "POTOCOLOM_VERSION=" v; found_v = 1; next }
 		/^COMPOSE_PROJECT_NAME=/ {
@@ -171,20 +216,49 @@ main() {
 	' "$ENV_FILE" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
 
-	# A host that changed vendor since the last install (or one that older
-	# releases detected as AMD before NVIDIA) still runs the other worker.
-	if [[ "$profile" == gpu ]]; then other=(rocm worker-rocm); else other=(gpu worker); fi
+	# Stop only this project's worker containers that do not match the selected
+	# profile. API-only transitions remove both release workers.
+	case "$profile" in
+		gpu) obsolete=('--profile' rocm rm -sf worker-rocm) ;;
+		rocm) obsolete=('--profile' gpu rm -sf worker) ;;
+		api) obsolete=(--profile gpu rm -sf worker) ;;
+	esac
 	POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
-		-f "$DIR/deploy/compose/compose.yml" --profile "${other[0]}" rm -sf "${other[1]}"
+		-f "$DIR/deploy/compose/compose.yml" "${obsolete[@]}"
+	if [[ "$profile" == api ]]; then
+		POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
+			-f "$DIR/deploy/compose/compose.yml" --profile rocm rm -sf worker-rocm
+	fi
 
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
+
+	# Readiness covers the API and its store. It does not wait for model downloads
+	# or worker warmup. Each curl has a short timeout and the retry count is fixed.
+	ready=false
+	for attempt in {1..30}; do
+		if curl -fsS --connect-timeout 2 --max-time 2 http://127.0.0.1:8080/api/v1/ready >/dev/null 2>&1; then
+			ready=true
+			break
+		fi
+		sleep 2
+	done
+	if [[ "$ready" != true ]]; then
+		echo 'error: API did not become ready within 120 seconds; data is intact.' >&2
+		echo "  Diagnose with: docker compose -p $PROJECT --env-file \"$ENV_FILE\" -f \"$DIR/deploy/compose/compose.yml\" logs api postgres" >&2
+		exit 1
+	fi
 
 	# Compose syntax: an optional export, and an unquoted value ends at a comment.
 	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
 	public_url="${public_url:-http://localhost:8080}"
 
 	echo
-	echo "potocolom $VERSION is running. Open $public_url"
+	if [[ "$profile" == api ]]; then
+		echo "potocolom $VERSION API and database are ready. Open $public_url"
+		echo 'Generation needs an attached GPU worker. Remote worker authentication uses FLEET_SECRET in the env file.'
+	else
+		echo "potocolom $VERSION is running. Open $public_url"
+	fi
 	if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
 		public_host="${BASH_REMATCH[1]}"
 		if [[ "$public_host" == localhost || "$public_host" == '[::1]' \

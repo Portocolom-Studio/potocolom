@@ -17,6 +17,8 @@ on:
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-restore.sh"
+      - "scripts/release-check.py"
+      - "scripts/tests/test_release_check*.py"
       - "Makefile"
       - ".github/workflows/deploy.yml"
 
@@ -37,6 +39,8 @@ jobs:
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-restore.sh
+        scripts/release-check.py
+        scripts/tests/test_release_check*.py
         Makefile
         .github/workflows/deploy.yml
   deploy:
@@ -46,6 +50,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: python3 -m unittest discover -s scripts/tests -p 'test_release_check*.py'
       - run: make verify-compose
       # Builds the api and worker-sim images and drives a real generation
       # through them; the script cleans up its containers and volumes.

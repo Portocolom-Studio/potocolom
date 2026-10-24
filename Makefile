@@ -340,11 +340,14 @@ verify-guards: ## prove setup guards and shared GPU detection
 	echo 'setup guards ok: no 3.11+ interpreter is refused; pip-less venvs are recreated; empty FLEET_SECRET is filled; the example DB password is rotated; every auth target shares the API database'
 	@bash scripts/test-gpu-detection.sh
 	@bash scripts/test-install-public-url.sh
+	@bash scripts/test-install-host-profiles.sh
+	@bash scripts/test-install-resilience.sh
+	@bash scripts/test-auth-enable-locking.sh
 	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \
-	for p in gpu rocm smoke; do \
+	for p in gpu rocm smoke api; do \
 		docker compose --env-file $$ENV_FILE -f compose.yml --profile $$p config -q || exit 1; \
 	done && \
 	docker compose --env-file $$ENV_FILE -f dev.yml config -q \
