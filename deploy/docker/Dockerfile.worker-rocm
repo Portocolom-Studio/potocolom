@@ -16,7 +16,7 @@ COPY worker/worker ./worker
 COPY worker/models /models
 
 RUN pip install --no-cache-dir ".[inference]" \
-	&& pip install --no-cache-dir --upgrade setuptools wheel
+	&& pip install --no-cache-dir --upgrade setuptools wheel 'filelock>=4.2.1'
 
 ENV DEVICE=rocm
 ENV PYTHONUNBUFFERED=1
