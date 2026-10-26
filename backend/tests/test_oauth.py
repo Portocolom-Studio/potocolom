@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, quote, urlsplit
@@ -793,9 +794,10 @@ def test_a_suspended_account_cannot_add_a_new_way_to_sign_in(accounts, monkeypat
 
 
 @pytest.mark.db
-def test_spent_and_expired_flows_are_reclaimed(accounts):
+def test_spent_and_expired_flows_are_reclaimed(accounts, monkeypatch):
     """The redirect route is unauthenticated, so its rows are the one thing
     here a stranger can accumulate. Nothing was clearing them."""
+    monkeypatch.setattr("app.main.maintain_loop", asyncio.Event().wait)
     with TestClient(app, base_url=ORIGIN) as client:
         _start(client, "google")
 
