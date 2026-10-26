@@ -265,8 +265,12 @@ async function launchStudio(locale, setup, apiAnswers, waitUntil, appPath = '/ap
 	}
 }
 
-async function openCanvas(locale = 'en', setup) {
-	const harness = await launchStudio(locale, setup, {}, 'networkidle0');
+async function openCanvas(
+	locale = 'en',
+	setup,
+	{ apiAnswers = {}, waitUntil = 'networkidle0' } = {}
+) {
+	const harness = await launchStudio(locale, setup, apiAnswers, waitUntil);
 	try {
 		const { page } = harness;
 		const tab = locale === 'es' ? 'Lienzo en tiempo real' : 'Realtime canvas';
@@ -275,7 +279,7 @@ async function openCanvas(locale = 'en', setup) {
 				[...document.querySelectorAll('button')].some(
 					(button) => button.textContent?.trim() === name
 				),
-			{ timeout: WAIT_MS },
+			{ timeout: WAIT_MS, polling: 'mutation' },
 			tab
 		);
 		await page.evaluate(
@@ -653,6 +657,43 @@ async function expectInvalidDrawingFile(page, filePath) {
 		{ timeout: WAIT_MS }
 	);
 }
+
+test('canvas tab readiness survives paused animation frames', async () => {
+	const harness = await openCanvas(
+		'en',
+		() => {
+			const requestFrame = window.requestAnimationFrame.bind(window);
+			const queuedFrames = [];
+			window.requestAnimationFrame = (callback) => {
+				queuedFrames.push(callback);
+				return queuedFrames.length;
+			};
+			document.addEventListener(
+				'click',
+				(event) => {
+					const button = event.target.closest('button');
+					if (button?.textContent?.trim() !== 'Realtime canvas') return;
+					window.requestAnimationFrame = requestFrame;
+					for (const callback of queuedFrames.splice(0)) callback(performance.now());
+					window.__canvasTabReleasedFrames = true;
+				},
+				{ capture: true, once: true }
+			);
+		},
+		{
+			apiAnswers: { '/api/v1/account': { body: [], delayMs: 500 } },
+			waitUntil: 'domcontentloaded'
+		}
+	);
+	try {
+		const { page } = harness;
+		assert.equal(await page.evaluate(() => window.__canvasTabReleasedFrames), true);
+		assert.ok(await page.$('canvas[aria-label="Drawing surface"]'));
+		assert.deepEqual(await surfacePixel(page, 256, 256), [255, 255, 255, 255]);
+	} finally {
+		await harness.close();
+	}
+});
 
 test('a rectangle drag has one undo step and no stale preview edges', async () => {
 	const harness = await openCanvas();
