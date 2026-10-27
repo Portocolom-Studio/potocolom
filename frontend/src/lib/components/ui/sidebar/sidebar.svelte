@@ -4,6 +4,7 @@
 	import type { HTMLAttributes } from 'svelte/elements';
 	import { SIDEBAR_WIDTH_MOBILE } from './constants.js';
 	import { useSidebar } from './context.svelte.js';
+	import { attachSwipeDismiss } from '$lib/swipe-dismiss';
 
 	let {
 		ref = $bindable(null),
@@ -20,6 +21,15 @@
 	} = $props();
 
 	const sidebar = useSidebar();
+
+	// On a phone the sheet closes with a swipe toward its own edge as well.
+	$effect(() => {
+		if (collapsible === 'none' || !sidebar.isMobile || !ref) return;
+		return attachSwipeDismiss(ref, {
+			direction: side === 'left' ? -1 : 1,
+			onDismiss: () => sidebar.setOpenMobile(false)
+		});
+	});
 </script>
 
 {#if collapsible === 'none'}
@@ -41,7 +51,7 @@
 			data-slot="sidebar"
 			data-mobile="true"
 			class={cn(
-				'bg-sidebar text-sidebar-foreground w-(--sidebar-width) p-0 [&>button]:hidden',
+				'bg-sidebar text-sidebar-foreground w-(--sidebar-width) touch-pan-y p-0 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)] [&_[data-slot=sidebar-content]]:touch-pan-y [&>button]:hidden',
 				className
 			)}
 			style="--sidebar-width: {SIDEBAR_WIDTH_MOBILE};"

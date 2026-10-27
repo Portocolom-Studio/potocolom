@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import AuthSplit from '$lib/components/auth/AuthSplit.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -11,7 +11,6 @@
 	import { Label } from '$lib/components/ui/label';
 	import { apiFetch } from '$lib/api';
 	import { createSubmitGuard, parseAuthError, readInviteTokenFromHash } from '$lib/auth-flow';
-	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
@@ -85,72 +84,66 @@
 
 <Seo titleKey="seo.join_title" descriptionKey="seo.join_description" path="/join" noindex />
 
-<div class="bg-background flex min-h-dvh flex-col">
-	<header class="border-b">
-		<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-			<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-				<BrandMark />
-			</a>
-			<LanguageToggle />
-		</div>
-	</header>
-
-	<main class="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12 sm:px-6">
-		{#if landing}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
-					<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
-				</Card.Header>
-			</Card.Root>
-		{:else if !ready}
-			<p class="text-muted-foreground text-center text-sm">{t('auth.loading')}</p>
-		{:else if !token}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
-					<Card.Description>{t('auth.join.missing_token')}</Card.Description>
-				</Card.Header>
-			</Card.Root>
-		{:else}
-			<Card.Root>
-				<Card.Header>
-					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
-					<Card.Description>{t('auth.join.sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content>
-					<form class="flex flex-col gap-4" onsubmit={submitJoin}>
-						<Field.Field>
-							<Label for="join-password">{t('auth.join.password_label')}</Label>
-							<Input
-								id="join-password"
-								name="password"
-								type="password"
-								autocomplete="new-password"
-								required
-								bind:value={password}
-							/>
-						</Field.Field>
-						<Field.Field>
-							<Label for="join-confirm">{t('auth.join.confirm_label')}</Label>
-							<Input
-								id="join-confirm"
-								name="confirm"
-								type="password"
-								autocomplete="new-password"
-								required
-								bind:value={confirmPassword}
-							/>
-						</Field.Field>
-						{#if error}
-							<p class="text-destructive text-sm" role="alert">{error}</p>
-						{/if}
-						<Button type="submit" disabled={submitting}>
-							{submitting ? t('auth.submitting') : t('auth.join.submit')}
-						</Button>
-					</form>
-				</Card.Content>
-			</Card.Root>
-		{/if}
-	</main>
-</div>
+<AuthSplit
+	fieldSide="start"
+	kicker={t('wl.kicker')}
+	heading={t('wl.title')}
+	body={t('split.cloud_p3')}
+>
+	{#if landing}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
+				<Card.Description>{t('auth.landing.unavailable')}</Card.Description>
+			</Card.Header>
+		</Card.Root>
+	{:else if !ready}
+		<p class="text-muted-foreground text-center text-sm">{t('auth.loading')}</p>
+	{:else if !token}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
+				<Card.Description>{t('auth.join.missing_token')}</Card.Description>
+			</Card.Header>
+		</Card.Root>
+	{:else}
+		<Card.Root>
+			<Card.Header>
+				<h1 data-slot="card-title" class="text-base font-medium">{t('auth.join.title')}</h1>
+				<Card.Description>{t('auth.join.sub')}</Card.Description>
+			</Card.Header>
+			<Card.Content>
+				<form class="flex flex-col gap-4" onsubmit={submitJoin}>
+					<Field.Field>
+						<Label for="join-password">{t('auth.join.password_label')}</Label>
+						<Input
+							id="join-password"
+							name="password"
+							type="password"
+							autocomplete="new-password"
+							required
+							bind:value={password}
+						/>
+					</Field.Field>
+					<Field.Field>
+						<Label for="join-confirm">{t('auth.join.confirm_label')}</Label>
+						<Input
+							id="join-confirm"
+							name="confirm"
+							type="password"
+							autocomplete="new-password"
+							required
+							bind:value={confirmPassword}
+						/>
+					</Field.Field>
+					{#if error}
+						<p class="text-destructive text-sm" role="alert">{error}</p>
+					{/if}
+					<Button type="submit" disabled={submitting}>
+						{submitting ? t('auth.submitting') : t('auth.join.submit')}
+					</Button>
+				</form>
+			</Card.Content>
+		</Card.Root>
+	{/if}
+</AuthSplit>

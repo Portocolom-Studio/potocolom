@@ -1,7 +1,15 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { t } from '$lib/i18n.svelte';
+	import { account } from '$lib/account.svelte';
+	import { accountCacheKey, studioCache } from '$lib/swr-cache';
 	import { formatMs } from '$lib/benchmark';
 	import type { MetricsRange } from '$lib/studio-metrics-range';
+	import {
+		getMetricsPreferences,
+		saveMetricsPreferences,
+		viewOwnerEpoch
+	} from '$lib/studio.svelte';
 	import {
 		byEventsThen,
 		categoryShares,
@@ -11,27 +19,49 @@
 	} from '$lib/studio-usage-mine';
 	import StudioMetricsRangePicker from '$lib/components/studio-metrics-range-picker.svelte';
 	import * as Card from '$lib/components/ui/card';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 
-	// 30d matches the route's own default window (docs/api.md).
-	let range = $state<MetricsRange>('30d');
-	let usage = $state<UsageMe | null>(null);
+	const ownerEpoch = viewOwnerEpoch();
+	const initialRange = getMetricsPreferences().mineRange;
+	let range = $state<MetricsRange>(initialRange);
+	// Keyed by account: the cache outlives a sign-out in the same tab.
+	const usageKey = (range: MetricsRange) =>
+		accountCacheKey(account.ownerId, `metrics:usage-me:${range}`);
+	let usage = $state<UsageMe | null>(studioCache.read(usageKey(initialRange)) ?? null);
 	let loading = $state(true);
 	let failed = $state(false);
 
 	$effect(() => {
+		const requestEpoch = ownerEpoch;
 		const { from, to } = usageMeWindow(range, Date.now());
+		const key = usageKey(range);
 		let cancelled = false;
+		// What this range showed last time stays up while it refreshes.
+		const cached = untrack(() => studioCache.read<UsageMe>(key));
+		// Never another range's numbers: without a cached copy the skeleton shows.
+		usage = cached ?? null;
 		loading = true;
 		failed = false;
-		void fetchUsageMe(from, to).then((body) => {
-			if (cancelled) return;
-			usage = body;
+		const controller = new AbortController();
+		void fetchUsageMe(from, to, controller.signal).then((body) => {
+			if (cancelled || requestEpoch !== viewOwnerEpoch()) return;
+			if (body !== null) {
+				usage = body;
+				studioCache.write(key, body);
+			}
 			loading = false;
-			failed = body === null;
+			failed = body === null && usage === null;
 		});
 		return () => {
 			cancelled = true;
+			controller.abort();
 		};
+	});
+
+	$effect(() => {
+		const currentRange = range;
+		if (ownerEpoch !== viewOwnerEpoch()) return;
+		saveMetricsPreferences({ ...getMetricsPreferences(), mineRange: currentRange });
 	});
 
 	const shares = $derived(
@@ -49,8 +79,21 @@
 
 <div class="flex flex-col gap-6">
 	<StudioMetricsRangePicker bind:value={range} />
-	{#if loading}
-		<p class="text-muted-foreground text-sm">{t('app.metrics.loading')}</p>
+	{#if loading && usage === null}
+		<div role="status" class="flex flex-col gap-6">
+			<span class="sr-only">{t('app.metrics.loading')}</span>
+			<div class="grid gap-4 sm:grid-cols-3" aria-hidden="true">
+				{#each [0, 1, 2] as index (index)}
+					<Skeleton class="h-[74px] rounded-[10px]" />
+				{/each}
+			</div>
+			<div class="flex flex-col gap-2" aria-hidden="true">
+				{#each [0, 1, 2] as index (index)}
+					<Skeleton class="h-2.5 w-full rounded-full" />
+				{/each}
+			</div>
+			<Skeleton class="h-40 rounded-lg" aria-hidden="true" />
+		</div>
 	{:else if failed || usage === null}
 		<p class="text-muted-foreground text-sm">{t('app.metrics.load_failed')}</p>
 	{:else if usage.totals.events === 0}

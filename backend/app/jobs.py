@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -44,7 +45,7 @@ from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
 from app.storage import get_storage
-from app.tables import Asset, Job, PendingDelete, User
+from app.tables import Asset, Job, Model, PendingDelete, User
 
 logger = logging.getLogger("potocolom.jobs")
 
@@ -70,6 +71,7 @@ PENDING_DELETE_MAX_ATTEMPTS = 8  # failures before the one alert; retries contin
 PENDING_DELETE_BACKOFF_CAP = 60  # minutes; 2 ** 7 would already overshoot an hour
 MAINTAIN_DELETES_INTERVAL = 300.0  # seconds
 PENDING_DELETE_TIMEOUT = 60.0  # seconds for one delete, so a wedged mount cannot stall the pass
+GenerationSize = Literal["512", "768", "1k", "2k", "4k", "above_4k", "unknown"]
 
 
 @dataclass(frozen=True, order=True)
@@ -586,6 +588,104 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _model_capability_condition(capability: str) -> ColumnElement[bool]:
+    """Whether a job's own model row lists a capability.
+
+    History is classified from the persisted models row, never the current
+    worker manifests: a model that stopped serving must keep classifying its
+    old jobs. Job.model_id is a foreign key onto this shared model row.
+    """
+    return select(Model.id).where(
+        Model.id == Job.model_id,
+        func.jsonb_exists(Model.capabilities, capability),
+    ).exists()
+
+
+def _library_conditions(
+    model_ids: list[str] | None,
+    created_from: datetime | None,
+    created_before: datetime | None,
+    sizes: list[GenerationSize] | None,
+) -> list[ColumnElement[bool]]:
+    conditions: list[ColumnElement[bool]] = []
+    if model_ids:
+        # Repeated model_id keys are one OR'd selection.
+        conditions.append(Job.model_id.in_(model_ids))
+    if created_from is not None:
+        conditions.append(Job.created_at >= created_from)
+    if created_before is not None:
+        conditions.append(Job.created_at < created_before)
+    if sizes:
+        asset = aliased(Asset)
+        master = and_(
+            asset.job_id == Job.id,
+            asset.user_id == Job.user_id,
+            ~asset.storage_key.like("%-thumb.webp"),
+            asset.width > 0,
+            asset.height > 0,
+        )
+        long_side = func.greatest(asset.width, asset.height)
+        ranges = {
+            "512": and_(long_side >= 1, long_side < 640),
+            "768": and_(long_side >= 640, long_side < 896),
+            "1k": and_(long_side >= 896, long_side < 1536),
+            "2k": and_(long_side >= 1536, long_side < 3072),
+            "4k": and_(long_side >= 3072, long_side < 6144),
+            "above_4k": long_side >= 6144,
+        }
+        valid_master = select(asset.id).where(master).correlate(Job).exists()
+        matching_ranges = [ranges[size] for size in sizes if size in ranges]
+        size_matches: list[ColumnElement[bool]] = []
+        if matching_ranges:
+            matching_master = select(asset.id).where(
+                master,
+                or_(*matching_ranges),
+            ).correlate(Job).exists()
+            size_matches.append(matching_master)
+        if "unknown" in sizes:
+            size_matches.append(~valid_master)
+        conditions.append(or_(*size_matches))
+    return conditions
+
+
+def _action_condition(
+    action: Literal["generate", "image_to_image", "upscale"],
+) -> ColumnElement[bool]:
+    if action == "generate":
+        return Job.source_asset_id.is_(None)
+    source = Job.source_asset_id.is_not(None)
+    upscale = _model_capability_condition("upscale")
+    return and_(source, upscale) if action == "upscale" else and_(source, ~upscale)
+
+
+def _library_ancestor_cte(user: User, conditions: list[ColumnElement[bool]]):
+    """The owned jobs that match library filters or are an ancestor of one.
+
+    A filtered roots page keeps a root whose descendant matches, so the
+    constraints select matching owned jobs and then walk each source_asset_id
+    up to the owned asset's owned parent job. UNION, never UNION ALL: the
+    distinct set is what terminates a cyclic edit chain, and every hop
+    re-scopes the asset and the parent job to the same owner, so a foreign
+    asset or job can never bridge into the returned roots.
+    """
+    seed = (
+        select(Job.id.label("job_id"))
+        .where(Job.user_id == user.id, *conditions)
+        .cte(name="library_matches", recursive=True)
+    )
+    walked = seed.alias(name="walked")
+    parent = aliased(Job)
+    source = aliased(Asset)
+    step = (
+        select(parent.id.label("job_id"))
+        .select_from(walked)
+        .join(Job, Job.id == walked.c.job_id)
+        .join(source, and_(source.id == Job.source_asset_id, source.user_id == user.id))
+        .join(parent, and_(parent.id == source.job_id, parent.user_id == user.id))
+    )
+    return seed.union(step)
+
+
 def _filter_generations(
     query,
     user: User,
@@ -593,6 +693,12 @@ def _filter_generations(
     starred: bool | None,
     roots_only: bool | None,
     q: str | None,
+    *,
+    model_ids: list[str] | None = None,
+    created_from: datetime | None = None,
+    created_before: datetime | None = None,
+    sizes: list[GenerationSize] | None = None,
+    action: Literal["generate", "image_to_image", "upscale"] | None = None,
 ):
     query = query.where(Job.user_id == user.id)
     if state is not None:
@@ -604,6 +710,21 @@ def _filter_generations(
             Job.source_asset_id.is_(None)
             if roots_only else Job.source_asset_id.is_not(None)
         )
+    library = _library_conditions(model_ids, created_from, created_before, sizes)
+    if roots_only and library:
+        # A root itself may sit outside the library filters while a
+        # descendant inside it makes its tree worth keeping, so on a roots
+        # page membership in the ancestor walk replaces a direct predicate on
+        # the root. Every non-root listing constrains each row directly, and
+        # the walk only runs when a library filter is actually active.
+        if state is not None:
+            library.append(Job.state == state)
+        ancestors = _library_ancestor_cte(user, library)
+        query = query.where(Job.id.in_(select(ancestors.c.job_id)))
+    else:
+        query = query.where(*library)
+    if action is not None:
+        query = query.where(_action_condition(action))
     trimmed = (q or "").strip()
     if trimmed:
         prompt = _prompt_text()
@@ -616,6 +737,26 @@ def _filter_generations(
     return query
 
 
+def _validate_created_window(
+    created_from: datetime | None,
+    created_before: datetime | None,
+) -> None:
+    """A date bound without an offset names no instant in particular, and a
+    reversed window can only be a caller mistake; both are 422 rather than a
+    quietly empty page."""
+    for bound in (created_from, created_before):
+        if bound is not None and (bound.tzinfo is None or bound.utcoffset() is None):
+            raise HTTPException(
+                status_code=422,
+                detail="created_from and created_before must be timezone-aware",
+            )
+    if created_from is not None and created_before is not None and created_from >= created_before:
+        raise HTTPException(
+            status_code=422,
+            detail="created_from must be before created_before",
+        )
+
+
 @router.get("/api/v1/generations")
 async def list_generations(
     limit: int = Query(default=50, ge=1),
@@ -625,18 +766,51 @@ async def list_generations(
     roots_only: bool | None = Query(default=None),
     q: StorableStr | None = Query(default=None),
     fields: Literal["ids"] | None = Query(default=None),
+    model_id: list[StorableStr] | None = Query(default=None),
+    created_from: datetime | None = Query(default=None),
+    created_before: datetime | None = Query(default=None),
+    size: list[GenerationSize] | None = Query(default=None),
+    action: Literal["generate", "image_to_image", "upscale"] | None = Query(default=None),
     user: User = Depends(current_user),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict] | dict:
+    _validate_created_window(created_from, created_before)
+    model_ids = [str(value) for value in dict.fromkeys(model_id)] if model_id else None
+    sizes = list(dict.fromkeys(size)) if size else None
     listing = select(Job.id) if fields == "ids" else select(Job)
-    query = _filter_generations(listing, user, state, starred, roots_only, q)
+    query = _filter_generations(
+        listing,
+        user,
+        state,
+        starred,
+        roots_only,
+        q,
+        model_ids=model_ids,
+        created_from=created_from,
+        created_before=created_before,
+        sizes=sizes,
+        action=action,
+    )
     if cursor is not None:
         anchor = await session.get(Job, cursor)
         if anchor is None or anchor.user_id != user.id:
             raise HTTPException(status_code=404, detail="unknown cursor")
+        # The cursor must be a member of the same filtered set, so a page
+        # cursor from another filter combination is refused rather than
+        # silently mixing two result sets.
         matched = await session.scalar(
             _filter_generations(
-                select(Job.id), user, state, starred, roots_only, q,
+                select(Job.id),
+                user,
+                state,
+                starred,
+                roots_only,
+                q,
+                model_ids=model_ids,
+                created_from=created_from,
+                created_before=created_before,
+                sizes=sizes,
+                action=action,
             ).where(Job.id == cursor)
         )
         if matched is None:
@@ -1180,6 +1354,33 @@ async def generation_lineage(
         "descendant_count": int(descendant["descendant_count"] or 0),
         "descendants_truncated": descendant["descendants_truncated"],
     }
+
+
+@router.get("/api/v1/generations/models")
+async def list_generation_models(
+    user: User = Depends(current_user), session: AsyncSession = Depends(db.get_session)
+) -> dict[str, list[dict[str, str]]]:
+    """Model options for the Images section filters.
+
+    Unlike GET /models (recent activity on the fleet), this lists every model the
+    user has at least one image asset for, including historical and
+    benchmark-only models, so historical generations stay filterable in the
+    library UI.
+    """
+    owner_job = aliased(Job)
+    rows = await session.execute(
+        select(Model.id, Model.name)
+        .join(owner_job, owner_job.model_id == Model.id)
+        .join(Asset, Asset.job_id == owner_job.id)
+        .where(
+            owner_job.user_id == user.id,
+            Asset.user_id == owner_job.user_id,
+            Asset.storage_key.not_like("%-thumb.webp"),
+        )
+        .distinct()
+        .order_by(Model.id)
+    )
+    return {"models": [{"id": model_id, "name": name} for model_id, name in rows.all()]}
 
 
 @router.get("/api/v1/generations/{job_id}")

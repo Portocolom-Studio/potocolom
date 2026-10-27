@@ -130,3 +130,19 @@ test('fetchUsageMe answers null when the request or the body fails', async () =>
 		globalThis.fetch = original;
 	}
 });
+
+test('fetchUsageMe passes its abort signal to fetch', async () => {
+	const original = globalThis.fetch;
+	const controller = new AbortController();
+	let received: AbortSignal | null = null;
+	try {
+		globalThis.fetch = (async (_input, init) => {
+			received = init?.signal ?? null;
+			return new Response(JSON.stringify(wellFormed), { status: 200 });
+		}) as typeof fetch;
+		assert.deepEqual(await fetchUsageMe(0, 1, controller.signal), wellFormed);
+		assert.equal(received, controller.signal);
+	} finally {
+		globalThis.fetch = original;
+	}
+});

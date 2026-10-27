@@ -4,6 +4,8 @@ Start here. The cleanup (PRs #648 to #651) is done, and protocol 6 with F1 recov
 
 ## Read and check first
 
+Before any frontend or UI change, read [design-system.md](design-system.md): tokens, components, layout templates, interaction patterns and the checklist for adding a studio view.
+
 1. Read the local `AGENTS.md` instructions, then the routing table in `docs/internals/AGENTS.md`. Local internals are ignored and must stay local.
 2. Read [audit_report.md](audit_report.md) for shipped state and [implementation_spec.md](implementation_spec.md) for the work order and gates. Read the nine authoritative documents named in the local instructions before changing a contract.
 3. Check `git status --short`, `git worktree list`, remote main and the live issue/PR tracker. The source baseline for this audit is `006f408ab1ed8148639cfc804553c13420ae8c0c`; PR #650 added the handoff and reset-test repair.

@@ -33,7 +33,7 @@
 
 {#if visible}
 	<Button
-		class="bg-background/90 fixed right-4 bottom-6 z-40 border shadow-md backdrop-blur-sm"
+		class="bg-background/90 fixed right-[calc(1rem+env(safe-area-inset-right))] bottom-[calc(1.5rem+env(safe-area-inset-bottom))] z-40 border shadow-md backdrop-blur-sm"
 		aria-label={t('nav.scroll_to_top')}
 		onclick={scrollToTop}
 		size="icon"

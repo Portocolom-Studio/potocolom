@@ -21,6 +21,20 @@ import {
 	starredListSnapshotIsCurrent
 } from '$lib/lineage-canvas-state';
 import { readStored, removeStored, writeStored } from '$lib/safe-storage';
+import {
+	activateViewPrefsOwner,
+	defaultViewPrefs,
+	hasViewPrefs,
+	normalizeViewPrefs,
+	readViewPrefs,
+	writeViewPrefs,
+	type ImagesPreferences,
+	type MetricsPreferences,
+	type ViewOwner
+} from '$lib/studio-view-prefs';
+import { resetLineageForestSessionCache } from '$lib/lineage-forest';
+import { studioCache } from '$lib/swr-cache';
+import { clearGpuSamples, stopGpuSampler } from '$lib/studio-gpu-sampler';
 
 export type Model = {
 	id: string;
@@ -141,8 +155,6 @@ const MAX_GENERATION_STREAMS = 4;
 const STREAM_RECONCILE_MS = 15_000;
 const STARRED_STORAGE_KEY = 'potocolom-starred';
 const REMOVED_MODELS_STORAGE_KEY = 'potocolom-removed-models';
-const LINEAGE_VIEWPORT_STORAGE_KEY = 'potocolom-lineage-viewport';
-const LINEAGE_TREE_OFFSETS_STORAGE_KEY = 'potocolom-lineage-tree-offsets';
 const LINEAGE_ROOT_ID_PATTERN =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -170,69 +182,6 @@ function loadRemovedModelIds(): string[] {
 	}
 }
 
-function loadLineageViewport(): LineageViewport | null {
-	try {
-		const raw = readStored(LINEAGE_VIEWPORT_STORAGE_KEY);
-		const parsed = raw ? (JSON.parse(raw) as Partial<LineageViewport>) : null;
-		if (
-			parsed === null ||
-			!Number.isFinite(parsed.translateX) ||
-			!Number.isFinite(parsed.translateY) ||
-			!Number.isFinite(parsed.scale) ||
-			(parsed.scale ?? 0) <= 0
-		) {
-			return null;
-		}
-		return {
-			translateX: clampLineageCoordinate(parsed.translateX as number),
-			translateY: clampLineageCoordinate(parsed.translateY as number),
-			scale: parsed.scale as number,
-			rootId:
-				typeof parsed.rootId === 'string' && LINEAGE_ROOT_ID_PATTERN.test(parsed.rootId)
-					? parsed.rootId
-					: null,
-			anchorX:
-				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
-					? clampLineageCoordinate(parsed.anchorX as number)
-					: null,
-			anchorY:
-				Number.isFinite(parsed.anchorX) && Number.isFinite(parsed.anchorY)
-					? clampLineageCoordinate(parsed.anchorY as number)
-					: null
-		};
-	} catch {
-		return null;
-	}
-}
-
-function loadLineageTreeOffsets(): Record<string, LineageTreeOffset> {
-	try {
-		const raw = readStored(LINEAGE_TREE_OFFSETS_STORAGE_KEY);
-		const parsed = raw ? (JSON.parse(raw) as unknown) : {};
-		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-		return Object.fromEntries(
-			Object.entries(parsed)
-				.filter(
-					(entry): entry is [string, LineageTreeOffset] =>
-						LINEAGE_ROOT_ID_PATTERN.test(entry[0]) &&
-						entry[1] !== null &&
-						typeof entry[1] === 'object' &&
-						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).x) &&
-						Number.isFinite((entry[1] as Partial<LineageTreeOffset>).y)
-				)
-				.map(([id, offset]) => [
-					id,
-					{
-						x: clampLineageCoordinate(offset.x),
-						y: clampLineageCoordinate(offset.y)
-					}
-				])
-		);
-	} catch {
-		return {};
-	}
-}
-
 function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Generation[] {
 	const byId = new Map(existing.map((generation) => [generation.id, generation]));
 	return incoming.map((generation) => {
@@ -257,19 +206,22 @@ function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Gene
 
 export const studio = $state({
 	models: [] as Model[],
+	// False until the first models and history answers (or failures) arrive,
+	// so the views can tell "still loading" from "nothing there" and show a
+	// skeleton for the first.
+	modelsLoaded: false,
+	historyLoaded: false,
 	modelId: '',
 	imageToImageModelId: '',
 	upscaleModelId: '',
 	removedModelIds: [] as string[],
 	prompt: '',
 	generationPrefill: null as GenerationPrefill | null,
-	lineageViewport: loadLineageViewport(),
-	lineageTreeOffsets: loadLineageTreeOffsets(),
-	// Canvas node selection. It lives here rather than in the canvas component
-	// because leaving the Images section destroys that component, and a node
-	// selected before an Upscale should still be selected on the way back.
-	// Deliberately not written to storage: a reload should open a clean canvas
-	// rather than an inspector pinned to whatever was picked days ago.
+	lineageViewport: null as LineageViewport | null,
+	lineageTreeOffsets: {} as Record<string, LineageTreeOffset>,
+	// Canvas node selection lives here because leaving Images destroys its
+	// component. Owner-scoped Images preferences save it, and restore reopens
+	// the inspector after the selected node is found.
 	lineageSelectedAssetId: null as string | null,
 	selectedId: null as string | null, // generation pinned in the viewer
 	selectedExtra: null as Generation | null, // selected lineage node outside loaded history
@@ -284,9 +236,181 @@ export const studio = $state({
 	// Mirrors the /app URL, which +page.svelte applies; change it through the
 	// open* functions below so the view survives reload, Back and deep links.
 	shellView: 'generate' as ShellView,
+	viewOwnerEpoch: 0,
 	metricsTab: 'usage' as MetricsTab,
-	adminTab: 'users' as AdminTab
+	adminTab: 'users' as AdminTab,
+	// The Images view's starred filter. Shared so the sidebar's Starred entry
+	// can open Images already filtered, and show which of the two is active.
+	imagesStarredOnly: false,
+	// True while the realtime canvas holds a live session; the sidebar marks
+	// the canvas entry with it.
+	realtimeLive: false
 });
+
+let activeViewOwner: ViewOwner | null = null;
+let activeViewRole: string | null = null;
+let ownerEpoch = 0;
+let metricsPreferences = defaultViewPrefs('metrics') as MetricsPreferences;
+let imagesPreferences = defaultViewPrefs('images') as ImagesPreferences;
+
+function sameViewOwner(left: ViewOwner | null, right: ViewOwner | null): boolean {
+	return (
+		left?.kind === right?.kind &&
+		(left === null ||
+			right === null ||
+			(left.kind === 'local' || right.kind === 'local'
+				? left.kind === right.kind
+				: left.id === right.id))
+	);
+}
+
+function clearPrivateStudioState(): void {
+	stopGenerationUpdates();
+	polling = false;
+	pollRequested = false;
+	stopGpuSampler();
+	clearGpuSamples();
+	generationRefreshesInFlight.clear();
+	studioCache.clear();
+	resetLineageForestSessionCache();
+	starredListRequestEpoch += 1;
+	starredMutationEpoch += 1;
+	starredListDirty = false;
+	pendingStarredMutations.clear();
+	starredMutationQueues.clear();
+	favoriteNotices.clear();
+	studio.favoriteNotice = '';
+	studio.starredIds = [];
+	studio.starredExtras = [];
+	studio.history = [];
+	studio.historyRecent = [];
+	studio.historyRecentFull = false;
+	studio.historyHasMore = false;
+	studio.historyExtended = false;
+	studio.historyLoaded = false;
+	studio.selectedId = null;
+	studio.selectedExtra = null;
+	studio.lineageSelectedAssetId = null;
+	studio.generationPrefill = null;
+	studio.prompt = '';
+	studio.models = [];
+	studio.modelsLoaded = false;
+	studio.modelId = '';
+	studio.imageToImageModelId = '';
+	studio.upscaleModelId = '';
+	studio.imagesStarredOnly = false;
+	studio.realtimeLive = false;
+}
+
+function migrateLocalLineagePrefs(owner: ViewOwner): void {
+	if (owner.kind !== 'local') return;
+	if (!hasViewPrefs(owner, 'images')) {
+		const legacyMode = readStored('potocolom-images-mode');
+		if (legacyMode !== null) {
+			writeViewPrefs(owner, 'images', {
+				...defaultViewPrefs('images'),
+				mode: legacyMode === 'grid' ? 'grid' : 'lineage'
+			});
+		}
+	}
+	const viewportKey = 'potocolom-lineage-viewport';
+	const offsetsKey = 'potocolom-lineage-tree-offsets';
+	if (!hasViewPrefs(owner, 'lineage-viewport')) {
+		const raw = readStored(viewportKey);
+		if (raw) {
+			try {
+				writeViewPrefs(owner, 'lineage-viewport', JSON.parse(raw));
+			} catch {}
+		}
+	}
+	if (!hasViewPrefs(owner, 'lineage-offsets')) {
+		const raw = readStored(offsetsKey);
+		if (raw) {
+			try {
+				writeViewPrefs(owner, 'lineage-offsets', JSON.parse(raw));
+			} catch {}
+		}
+	}
+}
+
+export function activateViewOwner(owner: ViewOwner | null, role?: string | null): void {
+	const nextRole = role ?? null;
+	if (sameViewOwner(activeViewOwner, owner) && activeViewRole === nextRole) return;
+	const changed = !sameViewOwner(activeViewOwner, owner) || activeViewRole !== nextRole;
+	if (changed) {
+		ownerEpoch += 1;
+		studio.viewOwnerEpoch = ownerEpoch;
+		clearPrivateStudioState();
+	}
+	activeViewOwner = owner === null ? null : { ...owner };
+	activeViewRole = nextRole;
+	if (owner !== null) {
+		activateViewPrefsOwner(owner);
+		migrateLocalLineagePrefs(owner);
+	}
+	metricsPreferences = readViewPrefs(owner, 'metrics');
+	imagesPreferences = readViewPrefs(owner, 'images');
+	studio.metricsTab = metricsPreferences.tab;
+	studio.imagesStarredOnly = imagesPreferences.starredOnly;
+	studio.lineageViewport = readViewPrefs(owner, 'lineage-viewport');
+	studio.lineageTreeOffsets = readViewPrefs(owner, 'lineage-offsets');
+}
+
+/** Revoke the current visit at route entry, including consecutive unknown visits. */
+export function resetViewOwner(): void {
+	ownerEpoch += 1;
+	studio.viewOwnerEpoch = ownerEpoch;
+	clearPrivateStudioState();
+	activeViewOwner = null;
+	activeViewRole = null;
+	metricsPreferences = defaultViewPrefs('metrics');
+	imagesPreferences = defaultViewPrefs('images');
+	studio.metricsTab = metricsPreferences.tab;
+	studio.lineageViewport = null;
+	studio.lineageTreeOffsets = {};
+}
+
+export function viewOwner(): ViewOwner | null {
+	return activeViewOwner === null ? null : { ...activeViewOwner };
+}
+
+export function viewOwnerEpoch(): number {
+	return studio.viewOwnerEpoch;
+}
+
+export function getMetricsPreferences(): MetricsPreferences {
+	return { ...metricsPreferences };
+}
+
+export function saveMetricsPreferences(next: MetricsPreferences): void {
+	metricsPreferences = normalizeViewPrefs('metrics', { ...metricsPreferences, ...next });
+	writeViewPrefs(activeViewOwner, 'metrics', metricsPreferences);
+}
+
+export function getImagesPreferences(): ImagesPreferences {
+	return structuredClone(imagesPreferences);
+}
+
+export function saveImagesPreferences(next: ImagesPreferences): void {
+	imagesPreferences = normalizeViewPrefs('images', { ...imagesPreferences, ...next });
+	studio.imagesStarredOnly = imagesPreferences.starredOnly;
+	writeViewPrefs(activeViewOwner, 'images', imagesPreferences);
+}
+
+/** The most recent distinct prompts in the loaded history, newest first. */
+export function recentPrompts(limit = 10): string[] {
+	const seen = new Set<string>();
+	const recent: string[] = [];
+	for (const generation of studio.history) {
+		const prompt = (generation.params.prompt ?? '').trim();
+		if (prompt !== '' && !seen.has(prompt)) {
+			seen.add(prompt);
+			recent.push(prompt);
+		}
+		if (recent.length === limit) break;
+	}
+	return recent;
+}
 
 export function saveLineageViewport(viewport: LineageViewport): void {
 	const bounded = {
@@ -297,23 +421,37 @@ export function saveLineageViewport(viewport: LineageViewport): void {
 		anchorY: viewport.anchorY === null ? null : clampLineageCoordinate(viewport.anchorY)
 	};
 	studio.lineageViewport = bounded;
-	writeStored(LINEAGE_VIEWPORT_STORAGE_KEY, JSON.stringify(bounded));
+	writeViewPrefs(activeViewOwner, 'lineage-viewport', bounded);
 }
 
 export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
+	const validEntries = Object.entries(offsets).filter(
+		([id, offset]) =>
+			LINEAGE_ROOT_ID_PATTERN.test(id) && Number.isFinite(offset.x) && Number.isFinite(offset.y)
+	);
+	const movedIds = new Set(
+		validEntries
+			.filter(([id, offset]) => {
+				const previous = studio.lineageTreeOffsets[id];
+				return previous === undefined || previous.x !== offset.x || previous.y !== offset.y;
+			})
+			.map(([id]) => id)
+	);
+	const ordered = [
+		...validEntries.filter(([id]) => !movedIds.has(id)),
+		...validEntries.filter(([id]) => movedIds.has(id))
+	];
 	const bounded = Object.fromEntries(
-		Object.entries(offsets)
-			.filter(([id]) => LINEAGE_ROOT_ID_PATTERN.test(id))
-			.map(([id, offset]) => [
-				id,
-				{
-					x: clampLineageCoordinate(offset.x),
-					y: clampLineageCoordinate(offset.y)
-				}
-			])
+		ordered.slice(-1024).map(([id, offset]) => [
+			id,
+			{
+				x: clampLineageCoordinate(offset.x),
+				y: clampLineageCoordinate(offset.y)
+			}
+		])
 	);
 	studio.lineageTreeOffsets = bounded;
-	writeStored(LINEAGE_TREE_OFFSETS_STORAGE_KEY, JSON.stringify(bounded));
+	writeViewPrefs(activeViewOwner, 'lineage-offsets', bounded);
 }
 
 type FavoriteNoticeKind = 'migration' | 'expired' | 'save';
@@ -352,8 +490,22 @@ export function openService(view: Exclude<ShellView, 'metrics' | 'admin' | 'acco
 	openView(view);
 }
 
-export function openMetrics(tab: MetricsTab = 'usage'): void {
-	openView('metrics', tab);
+export function openMetrics(tab?: MetricsTab): void {
+	openView('metrics', tab ?? studio.metricsTab);
+}
+
+export function openImages(starredOnly = false): void {
+	const collectionChanged = imagesPreferences.starredOnly !== starredOnly;
+	imagesPreferences = {
+		...imagesPreferences,
+		starredOnly,
+		...(collectionChanged
+			? { gridAnchor: null, gridSelectionId: null, lineageSelection: null }
+			: {})
+	};
+	studio.imagesStarredOnly = starredOnly;
+	writeViewPrefs(activeViewOwner, 'images', imagesPreferences);
+	openView('images');
 }
 
 export function openAdmin(tab: AdminTab = 'users'): void {
@@ -461,26 +613,35 @@ export function addModel(modelId: string): void {
 }
 
 export async function loadModels(): Promise<void> {
+	const epoch = ownerEpoch;
 	try {
 		const response = await fetch('/api/v1/models');
-		if (!response.ok) return;
+		if (!response.ok || epoch !== ownerEpoch) return;
+		const models = (await response.json()) as Model[];
+		if (epoch !== ownerEpoch) return;
 		studio.removedModelIds = loadRemovedModelIds();
-		applyModels((await response.json()) as Model[]);
+		applyModels(models);
 	} catch {
 		// API unreachable; studio shows the empty-model state.
+	} finally {
+		if (epoch === ownerEpoch) studio.modelsLoaded = true;
 	}
 }
 
 export async function migrateStoredFavorites(): Promise<void> {
+	const epoch = ownerEpoch;
 	const stored = loadStarredIds();
 	if (stored.length === 0) return;
 	const { retry, missing } = await runFavoriteMigration(stored, async (id) => {
+		if (epoch !== ownerEpoch) return null;
 		try {
-			return (await apiFetch(`/api/v1/generations/${id}/star`, { method: 'POST' })).status;
+			const response = await apiFetch(`/api/v1/generations/${id}/star`, { method: 'POST' });
+			return epoch === ownerEpoch ? response.status : null;
 		} catch {
 			return null;
 		}
 	});
+	if (epoch !== ownerEpoch) return;
 	if (retry.length === 0) removeStored(STARRED_STORAGE_KEY);
 	else writeStored(STARRED_STORAGE_KEY, JSON.stringify(retry));
 	const notices: string[] = [];
@@ -494,12 +655,23 @@ export async function migrateStoredFavorites(): Promise<void> {
 }
 
 export async function loadHistory(): Promise<void> {
+	const epoch = ownerEpoch;
+	try {
+		await fetchRecentHistory(epoch);
+	} finally {
+		if (epoch === ownerEpoch) studio.historyLoaded = true;
+	}
+}
+
+async function fetchRecentHistory(epoch: number): Promise<void> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
+	if (epoch !== ownerEpoch) return;
 	if (!response.ok) {
 		reconcileStarredExtras();
 		return;
 	}
 	const page = (await response.json()) as Generation[];
+	if (epoch !== ownerEpoch) return;
 	const recentFull = page.length === HISTORY_LIMIT;
 	const recent = preserveAssetUrls(page, studio.history);
 	studio.historyRecent = recent;
@@ -518,6 +690,7 @@ export async function loadHistory(): Promise<void> {
 }
 
 export async function loadOlderHistory(): Promise<boolean> {
+	const epoch = ownerEpoch;
 	if (!studio.historyHasMore) return false;
 	const oldest = studio.history.at(-1);
 	if (!oldest) return false;
@@ -531,7 +704,7 @@ export async function loadOlderHistory(): Promise<boolean> {
 	};
 
 	const result = await fetchPage(`cursor=${oldest.id}`);
-	if (result === null) return false;
+	if (result === null || epoch !== ownerEpoch) return false;
 
 	const unique = result.items.filter((generation) => !existing.has(generation.id));
 
@@ -556,13 +729,14 @@ export function generationById(id: string): Generation | undefined {
 }
 
 export async function selectGeneration(id: string): Promise<void> {
+	const epoch = ownerEpoch;
 	studio.selectedId = id;
 	if (generationById(id) !== undefined) return;
 	try {
 		const response = await fetch(`/api/v1/generations/${id}`);
 		if (!response.ok) return;
 		const generation = (await response.json()) as Generation;
-		if (studio.selectedId === id) studio.selectedExtra = generation;
+		if (epoch === ownerEpoch && studio.selectedId === id) studio.selectedExtra = generation;
 	} catch {
 		// Keep the current detail visible when an older lineage node cannot load.
 	}
@@ -613,6 +787,7 @@ export function reconcileStarredExtras(): void {
 }
 
 export async function loadStarredGenerations(): Promise<void> {
+	const ownerGeneration = ownerEpoch;
 	const requestEpoch = ++starredListRequestEpoch;
 	const mutationEpoch = starredMutationEpoch;
 	const favorites: Generation[] = [];
@@ -620,8 +795,9 @@ export async function loadStarredGenerations(): Promise<void> {
 	while (true) {
 		const query = cursor === null ? '' : `&cursor=${cursor}`;
 		const response = await fetch(`/api/v1/generations?starred=true&limit=200${query}`);
-		if (!response.ok) return;
+		if (!response.ok || ownerGeneration !== ownerEpoch) return;
 		const page = (await response.json()) as Generation[];
+		if (ownerGeneration !== ownerEpoch) return;
 		favorites.push(...page);
 		if (page.length < 200) break;
 		const nextCursor = page.at(-1)?.id;
@@ -635,7 +811,8 @@ export async function loadStarredGenerations(): Promise<void> {
 			mutationEpoch,
 			starredMutationEpoch,
 			pendingStarredMutations.size > 0
-		)
+		) ||
+		ownerGeneration !== ownerEpoch
 	) {
 		return;
 	}
@@ -663,7 +840,7 @@ export function isStarred(id: string): boolean {
 	return studio.starredIds.includes(id);
 }
 
-async function performStarredToggle(id: string): Promise<boolean> {
+async function performStarredToggle(id: string, ownerGeneration: number): Promise<boolean> {
 	const optimistic = beginOptimisticStarMutation(studio.starredIds, id);
 	const mutationToken = ++starredMutationSequence;
 	pendingStarredMutations.add(mutationToken);
@@ -675,6 +852,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		return false;
 	};
 	const settleMutation = async (succeeded: boolean): Promise<void> => {
+		if (ownerGeneration !== ownerEpoch) return;
 		pendingStarredMutations.delete(mutationToken);
 		const decision = settleStarredListMutation(
 			starredListDirty,
@@ -693,6 +871,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		const response = await apiFetch(`/api/v1/generations/${id}/star`, {
 			method: optimistic.mutation.wasStarred ? 'DELETE' : 'POST'
 		});
+		if (ownerGeneration !== ownerEpoch) return false;
 		if (!response.ok) {
 			const result = rollback();
 			await settleMutation(false);
@@ -702,6 +881,7 @@ async function performStarredToggle(id: string): Promise<boolean> {
 		await settleMutation(true);
 		return true;
 	} catch {
+		if (ownerGeneration !== ownerEpoch) return false;
 		const result = rollback();
 		await settleMutation(false);
 		return result;
@@ -709,8 +889,11 @@ async function performStarredToggle(id: string): Promise<boolean> {
 }
 
 export function toggleStarred(id: string): Promise<boolean> {
+	const epoch = ownerEpoch;
 	const previous = starredMutationQueues.get(id) ?? Promise.resolve(true);
-	const operation = previous.catch(() => false).then(() => performStarredToggle(id));
+	const operation = previous
+		.catch(() => false)
+		.then(() => (epoch === ownerEpoch ? performStarredToggle(id, epoch) : false));
 	starredMutationQueues.set(id, operation);
 	void operation.then(
 		() => {
@@ -724,14 +907,16 @@ export function toggleStarred(id: string): Promise<boolean> {
 }
 
 export async function cancelGeneration(id: string): Promise<boolean> {
+	const epoch = ownerEpoch;
 	try {
 		const response = await apiFetch(`/api/v1/generations/${id}/cancel`, { method: 'POST' });
-		if (!response.ok) return false;
+		if (!response.ok || epoch !== ownerEpoch) return false;
 	} catch {
 		return false;
 	}
+	if (epoch !== ownerEpoch) return false;
 	await refreshGeneration(id);
-	return true;
+	return epoch === ownerEpoch;
 }
 
 function closeGenerationStream(id: string): void {
@@ -748,10 +933,12 @@ function abandonTerminalRefresh(id: string): void {
 }
 
 async function refreshGeneration(id: string): Promise<void> {
+	const epoch = ownerEpoch;
 	if (generationRefreshesInFlight.has(id)) return;
 	generationRefreshesInFlight.add(id);
 	try {
 		const response = await fetch(`/api/v1/generations/${id}`);
+		if (epoch !== ownerEpoch) return;
 		if (response.status === 404) {
 			// The generation is gone; retrying cannot change that.
 			abandonTerminalRefresh(id);
@@ -762,6 +949,7 @@ async function refreshGeneration(id: string): Promise<void> {
 			return;
 		}
 		const generation = (await response.json()) as Generation;
+		if (epoch !== ownerEpoch) return;
 		// The page may have unmounted while this was in flight.
 		if (!updatesEnabled) return;
 		replaceGeneration(generation);
@@ -771,9 +959,9 @@ async function refreshGeneration(id: string): Promise<void> {
 			terminalRefreshAttempts.delete(id);
 		}
 	} catch {
-		countTerminalRefreshFailure(id);
+		if (epoch === ownerEpoch) countTerminalRefreshFailure(id);
 	} finally {
-		generationRefreshesInFlight.delete(id);
+		if (epoch === ownerEpoch) generationRefreshesInFlight.delete(id);
 	}
 }
 
@@ -789,6 +977,7 @@ function countTerminalRefreshFailure(id: string): void {
 }
 
 function subscribeToGeneration(id: string): void {
+	const epoch = ownerEpoch;
 	if (typeof EventSource === 'undefined') {
 		failedGenerationStreams.add(id);
 		return;
@@ -802,6 +991,7 @@ function subscribeToGeneration(id: string): void {
 	}
 	generationStreams.set(id, source);
 	source.onmessage = (message) => {
+		if (epoch !== ownerEpoch) return;
 		let event: GenerationEvent;
 		try {
 			event = JSON.parse(message.data) as GenerationEvent;
@@ -817,6 +1007,7 @@ function subscribeToGeneration(id: string): void {
 		}
 	};
 	source.onerror = () => {
+		if (epoch !== ownerEpoch) return;
 		if (generationStreams.get(id) !== source) return;
 		// This covers an error before the initial snapshot as well as a broken
 		// established stream. Polling is safer than relying on a reconnect that
@@ -866,6 +1057,7 @@ export async function pollWhileWorking(): Promise<void> {
 	// Requesting a tick must not re-enable a stopped view: callers reach here from
 	// async work that can resolve after teardown.
 	if (!updatesEnabled) return;
+	const epoch = ownerEpoch;
 	pollRequested = true;
 	if (polling) return;
 	polling = true;
@@ -875,12 +1067,13 @@ export async function pollWhileWorking(): Promise<void> {
 			pollRequested = false;
 			while (
 				updatesEnabled &&
+				epoch === ownerEpoch &&
 				(studio.history.some((g) => g.state === 'queued' || g.state === 'running') ||
 					pendingTerminalRefreshes.size > 0)
 			) {
 				syncGenerationStreams();
 				await new Promise((resolve) => setTimeout(resolve, 1500));
-				if (!updatesEnabled) break;
+				if (!updatesEnabled || epoch !== ownerEpoch) break;
 				if (syncGenerationStreams()) {
 					try {
 						await loadHistory();
@@ -898,12 +1091,15 @@ export async function pollWhileWorking(): Promise<void> {
 			// have already refreshed history with new queued/running jobs.
 		} while (
 			updatesEnabled &&
+			epoch === ownerEpoch &&
 			(pollRequested || studio.history.some((g) => g.state === 'queued' || g.state === 'running'))
 		);
 	} finally {
-		for (const id of generationStreams.keys()) closeGenerationStream(id);
-		failedGenerationStreams.clear();
-		polling = false;
-		if (updatesEnabled && pollRequested) void pollWhileWorking();
+		if (epoch === ownerEpoch) {
+			for (const id of generationStreams.keys()) closeGenerationStream(id);
+			failedGenerationStreams.clear();
+			polling = false;
+			if (updatesEnabled && pollRequested) void pollWhileWorking();
+		}
 	}
 }

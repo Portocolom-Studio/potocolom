@@ -12,7 +12,8 @@
 <style>
 	.sketch-switcher {
 		position: fixed;
-		inset-block-end: 1rem;
+		/* Clear of the home indicator once viewport-fit=cover reaches it. */
+		inset-block-end: calc(1rem + env(safe-area-inset-bottom));
 		inset-inline-start: 50%;
 		z-index: 200;
 		display: flex;

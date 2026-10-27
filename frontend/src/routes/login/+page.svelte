@@ -2,8 +2,9 @@
 	import { onMount } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import { PUBLIC_SITE_MODE, PUBLIC_WAITLIST_URL } from '$env/static/public';
+	import AuthSplit from '$lib/components/auth/AuthSplit.svelte';
+	import WaitlistForm from '$lib/components/auth/WaitlistForm.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -21,11 +22,15 @@
 		studioReturnSearch,
 		type AuthView
 	} from '$lib/auth-flow';
-	import BrandMark from '$lib/components/brand-mark.svelte';
 	import { t } from '$lib/i18n.svelte';
+	import { initialAuthTab } from '$lib/waitlist';
 	import { resolve } from '$app/paths';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
+	// The waitlist tab exists only when a waitlist endpoint is baked in.
+	const waitlistEndpoint = PUBLIC_WAITLIST_URL;
+	const tabs = ['signin', 'waitlist'] as const;
+	type Tab = (typeof tabs)[number];
 	const loginGuard = createSubmitGuard();
 	const challengeGuard = createSubmitGuard();
 
@@ -39,6 +44,9 @@
 	let loadingConfig = $state(!landing);
 	let submitting = $state(false);
 	let challengeAttempts = $state(0);
+	// Read from the URL on mount: a prerendered page has no search to read.
+	let tab = $state<Tab>(initialAuthTab('', Boolean(waitlistEndpoint), landing));
+	const tabButtons: Partial<Record<Tab, HTMLButtonElement>> = {};
 
 	const showPasswordForm = $derived(
 		!landing && authMethods.includes('password') && !shouldShowChallenge(view)
@@ -53,6 +61,7 @@
 	});
 
 	onMount(async () => {
+		tab = initialAuthTab(page.url.search, Boolean(waitlistEndpoint), landing);
 		if (landing) return;
 		view = initialAuthView(page.url.search);
 		try {
@@ -158,6 +167,29 @@
 		return t('auth.error.generic');
 	}
 
+	function selectTab(next: Tab) {
+		if (next === tab) return;
+		tab = next;
+		const url = new URL(page.url);
+		url.searchParams.set('tab', next);
+		replaceState(url.pathname + url.search + url.hash, page.state);
+	}
+
+	function onTabKey(event: KeyboardEvent) {
+		const index = tabs.indexOf(tab);
+		const moves: Record<string, number> = {
+			ArrowRight: index + 1,
+			ArrowLeft: index - 1,
+			Home: 0,
+			End: tabs.length - 1
+		};
+		if (!(event.key in moves)) return;
+		event.preventDefault();
+		const next = tabs[(moves[event.key] + tabs.length) % tabs.length];
+		selectTab(next);
+		tabButtons[next]?.focus();
+	}
+
 	function backToPassword() {
 		view = 'password';
 		code = '';
@@ -169,18 +201,39 @@
 
 <Seo titleKey="seo.login_title" descriptionKey="seo.login_description" path="/login" noindex />
 
-<div class="bg-background flex min-h-dvh flex-col">
-	<header class="border-b">
-		<div class="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
-			<a class="text-base font-bold tracking-tight" href={resolve('/')}>
-				<BrandMark />
-			</a>
-			<LanguageToggle />
+<AuthSplit
+	fieldSide="end"
+	kicker={t('hero.kicker')}
+	heading={t('hero.title1')}
+	headingTail={t('hero.title2')}
+>
+	{#if waitlistEndpoint}
+		<div class="auth-tabs" role="tablist" aria-label={t('auth.tabs_label')}>
+			{#each tabs as option (option)}
+				<button
+					bind:this={tabButtons[option]}
+					type="button"
+					role="tab"
+					id={`auth-tab-${option}`}
+					aria-selected={tab === option}
+					aria-controls="auth-panel"
+					tabindex={tab === option ? 0 : -1}
+					onclick={() => selectTab(option)}
+					onkeydown={onTabKey}
+				>
+					{option === 'signin' ? t('auth.login.title') : t('wl.cta')}
+				</button>
+			{/each}
 		</div>
-	</header>
-
-	<main class="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-4 py-12 sm:px-6">
-		{#if landing}
+	{/if}
+	<div
+		id="auth-panel"
+		role={waitlistEndpoint ? 'tabpanel' : undefined}
+		aria-labelledby={waitlistEndpoint ? `auth-tab-${tab}` : undefined}
+	>
+		{#if waitlistEndpoint && tab === 'waitlist'}
+			<WaitlistForm endpoint={waitlistEndpoint} />
+		{:else if landing}
 			<Card.Root>
 				<Card.Header>
 					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
@@ -298,5 +351,46 @@
 				</Card.Header>
 			</Card.Root>
 		{/if}
-	</main>
-</div>
+	</div>
+</AuthSplit>
+
+<style>
+	.auth-tabs {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		margin-block-end: 1.75rem;
+		padding: 0.25rem;
+		border-radius: 999px;
+		background: rgb(255 255 255 / 6%);
+	}
+
+	.auth-tabs button {
+		min-block-size: 2.5rem;
+		padding-inline: 0.75rem;
+		border: 0;
+		border-radius: 999px;
+		background: transparent;
+		color: #a6abb5;
+		font-size: 0.875rem;
+		font-weight: 700;
+		cursor: pointer;
+		transition:
+			background-color 160ms ease-out,
+			color 160ms ease-out;
+	}
+
+	.auth-tabs button:hover {
+		color: #f7f8fa;
+	}
+
+	.auth-tabs button[aria-selected='true'] {
+		background: #f7f8fa;
+		color: #07090f;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.auth-tabs button {
+			transition: none;
+		}
+	}
+</style>

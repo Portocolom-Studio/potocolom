@@ -82,6 +82,10 @@
 		align-items: center;
 		gap: 1rem;
 		padding: 1.1rem clamp(1rem, 3vw, 2.5rem);
+		/* The sticky bar reaches under a notch; its contents stay below it. */
+		padding-block-start: calc(1.1rem + env(safe-area-inset-top));
+		padding-inline: max(clamp(1rem, 3vw, 2.5rem), env(safe-area-inset-left))
+			max(clamp(1rem, 3vw, 2.5rem), env(safe-area-inset-right));
 		border-block-end: 1px solid var(--k-line);
 		background: oklch(0.08 0.012 265 / 72%);
 		backdrop-filter: blur(20px);

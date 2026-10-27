@@ -6,18 +6,23 @@
 
 	type Props = WithElementRef<
 		Omit<HTMLInputAttributes, 'type'> &
-			({ type: 'file'; files?: FileList } | { type?: InputType; files?: undefined })
+			({ type: 'file'; files?: FileList } | { type?: InputType; files?: undefined }) & {
+				variant?: 'default' | 'chip';
+			}
 	>;
 
 	let {
 		ref = $bindable(null),
 		value = $bindable(),
 		type,
+		variant = 'default',
 		files = $bindable(),
 		class: className,
 		'data-slot': dataSlot = 'input',
 		...restProps
 	}: Props = $props();
+	const chipClass =
+		'bg-transparent border-line-strong text-foreground h-[26px] rounded-full px-2.5 py-0 font-sans text-xs md:text-xs font-medium transition-colors hover:bg-hover dark:hover:bg-hover focus-visible:border-ring focus-visible:ring-ring/60 focus-visible:ring-2';
 </script>
 
 {#if type === 'file'}
@@ -26,6 +31,7 @@
 		data-slot={dataSlot}
 		class={cn(
 			'bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-4xl border px-3 py-1 font-sans text-base transition-colors file:h-7 file:text-sm file:font-medium focus-visible:ring-[3px] aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50',
+			variant === 'chip' && chipClass,
 			className
 		)}
 		type="file"
@@ -39,6 +45,7 @@
 		data-slot={dataSlot}
 		class={cn(
 			'bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:aria-invalid:border-destructive/50 h-9 rounded-4xl border px-3 py-1 font-sans text-base transition-colors file:h-7 file:text-sm file:font-medium focus-visible:ring-[3px] aria-invalid:ring-[3px] md:text-sm file:text-foreground placeholder:text-muted-foreground w-full min-w-0 outline-none file:inline-flex file:border-0 file:bg-transparent disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50',
+			variant === 'chip' && chipClass,
 			className
 		)}
 		{type}

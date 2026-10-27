@@ -3,6 +3,7 @@
 	import { t } from '$lib/i18n.svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import CircleXIcon from '@lucide/svelte/icons/circle-x';
@@ -258,7 +259,7 @@
 		{#if studio.historyExtended}
 			<button
 				type="button"
-				class="border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground flex h-24 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border text-[0.65rem] leading-tight transition-colors"
+				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-12 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-[0.65rem] leading-tight transition-colors"
 				title={t('app.gen.back_to_recent')}
 				onclick={backToRecent}
 			>
@@ -268,7 +269,7 @@
 		{/if}
 
 		<div
-			class="no-scrollbar flex min-w-0 flex-1 cursor-grab gap-2 overflow-x-auto pb-1 active:cursor-grabbing"
+			class="no-scrollbar flex min-w-0 flex-1 cursor-grab gap-2 overflow-x-auto p-0.5 active:cursor-grabbing"
 			bind:this={stripEl}
 			onpointerdown={onStripPointerDown}
 			onpointermove={onStripPointerMove}
@@ -281,7 +282,7 @@
 				{#if item.generation.assets.length > 0}
 					<button
 						type="button"
-						class="relative shrink-0 hover:opacity-90 focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none rounded-md"
+						class="focus-visible:ring-ring relative shrink-0 rounded-md outline-none hover:opacity-90 focus-visible:ring-2"
 						title={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
 						tabindex={item.thumbIndex === tabStop ? 0 : -1}
 						aria-current={shownId === item.generation.id ? 'true' : undefined}
@@ -292,25 +293,27 @@
 						<img
 							src={item.generation.assets[0].thumbnail_url ?? item.generation.assets[0].url}
 							alt={thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))}
-							class={'pointer-events-none h-24 w-24 rounded-lg border object-cover ' +
-								(shownId === item.generation.id ? 'border-primary' : 'border-border')}
-							width="96"
-							height="96"
+							class={'pointer-events-none size-[72px] rounded-md object-cover ' +
+								(shownId === item.generation.id
+									? 'ring-brand ring-2 ring-offset-1 ring-offset-background'
+									: 'ring-line-strong ring-1')}
+							width="72"
+							height="72"
 							loading="lazy"
 							draggable="false"
 						/>
 						{#if isStarred(item.generation.id)}
 							<span
-								class="bg-background/80 pointer-events-none absolute end-1 top-1 rounded-full p-0.5"
+								class="text-status-warning pointer-events-none absolute end-1 top-1 rounded-full bg-black/40 p-0.5"
 								aria-hidden="true"
 							>
-								<StarIcon class="fill-current size-3" />
+								<StarIcon class="size-3" />
 							</span>
 						{/if}
 					</button>
 				{:else if isCancellable(item.generation.state)}
 					<div
-						class="border-border/60 text-muted-foreground relative grid h-24 w-24 shrink-0 place-items-center rounded-lg border border-dashed"
+						class="border-line-strong text-muted-foreground relative grid size-[72px] shrink-0 place-items-center rounded-md border border-dashed"
 					>
 						<Badge variant="outline">
 							{t('app.gen.badge_working')}
@@ -319,7 +322,7 @@
 							type="button"
 							variant="outline"
 							size="icon-xs"
-							class="bg-background/80 absolute end-1 top-1"
+							class="bg-background/80 hit-slop absolute end-1 top-1"
 							title={t('app.gen.cancel')}
 							aria-label={t('app.gen.cancel')}
 							disabled={cancellingIds.has(item.generation.id)}
@@ -328,14 +331,14 @@
 							<CircleXIcon />
 						</Button>
 						{#if item.generation.state === 'running' && item.generation.progress !== null}
-							<div class="bg-border absolute inset-x-3 bottom-2 h-1 rounded-full">
+							<div class="bg-line-strong absolute inset-x-2 bottom-2 h-0.5 rounded-full">
 								<div
 									role="progressbar"
 									aria-valuemin="0"
 									aria-valuemax="100"
 									aria-valuenow={Math.round(item.generation.progress * 100)}
 									aria-label={t('app.gen.badge_working')}
-									class="bg-primary h-1 w-full origin-left rounded-full transition-transform motion-reduce:transition-none"
+									class="bg-brand h-0.5 w-full origin-left rounded-full transition-transform motion-reduce:transition-none"
 									style={`transform: scaleX(${item.generation.progress})`}
 								></div>
 							</div>
@@ -348,7 +351,7 @@
 		{#if studio.historyHasMore}
 			<button
 				type="button"
-				class="border-border bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground flex h-24 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border text-[0.65rem] leading-tight transition-colors disabled:opacity-50"
+				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-12 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-[0.65rem] leading-tight transition-colors disabled:opacity-50"
 				title={t('app.gen.load_older')}
 				disabled={loadingOlder}
 				onclick={loadOlder}
@@ -364,4 +367,12 @@
 	{#if cancelError !== ''}
 		<p role="status" class="text-destructive text-xs">{cancelError}</p>
 	{/if}
+{:else if !studio.historyLoaded}
+	<!-- The strip's shape while the first history page loads; the generate
+	     viewer above announces the wait. -->
+	<div class="flex min-w-0 gap-2 overflow-hidden p-0.5" aria-hidden="true">
+		{#each [0, 1, 2, 3, 4, 5] as index (index)}
+			<Skeleton class="size-[72px] shrink-0 rounded-md" />
+		{/each}
+	</div>
 {/if}

@@ -3,7 +3,6 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
 import base64
-import inspect
 import logging
 import struct
 import threading
@@ -4031,11 +4030,6 @@ def test_generation_cursor_anchor_must_match_every_filter():
 
 @pytest.mark.db
 def test_generation_prompt_search_ids_share_the_q_filter():
-    source = inspect.getsource(jobs.list_generations)
-    assert "_filter_generations(" in source
-    assert ", q)" in source or ", q," in source
-    assert 'fields == "ids"' in source
-    assert "prompt" in inspect.getsource(jobs._filter_generations)
     with TestClient(app, headers=FLEET_HEADERS) as client:
         async def seed() -> tuple[str, str, str]:
             assert db.local_user_id is not None
@@ -4091,11 +4085,15 @@ def test_generation_prompt_search_ids_share_the_q_filter():
             return str(castle_id), str(lighthouse_id), str(foreign_id)
 
         castle_id, lighthouse_id, foreign_id = client.portal.call(seed)
-        ids = client.get(
+        ids_response = client.get(
             "/api/v1/generations",
             params={"q": "castle", "fields": "ids"},
-        ).json()
-        listed = client.get("/api/v1/generations", params={"q": "castle"}).json()
+        )
+        listed_response = client.get("/api/v1/generations", params={"q": "castle"})
+        assert ids_response.status_code == 200
+        assert listed_response.status_code == 200
+        ids = ids_response.json()
+        listed = listed_response.json()
         assert ids["ids"] == [castle_id]
         assert [row["id"] for row in listed] == [castle_id]
         assert lighthouse_id not in ids["ids"]

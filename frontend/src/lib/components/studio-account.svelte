@@ -12,13 +12,24 @@
 		signInAgainHref
 	} from '$lib/account-logic';
 	import { account } from '$lib/account.svelte';
+	import { activateViewOwner } from '$lib/studio.svelte';
 	import { accountRoleLabelKey, type Role } from '$lib/account-display';
 	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
-	import { t, formatDateTime } from '$lib/i18n.svelte';
+	import { t, formatDateTime, getLocale, locales, setLocale } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Dialog } from 'bits-ui';
+	import type { Component } from 'svelte';
+	import DownloadIcon from '@lucide/svelte/icons/download';
+	import LinkIcon from '@lucide/svelte/icons/link';
+	import MonitorIcon from '@lucide/svelte/icons/monitor';
+	import ShieldIcon from '@lucide/svelte/icons/shield';
+	import SlidersHorizontalIcon from '@lucide/svelte/icons/sliders-horizontal';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import UserIcon from '@lucide/svelte/icons/user';
+	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 
 	type AccountSession = {
 		id: string;
@@ -114,6 +125,9 @@
 		// front of the screen off to the sign-in page.
 		if (destroyed) return true;
 		account.current = null;
+		account.ownerId = null;
+		account.localModeConfirmed = false;
+		activateViewOwner(null, null);
 		await goto(resolve('/login'));
 		return true;
 	}
@@ -263,7 +277,13 @@
 	// server asks for, so the way out is a new sign-in that returns here.
 	async function signInAgain(): Promise<void> {
 		try {
-			await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+			const response = await apiFetch('/api/v1/auth/logout', { method: 'POST' });
+			if (response.ok) {
+				account.current = null;
+				account.ownerId = null;
+				account.localModeConfirmed = false;
+				activateViewOwner(null, null);
+			}
 		} catch {
 			// A sign-in page that finds a live session is still a sign-in page.
 		}
@@ -599,6 +619,58 @@
 		void loadAuthMethods();
 	});
 
+	// The settings sub-navigation: one section on screen at a time.
+	type Section = 'profile' | 'security' | 'sessions' | 'signin' | 'preferences' | 'data' | 'delete';
+	let section = $state<Section>('profile');
+	const sections = $derived<{ value: Section; label: string; sub: string; icon: Component }[]>([
+		{
+			value: 'profile',
+			label: t('app.account.profile'),
+			sub: t('app.account.sub'),
+			icon: UserIcon
+		},
+		{
+			value: 'security',
+			label: t('app.account.security'),
+			sub: t('app.account.security_sub'),
+			icon: ShieldIcon
+		},
+		{
+			value: 'sessions',
+			label: t('app.account.sessions'),
+			sub: t('app.account.sessions_sub'),
+			icon: MonitorIcon
+		},
+		{
+			value: 'signin',
+			label: t('app.account.identities'),
+			sub: t('app.account.identities_sub'),
+			icon: LinkIcon
+		},
+		{
+			value: 'preferences',
+			label: t('app.account.preferences'),
+			sub: t('app.account.preferences_sub'),
+			icon: SlidersHorizontalIcon
+		},
+		{
+			value: 'data',
+			label: t('app.account.your_data'),
+			sub: t('app.account.your_data_sub'),
+			icon: DownloadIcon
+		},
+		{
+			value: 'delete',
+			label: t('app.account.delete_title'),
+			sub: t('app.account.delete_sub'),
+			icon: Trash2Icon
+		}
+	]);
+	const current = $derived(sections.find((entry) => entry.value === section) ?? sections[0]);
+	const cardClass = 'bg-card border-border rounded-[10px] border p-0 ring-0 [--card-spacing:0]';
+
+	useStudioHeader(() => ({ actions: languageToggle }));
+
 	// The view is left with the setup still open more often than it completes,
 	// and its secret is the only copy: dropping it here is what keeps it from
 	// outliving the view that showed it.
@@ -610,7 +682,7 @@
 
 {#snippet freshSignIn(noteKey: Parameters<typeof t>[0])}
 	{#if detail !== null && !detail.recent_auth}
-		<div class="border-border bg-muted/30 rounded-lg border px-4 py-3 text-sm">
+		<div class="border-border bg-raised rounded-[10px] border px-4 py-3 text-[13px]">
 			<p>{t(noteKey)}</p>
 			<Button class="mt-2" variant="outline" size="sm" onclick={() => void signInAgain()}>
 				{t('app.account.sign_in_again')}
@@ -619,389 +691,487 @@
 	{/if}
 {/snippet}
 
-<div class="no-scrollbar h-full overflow-y-auto">
-	<div class="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
-		<div>
-			<h1 class="text-xl font-semibold">{t('app.account.title')}</h1>
-			<p class="text-muted-foreground mt-1 text-sm leading-relaxed">{t('app.account.sub')}</p>
-		</div>
+{#snippet languageToggle()}
+	<div
+		class="bg-field border-line-strong flex gap-0.5 rounded-[7px] border p-0.5"
+		role="group"
+		aria-label={t('ui.language')}
+	>
+		{#each locales as locale (locale)}
+			<button
+				type="button"
+				class={'h-[26px] w-14 rounded-[5px] text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+					(getLocale() === locale
+						? 'bg-hover text-foreground ring-line-strong ring-1 ring-inset'
+						: 'text-muted-foreground hover:text-foreground')}
+				aria-pressed={getLocale() === locale}
+				lang={locale}
+				onclick={() => setLocale(locale)}>{locale.toUpperCase()}</button
+			>
+		{/each}
+	</div>
+{/snippet}
 
-		{#if loading}
-			<p class="text-muted-foreground text-sm">{t('app.account.loading')}</p>
-		{:else if detail}
-			{#if loadError}
-				<p role="alert" class="text-destructive text-sm">{loadError}</p>
-			{/if}
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.profile')}</Card.Title>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-3 p-4">
-					<dl class="grid gap-3 text-sm sm:grid-cols-2">
-						<div>
-							<dt class="text-muted-foreground text-xs">{t('app.account.email')}</dt>
-							<dd class="mt-1 break-all font-medium">{detail.email}</dd>
-						</div>
-						<div>
-							<dt class="text-muted-foreground text-xs">{t('app.account.role')}</dt>
-							<dd class="mt-1 font-medium">{t(accountRoleLabelKey(detail.role))}</dd>
-						</div>
-					</dl>
-					<p class="text-muted-foreground text-sm">
-						{detail.mail_verified ? t('app.account.verified') : t('app.account.not_verified')}
-					</p>
-				</Card.Content>
-			</Card.Root>
+<div class="flex h-full min-h-0 flex-col md:flex-row">
+	<nav
+		class="border-border flex shrink-0 gap-1 overflow-x-auto border-b px-3 py-2 md:w-[244px] md:flex-col md:gap-0.5 md:overflow-visible md:border-e md:border-b-0 md:px-3 md:py-5"
+		aria-label={t('app.account.title')}
+	>
+		<p class="text-dim hidden px-2 pb-2 text-[11px] font-medium md:block">
+			{t('app.account.title')}
+		</p>
+		{#each sections as entry (entry.value)}
+			<button
+				type="button"
+				class={'relative flex h-[30px] shrink-0 items-center gap-2.5 rounded-md px-2 text-[13px] font-medium whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+					(section === entry.value
+						? "bg-hover text-foreground md:before:absolute md:before:-left-3 md:before:top-[7px] md:before:bottom-[7px] md:before:w-0.5 md:before:rounded-full md:before:bg-brand md:before:content-['']"
+						: 'text-muted-foreground hover:text-foreground')}
+				aria-current={section === entry.value ? 'page' : undefined}
+				onclick={() => (section = entry.value)}
+			>
+				<entry.icon class="size-4 shrink-0" aria-hidden="true" />
+				{entry.label}
+			</button>
+		{/each}
+	</nav>
+	<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
+		<div class="flex w-full max-w-[760px] flex-col gap-4 px-4 py-8 md:px-12">
+			<div>
+				<h1 class="text-xl font-semibold tracking-[-0.02em]">{current.label}</h1>
+				<p class="text-muted-foreground mt-1 text-[12.5px] leading-relaxed">{current.sub}</p>
+			</div>
 
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.sessions')}</Card.Title>
-					<Card.Description>{t('app.account.sessions_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="p-4">
-					{#if sessionError}
-						<p role="alert" class="text-destructive mb-3 text-sm">{sessionError}</p>
-					{/if}
-					{#if detail.sessions.length === 0}
-						<p class="text-muted-foreground text-sm">{t('app.account.sessions_empty')}</p>
-					{:else}
-						<ul class="divide-border divide-y">
-							{#each detail.sessions as session (session.id)}
-								<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
-									<div class="min-w-0">
-										<p class="text-sm font-medium">
-											{#if session.current}
-												{t('app.account.this_device')}
-											{:else}
-												<span class="font-mono text-xs break-all">{session.id}</span>
-											{/if}
-										</p>
-										<p class="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
-											<span>{t('app.account.created')}: {formatDateTime(session.created_at)}</span>
-											<span>
-												{t('app.account.last_seen')}: {formatDateTime(session.last_seen_at)}
-											</span>
-										</p>
-									</div>
-									<Button
-										variant="outline"
-										size="sm"
-										disabled={endingSession !== null}
-										aria-label={t('app.account.sign_out_session')
-											.replace('{date}', () => formatDateTime(session.created_at))
-											.replace('{seen}', () => formatDateTime(session.last_seen_at))}
-										onclick={() => void endSession(session)}
-									>
-										{t('app.account.sign_out')}
-									</Button>
-								</li>
+			{#if loading}
+				<div role="status" class="flex flex-col gap-4">
+					<span class="sr-only">{t('app.account.loading')}</span>
+					<div class="bg-card border-border rounded-[10px] border" aria-hidden="true">
+						<div class="border-border border-b px-4 py-3">
+							<Skeleton class="h-4 w-24 rounded" />
+						</div>
+						<div class="grid gap-3 p-4 sm:grid-cols-2">
+							{#each [0, 1] as index (index)}
+								<div class="flex flex-col gap-2">
+									<Skeleton class="h-2.5 w-16 rounded" />
+									<Skeleton class="h-3.5 w-40 rounded" />
+								</div>
 							{/each}
-						</ul>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.password')}</Card.Title>
-					<Card.Description>{t('app.account.password_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-3 p-4">
-					{#if passwordNotice}
-						<p role="status" class="text-muted-foreground text-sm">{passwordNotice}</p>
-					{/if}
-					{@render freshSignIn('app.account.recent_auth_note')}
-					<form class="grid gap-3 sm:grid-cols-2" onsubmit={savePassword}>
-						<label class="flex flex-col gap-1 text-xs font-medium">
-							{t('app.account.current_password')}
-							<Input
-								type="password"
-								autocomplete="current-password"
-								disabled={!detail.recent_auth || savingPassword}
-								bind:value={currentPassword}
-							/>
-						</label>
-						<label class="flex flex-col gap-1 text-xs font-medium">
-							{t('app.account.new_password')}
-							<Input
-								type="password"
-								autocomplete="new-password"
-								disabled={!detail.recent_auth || savingPassword}
-								bind:value={newPassword}
-							/>
-						</label>
-						<div class="flex items-end sm:col-span-2">
-							<Button
-								type="submit"
-								disabled={!detail.recent_auth || savingPassword || newPassword === ''}
-							>
-								{savingPassword ? t('app.account.saving') : t('app.account.save_password')}
-							</Button>
 						</div>
-					</form>
-					{#if passwordError}
-						<p role="alert" class="text-destructive text-sm">{passwordError}</p>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.totp')}</Card.Title>
-					<Card.Description>{t('app.account.totp_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn('app.account.recent_auth_needed')}
-					<p class="text-sm">
-						{detail.totp ? t('app.account.totp_on') : t('app.account.totp_off')}
-					</p>
-					{#if setup !== null}
-						<form class="grid gap-3" onsubmit={confirmSetup}>
-							<p class="text-sm font-medium">
-								{replacing
-									? t('app.account.totp_replace_heading')
-									: t('app.account.totp_setup_heading')}
+					</div>
+					<Skeleton class="h-32 rounded-[10px]" aria-hidden="true" />
+				</div>
+			{:else if detail}
+				{#if loadError}
+					<p role="alert" class="text-destructive text-sm">{loadError}</p>
+				{/if}
+				{#if section === 'profile'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.profile')}</Card.Title>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-3 p-4">
+							<dl class="grid gap-3 text-sm sm:grid-cols-2">
+								<div>
+									<dt class="text-muted-foreground text-xs">{t('app.account.email')}</dt>
+									<dd class="mt-1 break-all font-medium">{detail.email}</dd>
+								</div>
+								<div>
+									<dt class="text-muted-foreground text-xs">{t('app.account.role')}</dt>
+									<dd class="mt-1 font-medium">{t(accountRoleLabelKey(detail.role))}</dd>
+								</div>
+							</dl>
+							<p class="text-muted-foreground text-sm">
+								{detail.mail_verified ? t('app.account.verified') : t('app.account.not_verified')}
 							</p>
-							<label class="flex flex-col gap-1 text-xs font-medium">
-								{t('app.account.totp_secret_label')}
-								<Input type="text" readonly autocomplete="off" value={setup.secret} />
-							</label>
-							<p class="text-muted-foreground text-sm">{t('app.account.totp_secret_note')}</p>
-							<a
-								class="text-sm underline"
-								href={setup.uri}
-								target="_blank"
-								rel="noopener noreferrer"
-							>
-								{t('app.account.totp_open_app')}
-							</a>
-							<div>
-								<p class="text-xs font-medium">{t('app.account.totp_codes')}</p>
-								<p class="text-muted-foreground mt-1 text-sm">
-									{t('app.account.totp_codes_note')}
-								</p>
-								<ul class="mt-2 grid gap-1 font-mono text-sm">
-									{#each setup.recovery_codes as code (code)}
-										<li>{code}</li>
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'sessions'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.sessions')}</Card.Title>
+							<Card.Description>{t('app.account.sessions_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="p-4">
+							{#if sessionError}
+								<p role="alert" class="text-destructive mb-3 text-sm">{sessionError}</p>
+							{/if}
+							{#if detail.sessions.length === 0}
+								<p class="text-muted-foreground text-sm">{t('app.account.sessions_empty')}</p>
+							{:else}
+								<ul class="divide-border divide-y">
+									{#each detail.sessions as session (session.id)}
+										<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
+											<div class="min-w-0">
+												<p class="text-sm font-medium">
+													{#if session.current}
+														{t('app.account.this_device')}
+													{:else}
+														<span class="font-mono text-xs break-all">{session.id}</span>
+													{/if}
+												</p>
+												<p class="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
+													<span
+														>{t('app.account.created')}: {formatDateTime(session.created_at)}</span
+													>
+													<span>
+														{t('app.account.last_seen')}: {formatDateTime(session.last_seen_at)}
+													</span>
+												</p>
+											</div>
+											<Button
+												variant="outline"
+												size="sm"
+												disabled={endingSession !== null}
+												aria-label={t('app.account.sign_out_session')
+													.replace('{date}', () => formatDateTime(session.created_at))
+													.replace('{seen}', () => formatDateTime(session.last_seen_at))}
+												onclick={() => void endSession(session)}
+											>
+												{t('app.account.sign_out')}
+											</Button>
+										</li>
 									{/each}
 								</ul>
-								<Button
-									type="button"
-									class="mt-2"
-									variant="outline"
-									size="sm"
-									onclick={() => void copyCodes()}
-								>
-									{t('app.account.totp_copy_codes')}
-								</Button>
-								{#if codesNotice}
-									<p role="status" class="text-muted-foreground mt-2 text-sm">{codesNotice}</p>
-								{/if}
-								{#if codesError}
-									<p role="alert" class="text-destructive mt-2 text-sm">{codesError}</p>
-								{/if}
-							</div>
-							<label class="flex flex-col gap-1 text-xs font-medium">
-								{t('app.account.totp_code_label')}
-								<Input
-									type="text"
-									inputmode="numeric"
-									autocomplete="one-time-code"
-									maxlength={6}
-									disabled={!detail.recent_auth || setupBusy}
-									bind:value={setupCode}
-								/>
-							</label>
-							{#if replacing}
+							{/if}
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'security'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.password')}</Card.Title>
+							<Card.Description>{t('app.account.password_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-3 p-4">
+							{#if passwordNotice}
+								<p role="status" class="text-muted-foreground text-sm">{passwordNotice}</p>
+							{/if}
+							{@render freshSignIn('app.account.recent_auth_note')}
+							<form class="grid gap-3 sm:grid-cols-2" onsubmit={savePassword}>
 								<label class="flex flex-col gap-1 text-xs font-medium">
-									{t('app.account.totp_current_code_label')}
-									<!-- A recovery code carries letters, so the keyboard cannot be numeric. -->
+									{t('app.account.current_password')}
 									<Input
-										type="text"
-										inputmode="text"
-										autocomplete="off"
-										disabled={!detail.recent_auth || setupBusy}
-										bind:value={currentCode}
+										type="password"
+										autocomplete="current-password"
+										disabled={!detail.recent_auth || savingPassword}
+										bind:value={currentPassword}
 									/>
 								</label>
+								<label class="flex flex-col gap-1 text-xs font-medium">
+									{t('app.account.new_password')}
+									<Input
+										type="password"
+										autocomplete="new-password"
+										disabled={!detail.recent_auth || savingPassword}
+										bind:value={newPassword}
+									/>
+								</label>
+								<div class="flex items-end sm:col-span-2">
+									<Button
+										type="submit"
+										disabled={!detail.recent_auth || savingPassword || newPassword === ''}
+									>
+										{savingPassword ? t('app.account.saving') : t('app.account.save_password')}
+									</Button>
+								</div>
+							</form>
+							{#if passwordError}
+								<p role="alert" class="text-destructive text-sm">{passwordError}</p>
 							{/if}
-							<div class="flex flex-wrap gap-2">
-								<Button
-									type="submit"
-									disabled={!detail.recent_auth ||
-										setupBusy ||
-										setupCode.trim() === '' ||
-										(replacing && currentCode.trim() === '')}
-								>
-									{t('app.account.totp_confirm')}
-								</Button>
-								<Button type="button" variant="outline" disabled={setupBusy} onclick={cancelSetup}>
-									{t('app.account.cancel')}
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'security'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.totp')}</Card.Title>
+							<Card.Description>{t('app.account.totp_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-3 p-4">
+							{@render freshSignIn('app.account.recent_auth_needed')}
+							<p class="text-sm">
+								{detail.totp ? t('app.account.totp_on') : t('app.account.totp_off')}
+							</p>
+							{#if setup !== null}
+								<form class="grid gap-3" onsubmit={confirmSetup}>
+									<p class="text-sm font-medium">
+										{replacing
+											? t('app.account.totp_replace_heading')
+											: t('app.account.totp_setup_heading')}
+									</p>
+									<label class="flex flex-col gap-1 text-xs font-medium">
+										{t('app.account.totp_secret_label')}
+										<Input type="text" readonly autocomplete="off" value={setup.secret} />
+									</label>
+									<p class="text-muted-foreground text-sm">{t('app.account.totp_secret_note')}</p>
+									<a
+										class="text-sm underline"
+										href={setup.uri}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										{t('app.account.totp_open_app')}
+									</a>
+									<div>
+										<p class="text-xs font-medium">{t('app.account.totp_codes')}</p>
+										<p class="text-muted-foreground mt-1 text-sm">
+											{t('app.account.totp_codes_note')}
+										</p>
+										<ul class="mt-2 grid gap-1 font-mono text-sm">
+											{#each setup.recovery_codes as code (code)}
+												<li>{code}</li>
+											{/each}
+										</ul>
+										<Button
+											type="button"
+											class="mt-2"
+											variant="outline"
+											size="sm"
+											onclick={() => void copyCodes()}
+										>
+											{t('app.account.totp_copy_codes')}
+										</Button>
+										{#if codesNotice}
+											<p role="status" class="text-muted-foreground mt-2 text-sm">{codesNotice}</p>
+										{/if}
+										{#if codesError}
+											<p role="alert" class="text-destructive mt-2 text-sm">{codesError}</p>
+										{/if}
+									</div>
+									<label class="flex flex-col gap-1 text-xs font-medium">
+										{t('app.account.totp_code_label')}
+										<Input
+											type="text"
+											inputmode="numeric"
+											autocomplete="one-time-code"
+											pattern="[0-9]{6}"
+											maxlength={6}
+											disabled={!detail.recent_auth || setupBusy}
+											bind:value={setupCode}
+										/>
+									</label>
+									{#if replacing}
+										<label class="flex flex-col gap-1 text-xs font-medium">
+											{t('app.account.totp_current_code_label')}
+											<!-- A recovery code carries letters, so the keyboard cannot be numeric;
+											     one-time-code still lets a password manager offer the
+											     current code. -->
+											<Input
+												type="text"
+												inputmode="text"
+												autocomplete="one-time-code"
+												spellcheck={false}
+												pattern=".*\S.*"
+												disabled={!detail.recent_auth || setupBusy}
+												bind:value={currentCode}
+											/>
+										</label>
+									{/if}
+									<div class="flex flex-wrap gap-2">
+										<Button
+											type="submit"
+											disabled={!detail.recent_auth ||
+												setupBusy ||
+												setupCode.trim() === '' ||
+												(replacing && currentCode.trim() === '')}
+										>
+											{t('app.account.totp_confirm')}
+										</Button>
+										<Button
+											type="button"
+											variant="outline"
+											disabled={setupBusy}
+											onclick={cancelSetup}
+										>
+											{t('app.account.cancel')}
+										</Button>
+									</div>
+								</form>
+							{:else}
+								<div class="flex flex-wrap gap-2">
+									{#if !detail.totp}
+										<Button
+											disabled={!detail.recent_auth || setupBusy}
+											onclick={() => void beginSetup('enrol')}
+										>
+											{t('app.account.totp_setup')}
+										</Button>
+									{:else}
+										<Button
+											variant="outline"
+											disabled={!detail.recent_auth || setupBusy}
+											onclick={() => void beginSetup('replace')}
+										>
+											{t('app.account.totp_replace')}
+										</Button>
+										<Button
+											variant="destructive"
+											disabled={!detail.recent_auth || removing}
+											onclick={openRemoveDialog}
+										>
+											{t('app.account.totp_remove')}
+										</Button>
+									{/if}
+								</div>
+							{/if}
+							{#if setupError}
+								<p role="alert" class="text-destructive text-sm">{setupError}</p>
+							{/if}
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'security'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.email')}</Card.Title>
+							<Card.Description>{t('app.account.email_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-3 p-4">
+							{@render freshSignIn('app.account.recent_auth_needed')}
+							{#if emailNotice}
+								<p role="status" class="text-muted-foreground text-sm">{emailNotice}</p>
+							{/if}
+							<p class="text-sm">
+								<span class="text-muted-foreground text-xs">{t('app.account.email_current')}</span>
+								<span class="ml-2 break-all font-medium">{detail.email}</span>
+							</p>
+							<form class="grid gap-3 sm:grid-cols-2" onsubmit={saveEmail}>
+								<label class="flex flex-col gap-1 text-xs font-medium">
+									{t('app.account.email_new')}
+									<Input
+										type="email"
+										autocomplete="email"
+										disabled={!detail.recent_auth || savingEmail}
+										bind:value={newEmail}
+									/>
+								</label>
+								<div class="flex items-end">
+									<Button
+										type="submit"
+										disabled={!detail.recent_auth ||
+											savingEmail ||
+											emailUnchanged ||
+											newEmail.trim() === ''}
+									>
+										{savingEmail ? t('app.account.saving') : t('app.account.save_email')}
+									</Button>
+								</div>
+							</form>
+							{#if emailError}
+								<p role="alert" class="text-destructive text-sm">{emailError}</p>
+							{/if}
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'signin'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.identities')}</Card.Title>
+							<Card.Description>{t('app.account.identities_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="flex flex-col gap-3 p-4">
+							{@render freshSignIn('app.account.recent_auth_needed')}
+							{#if identityError}
+								<p role="alert" class="text-destructive text-sm">{identityError}</p>
+							{/if}
+							<ul class="divide-border divide-y">
+								{#each detail.identities as identity (identity)}
+									<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
+										<p class="text-sm font-medium">{providerLabel(identity)}</p>
+										{#if canUnlinkIdentity(identity, detail.identities)}
+											<Button
+												variant="outline"
+												size="sm"
+												disabled={!detail.recent_auth || identityBusy !== null}
+												onclick={() => void unlinkIdentity(identity)}
+											>
+												{t('app.account.unlink')}
+											</Button>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+							{#if linkable.length > 0}
+								<div class="flex flex-wrap items-center gap-2 border-border border-t pt-3">
+									<span class="text-muted-foreground text-sm">{t('app.account.link_offer')}</span>
+									{#each linkable as provider (provider)}
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={!detail.recent_auth || identityBusy !== null}
+											onclick={() => void linkIdentity(provider)}
+										>
+											{t('app.account.link')}
+											{providerLabel(provider)}
+										</Button>
+									{/each}
+								</div>
+							{/if}
+						</Card.Content>
+					</Card.Root>
+				{/if}
+
+				{#if section === 'data'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<div class="flex flex-wrap items-center justify-between gap-3">
+								<div>
+									<Card.Title class="text-base">{t('app.account.your_data')}</Card.Title>
+									<Card.Description>{t('app.account.your_data_sub')}</Card.Description>
+								</div>
+								<Button variant="outline" size="sm" disabled={exporting} onclick={exportAccount}>
+									{t('app.account.download')}
 								</Button>
 							</div>
-						</form>
-					{:else}
-						<div class="flex flex-wrap gap-2">
-							{#if !detail.totp}
-								<Button
-									disabled={!detail.recent_auth || setupBusy}
-									onclick={() => void beginSetup('enrol')}
-								>
-									{t('app.account.totp_setup')}
-								</Button>
-							{:else}
-								<Button
-									variant="outline"
-									disabled={!detail.recent_auth || setupBusy}
-									onclick={() => void beginSetup('replace')}
-								>
-									{t('app.account.totp_replace')}
-								</Button>
-								<Button
-									variant="destructive"
-									disabled={!detail.recent_auth || removing}
-									onclick={openRemoveDialog}
-								>
-									{t('app.account.totp_remove')}
-								</Button>
-							{/if}
-						</div>
-					{/if}
-					{#if setupError}
-						<p role="alert" class="text-destructive text-sm">{setupError}</p>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.email')}</Card.Title>
-					<Card.Description>{t('app.account.email_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn('app.account.recent_auth_needed')}
-					{#if emailNotice}
-						<p role="status" class="text-muted-foreground text-sm">{emailNotice}</p>
-					{/if}
-					<p class="text-sm">
-						<span class="text-muted-foreground text-xs">{t('app.account.email_current')}</span>
-						<span class="ml-2 break-all font-medium">{detail.email}</span>
-					</p>
-					<form class="grid gap-3 sm:grid-cols-2" onsubmit={saveEmail}>
-						<label class="flex flex-col gap-1 text-xs font-medium">
-							{t('app.account.email_new')}
-							<Input
-								type="email"
-								autocomplete="email"
-								disabled={!detail.recent_auth || savingEmail}
-								bind:value={newEmail}
-							/>
-						</label>
-						<div class="flex items-end">
-							<Button
-								type="submit"
-								disabled={!detail.recent_auth ||
-									savingEmail ||
-									emailUnchanged ||
-									newEmail.trim() === ''}
-							>
-								{savingEmail ? t('app.account.saving') : t('app.account.save_email')}
-							</Button>
-						</div>
-					</form>
-					{#if emailError}
-						<p role="alert" class="text-destructive text-sm">{emailError}</p>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.identities')}</Card.Title>
-					<Card.Description>{t('app.account.identities_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="flex flex-col gap-3 p-4">
-					{@render freshSignIn('app.account.recent_auth_needed')}
-					{#if identityError}
-						<p role="alert" class="text-destructive text-sm">{identityError}</p>
-					{/if}
-					<ul class="divide-border divide-y">
-						{#each detail.identities as identity (identity)}
-							<li class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-3">
-								<p class="text-sm font-medium">{providerLabel(identity)}</p>
-								{#if canUnlinkIdentity(identity, detail.identities)}
-									<Button
-										variant="outline"
-										size="sm"
-										disabled={!detail.recent_auth || identityBusy !== null}
-										onclick={() => void unlinkIdentity(identity)}
-									>
-										{t('app.account.unlink')}
-									</Button>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-					{#if linkable.length > 0}
-						<div class="flex flex-wrap items-center gap-2 border-border border-t pt-3">
-							<span class="text-muted-foreground text-sm">{t('app.account.link_offer')}</span>
-							{#each linkable as provider (provider)}
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={!detail.recent_auth || identityBusy !== null}
-									onclick={() => void linkIdentity(provider)}
-								>
-									{t('app.account.link')}
-									{providerLabel(provider)}
-								</Button>
-							{/each}
-						</div>
-					{/if}
-				</Card.Content>
-			</Card.Root>
-
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<div class="flex flex-wrap items-center justify-between gap-3">
-						<div>
-							<Card.Title class="text-base">{t('app.account.your_data')}</Card.Title>
-							<Card.Description>{t('app.account.your_data_sub')}</Card.Description>
-						</div>
-						<Button variant="outline" size="sm" disabled={exporting} onclick={exportAccount}>
-							{t('app.account.download')}
-						</Button>
-					</div>
-				</Card.Header>
-				{#if exportError}
-					<Card.Content class="p-4">
-						<p role="alert" class="text-destructive text-sm">{exportError}</p>
-					</Card.Content>
+						</Card.Header>
+						{#if exportError}
+							<Card.Content class="p-4">
+								<p role="alert" class="text-destructive text-sm">{exportError}</p>
+							</Card.Content>
+						{/if}
+					</Card.Root>
 				{/if}
-			</Card.Root>
 
-			<Card.Root class="p-0 [--card-spacing:0]">
-				<Card.Header class="border-border border-b px-4 py-3">
-					<Card.Title class="text-base">{t('app.account.delete_title')}</Card.Title>
-					<Card.Description>{t('app.account.delete_sub')}</Card.Description>
-				</Card.Header>
-				<Card.Content class="p-4">
-					<Button variant="destructive" onclick={openDeleteDialog}>
-						{t('app.account.delete_button')}
-					</Button>
-				</Card.Content>
-			</Card.Root>
-		{:else if loadError}
-			<p role="alert" class="text-destructive text-sm">{loadError}</p>
-		{/if}
+				{#if section === 'delete'}
+					<Card.Root class={cardClass}>
+						<Card.Header class="border-border border-b px-4 py-3">
+							<Card.Title class="text-base">{t('app.account.delete_title')}</Card.Title>
+							<Card.Description>{t('app.account.delete_sub')}</Card.Description>
+						</Card.Header>
+						<Card.Content class="p-4">
+							<Button variant="destructive" onclick={openDeleteDialog}>
+								{t('app.account.delete_button')}
+							</Button>
+						</Card.Content>
+					</Card.Root>
+				{/if}
+			{:else if loadError}
+				<p role="alert" class="text-destructive text-sm">{loadError}</p>
+			{/if}
+			{#if section === 'preferences'}
+				<div class={cardClass + ' flex items-center justify-between gap-4 px-4 py-3.5'}>
+					<div>
+						<p class="text-[13px] font-medium">{t('ui.language')}</p>
+						<p class="text-muted-foreground text-xs">{t('app.account.language_sub')}</p>
+					</div>
+					{@render languageToggle()}
+				</div>
+			{/if}
+		</div>
 	</div>
 </div>
 
 <Dialog.Root bind:open={deleteOpen}>
 	<Dialog.Portal>
-		<Dialog.Overlay class="bg-background/80 fixed inset-0 z-50 backdrop-blur-sm" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/60" />
 		<Dialog.Content
-			class="bg-popover text-popover-foreground fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border p-6 shadow-lg"
+			class="bg-popover text-popover-foreground border-line-strong fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border p-6 shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
 		>
 			<Dialog.Title class="text-lg font-semibold">{t('app.account.delete_title')}</Dialog.Title>
 			<Dialog.Description class="text-muted-foreground mt-2 text-sm">
@@ -1028,9 +1198,9 @@
 
 <Dialog.Root bind:open={removeOpen}>
 	<Dialog.Portal>
-		<Dialog.Overlay class="bg-background/80 fixed inset-0 z-50 backdrop-blur-sm" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/60" />
 		<Dialog.Content
-			class="bg-popover text-popover-foreground fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border p-6 shadow-lg"
+			class="bg-popover text-popover-foreground border-line-strong fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border p-6 shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
 		>
 			<Dialog.Title class="text-lg font-semibold">
 				{t('app.account.totp_remove_title')}
@@ -1040,11 +1210,14 @@
 			</Dialog.Description>
 			<label class="mt-4 flex flex-col gap-1 text-xs font-medium">
 				{t('app.account.totp_current_code_label')}
-				<!-- A recovery code carries letters, so the keyboard cannot be numeric. -->
+				<!-- A recovery code carries letters, so the keyboard cannot be numeric;
+				     one-time-code still lets a password manager offer the current code. -->
 				<Input
 					type="text"
 					inputmode="text"
-					autocomplete="off"
+					autocomplete="one-time-code"
+					spellcheck={false}
+					pattern=".*\S.*"
 					disabled={!mayChange || removing}
 					bind:value={removeCode}
 				/>

@@ -36,14 +36,16 @@ export async function fetchGpuHistory(
 	toMs: number,
 	rollup: 'auto' | 'raw' | '5m' = 'auto',
 	workerId?: string
-): Promise<GpuHistoryPoint[]> {
-	const response = await fetch(
-		`/api/v1/metrics/gpu/history${gpuHistorySearch(fromMs, toMs, rollup, workerId)}`
-	);
-	if (!response.ok) {
-		return [];
+): Promise<GpuHistoryPoint[] | null> {
+	try {
+		const response = await fetch(
+			`/api/v1/metrics/gpu/history${gpuHistorySearch(fromMs, toMs, rollup, workerId)}`
+		);
+		if (!response.ok) return null;
+		return gpuHistoryPoints((await response.json()) as GpuHistoryResponse);
+	} catch {
+		return null;
 	}
-	return gpuHistoryPoints((await response.json()) as GpuHistoryResponse);
 }
 
 export function gpuHistorySearch(

@@ -34,7 +34,7 @@
 
 <style>
 	/* Rule-based rows keep the FAQ quiet between the particle split and
-	   the more atmospheric waitlist field. */
+	   the footer. */
 	.faq {
 		position: relative;
 		z-index: 1;

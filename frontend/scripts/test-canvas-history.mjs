@@ -18,6 +18,19 @@ const WAIT_MS = 20000;
 const FRAME_HEADER_BYTES = 21;
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
+async function waitFixture(promise, label) {
+	let timeout;
+	try {
+		await Promise.race([
+			promise,
+			new Promise((_, reject) => {
+				timeout = setTimeout(() => reject(new Error(label)), WAIT_MS);
+			})
+		]);
+	} finally {
+		clearTimeout(timeout);
+	}
+}
 const MODEL = {
 	id: 'history-smoke',
 	name: 'History smoke model',
@@ -55,6 +68,19 @@ const CONTENT_TYPES = {
 // The answers a caller did not override, so every existing caller keeps them.
 function defaultApiBody(path) {
 	if (path === '/api/v1/models') return [MODEL];
+	if (path === '/api/v1/generations/models') return { models: [MODEL] };
+	if (/^\/api\/v1\/generations\/[^/]+\/lineage$/.test(path)) {
+		return { ancestors: [], children: [], descendant_count: 0, descendants_truncated: false };
+	}
+	if (path === '/api/v1/metrics/gpu/history') {
+		return {
+			from: '1970-01-01T00:00:00Z',
+			to: '1970-01-01T00:05:00Z',
+			rollup: 'raw',
+			samples: [],
+			truncated: false
+		};
+	}
 	if (path === '/api/v1/config')
 		return { auth_methods: [], billing_enabled: false, languages: ['en', 'es'] };
 	return [];
@@ -73,14 +99,25 @@ async function serveBuild(apiAnswers = {}) {
 			const path = url.pathname;
 			if (path.startsWith('/api/')) {
 				const key = `${path}${url.search}`;
-				const answer = apiAnswers[key] ??
-					Object.entries(apiAnswers).find(
-						([queryKey]) => queryKey.includes('?') && key.startsWith(queryKey)
-					)?.[1] ??
-					apiAnswers[path] ?? { body: defaultApiBody(path) };
+				const answer =
+					apiAnswers[key] ??
+					Object.entries(apiAnswers)
+						.filter(([queryKey]) => queryKey.includes('?') && key.startsWith(queryKey))
+						.sort(([left], [right]) => right.length - left.length)[0]?.[1] ??
+					apiAnswers[path] ??
+					(path === '/api/v1/account'
+						? { status: 404, body: null }
+						: { body: defaultApiBody(path) });
 				if (answer.delayMs) await pause(answer.delayMs);
-				response.writeHead(200, { 'Content-Type': 'application/json' });
-				response.end(JSON.stringify(answer.body));
+				const body =
+					typeof answer.body === 'function' ? await answer.body(url, request) : answer.body;
+				const status =
+					typeof answer.status === 'function'
+						? await answer.status(url, request)
+						: (answer.status ?? 200);
+				response.writeHead(status, { 'Content-Type': 'application/json' });
+				if (status === 204 || status === 304) response.end();
+				else response.end(body === null ? '' : JSON.stringify(body));
 				return;
 			}
 			const clean = resolve(build, '.' + decodeURIComponent(path));
@@ -120,6 +157,24 @@ async function serveBuild(apiAnswers = {}) {
 	});
 	await new Promise((resolveServer) => server.listen(0, '127.0.0.1', resolveServer));
 	return server;
+}
+
+function viewPrefsStorageKey(owner, section) {
+	const profile = owner.kind === 'local' ? 'local' : `account-${owner.id.toLowerCase()}`;
+	return `potocolom-view-v1:${profile}:${section}`;
+}
+
+async function readViewPrefs(page, owner, section) {
+	return page.evaluate(
+		({ profileKey, selectedSection }) => {
+			const raw = localStorage.getItem(`potocolom-view-v1:${profileKey}:${selectedSection}`);
+			return raw === null ? null : JSON.parse(raw);
+		},
+		{
+			profileKey: owner.kind === 'local' ? 'local' : `account-${owner.id.toLowerCase()}`,
+			selectedSection: section
+		}
+	);
 }
 
 async function chromeExecutable() {
@@ -224,7 +279,14 @@ function installSocketAdapter(page) {
 // socket stub and the caller's setup installed before the document loads.
 // `verifyErrors` stays on for the tests and is switched off only where a failed
 // open would report the page error instead of its own cause.
-async function launchStudio(locale, setup, apiAnswers, waitUntil, appPath = '/app') {
+async function launchStudio(
+	locale,
+	setup,
+	apiAnswers,
+	waitUntil,
+	appPath = '/app',
+	setupArgs = []
+) {
 	const server = await serveBuild(apiAnswers);
 	let browser;
 	try {
@@ -236,7 +298,7 @@ async function launchStudio(locale, setup, apiAnswers, waitUntil, appPath = '/ap
 		const page = await browser.newPage();
 		page.setDefaultTimeout(WAIT_MS);
 		const errors = [];
-		page.on('pageerror', (error) => errors.push(error.message));
+		page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
 		await page.setViewport({ width: 1440, height: 1100 });
 		await page.evaluateOnNewDocument((selectedLocale) => {
 			try {
@@ -246,7 +308,7 @@ async function launchStudio(locale, setup, apiAnswers, waitUntil, appPath = '/ap
 			}
 		}, locale);
 		await installSocketAdapter(page);
-		if (setup) await page.evaluateOnNewDocument(setup);
+		if (setup) await page.evaluateOnNewDocument(setup, ...setupArgs);
 		await page.goto(`http://127.0.0.1:${server.address().port}${appPath}`, { waitUntil });
 		return {
 			page,
@@ -321,6 +383,199 @@ async function openStudio(apiAnswers = {}) {
 		throw error;
 	}
 }
+
+test('an owner recheck restarts history and stream updates without accepting late history', async () => {
+	const ownerId = '550e8400-e29b-41d4-a716-446655440040';
+	const oldJob = '550e8400-e29b-41d4-a716-446655440041';
+	const newJob = '550e8400-e29b-41d4-a716-446655440042';
+	const accountAdmin = { id: ownerId, email: 'owner@example.com', role: 'admin' };
+	const accountUser = { id: ownerId, email: 'owner@example.com', role: 'user' };
+	const queued = (id, prompt) => ({
+		id,
+		model_id: MODEL.id,
+		source_asset_id: null,
+		params: { prompt },
+		state: 'queued',
+		progress: 0,
+		gpu_ms: null,
+		input_fetch_ms: null,
+		load_ms: null,
+		postprocess_ms: null,
+		failure_reason: null,
+		created_at: '2026-10-27T00:00:00Z',
+		dispatched_at: null,
+		finished_at: null,
+		starred_at: null,
+		expired_favorite: false,
+		assets: []
+	});
+	let accountReads = 0;
+	let historyReads = 0;
+	let announceOldHistory;
+	let announceNewHistory;
+	let announceRecheck;
+	let releaseAdminFailure;
+	let announceAdminRequest;
+	const oldHistoryStarted = new Promise((resolve) => (announceOldHistory = resolve));
+	const newHistoryStarted = new Promise((resolve) => (announceNewHistory = resolve));
+	const recheckStarted = new Promise((resolve) => (announceRecheck = resolve));
+	const adminRequestStarted = new Promise((resolve) => (announceAdminRequest = resolve));
+	const heldAdminFailure = new Promise((resolve) => (releaseAdminFailure = resolve));
+	const answers = {
+		'/api/v1/account': {
+			body: () => {
+				accountReads += 1;
+				if (accountReads === 2) announceRecheck();
+				return accountReads === 1 ? accountAdmin : accountUser;
+			}
+		},
+		'/api/v1/users': {
+			status: 403,
+			body: () => {
+				announceAdminRequest();
+				return heldAdminFailure;
+			}
+		},
+		'/api/v1/generations?limit=50': {
+			body: () => {
+				historyReads += 1;
+				if (historyReads === 1) {
+					announceOldHistory();
+					return [queued(oldJob, 'owner-a queued job')];
+				}
+				if (historyReads === 2) {
+					announceNewHistory();
+					return [queued(newJob, 'owner-b queued job')];
+				}
+				return [];
+			}
+		},
+		'/api/v1/generations?starred=true&limit=200': { body: [] }
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			window.__ownerEventSources = [];
+			const originalFetch = window.fetch.bind(window);
+			let historyResponses = 0;
+			window.__releaseOldHistoryJson = null;
+			window.fetch = async (input, ...rest) => {
+				const url = String(input);
+				const response = await originalFetch(input, ...rest);
+				if (url === '/api/v1/generations?limit=50' && ++historyResponses === 1) {
+					const body = await response.text();
+					const buffered = new Response(body, {
+						status: response.status,
+						statusText: response.statusText,
+						headers: response.headers
+					});
+					const readJson = buffered.json.bind(buffered);
+					buffered.json = () =>
+						new Promise((resolve, reject) => {
+							window.__releaseOldHistoryJson = () => readJson().then(resolve, reject);
+						});
+					return buffered;
+				}
+				return response;
+			};
+			window.EventSource = class {
+				constructor(url) {
+					this.url = String(url);
+					this.closed = false;
+					window.__ownerEventSources.push(this);
+				}
+				close() {
+					this.closed = true;
+				}
+			};
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=admin&tab=users'
+	);
+	try {
+		const { page } = harness;
+		await waitFixture(oldHistoryStarted, 'owner A history request did not start');
+		await waitFixture(adminRequestStarted, 'the admin endpoint did not receive the role check');
+		await page.waitForFunction(() => typeof window.__releaseOldHistoryJson === 'function', {
+			timeout: WAIT_MS
+		});
+		releaseAdminFailure({ detail: 'role changed' });
+		await waitFixture(recheckStarted, 'the admin 403 did not recheck the account');
+		await waitFixture(newHistoryStarted, 'the changed owner epoch did not refetch history');
+		await page.waitForFunction(
+			(id) =>
+				window.__ownerEventSources.some(
+					(source) => source.url === `/api/v1/generations/${id}/events`
+				),
+			{ timeout: WAIT_MS },
+			newJob
+		);
+		assert.equal(accountReads, 2, 'the admin 403 caused one account role recheck');
+		assert.equal(historyReads, 2, 'the new owner epoch fetched history while the old body waited');
+		const streamBeforeLateResponse = await page.evaluate(
+			(id) =>
+				window.__ownerEventSources.find(
+					(source) => source.url === `/api/v1/generations/${id}/events`
+				)?.closed,
+			newJob
+		);
+		assert.equal(streamBeforeLateResponse, false, 'the new queued job has an open event stream');
+
+		await page.evaluate(() => window.__releaseOldHistoryJson());
+		await pause(1700);
+		const streams = await page.evaluate(() =>
+			window.__ownerEventSources.map(({ url, closed }) => ({ url, closed }))
+		);
+		assert.ok(
+			streams.some(
+				(source) => source.url === `/api/v1/generations/${newJob}/events` && !source.closed
+			),
+			'a late response for the old owner cannot stop the current owner stream'
+		);
+		assert.equal(
+			streams.some((source) => source.url === `/api/v1/generations/${oldJob}/events`),
+			false,
+			'a late old-owner history cannot start an old generation stream'
+		);
+	} finally {
+		releaseAdminFailure({ detail: 'role changed' });
+		await harness.page.evaluate(() => window.__releaseOldHistoryJson?.()).catch(() => {});
+		await harness.close();
+	}
+});
+
+test('account 404 plus empty auth methods uses local preferences without reading account profiles', async () => {
+	const accountA = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440000' };
+	const seeded = { version: 1, section: 'metrics', value: { tab: 'benchmarks' } };
+	const harness = await launchStudio(
+		'en',
+		(seededPreferences) => {
+			localStorage.setItem(
+				'potocolom-view-v1:account-550e8400-e29b-41d4-a716-446655440000:metrics',
+				JSON.stringify(seededPreferences)
+			);
+		},
+		{},
+		'domcontentloaded',
+		'/app',
+		[seeded]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() =>
+			document.querySelector('[data-studio-shell]')?.textContent?.includes('Generate')
+		);
+		assert.equal(await readViewPrefs(page, { kind: 'local' }, 'metrics'), null);
+		assert.deepEqual(await readViewPrefs(page, accountA, 'metrics'), seeded);
+		assert.notEqual(
+			viewPrefsStorageKey({ kind: 'local' }, 'metrics'),
+			viewPrefsStorageKey(accountA, 'metrics')
+		);
+	} finally {
+		await harness.close();
+	}
+});
 
 async function bitmap(page) {
 	return page.evaluate(() => {
@@ -516,6 +771,44 @@ async function clickButton(page, name) {
 	}, name);
 }
 
+async function clickStudioView(page, view, sectionSelector = null) {
+	const before = await page.evaluate(() => new URL(location.href).searchParams.get('view'));
+	const button = view === 'metrics' ? 'Metrics' : 'Images';
+	await clickButton(page, button);
+	await page.waitForFunction(
+		({ expectedView, leavingImages, sectionSelector: readySelector }) => {
+			const currentView = new URL(location.href).searchParams.get('view');
+			const imageSectionMounted = Boolean(document.querySelector('[aria-label="Filter by model"]'));
+			const gridMounted = Boolean(document.querySelector('.grid-scroller'));
+			const lineageMounted = Boolean(document.querySelector('.lineage-viewport'));
+			return (
+				currentView === expectedView &&
+				(!leavingImages || (!imageSectionMounted && !gridMounted && !lineageMounted)) &&
+				(!readySelector || Boolean(document.querySelector(readySelector)))
+			);
+		},
+		{ timeout: WAIT_MS },
+		{ expectedView: view, leavingImages: before === 'images', sectionSelector }
+	);
+}
+
+async function visibleGridTile(page) {
+	return page.evaluate(() => {
+		const scroller = document.querySelector('.grid-scroller')?.getBoundingClientRect();
+		const tile = [...document.querySelectorAll('.grid-tile')].find((candidate) => {
+			const rect = candidate.getBoundingClientRect();
+			return scroller && rect.top > scroller.top && rect.bottom < scroller.bottom;
+		});
+		if (!tile) return null;
+		const rect = tile.getBoundingClientRect();
+		return {
+			id: tile.dataset.generationId,
+			x: rect.left + rect.width / 2,
+			y: rect.top + rect.height / 2
+		};
+	});
+}
+
 async function maybeClickButton(page, name) {
 	const state = await button(page, name);
 	if (state.disabled) return false;
@@ -527,6 +820,23 @@ async function maybeClickButton(page, name) {
 		candidate?.click();
 	}, name);
 	return true;
+}
+
+// The tool rail is a group of toggle buttons, one per drawing tool, keyed by
+// data-tool; picking one presses it and releases the others.
+async function selectTool(page, tool) {
+	await page.waitForSelector(`button[data-tool="${tool}"]`, { timeout: WAIT_MS });
+	// A DOM click, like the select it replaced: the mouse stays where a test
+	// holding a gesture left it.
+	await page.$eval(`button[data-tool="${tool}"]`, (button) => button.click());
+	assert.deepEqual(
+		await page.$$eval('button[data-tool]', (buttons) =>
+			buttons
+				.filter((button) => button.getAttribute('aria-pressed') === 'true')
+				.map((button) => button.dataset.tool)
+		),
+		[tool]
+	);
 }
 
 async function selectColor(page, name) {
@@ -700,7 +1010,7 @@ test('a rectangle drag has one undo step and no stale preview edges', async () =
 	try {
 		const { page } = harness;
 		const blank = await bitmap(page);
-		assert.deepEqual(await page.select('#realtime-tool', 'rectangle'), ['rectangle']);
+		await selectTool(page, 'rectangle');
 		await selectColor(page, 'Blue');
 		await setBrushSize(page, 8);
 		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
@@ -755,7 +1065,7 @@ test('line rectangle and ellipse drags draw outline-only geometry in either dire
 		];
 		for (const shape of shapes) {
 			const blank = await bitmap(page);
-			assert.deepEqual(await page.select('#realtime-tool', shape.tool), [shape.tool]);
+			await selectTool(page, shape.tool);
 			await stroke(page, shape.from, shape.to, 8);
 			assert.deepEqual(await surfacePixel(page, ...shape.edge), [17, 24, 39, 255]);
 			for (const interior of shape.interior ?? [])
@@ -778,7 +1088,7 @@ test('a shape keeps its starting color and width through a mid-gesture control c
 	try {
 		const { page } = harness;
 		const blank = await bitmap(page);
-		await page.select('#realtime-tool', 'rectangle');
+		await selectTool(page, 'rectangle');
 		await selectColor(page, 'Red');
 		await setBrushSize(page, 4);
 		const rect = await canvasRect(page);
@@ -808,11 +1118,11 @@ test('shape draw and erase operations interleave with exact undo and redo bitmap
 		await selectColor(page, 'Red');
 		await tap(page, 0.25, 0.5);
 		const drawn = await bitmap(page);
-		await page.select('#realtime-tool', 'rectangle');
+		await selectTool(page, 'rectangle');
 		await selectColor(page, 'Blue');
 		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
 		const shaped = await bitmap(page);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await setBrushSize(page, 32);
 		await tap(page, 0.5, 0.2);
 		const erased = await bitmap(page);
@@ -841,7 +1151,7 @@ for (const finish of ['cancel', 'lost capture']) {
 			const { page } = harness;
 			const blank = await bitmap(page);
 			const rect = await canvasRect(page);
-			await page.select('#realtime-tool', 'ellipse');
+			await selectTool(page, 'ellipse');
 			await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
 			await page.mouse.down();
 			await page.mouse.move(rect.x + rect.width * 0.4, rect.y + rect.height * 0.4, { steps: 3 });
@@ -885,7 +1195,7 @@ test('saving a shape uses v2 geometry and round-trips its exact bitmap and redo'
 			behavior: 'allow',
 			downloadPath: directory
 		});
-		await page.select('#realtime-tool', 'ellipse');
+		await selectTool(page, 'ellipse');
 		await selectColor(page, 'Purple');
 		await setBrushSize(page, 10);
 		await stroke(page, [0.2, 0.2], [1.1, 0.8], 8);
@@ -929,7 +1239,7 @@ test('a zero-length shape gesture saves, reopens and undoes safely', async () =>
 			behavior: 'allow',
 			downloadPath: directory
 		});
-		await page.select('#realtime-tool', 'ellipse');
+		await selectTool(page, 'ellipse');
 		await stroke(page, [0.5, 0.5], [0.5, 0.5], 1);
 		const degenerate = await bitmap(page);
 		await clickButton(page, 'Save drawing');
@@ -977,16 +1287,16 @@ test('mixed shape and brush history uses the native PNG checkpoint at sixteen op
 		const snapshots = [blank];
 		for (let group = 0; group < 4; group += 1) {
 			const offset = group * 0.18;
-			await page.select('#realtime-tool', 'draw');
+			await selectTool(page, 'draw');
 			await tap(page, 0.1 + offset, 0.1 + offset);
 			snapshots.push(await bitmap(page));
-			await page.select('#realtime-tool', 'line');
+			await selectTool(page, 'line');
 			await stroke(page, [0.15 + offset, 0.2], [0.3 + offset, 0.2], 3);
 			snapshots.push(await bitmap(page));
-			await page.select('#realtime-tool', 'rectangle');
+			await selectTool(page, 'rectangle');
 			await stroke(page, [0.2 + offset, 0.3], [0.32 + offset, 0.42], 3);
 			snapshots.push(await bitmap(page));
-			await page.select('#realtime-tool', 'ellipse');
+			await selectTool(page, 'ellipse');
 			await stroke(page, [0.4 + offset, 0.35], [0.52 + offset, 0.47], 3);
 			snapshots.push(await bitmap(page));
 		}
@@ -1019,7 +1329,7 @@ test('malformed v2 shapes and v1 shape operations are rejected atomically', asyn
 				behavior: 'allow',
 				downloadPath: downloadDirectory
 			});
-			await page.select('#realtime-tool', 'rectangle');
+			await selectTool(page, 'rectangle');
 			await stroke(page, [0.2, 0.2], [0.8, 0.8], 6);
 			await clickButton(page, 'Save drawing');
 			const validPath = await waitForDrawingDownload(downloadDirectory);
@@ -1389,7 +1699,7 @@ test('shape selection is silent and a connected shape publishes an opaque 512px 
 		await connect(page);
 		await pause(700);
 		const before = await page.evaluate(() => window.__historySockets[0].frames.length);
-		await page.select('#realtime-tool', 'rectangle');
+		await selectTool(page, 'rectangle');
 		await pause(700);
 		assert.equal(await page.evaluate(() => window.__historySockets[0].frames.length), before);
 		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
@@ -1443,7 +1753,7 @@ test('leaving the canvas while a shape preview is active drops the preview befor
 		const blank = await bitmap(page);
 		await connect(page);
 		await pause(700);
-		await page.select('#realtime-tool', 'rectangle');
+		await selectTool(page, 'rectangle');
 		const rect = await canvasRect(page);
 		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
 		await page.mouse.down();
@@ -1534,7 +1844,7 @@ test('saved captured strokes, erase and a clear redo retain exact pixels', async
 		await selectColor(page, 'Red');
 		await stroke(page, [0.2, 0.5], [1.1, 0.5]);
 		const drawn = await bitmap(page);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await stroke(page, [0.5, 0.3], [0.5, 0.7]);
 		const erased = await bitmap(page);
 		assert.notEqual(erased.hash, drawn.hash);
@@ -2268,7 +2578,7 @@ test('colors, brush bounds and erase replay keep each stroke settings', async ()
 				.getImageData(128, 128, 1, 1).data
 		]);
 		assert.deepEqual(red, [220, 38, 38, 255]);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await tap(page, 0.25, 0.25);
 		const erased = await page.evaluate(() => [
 			...document
@@ -2291,7 +2601,7 @@ test('colors, brush bounds and erase replay keep each stroke settings', async ()
 			{ timeout: WAIT_MS },
 			[220, 38, 38]
 		);
-		await page.select('#realtime-tool', 'draw');
+		await selectTool(page, 'draw');
 		await selectColor(page, 'Black');
 		await setBrushSize(page, 6);
 		const rect = await canvasRect(page);
@@ -2299,7 +2609,7 @@ test('colors, brush bounds and erase replay keep each stroke settings', async ()
 		await page.mouse.down();
 		await selectColor(page, 'Red');
 		await setBrushSize(page, 32);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await page.mouse.move(rect.x + rect.width * 0.6, rect.y + rect.height * 0.5, { steps: 4 });
 		await page.mouse.up();
 		const retained = await page.evaluate(() => {
@@ -2380,14 +2690,14 @@ test('paint controls are silent while drawing edits publish real WebP frames', a
 		}));
 		await selectColor(page, 'Blue');
 		await setBrushSize(page, 20);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await pause(700);
 		const afterControls = await page.evaluate(() => ({
 			frames: window.__historySockets[0]?.frames.length ?? 0,
 			sent: window.__historySockets[0]?.sent.length ?? 0
 		}));
 		assert.deepEqual(afterControls, before);
-		await page.select('#realtime-tool', 'draw');
+		await selectTool(page, 'draw');
 		await tap(page, 0.5, 0.5);
 		await page.waitForFunction(
 			(minimum) => (window.__historySockets[0]?.frames.length ?? 0) > minimum,
@@ -2532,8 +2842,8 @@ test('new canvas controls have Spanish accessible labels', async () => {
 			assert.ok(await page.$(`aria/${label}`), `missing Spanish label ${label}`);
 		}
 		assert.deepEqual(
-			await page.$$eval('#realtime-tool option', (options) =>
-				options.map((option) => [option.value, option.textContent.trim()])
+			await page.$$eval('button[data-tool]', (buttons) =>
+				buttons.map((button) => [button.dataset.tool, button.getAttribute('aria-label')])
 			),
 			[
 				['draw', 'Dibujar'],
@@ -2624,16 +2934,16 @@ test('clear stays disabled while erasing white paper and after erasing the last 
 	try {
 		const { page } = harness;
 		const blank = await bitmap(page);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		const rect = await canvasRect(page);
 		await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
 		await page.mouse.down();
 		assert.deepEqual(await bitmap(page), blank);
 		assert.equal((await button(page, 'Clear canvas')).disabled, true);
 		await page.mouse.up();
-		await page.select('#realtime-tool', 'draw');
+		await selectTool(page, 'draw');
 		await tap(page);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		await setBrushSize(page, 32);
 		await page.mouse.down();
 		assert.deepEqual(await bitmap(page), blank);
@@ -2846,7 +3156,7 @@ test('a round brush paints its stated width and controls preserve a pending redo
 		await clickButton(page, 'Undo');
 		await selectColor(page, 'Red');
 		await setBrushSize(page, 12);
-		await page.select('#realtime-tool', 'erase');
+		await selectTool(page, 'erase');
 		assert.equal((await button(page, 'Redo')).disabled, false);
 		await clickButton(page, 'Redo');
 		assert.deepEqual(await bitmap(page), painted);
@@ -2874,8 +3184,8 @@ for (const tool of ['erase', 'rectangle'])
 			const { page } = harness;
 			if (tool === 'erase') {
 				await tap(page, 0.8, 0.8);
-				await page.select('#realtime-tool', 'erase');
-			} else await page.select('#realtime-tool', 'rectangle');
+				await selectTool(page, 'erase');
+			} else await selectTool(page, 'rectangle');
 			const rect = await canvasRect(page);
 			await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
 			await page.mouse.down();
@@ -3183,6 +3493,4692 @@ function lineageCanvasFixtures() {
 	};
 }
 
+function imageGridFixtures(count = 1) {
+	const createdAt = new Date().toISOString();
+	const rows = Array.from({ length: count }, (_, index) => {
+		const generation = lineageGeneration(
+			lineageJobId(201 + index),
+			lineageAssetId(201 + index),
+			`Image filter result ${index + 1}`,
+			createdAt
+		);
+		generation.starred_at = createdAt;
+		return generation;
+	});
+	let nextStarredAt = Date.now();
+	const models = [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }];
+	const answers = {
+		'/api/v1/generations/models': { body: { models } },
+		'/api/v1/generations?limit=50': { body: rows },
+		'/api/v1/generations?limit=50&starred=true': { body: rows },
+		'/api/v1/generations?starred=true&limit=200': {
+			body: () => rows.filter((row) => row.starred_at !== null)
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] },
+		...Object.fromEntries(
+			rows.map((row) => [
+				`/api/v1/generations/${row.id}/star`,
+				{
+					body: (_url, request) => {
+						if (request.method === 'DELETE') row.starred_at = null;
+						else if (row.starred_at === null) {
+							row.starred_at = new Date(++nextStarredAt).toISOString();
+						}
+						return {};
+					}
+				}
+			])
+		)
+	};
+	return { answers, rows, models };
+}
+
+async function openImagesGrid(apiAnswers, setup, setupArgs = []) {
+	const harness = await launchStudio(
+		'en',
+		setup,
+		apiAnswers,
+		'domcontentloaded',
+		'/app?view=images',
+		setupArgs
+	);
+	try {
+		await harness.page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		return harness;
+	} catch (error) {
+		await harness.close(false);
+		throw error;
+	}
+}
+
+async function openGenerateThenImages(apiAnswers, setup) {
+	const harness = await launchStudio(
+		'en',
+		setup,
+		apiAnswers,
+		'domcontentloaded',
+		'/app?view=generate'
+	);
+	try {
+		const previousUrl = await harness.page.evaluate(() => location.href);
+		await clickButton(harness.page, 'Images');
+		await harness.page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		return { ...harness, previousUrl };
+	} catch (error) {
+		await harness.close(false);
+		throw error;
+	}
+}
+
+test('Grid keeps shared older history behind server pages and preserves order on More', async () => {
+	const rows = Array.from({ length: 120 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(500 + index),
+			lineageAssetId(500 + index),
+			`Ordered library image ${String(index).padStart(3, '0')}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	let firstSharedHistoryRead = true;
+	let failNextPage = false;
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': {
+			body: (url, request) => {
+				const cursor = url.searchParams.get('cursor');
+				if (cursor !== null) {
+					const index = rows.findIndex((row) => row.id === cursor);
+					assert.notEqual(index, -1, 'shared-history and grid cursors belong to the fixture feed');
+					return rows.slice(index + 1, index + 51);
+				}
+				if (firstSharedHistoryRead) {
+					firstSharedHistoryRead = false;
+					assert.equal(request.headers.referer?.includes('view=images'), true);
+				}
+				return rows.slice(0, 50);
+			}
+		},
+		'/api/v1/generations?limit=50&cursor=': {
+			body: (url) => {
+				if (failNextPage) {
+					failNextPage = false;
+					throw new Error('simulated page failure');
+				}
+				const index = rows.findIndex((row) => row.id === url.searchParams.get('cursor'));
+				assert.notEqual(index, -1, 'older-history cursors belong to the fixture feed');
+				return rows.slice(index + 1, index + 51);
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] },
+		...Object.fromEntries(
+			rows.map((row) => [
+				`/api/v1/generations/${row.id}/lineage`,
+				{ body: { ancestors: [], children: [] } }
+			])
+		)
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			window.__libraryPageRequests = [];
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (
+					url.pathname === '/api/v1/generations' &&
+					url.searchParams.get('limit') === '50' &&
+					!url.searchParams.has('roots_only') &&
+					!url.searchParams.has('fields')
+				) {
+					window.__libraryPageRequests.push(url.searchParams.toString());
+				}
+				return originalFetch(input, init);
+			};
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await page.waitForFunction(() => window.__libraryPageRequests.length === 1, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Generate');
+		await clickButton(page, 'Older');
+		await page.waitForFunction(
+			() =>
+				window.__libraryPageRequests.filter((query) => new URLSearchParams(query).has('cursor'))
+					.length === 1,
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			() => document.querySelectorAll('button[data-strip-thumb]').length === 100,
+			{ timeout: WAIT_MS }
+		);
+		await clickButton(page, 'Older');
+		await page.waitForFunction(
+			() =>
+				window.__libraryPageRequests.filter((query) => new URLSearchParams(query).has('cursor'))
+					.length === 2,
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			() =>
+				![...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === 'Older'
+				),
+			{ timeout: WAIT_MS }
+		);
+		await clickButton(page, 'Images');
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		let titles = await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.title));
+		assert.equal(titles[0], 'Ordered library image 000');
+		assert.deepEqual(
+			titles,
+			rows.slice(0, 50).map((row) => row.params.prompt),
+			'only the newest server page appears, in server order'
+		);
+		await clickButton(page, 'More matching results');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 100, {
+			timeout: WAIT_MS
+		});
+		titles = await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.title));
+		assert.deepEqual(
+			titles,
+			rows.slice(0, 100).map((row) => row.params.prompt),
+			'Load More appends the next server page without inserting older shared-history rows'
+		);
+		failNextPage = true;
+		await clickButton(page, 'More matching results');
+		await page.waitForSelector('[role="alert"]', { timeout: WAIT_MS });
+		assert.equal(await page.$$eval('.grid-tile', (tiles) => tiles.length), 100);
+		await clickButton(page, 'Retry');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 120, {
+			timeout: WAIT_MS
+		});
+		titles = await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.title));
+		assert.deepEqual(
+			titles,
+			rows.map((row) => row.params.prompt)
+		);
+		assert.equal(await page.$('[role="alert"]'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+async function chooseImageOption(page, aria, name) {
+	await page.locator(`[aria-label="${aria}"]`).click();
+	await page.waitForSelector('[role="option"]');
+	const options = await page.$$('[role="option"]');
+	let picked = false;
+	for (const option of options) {
+		if ((await option.evaluate((node) => node.textContent.trim())) === name) {
+			await option.click();
+			picked = true;
+			break;
+		}
+	}
+	assert.ok(picked, `Missing option ${name}`);
+	const triggerExpanded = await page.$eval(`[aria-label="${aria}"]`, (trigger) =>
+		trigger.getAttribute('aria-expanded')
+	);
+	if (triggerExpanded === 'true') await page.keyboard.press('Escape');
+	await page.waitForFunction(() => !document.querySelector('[role="listbox"]'));
+	await page.waitForFunction(() => getComputedStyle(document.body).pointerEvents !== 'none');
+}
+
+async function chooseImageModel(page, name) {
+	await chooseImageOption(page, 'Filter by model', name);
+}
+
+test('grid, lineage roots, and search IDs exclude failed jobs before paging', async () => {
+	const saved = lineageGeneration(
+		lineageJobId(1100),
+		lineageAssetId(1100),
+		'Older saved image',
+		new Date(Date.now() - 30 * 86400000).toISOString()
+	);
+	const failed = Array.from({ length: 55 }, (_, index) => {
+		const generation = lineageGeneration(
+			lineageJobId(1200 + index),
+			lineageAssetId(1200 + index),
+			`Recent failed job ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		generation.state = 'failed';
+		generation.assets = [];
+		return generation;
+	});
+	const stateQueries = { grid: [], roots: [], search: [] };
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': {
+			body: (url) => {
+				stateQueries.grid.push(url.searchParams.toString());
+				return url.searchParams.get('state') === 'succeeded' ? [saved] : failed.slice(0, 50);
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				stateQueries.roots.push(url.searchParams.toString());
+				return url.searchParams.get('state') === 'succeeded' ? [saved] : failed.slice(0, 50);
+			}
+		},
+		'/api/v1/generations?fields=ids&limit=5000': {
+			body: (url) => {
+				stateQueries.search.push(url.searchParams.toString());
+				return {
+					ids:
+						url.searchParams.get('state') === 'succeeded'
+							? [saved.id]
+							: failed.slice(0, 50).map((generation) => generation.id)
+				};
+			}
+		},
+		[`/api/v1/generations/${saved.id}/subtree`]: {
+			body: lineageSubtree([lineageSubtreeNode(saved, saved.assets[0].id, null)])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__stateQueries = { grid: [], roots: [], search: [] };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.get('state') === 'succeeded') {
+				const query = url.searchParams.toString();
+				if (url.searchParams.has('roots_only')) window.__stateQueries.roots.push(query);
+				else if (url.searchParams.has('fields')) window.__stateQueries.search.push(query);
+				else if (url.searchParams.get('limit') === '50') window.__stateQueries.grid.push(query);
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-generation-id="${saved.id}"]`, { timeout: WAIT_MS });
+		assert.equal(await page.$$('.grid-tile').then((tiles) => tiles.length), 1);
+		assert.equal(new URLSearchParams(stateQueries.grid.at(-1)).get('state'), 'succeeded');
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(stateQueries.roots.length, 0, 'Grid filter changes do not load lineage roots');
+		await clickButton(page, 'Lineage');
+		await page.waitForSelector(`[data-lineage-node="${saved.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__stateQueries.roots.length === 1, {
+			timeout: WAIT_MS
+		});
+		assert.equal(new URLSearchParams(stateQueries.roots.at(-1)).get('state'), 'succeeded');
+		assert.equal(new URLSearchParams(stateQueries.roots.at(-1)).get('model_id'), MODEL.id);
+		await page.type('input[name="q"]', 'Older saved image');
+		await page.waitForFunction(() => window.__stateQueries.search.length === 1, {
+			timeout: WAIT_MS
+		});
+		assert.equal(new URLSearchParams(stateQueries.search.at(-1)).get('state'), 'succeeded');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('lineage root requests abort on filter and mode changes, then use current criteria', async () => {
+	let releaseRootPages;
+	const rootPages = new Promise((resolvePages) => {
+		releaseRootPages = resolvePages;
+	});
+	const root = lineageGeneration(
+		lineageJobId(1300),
+		lineageAssetId(1300),
+		'Root request lifecycle',
+		new Date().toISOString()
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': { body: [root] },
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: async () => {
+				await rootPages;
+				return [root];
+			}
+		},
+		[`/api/v1/generations/${root.id}/subtree`]: {
+			body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__rootLifecycle = { queries: [], aborts: 0 };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__rootLifecycle.queries.push(url.searchParams.toString());
+				init?.signal?.addEventListener('abort', () => {
+					window.__rootLifecycle.aborts += 1;
+				});
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector('.grid-tile', { timeout: WAIT_MS });
+		await clickButton(page, 'Lineage');
+		await page.waitForFunction(() => window.__rootLifecycle.queries.length === 1, {
+			timeout: WAIT_MS
+		});
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(() => window.__rootLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__rootLifecycle.aborts >= 1, { timeout: WAIT_MS });
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__rootLifecycle.aborts >= 2, { timeout: WAIT_MS });
+		await clickButton(page, 'Lineage');
+		await page.waitForFunction(() => window.__rootLifecycle.queries.length === 3, {
+			timeout: WAIT_MS
+		});
+		const latest = await page.evaluate(() => window.__rootLifecycle.queries.at(-1));
+		assert.equal(new URLSearchParams(latest).get('state'), 'succeeded');
+		assert.equal(new URLSearchParams(latest).get('model_id'), MODEL.id);
+		releaseRootPages();
+		await page.waitForSelector(`[data-lineage-node="${root.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await pause(250);
+		assert.equal(await page.evaluate(() => window.__rootLifecycle.queries.length), 3);
+	} finally {
+		releaseRootPages();
+		await harness.close();
+	}
+});
+
+test('a failed lineage replacement keeps its roots and retries the same query', async () => {
+	const root = lineageGeneration(
+		lineageJobId(1350),
+		lineageAssetId(1350),
+		'Retry current lineage roots',
+		new Date().toISOString()
+	);
+	const rootQueries = [];
+	let failReplacement = true;
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				if (url.searchParams.has('model_id') && failReplacement) {
+					failReplacement = false;
+					throw new Error('simulated root replacement failure');
+				}
+				return [root];
+			}
+		},
+		[`/api/v1/generations/${root.id}/subtree`]: {
+			body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		window.__rootQueries = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__rootQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${root.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.evaluate((id) => {
+			window.__savedFailedRoot = document.querySelector(`[data-lineage-node="${id}"]`);
+		}, root.assets[0].id);
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(rootQueries.length, 2);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('model_id'), MODEL.id);
+		assert.equal(
+			await page.evaluate(
+				(id) => document.querySelector(`[data-lineage-node="${id}"]`) === window.__savedFailedRoot,
+				root.assets[0].id
+			),
+			true,
+			'a failed replacement keeps the existing root node mounted'
+		);
+		await clickButton(page, 'Retry');
+		await page.waitForFunction(() => window.__rootQueries.length === 3, { timeout: WAIT_MS });
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('model_id'), MODEL.id);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('state'), 'succeeded');
+		await page.waitForFunction(
+			() =>
+				![...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(
+				(id) => document.querySelector(`[data-lineage-node="${id}"]`) === window.__savedFailedRoot,
+				root.assets[0].id
+			),
+			true,
+			'retrying the same criteria preserves the keyed root'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a failed root append retries with its committed cursor', async () => {
+	const roots = Array.from({ length: 60 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1620 + index),
+			lineageAssetId(1620 + index),
+			`Append root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const rootQueries = [];
+	let failAppend = true;
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				if (!url.searchParams.has('cursor')) return roots.slice(0, 50);
+				if (failAppend) {
+					failAppend = false;
+					throw new Error('simulated root append failure');
+				}
+				const cursorIndex = roots.findIndex((root) => root.id === url.searchParams.get('cursor'));
+				return roots.slice(cursorIndex + 1, cursorIndex + 51);
+			}
+		},
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		window.__rootQueries = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__rootQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.focus('.lineage-viewport');
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowDown');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		const failedQuery = new URLSearchParams(rootQueries.at(-1));
+		assert.equal(failedQuery.get('cursor'), roots[49].id);
+		await clickButton(page, 'Retry');
+		await page.waitForFunction(() => window.__rootQueries.length === 3, { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() =>
+				![...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		const retriedQuery = new URLSearchParams(rootQueries.at(-1));
+		assert.equal(retriedQuery.get('cursor'), failedQuery.get('cursor'));
+		assert.equal(retriedQuery.get('state'), 'succeeded');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a failed root replacement cannot append its old cursor and retries from the first page', async () => {
+	const roots = Array.from({ length: 300 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1450 + index),
+			lineageAssetId(1450 + index),
+			`Old root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const replacement = lineageGeneration(
+		lineageJobId(1600),
+		lineageAssetId(1600),
+		'New filtered root',
+		new Date().toISOString()
+	);
+	const rootQueries = [];
+	let failReplacement = true;
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				if (url.searchParams.has('model_id')) {
+					if (failReplacement) {
+						failReplacement = false;
+						throw new Error('simulated root replacement failure');
+					}
+					return [replacement];
+				}
+				if (!url.searchParams.has('cursor')) return roots.slice(0, 50);
+				const cursorIndex = roots.findIndex((root) => root.id === url.searchParams.get('cursor'));
+				return roots.slice(cursorIndex + 1, cursorIndex + 51);
+			}
+		},
+		...Object.fromEntries(
+			[...roots, replacement].map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		window.__rootQueries = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__rootQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.focus('.lineage-viewport');
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowDown');
+		await page.waitForFunction(
+			() => window.__rootQueries.some((query) => new URLSearchParams(query).has('cursor')),
+			{ timeout: WAIT_MS }
+		);
+		const committedPageCount = await page.evaluate(() => window.__rootQueries.length);
+		assert.ok(committedPageCount >= 2, 'more than fifty old roots are committed before failure');
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		const countWithFailedReplace = await page.evaluate(() => window.__rootQueries.length);
+		assert.equal(countWithFailedReplace, committedPageCount + 1);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('cursor'), null);
+		const viewport = await page.$('.lineage-viewport');
+		const bounds = await viewport.boundingBox();
+		assert.ok(bounds);
+		await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(bounds.x + bounds.width / 2 - 700, bounds.y + bounds.height / 2, {
+			steps: 8
+		});
+		await page.mouse.up();
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowDown');
+		await pause(250);
+		assert.equal(
+			await page.evaluate(() => window.__rootQueries.length),
+			countWithFailedReplace,
+			'panning while a replacement error is visible does not request an old page'
+		);
+		assert.equal(
+			rootQueries.filter((query) => new URLSearchParams(query).has('cursor')).length,
+			committedPageCount - 1,
+			'only pages from the committed old query use cursors'
+		);
+		await clickButton(page, 'Retry');
+		await page.waitForSelector(`[data-lineage-node="${replacement.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		assert.equal(
+			await page.evaluate(() => window.__rootQueries.length),
+			countWithFailedReplace + 1
+		);
+		const retried = new URLSearchParams(rootQueries.at(-1));
+		assert.equal(retried.get('model_id'), MODEL.id);
+		assert.equal(retried.get('state'), 'succeeded');
+		assert.equal(retried.get('cursor'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('GPU history keeps only data cached for the selected range', async () => {
+	let historyRequestCount = 0;
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/metrics/gpu/history?': {
+			status: () => (historyRequestCount === 1 ? 200 : 503),
+			body: (url) => {
+				historyRequestCount += 1;
+				if (historyRequestCount > 1) return { detail: 'history unavailable' };
+				const from = Number(url.searchParams.get('from'));
+				const to = Number(url.searchParams.get('to'));
+				return {
+					from: new Date(from).toISOString(),
+					to: new Date(to).toISOString(),
+					rollup: 'raw',
+					samples: [
+						{
+							ts: new Date(to - 1000).toISOString(),
+							util_pct: 47,
+							vram_used_pct: 23,
+							temperature_c: 48,
+							power_w: 90
+						}
+					],
+					truncated: false
+				};
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__gpuHistoryResponses = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname !== '/api/v1/metrics/gpu/history') return originalFetch(input, init);
+			const entry = { query: url.search, status: null, completed: false };
+			window.__gpuHistoryResponses.push(entry);
+			return originalFetch(input, init).then((response) => {
+				entry.status = response.status;
+				entry.completed = true;
+				return response;
+			});
+		};
+	});
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Metrics');
+		await page.waitForFunction(
+			() =>
+				document.body.innerText.includes('GPU activity') &&
+				!document.body.innerText.includes('Sample data'),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			() => window.__gpuHistoryResponses.length >= 1 && window.__gpuHistoryResponses[0].completed,
+			{ timeout: WAIT_MS }
+		);
+		const firstRequest = await page.evaluate(() => window.__gpuHistoryResponses[0]);
+		assert.equal(firstRequest.status, 200);
+		const firstQuery = new URLSearchParams(firstRequest.query);
+		assert.equal(firstQuery.get('rollup'), 'raw');
+		assert.ok(
+			Math.abs(Number(firstQuery.get('to')) - Number(firstQuery.get('from')) - 300_000) < 2000
+		);
+
+		await clickButton(page, 'Images');
+		await page.waitForFunction(
+			() =>
+				new URL(location.href).searchParams.get('view') === 'images' &&
+				Boolean(document.querySelector('[aria-label="Filter by model"]')),
+			{ timeout: WAIT_MS }
+		);
+		const reentryIndex = await page.evaluate(() => window.__gpuHistoryResponses.length);
+		await clickButton(page, 'Metrics');
+		await page.waitForFunction(
+			() => new URL(location.href).searchParams.get('view') === 'metrics',
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			(index) =>
+				window.__gpuHistoryResponses.length > index &&
+				window.__gpuHistoryResponses[index].completed,
+			{ timeout: WAIT_MS },
+			reentryIndex
+		);
+		const refreshResponse = await page.evaluate(
+			(index) => window.__gpuHistoryResponses[index],
+			reentryIndex
+		);
+		assert.equal(refreshResponse.status, 503);
+		assert.equal(await page.evaluate(() => document.body.innerText.includes('Sample data')), false);
+		const refreshQuery = new URLSearchParams(refreshResponse.query);
+		assert.equal(refreshQuery.get('rollup'), 'raw');
+		assert.ok(
+			Math.abs(Number(refreshQuery.get('to')) - Number(refreshQuery.get('from')) - 300_000) < 2000
+		);
+
+		const uncachedIndex = await page.evaluate(() => window.__gpuHistoryResponses.length);
+		await clickButton(page, '24h');
+		await page.waitForFunction(
+			(index) =>
+				window.__gpuHistoryResponses.length > index &&
+				window.__gpuHistoryResponses[index].completed,
+			{ timeout: WAIT_MS },
+			uncachedIndex
+		);
+		const uncachedResponse = await page.evaluate(
+			(index) => window.__gpuHistoryResponses[index],
+			uncachedIndex
+		);
+		assert.equal(uncachedResponse.status, 503);
+		const uncachedQuery = new URLSearchParams(uncachedResponse.query);
+		assert.equal(uncachedQuery.get('rollup'), 'auto');
+		assert.ok(
+			Math.abs(Number(uncachedQuery.get('to')) - Number(uncachedQuery.get('from')) - 86_400_000) <
+				2000
+		);
+		await page.waitForFunction(() => document.body.innerText.includes('Sample data'), {
+			timeout: WAIT_MS
+		});
+	} finally {
+		await harness.close();
+	}
+});
+
+test('choosing Images from the mobile command palette closes both overlays before navigation', async () => {
+	const harness = await launchStudio('en', undefined, {}, 'domcontentloaded', '/app?view=generate');
+	try {
+		const { page } = harness;
+		await page.setViewport({ width: 390, height: 844 });
+		await clickButton(page, 'Toggle sidebar');
+		await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 1, {
+			timeout: WAIT_MS
+		});
+		await page.click('button[aria-keyshortcuts="Meta+K Control+K"]');
+		await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForSelector('input[aria-label="Search or jump to"]', { timeout: WAIT_MS });
+		await page.type('input[aria-label="Search or jump to"]', 'Images');
+		await page.keyboard.press('Enter');
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await page.waitForFunction(() => document.querySelectorAll('[role="dialog"]').length === 0, {
+			timeout: WAIT_MS
+		});
+		assert.equal(new URL(page.url()).searchParams.get('view'), 'images');
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(
+			() => new URL(location.href).searchParams.get('view') === 'generate',
+			{ timeout: WAIT_MS }
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('returning to Lineage keeps committed pages and viewport until root filters change', async () => {
+	const roots = Array.from({ length: 110 }, (_, index) => {
+		const root = lineageGeneration(
+			lineageJobId(1700 + index),
+			lineageAssetId(1700 + index),
+			`Cached root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		if (index < 12) root.model_id = 'other-root-model';
+		return root;
+	});
+	const rootQueries = [];
+	const answers = {
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-root-model', name: 'Other root model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				if (url.searchParams.has('model_id')) {
+					return roots.filter((root) => root.model_id === 'other-root-model');
+				}
+				if (!url.searchParams.has('cursor')) return roots.slice(0, 50);
+				const cursorIndex = roots.findIndex((root) => root.id === url.searchParams.get('cursor'));
+				return roots.slice(cursorIndex + 1, cursorIndex + 51);
+			}
+		},
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			window.__rootQueries = [];
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					window.__rootQueries.push(url.searchParams.toString());
+				}
+				return originalFetch(input, init);
+			};
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=generate'
+	);
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Images');
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.focus('.lineage-viewport');
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowDown');
+		await page.waitForFunction(
+			() => window.__rootQueries.some((query) => new URLSearchParams(query).has('cursor')),
+			{ timeout: WAIT_MS }
+		);
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowUp');
+		await page.waitForFunction(() => !document.activeViewTransition, { timeout: WAIT_MS });
+		const panPoint = await page.$eval('.lineage-viewport', (element) => {
+			const rect = element.getBoundingClientRect();
+			for (let y = rect.top + 40; y < rect.bottom - 30; y += 16) {
+				for (let x = rect.left + 60; x < rect.right - 30; x += 16) {
+					const target = document.elementFromPoint(x, y);
+					if (
+						target &&
+						element.contains(target) &&
+						!target.closest('button, [data-lineage-node], [data-lineage-search]')
+					) {
+						return { x, y };
+					}
+				}
+			}
+			return null;
+		});
+		assert.ok(panPoint, 'found a background point away from nodes and buttons');
+		const transformBeforePan = await page.$eval('.lineage-world', (world) => world.style.transform);
+		await page.mouse.move(panPoint.x, panPoint.y);
+		await page.mouse.down();
+		await page.mouse.move(panPoint.x - 45, panPoint.y - 20, { steps: 6 });
+		await page.mouse.up();
+		let previousTransform = await page.$eval('.lineage-world', (world) => world.style.transform);
+		let stableFrames = 0;
+		const settleDeadline = Date.now() + WAIT_MS;
+		while (stableFrames < 3) {
+			assert.ok(Date.now() < settleDeadline, 'Lineage pan transform did not settle');
+			await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
+			const currentTransform = await page.$eval('.lineage-world', (world) => world.style.transform);
+			stableFrames = currentTransform === previousTransform ? stableFrames + 1 : 0;
+			previousTransform = currentTransform;
+		}
+		const before = await page.evaluate(() => {
+			const node = document.querySelector('[data-lineage-node]');
+			const rect = node.getBoundingClientRect();
+			window.__modeNodeId = node.dataset.lineageNode;
+			return {
+				transform: document.querySelector('.lineage-world').style.transform,
+				id: node.dataset.lineageNode,
+				left: rect.left,
+				top: rect.top
+			};
+		});
+		assert.notEqual(
+			before.transform,
+			transformBeforePan,
+			'a background drag changes the Lineage viewport before it is captured'
+		);
+		const queryCount = await page.evaluate(() => window.__rootQueries.length);
+		await page.$eval(`[data-lineage-node="${before.id}"]`, (node) => node.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.equal(
+			await page.evaluate(() => history.state?.['sveltekit:states']?.studioOverlay),
+			'inspector'
+		);
+		await clickButton(page, 'Lineage');
+		assert.notEqual(await page.$('.selection-inspector'), null, 'same-mode selection stays open');
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'), {
+			timeout: WAIT_MS
+		});
+		assert.equal(
+			await page.evaluate(() => history.state?.['sveltekit:states']?.studioOverlay ?? null),
+			null,
+			'mode switch removes the inspector history entry'
+		);
+		await clickButton(page, 'Lineage');
+		await page.waitForSelector('.lineage-world', { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() =>
+				new URL(location.href).searchParams.get('view') === 'images' &&
+				[...document.querySelectorAll('button[aria-pressed="true"]')].some(
+					(button) => button.textContent?.trim() === 'Lineage'
+				),
+			{ timeout: WAIT_MS }
+		);
+		await page.evaluate(
+			() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+		);
+		assert.equal(
+			await page.$('.selection-inspector'),
+			null,
+			'a Lineage mode change does not restore its cleared selection hint'
+		);
+		assert.equal(await page.evaluate(() => window.__rootQueries.length), queryCount);
+		const after = await page.evaluate(() => {
+			const node = document.querySelector(`[data-lineage-node="${window.__modeNodeId}"]`);
+			const rect = node.getBoundingClientRect();
+			return {
+				transform: document.querySelector('.lineage-world').style.transform,
+				id: node.dataset.lineageNode,
+				left: rect.left,
+				top: rect.top
+			};
+		});
+		assert.equal(after.id, before.id);
+		assert.equal(after.transform, before.transform);
+		assert.ok(Math.abs(after.left - before.left) < 4);
+		assert.ok(Math.abs(after.top - before.top) < 4);
+		await clickButton(page, 'Grid');
+		await chooseImageModel(page, 'Other root model');
+		const beforeChangedCriteria = await page.evaluate(() => window.__rootQueries.length);
+		await clickButton(page, 'Lineage');
+		await page.waitForFunction(
+			(count) => window.__rootQueries.length === count + 1,
+			{ timeout: WAIT_MS },
+			beforeChangedCriteria
+		);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('model_id'), 'other-root-model');
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('state'), 'succeeded');
+		await pause(250);
+		assert.equal(await page.evaluate(() => window.__rootQueries.length), beforeChangedCriteria + 1);
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(
+			() => new URL(location.href).searchParams.get('view') === 'generate',
+			{
+				timeout: WAIT_MS
+			}
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('an incomplete custom date keeps lineage search results and its match index', async () => {
+	const matches = [0, 1].map((index) =>
+		lineageGeneration(
+			lineageJobId(1400 + index),
+			lineageAssetId(1400 + index),
+			`Needle root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const searchQueries = [];
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': { body: matches },
+		'/api/v1/generations?fields=ids&limit=5000': {
+			body: (url) => {
+				searchQueries.push(url.searchParams.toString());
+				return { ids: matches.map((generation) => generation.id) };
+			}
+		},
+		...Object.fromEntries(
+			matches.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${matches[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.type('input[name="q"]', 'needle');
+		await page.waitForFunction(() => document.body.textContent.includes('Matches: 2'), {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Next match');
+		const firstMatchTransform = await page.$eval('.lineage-world', (world) =>
+			world.getAttribute('style')
+		);
+		const queriesBeforeInvalidDate = searchQueries.length;
+		await chooseImageOption(page, 'Filter by creation date', 'Custom dates');
+		await page.waitForSelector('#image-filter-from', { timeout: WAIT_MS });
+		await page.$eval('#image-filter-from', (input) => {
+			input.value = '2035-01-01';
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		});
+		await page.waitForFunction(() => document.body.textContent.includes('Choose both dates'), {
+			timeout: WAIT_MS
+		});
+		assert.equal(searchQueries.length, queriesBeforeInvalidDate);
+		assert.match(
+			await page.$eval('.lineage-section > p[role="status"]', (status) => status.textContent),
+			/Matches: 2/
+		);
+		assert.equal((await button(page, 'Next match')).disabled, false);
+		await clickButton(page, 'Next match');
+		const secondMatchTransform = await page.$eval('.lineage-world', (world) =>
+			world.getAttribute('style')
+		);
+		assert.notEqual(
+			secondMatchTransform,
+			firstMatchTransform,
+			'the next match advances from the previous index after an incomplete date edit'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Images replacement keeps keyed tiles and inspector, sends sizes, and holds incomplete dates', async () => {
+	const fixtures = imageGridFixtures(72);
+	let releaseInitialPage;
+	const initialPage = new Promise((resolvePage) => {
+		releaseInitialPage = resolvePage;
+	});
+	for (const [index, row] of fixtures.rows.entries()) {
+		row.assets[0].width = index < 36 ? 512 : 2048;
+		row.assets[0].height = index < 36 ? 512 : 1024;
+	}
+	const multiOutput = lineageGeneration(
+		lineageJobId(972),
+		lineageAssetId(972),
+		'Multi-output job with omitted expired master',
+		new Date().toISOString()
+	);
+	multiOutput.expired = false;
+	multiOutput.assets[0].width = 512;
+	multiOutput.assets[0].height = 512;
+	fixtures.rows.push(multiOutput);
+	const requests = [];
+	fixtures.answers['/api/v1/generations?limit=50'] = {
+		body: async (url) => {
+			await initialPage;
+			requests.push(url.searchParams.toString());
+			if (url.searchParams.has('size') || url.searchParams.has('action')) await pause(400);
+			const size = url.searchParams.getAll('size');
+			return fixtures.rows.filter((row) => {
+				const dimension = Math.max(row.assets[0].width, row.assets[0].height);
+				return (
+					size.length === 0 ||
+					(size.includes('2k') && dimension >= 1536 && dimension < 3072) ||
+					(size.includes('2k') && row.id === multiOutput.id)
+				);
+			});
+		}
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector('.grid-scroller [role="status"]', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.grid-scroller [role="status"]', (status) => status.textContent),
+			/Loading/
+		);
+		releaseInitialPage();
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 73, {
+			timeout: WAIT_MS
+		});
+		const dimensions = await page.$$eval('[aria-label^="Filter by"]', (controls) =>
+			controls.map((control) => ({
+				height: getComputedStyle(control).height,
+				fontSize: getComputedStyle(control).fontSize,
+				fontWeight: getComputedStyle(control).fontWeight
+			}))
+		);
+		assert.ok(dimensions.length >= 3);
+		for (const style of dimensions) {
+			assert.equal(style.height, '26px');
+			assert.equal(style.fontSize, '12px');
+			assert.equal(style.fontWeight, '500');
+		}
+
+		const selectedId = fixtures.rows[50].id;
+		await page.$eval('.grid-scroller', (element) => (element.style.overflowAnchor = 'none'));
+		await page.$eval(`[data-generation-id="${selectedId}"]`, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.evaluate((id) => {
+			window.__gridContinuityNodes = {
+				list: document.querySelector('.image-grid'),
+				image: document.querySelector(`[data-generation-id="${id}"] img`),
+				inspector: document.querySelector('.selection-inspector')
+			};
+		}, selectedId);
+		const scroller = await page.$('.grid-scroller');
+		assert.ok(scroller);
+		await page.$eval(`[data-generation-id="${selectedId}"]`, (tile) =>
+			tile.scrollIntoView({ block: 'center' })
+		);
+		const anchor = await page.$eval(
+			'.grid-scroller',
+			(scroller, firstTwoKId) => {
+				const area = scroller.getBoundingClientRect();
+				const tile = [...scroller.querySelectorAll('.grid-tile')].find((candidate) => {
+					const rect = candidate.getBoundingClientRect();
+					return (
+						candidate.dataset.generationId >= firstTwoKId &&
+						rect.bottom > area.top &&
+						rect.top < area.bottom
+					);
+				});
+				return tile && { id: tile.dataset.generationId, top: tile.getBoundingClientRect().top };
+			},
+			fixtures.rows[36].id
+		);
+		assert.ok(anchor);
+		await chooseImageOption(page, 'Filter by image size', '2K (1536-3071 px)');
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'true',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(
+				() => document.querySelector('.image-grid') === window.__gridContinuityNodes.list
+			),
+			true
+		);
+		assert.equal(
+			await page.evaluate(
+				(id) =>
+					document.querySelector(`[data-generation-id="${id}"] img`) ===
+					window.__gridContinuityNodes.image,
+				selectedId
+			),
+			true
+		);
+		assert.equal(
+			await page.evaluate(
+				() =>
+					document.querySelector('.selection-inspector') === window.__gridContinuityNodes.inspector
+			),
+			true
+		);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.querySelector('[role="status"]')),
+			null,
+			'replacement does not show a loading message'
+		);
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 37, {
+			timeout: WAIT_MS
+		});
+		assert.notEqual(
+			await page.$(`[data-generation-id="${multiOutput.id}"]`),
+			null,
+			'the current server page keeps a 2K match whose expired master is not serialized'
+		);
+		assert.ok(requests.some((query) => new URLSearchParams(query).getAll('size').includes('2k')));
+		assert.equal(
+			await page.evaluate(
+				() => document.querySelector('.image-grid') === window.__gridContinuityNodes.list
+			),
+			true
+		);
+		assert.ok(
+			Math.abs(
+				(await page.$eval(
+					`[data-generation-id="${anchor.id}"]`,
+					(tile) => tile.getBoundingClientRect().top
+				)) - anchor.top
+			) <= 1,
+			'the visible common tile keeps its screen position'
+		);
+		assert.equal(
+			await page.evaluate(
+				() =>
+					document.querySelector('.selection-inspector') === window.__gridContinuityNodes.inspector
+			),
+			true
+		);
+
+		await page.click('[aria-label="Clear model, size, and date filters"]');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 73, {
+			timeout: WAIT_MS
+		});
+		assert.equal(
+			await page.evaluate(
+				(id) =>
+					document.querySelector(`[data-generation-id="${id}"] img`) ===
+					window.__gridContinuityNodes.image,
+				selectedId
+			),
+			true,
+			'clearing a filter reuses the common image node'
+		);
+		const scrollingAnchorId = fixtures.rows[36].id;
+		await page.$eval(`[data-generation-id="${scrollingAnchorId}"]`, (tile) =>
+			tile.scrollIntoView({ block: 'start' })
+		);
+		await page.$eval('.grid-scroller', (element) => (element.style.overflowAnchor = 'none'));
+		await chooseImageOption(page, 'Filter by image size', '2K (1536-3071 px)');
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'true',
+			{ timeout: WAIT_MS }
+		);
+		const scrollBeforeWheel = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		const scrollerRect = await scroller.boundingBox();
+		assert.ok(scrollerRect);
+		await page.mouse.move(scrollerRect.x + 40, scrollerRect.y + 40);
+		await page.mouse.wheel({ deltaY: 120 });
+		await page.waitForFunction(
+			(previous) => document.querySelector('.grid-scroller').scrollTop > previous,
+			{},
+			scrollBeforeWheel
+		);
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const wheelPreservedScroll = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		assert.ok(wheelPreservedScroll > 0);
+		assert.ok(
+			(await page.$eval(
+				`[data-generation-id="${scrollingAnchorId}"]`,
+				(tile) => tile.getBoundingClientRect().top
+			)) <
+				scrollerRect.y - 20,
+			'a wheel scroll during replacement is not reset to the saved tile anchor'
+		);
+		await page.click('[aria-label="Clear model, size, and date filters"]');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 73, {
+			timeout: WAIT_MS
+		});
+		await page.$eval('.grid-scroller', (element) => (element.scrollTop = 200));
+		await page.evaluate(() => {
+			const generated = [...document.querySelectorAll('button[aria-pressed]')].find(
+				(button) => button.textContent?.trim() === 'Generated'
+			);
+			if (!generated) throw new Error('generated action filter not found');
+			generated.click();
+		});
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'true',
+			{ timeout: WAIT_MS }
+		);
+		const dragStart = await visibleGridTile(page);
+		assert.ok(dragStart);
+		const scrollBeforeDrag = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await page.mouse.move(dragStart.x, dragStart.y);
+		await page.mouse.down();
+		await page.mouse.move(dragStart.x, dragStart.y - 100, { steps: 5 });
+		await page.mouse.up();
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.ok(
+			(await page.$eval('.grid-scroller', (element) => element.scrollTop)) > scrollBeforeDrag + 20,
+			'a drag scroll during replacement is not reset to the saved tile anchor'
+		);
+		await clickButton(page, 'All');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 73, {
+			timeout: WAIT_MS
+		});
+		await page.$eval('.grid-scroller', (element) => (element.scrollTop = 200));
+		await clickButton(page, 'Generated');
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'true',
+			{ timeout: WAIT_MS }
+		);
+		const touchScrollTop = await page.$eval('.grid-scroller', (element) => {
+			const rect = element.getBoundingClientRect();
+			element.dispatchEvent(
+				new PointerEvent('pointerdown', {
+					bubbles: true,
+					pointerType: 'touch',
+					pointerId: 71,
+					button: 0,
+					clientX: rect.left + 40,
+					clientY: rect.top + 40
+				})
+			);
+			element.scrollTop += 100;
+			return element.scrollTop;
+		});
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			touchScrollTop,
+			'an ignored touch press cancels the pending scroll anchor'
+		);
+		await clickButton(page, 'All');
+		await page.waitForFunction(
+			() => document.querySelector('.image-grid')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const requestsBeforeCustomDate = requests.length;
+		await chooseImageOption(page, 'Filter by creation date', 'Custom dates');
+		await page.waitForSelector('#image-filter-from');
+		await page.$eval('#image-filter-from', (input) => {
+			input.value = '2035-01-01';
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		});
+		await page.waitForFunction(() => document.body.textContent.includes('Choose both dates'));
+		await pause(250);
+		assert.equal(requests.length, requestsBeforeCustomDate, 'an incomplete range sends no query');
+		assert.equal(await page.$$('.grid-tile').then((tiles) => tiles.length), 73);
+		await clickButton(page, 'All');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 73, {
+			timeout: WAIT_MS
+		});
+		const allQuery = new URLSearchParams(requests.at(-1));
+		assert.equal(allQuery.has('size'), false);
+		assert.equal(allQuery.has('created_from'), false);
+	} finally {
+		releaseInitialPage();
+		await harness.close();
+	}
+});
+
+test('grid ignores a late response from a replaced date query', async () => {
+	const fixtures = imageGridFixtures(3);
+	fixtures.rows[2].created_at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+	let delayedDateResponse = false;
+	const dateQueries = [];
+	fixtures.answers['/api/v1/generations?limit=50'] = {
+		body: async (url) => {
+			if (url.searchParams.has('created_from')) {
+				dateQueries.push(url.searchParams.toString());
+				if (!delayedDateResponse) {
+					delayedDateResponse = true;
+					await pause(450);
+					return [fixtures.rows[0], fixtures.rows[2]];
+				}
+				return [fixtures.rows[0], fixtures.rows[1]];
+			}
+			return fixtures.rows;
+		}
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__dateQueries = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (
+				url.pathname === '/api/v1/generations' &&
+				url.searchParams.has('created_from') &&
+				!url.searchParams.has('roots_only')
+			) {
+				window.__dateQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 3, {
+			timeout: WAIT_MS
+		});
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.waitForFunction(() => document.querySelector('[aria-busy="true"]'));
+		await chooseImageOption(page, 'Filter by creation date', 'Today');
+		await pause(300);
+		const dateQueryState = await page.evaluate(() => ({
+			queries: window.__dateQueries,
+			label: document.querySelector('[aria-label="Filter by creation date"]')?.textContent,
+			busy: document.querySelector('.grid-scroller')?.getAttribute('aria-busy')
+		}));
+		assert.equal(dateQueryState.queries.length, 2, JSON.stringify(dateQueryState));
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 2, {
+			timeout: WAIT_MS
+		});
+		await pause(500);
+		assert.deepEqual(
+			await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.dataset.generationId)),
+			[fixtures.rows[0].id, fixtures.rows[1].id]
+		);
+		assert.equal(dateQueries.length, 2, 'both distinct filter requests reached the fixture server');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('server classified historical rows stay visible when their model is unavailable locally', async () => {
+	const fixtures = imageGridFixtures(2);
+	fixtures.rows[0].model_id = 'removed-history-model';
+	fixtures.rows[0].source_asset_id = lineageAssetId(999);
+	fixtures.rows[1].source_asset_id = lineageAssetId(998);
+	fixtures.answers['/api/v1/generations/models'] = { body: { models: [MODEL] } };
+	fixtures.answers[`/api/v1/generations/${fixtures.rows[0].id}/lineage`] = {
+		body: { ancestors: [], children: [], descendant_count: 0, descendants_truncated: false }
+	};
+	const actionQueries = [];
+	fixtures.answers['/api/v1/generations?limit=50'] = {
+		body: (url) => {
+			if (url.searchParams.get('action') === 'upscale')
+				actionQueries.push(url.searchParams.toString());
+			return fixtures.rows;
+		}
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__actionQueries = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('action')) {
+				window.__actionQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.evaluate(() => {
+			const upscale = [...document.querySelectorAll('button[aria-pressed]')].find(
+				(candidate) => candidate.textContent?.trim() === 'Upscaled'
+			);
+			if (!upscale) throw new Error('upscale filter not found');
+			upscale.click();
+		});
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button[aria-pressed]')].some(
+					(button) =>
+						button.textContent?.trim() === 'Upscaled' &&
+						button.getAttribute('aria-pressed') === 'true'
+				),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(() => window.__actionQueries.length === 1, { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(new URLSearchParams(actionQueries.at(-1)).get('action'), 'upscale');
+		assert.equal(
+			await page.$$('.grid-tile').then((tiles) => tiles.length),
+			2,
+			'server membership wins over absent models and narrowed public model capabilities'
+		);
+		await page.$eval('.grid-tile', (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+	} finally {
+		await harness.close();
+	}
+});
+
+test('lineage replaces roots atomically after paging beyond fifty', async () => {
+	const roots = Array.from({ length: 60 }, (_, index) => {
+		const root = lineageGeneration(
+			lineageJobId(900 + index),
+			lineageAssetId(900 + index),
+			`Paged root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		if (index >= 20) root.model_id = 'other-history-smoke';
+		return root;
+	});
+	const rootQueries = [];
+	const answers = {
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: async (url) => {
+				rootQueries.push(url.searchParams.toString());
+				const cursor = url.searchParams.get('cursor');
+				if (url.searchParams.get('model_id') === 'other-history-smoke') {
+					await pause(350);
+					return roots.filter((root) => root.model_id === 'other-history-smoke');
+				}
+				if (cursor !== null) return roots.slice(50);
+				return roots.slice(0, 50);
+			}
+		},
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			window.__rootPageCursors = [];
+			window.__rootQueries = [];
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					window.__rootPageCursors.push(url.searchParams.get('cursor'));
+					window.__rootQueries.push(url.searchParams.toString());
+				}
+				return originalFetch(input, init);
+			};
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		const commonNodeId = roots[20].assets[0].id;
+		await page.waitForSelector(`[data-lineage-node="${commonNodeId}"]`, { timeout: WAIT_MS });
+		await page.evaluate((id) => {
+			window.__savedRootNode = document.querySelector(`[data-lineage-node="${id}"]`);
+		}, commonNodeId);
+		await page.focus('.lineage-viewport');
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowDown');
+		await page.waitForFunction(
+			() => window.__rootPageCursors.filter((cursor) => cursor !== null).length > 0,
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(() => window.__rootPageCursors.length >= 2, { timeout: WAIT_MS });
+		for (let step = 0; step < 40; step += 1) await page.keyboard.press('ArrowUp');
+		await page.waitForSelector(`[data-lineage-node="${commonNodeId}"]`, { timeout: WAIT_MS });
+		await page.evaluate((id) => {
+			window.__savedRootNode = document.querySelector(`[data-lineage-node="${id}"]`);
+		}, commonNodeId);
+		await chooseImageModel(page, 'Other history model');
+		await page.waitForFunction(
+			() => window.__rootQueries.some((query) => new URLSearchParams(query).has('model_id')),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(
+				(id) => document.querySelector(`[data-lineage-node="${id}"]`) === window.__savedRootNode,
+				commonNodeId
+			),
+			true,
+			'the keyed common root stays mounted while its replacement is pending'
+		);
+		await pause(450);
+		assert.equal(
+			await page.evaluate(
+				(id) => document.querySelector(`[data-lineage-node="${id}"]`) === window.__savedRootNode,
+				commonNodeId
+			),
+			true,
+			'the keyed common root remains after replacement'
+		);
+		assert.equal(rootQueries.filter((query) => new URLSearchParams(query).has('cursor')).length, 1);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('grid mouse drag scrolls without selecting and preserves click, cancel, reduced motion, and wheel', async () => {
+	const fixtures = imageGridFixtures(120);
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 120, {
+			timeout: WAIT_MS
+		});
+		const scroller = await page.$('.grid-scroller');
+		assert.ok(scroller);
+		const tile = await page.$('.grid-tile');
+		const rect = await tile.boundingBox();
+		assert.ok(rect);
+		await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2 - 220, { steps: 8 });
+		assert.equal(
+			await page.$eval('.grid-scroller .grid-tile', (element) => getComputedStyle(element).cursor),
+			'grabbing'
+		);
+		await page.$eval('.grid-scroller', (scroller) => {
+			const tile = scroller.querySelector('.grid-tile');
+			scroller.addEventListener(
+				'pointerup',
+				() => {
+					const compatibilityClick = new MouseEvent('click', {
+						bubbles: true,
+						cancelable: true,
+						detail: 1
+					});
+					tile.dispatchEvent(compatibilityClick);
+					window.__dragClickPrevented = compatibilityClick.defaultPrevented;
+				},
+				{ once: true }
+			);
+		});
+		await page.mouse.up();
+		assert.equal(await page.evaluate(() => window.__dragClickPrevented), true);
+		await page.waitForFunction(() => document.querySelector('.grid-scroller').scrollTop > 150);
+		const scrollAfterDrag = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		assert.ok(scrollAfterDrag > 0);
+		assert.equal(
+			await page.$('.selection-inspector'),
+			null,
+			'a tile drag does not select the tile'
+		);
+		const rightClickTarget = await page.evaluate(() => {
+			const scroller = document.querySelector('.grid-scroller').getBoundingClientRect();
+			const tile = [...document.querySelectorAll('.grid-tile')].find((candidate) => {
+				const rect = candidate.getBoundingClientRect();
+				return rect.bottom > scroller.top && rect.top < scroller.bottom;
+			});
+			const rect = tile.getBoundingClientRect();
+			return { id: tile.dataset.generationId, x: rect.left + 20, y: rect.top + 20 };
+		});
+		await page.mouse.click(rightClickTarget.x, rightClickTarget.y, { button: 'right' });
+		await page.$eval(`[data-generation-id="${rightClickTarget.id}"]`, (button) => button.focus());
+		await page.keyboard.press('Enter');
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.click('.selection-inspector button[aria-label="Close selected image"]');
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'));
+		await pause(1200);
+
+		const visibleTile = await visibleGridTile(page);
+		assert.ok(visibleTile);
+		await page.mouse.click(visibleTile.x, visibleTile.y);
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.$eval('.grid-scroller', (element) => (element.scrollTop = 300));
+		const outsideStart = await visibleGridTile(page);
+		assert.ok(outsideStart);
+		const scrollerRect = await scroller.boundingBox();
+		const inspectorRect = await page.$('.selection-inspector').then((node) => node.boundingBox());
+		assert.ok(scrollerRect && inspectorRect);
+		const retainedScrollTop = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await page.mouse.move(outsideStart.x, outsideStart.y);
+		await page.mouse.down();
+		await page.mouse.move(inspectorRect.x + 20, outsideStart.y, { steps: 4 });
+		await page.mouse.up();
+		await page.mouse.move(scrollerRect.x + 30, scrollerRect.y + 30);
+		await page.mouse.move(scrollerRect.x + 30, scrollerRect.y + 120);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) =>
+				element.classList.contains('is-drag-scrolling')
+			),
+			false
+		);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			retainedScrollTop,
+			'a release outside the scroller before the vertical threshold ends the gesture'
+		);
+		await page.click('.selection-inspector button[aria-label="Close selected image"]');
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'));
+
+		const clickTile = await visibleGridTile(page);
+		assert.ok(clickTile);
+		await page.mouse.move(clickTile.x + 10, clickTile.y + 10);
+		await page.mouse.down();
+		await page.mouse.move(clickTile.x + 10, clickTile.y + 15);
+		await page.mouse.up();
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.click('.selection-inspector button[aria-label="Close selected image"]');
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'));
+
+		const client = await page.createCDPSession();
+		await client.send('Emulation.setEmulatedMedia', {
+			features: [{ name: 'prefers-reduced-motion', value: 'reduce' }]
+		});
+		await page.$eval('.grid-scroller', (element) => (element.scrollTop = 300));
+		const reducedTile = await visibleGridTile(page);
+		assert.ok(reducedTile);
+		await page.mouse.move(reducedTile.x + 5, reducedTile.y + 5);
+		await page.mouse.down();
+		await page.mouse.move(reducedTile.x + 5, reducedTile.y - 135, { steps: 5 });
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) =>
+				element.classList.contains('is-drag-scrolling')
+			),
+			true
+		);
+		await page.mouse.up();
+		const afterRelease = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		assert.ok(afterRelease > 400);
+		assert.ok(
+			await page.$eval(
+				'.grid-scroller',
+				(element) => element.scrollHeight - element.clientHeight - element.scrollTop > 300
+			)
+		);
+		await pause(160);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			afterRelease,
+			'reduced motion disables coast after the pointer is released'
+		);
+		await client.send('Emulation.setEmulatedMedia', { features: [] });
+
+		const cancelTile = await visibleGridTile(page);
+		assert.ok(cancelTile);
+		await page.mouse.move(cancelTile.x + 10, cancelTile.y + 10);
+		await page.mouse.down();
+		await page.mouse.move(cancelTile.x + 10, cancelTile.y - 90, { steps: 4 });
+		await page.$eval('.grid-scroller', (element) =>
+			element.dispatchEvent(
+				new PointerEvent('pointercancel', { bubbles: true, pointerId: 1, pointerType: 'mouse' })
+			)
+		);
+		await page.mouse.up();
+		const afterCancel = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await pause(180);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			afterCancel,
+			'pointer cancellation stops movement without coast'
+		);
+
+		const lostCaptureTile = await visibleGridTile(page);
+		assert.ok(lostCaptureTile);
+		await page.$eval('.grid-scroller', (element) => {
+			element.addEventListener('pointermove', (event) => {
+				if (event.buttons === 1) window.__activeDragPointerId = event.pointerId;
+			});
+		});
+		await page.mouse.move(lostCaptureTile.x, lostCaptureTile.y);
+		await page.mouse.down();
+		await page.mouse.move(lostCaptureTile.x, lostCaptureTile.y - 90, { steps: 4 });
+		const lostCapturePointerId = await page.evaluate(() => window.__activeDragPointerId);
+		assert.equal(typeof lostCapturePointerId, 'number');
+		assert.equal(
+			await page.$eval(
+				'.grid-scroller',
+				(element, pointerId) => element.hasPointerCapture(pointerId),
+				lostCapturePointerId
+			),
+			true
+		);
+		await page.$eval(
+			'.grid-scroller',
+			(element, pointerId) => {
+				element.dispatchEvent(
+					new PointerEvent('lostpointercapture', {
+						bubbles: true,
+						pointerId,
+						pointerType: 'mouse'
+					})
+				);
+			},
+			lostCapturePointerId
+		);
+		await page.waitForFunction(
+			() => !document.querySelector('.grid-scroller').classList.contains('is-drag-scrolling'),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) =>
+				element.classList.contains('is-drag-scrolling')
+			),
+			false
+		);
+		await page.mouse.up();
+		const afterLostCapture = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await pause(160);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			afterLostCapture,
+			'lost pointer capture ends the drag without coast'
+		);
+
+		const blurTile = await visibleGridTile(page);
+		assert.ok(blurTile);
+		await page.mouse.move(blurTile.x, blurTile.y);
+		await page.mouse.down();
+		await page.mouse.move(blurTile.x, blurTile.y - 90, { steps: 4 });
+		await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) =>
+				element.classList.contains('is-drag-scrolling')
+			),
+			false
+		);
+		await page.mouse.up();
+		const afterBlur = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await pause(160);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			afterBlur,
+			'window blur ends the drag without coast'
+		);
+
+		const keyTile = await visibleGridTile(page);
+		assert.ok(keyTile);
+		await page.mouse.move(keyTile.x, keyTile.y);
+		await page.mouse.down();
+		await page.mouse.move(keyTile.x, keyTile.y - 90, { steps: 4 });
+		await page.mouse.up();
+		await page.$eval(`[data-generation-id="${keyTile.id}"]`, (tile) => tile.focus());
+		await page.keyboard.press('Escape');
+		const afterKey = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		await pause(160);
+		assert.equal(
+			await page.$eval('.grid-scroller', (element) => element.scrollTop),
+			afterKey,
+			'keyboard input stops coast'
+		);
+
+		await page.mouse.move(scrollerRect.x + 40, scrollerRect.y + 40);
+		const beforeWheel = await page.$eval('.grid-scroller', (element) => {
+			element.addEventListener('wheel', () => (window.__sawGridWheel = true), { once: true });
+			return element.scrollTop;
+		});
+		await page.mouse.wheel({ deltaY: 160 });
+		await page.waitForFunction(
+			(previous) => document.querySelector('.grid-scroller').scrollTop > previous,
+			{},
+			beforeWheel
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('un-starring a filtered grid result removes it from that server page', async () => {
+	const fixtures = imageGridFixtures(6);
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 6, {
+			timeout: WAIT_MS
+		});
+		await page.$eval('.grid-tile', (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 5, {
+			timeout: WAIT_MS
+		});
+		assert.equal(await page.$('.selection-inspector'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('filtered older grid images open in the inspector and close with Back or a mobile swipe', async () => {
+	const fixtures = imageGridFixtures(51);
+	fixtures.rows[50].params.prompt = 'Older filtered image beyond the first page';
+	fixtures.rows[50].created_at = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+	fixtures.rows[50].assets[0].thumbnail_url = '/api/v1/assets/held-thumbnail.png';
+	let heldThumbnailRequest = null;
+	fixtures.answers['/api/v1/generations?limit=50'] = {
+		body: (url) =>
+			url.searchParams.has('cursor') ? fixtures.rows.slice(50) : fixtures.rows.slice(0, 50)
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.setRequestInterception(true);
+		page.on('request', (request) => {
+			if (request.url().endsWith('/api/v1/assets/held-thumbnail.png')) {
+				heldThumbnailRequest = request;
+				return;
+			}
+			void request.continue();
+		});
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'More matching results');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 51, {
+			timeout: WAIT_MS
+		});
+		const olderTile = '[data-generation-id="' + fixtures.rows[50].id + '"]';
+		assert.notEqual(await page.$(olderTile), null);
+		await page.$eval(olderTile, (tile) => tile.scrollIntoView({ block: 'center' }));
+		await page.waitForFunction(
+			(selector) => {
+				const image = document.querySelector(selector + ' img');
+				return (
+					image?.getAttribute('src') === '/api/v1/assets/held-thumbnail.png' && !image.complete
+				);
+			},
+			{ timeout: WAIT_MS },
+			olderTile
+		);
+		assert.match(
+			await page.$eval(olderTile, (tile) => getComputedStyle(tile).backgroundImage),
+			/linear-gradient/
+		);
+		heldThumbnailRequest ??= await page.waitForRequest(
+			(request) => new URL(request.url()).pathname === '/api/v1/assets/held-thumbnail.png',
+			{ timeout: WAIT_MS }
+		);
+		await heldThumbnailRequest.abort();
+		await page.$eval(olderTile, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.selection-inspector', (panel) => panel.textContent),
+			/Older filtered image beyond the first page/
+		);
+
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'), {
+			timeout: WAIT_MS
+		});
+		assert.equal(await page.$$('.grid-tile').then((tiles) => tiles.length), 51);
+
+		await page.setViewport({ width: 390, height: 844 });
+		await page.$eval(olderTile, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		const panel = await page.$('.selection-inspector');
+		const bounds = await panel.boundingBox();
+		assert.ok(bounds);
+		const touch = await page.createCDPSession();
+		await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+		await touch.send('Input.dispatchTouchEvent', {
+			type: 'touchStart',
+			touchPoints: [{ x: bounds.x + 30, y: bounds.y + 120, id: 1 }]
+		});
+		await touch.send('Input.dispatchTouchEvent', {
+			type: 'touchMove',
+			touchPoints: [{ x: bounds.x + bounds.width * 0.65, y: bounds.y + 120, id: 1 }]
+		});
+		await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+		await page.waitForFunction(() => !document.querySelector('.selection-inspector'), {
+			timeout: WAIT_MS
+		});
+		await touch.detach();
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Unstar Undo restores an image while Starred and action filters are active', async () => {
+	const fixtures = imageGridFixtures(51);
+	const baseTime = Date.parse(fixtures.rows[0].created_at);
+	for (const [index, row] of fixtures.rows.entries()) {
+		const timestamp = new Date(baseTime - (index + 1) * 1000).toISOString();
+		row.created_at = timestamp;
+		row.starred_at = timestamp;
+	}
+	const olderRow = fixtures.rows[50];
+	const historyPageIds = [];
+	const gridPages = [];
+	const getGenerationPage = (url) => {
+		const starred = url.searchParams.get('starred') === 'true';
+		const action = url.searchParams.get('action');
+		const matching = fixtures.rows
+			.filter((row) => row.state === (url.searchParams.get('state') ?? row.state))
+			.filter((row) => !starred || row.starred_at !== null)
+			.filter((row) => action !== 'generate' || row.source_asset_id === null)
+			.sort((left, right) => {
+				const leftTime = Date.parse(starred ? left.starred_at : left.created_at);
+				const rightTime = Date.parse(starred ? right.starred_at : right.created_at);
+				return rightTime - leftTime || right.id.localeCompare(left.id);
+			});
+		const cursor = url.searchParams.get('cursor');
+		const cursorIndex = cursor === null ? -1 : matching.findIndex((row) => row.id === cursor);
+		assert.equal(
+			cursor === null || cursorIndex >= 0,
+			true,
+			'cursor belongs to this filtered result'
+		);
+		const limit = Number(url.searchParams.get('limit') ?? 50);
+		const page = matching.slice(cursorIndex + 1, cursorIndex + 1 + limit);
+		if (url.searchParams.has('state')) {
+			gridPages.push({
+				cursor,
+				starred,
+				action,
+				state: url.searchParams.get('state'),
+				ids: page.map((row) => row.id)
+			});
+		} else if (!starred) {
+			historyPageIds.splice(0, historyPageIds.length, ...page.map((row) => row.id));
+		}
+		return page;
+	};
+	fixtures.answers['/api/v1/generations?limit=50'] = { body: getGenerationPage };
+	fixtures.answers['/api/v1/generations?limit=50&starred=true'] = {
+		body: getGenerationPage
+	};
+	fixtures.answers['/api/v1/generations?starred=true&limit=200'] = {
+		body: () =>
+			fixtures.rows
+				.filter((row) => row.starred_at !== null)
+				.sort(
+					(left, right) =>
+						Date.parse(right.starred_at) - Date.parse(left.starred_at) ||
+						right.id.localeCompare(left.id)
+				)
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		assert.equal(historyPageIds.length, 50);
+		assert.equal(
+			historyPageIds.includes(olderRow.id),
+			false,
+			'the target is outside shared recent history'
+		);
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Generated');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button[aria-pressed]')].some(
+					(button) =>
+						button.textContent?.trim() === 'Generated' &&
+						button.getAttribute('aria-pressed') === 'true'
+				),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		assert.deepEqual(
+			gridPages.at(-1).ids,
+			fixtures.rows.slice(0, 50).map((row) => row.id)
+		);
+		await clickButton(page, 'More matching results');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 51, {
+			timeout: WAIT_MS
+		});
+		assert.equal(gridPages.at(-1).cursor, fixtures.rows[49].id);
+		assert.deepEqual(gridPages.at(-1).ids, [olderRow.id]);
+		const id = olderRow.id;
+		await page.$eval('[data-generation-id="' + id + '"]', (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		assert.equal(olderRow.starred_at, null, 'DELETE removes the favorite in the server fixture');
+		const favoritesAfterUnstar = await page.evaluate(async () =>
+			(await fetch('/api/v1/generations?starred=true&limit=200')).json()
+		);
+		assert.equal(
+			favoritesAfterUnstar.some((row) => row.id === id),
+			false
+		);
+		const pagesBeforeUndo = gridPages.length;
+		await clickButton(page, 'Undo');
+		await page.waitForFunction(
+			(id) =>
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false' &&
+				document.querySelector('.grid-tile')?.dataset.generationId === id,
+			{ timeout: WAIT_MS },
+			id
+		);
+		assert.equal(gridPages.length, pagesBeforeUndo + 1, 'Undo reloads the first server page');
+		assert.equal(await page.$$('.grid-tile').then((tiles) => tiles.length), 50);
+		assert.equal(gridPages.at(-1).cursor, null);
+		assert.equal(gridPages.at(-1).starred, true);
+		assert.equal(gridPages.at(-1).action, 'generate');
+		assert.equal(gridPages.at(-1).state, 'succeeded');
+		assert.equal(gridPages.at(-1).ids[0], id, 'the restored favorite sorts to the newest position');
+		assert.ok(Date.parse(olderRow.starred_at) > baseTime - 1000);
+		assert.equal(await page.$eval('.grid-tile', (tile) => tile.dataset.generationId), id);
+		const favoritesAfterUndo = await page.evaluate(async () =>
+			(await fetch('/api/v1/generations?starred=true&limit=200')).json()
+		);
+		assert.equal(favoritesAfterUndo[0].id, id);
+		assert.equal(
+			await page.$eval(
+				'[data-generation-id="' + id + '"]',
+				(tile) => tile.querySelector('.grid-star') !== null
+			),
+			true
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('un-starring the cursor row moves the next page cursor to the last remaining favorite', async () => {
+	const fixtures = imageGridFixtures(50);
+	fixtures.answers['/api/v1/generations?limit=50&starred=true'].body = (url) =>
+		url.searchParams.has('cursor') ? [] : fixtures.rows;
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__gridCursors = [];
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('starred')) {
+				window.__gridCursors.push(url.searchParams.get('cursor'));
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await page.$$eval('.grid-tile', (tiles) => tiles.at(-1)?.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 49, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'More matching results');
+		await page.waitForFunction(() => window.__gridCursors.some((cursor) => cursor !== null), {
+			timeout: WAIT_MS
+		});
+		assert.equal(
+			await page.evaluate(() => window.__gridCursors.at(-1)),
+			fixtures.rows.at(-2).id,
+			'the next page uses the last remaining starred server row as its cursor'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a refused un-star keeps the server result and its inspector visible', async () => {
+	const fixtures = imageGridFixtures(6);
+	fixtures.answers[`/api/v1/generations/${fixtures.rows[0].id}/star`] = {
+		status: 500,
+		body: { detail: 'star save failed' }
+	};
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 6, {
+			timeout: WAIT_MS
+		});
+		await page.$eval('.grid-tile', (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(
+			() => document.body.innerText.includes('The favorite could not be saved.'),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.$$('.grid-tile').then((tiles) => tiles.length), 6);
+		assert.notEqual(await page.$('.selection-inspector'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('the Images inspector shows execution time when it is present, including zero', async () => {
+	const fixtures = imageGridFixtures(3);
+	fixtures.rows[0].gpu_ms = 1500;
+	fixtures.rows[1].gpu_ms = 0;
+	fixtures.rows[2].gpu_ms = null;
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 3, {
+			timeout: WAIT_MS
+		});
+		const gpuTimeFor = async (title) => {
+			await page.$eval(`.grid-tile[title="${title}"]`, (tile) => tile.click());
+			await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+			return page.$eval('.selection-inspector dl', (details) => {
+				const label = [...details.querySelectorAll('dt')].find(
+					(item) => item.textContent?.trim() === 'GPU time'
+				);
+				return label?.parentElement?.querySelector('dd')?.textContent?.trim() ?? null;
+			});
+		};
+		assert.equal(await gpuTimeFor('Image filter result 1'), '1.5 s');
+		assert.equal(await gpuTimeFor('Image filter result 2'), '0 ms');
+		assert.equal(await gpuTimeFor('Image filter result 3'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('changing the custom date filter clears an inspector for an excluded row', async () => {
+	const fixtures = imageGridFixtures();
+	fixtures.answers['/api/v1/generations?limit=50'].body = (url) =>
+		url.searchParams.has('created_from') ? [] : fixtures.rows;
+	const harness = await openImagesGrid(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 1, {
+			timeout: WAIT_MS
+		});
+		await page.$eval('.grid-tile', (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await chooseImageOption(page, 'Filter by creation date', 'Custom dates');
+		await page.waitForFunction(() => document.querySelectorAll('input[type="date"]').length === 2, {
+			timeout: WAIT_MS
+		});
+		for (const id of ['image-filter-from', 'image-filter-through']) {
+			await page.$eval(`#${id}`, (input) => {
+				input.value = '2035-01-01';
+				input.dispatchEvent(new Event('change', { bubbles: true }));
+			});
+		}
+		await page.waitForFunction(
+			() =>
+				document.querySelectorAll('.grid-tile').length === 0 &&
+				!document.querySelector('.selection-inspector'),
+			{ timeout: WAIT_MS }
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('filtered lineage roots retain saved offsets until the filter is cleared', async () => {
+	const root = lineageGeneration(
+		LINEAGE_ROOT_JOB,
+		lineageAssetId(1),
+		'Offset root',
+		new Date().toISOString()
+	);
+	root.expired = true;
+	root.assets = [];
+	const offset = { x: 137, y: -82 };
+	const answers = {
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => (url.searchParams.get('model_id') === 'other-history-smoke' ? [] : [root])
+		}
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			localStorage.setItem(
+				'potocolom-view-v1:local:lineage-offsets',
+				JSON.stringify({
+					version: 1,
+					section: 'lineage-offsets',
+					value: { '13000000-0000-4000-8000-000000000001': { x: 137, y: -82 } }
+				})
+			);
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${root.id}"]`, { timeout: WAIT_MS });
+		const savedOffset = { [root.id]: offset };
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			savedOffset
+		);
+		await chooseImageModel(page, 'Other history model');
+		await page.waitForFunction(
+			() => !document.querySelector('[data-lineage-node="13000000-0000-4000-8000-000000000001"]'),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(() => document.body.textContent.includes('No matching images.'), {
+			timeout: WAIT_MS
+		});
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			savedOffset,
+			'the filtered empty forest keeps the saved root offset'
+		);
+		await page.click('[aria-label="Clear model, size, and date filters"]');
+		await page.waitForSelector(`[data-lineage-node="${root.id}"]`, { timeout: WAIT_MS });
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			savedOffset,
+			'clearing the filter restores the root without changing its offset'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('clearing a Lineage filter in Grid keeps offsets for roots outside the cached subset', async () => {
+	const roots = [
+		lineageGeneration(
+			lineageJobId(2050),
+			lineageAssetId(2050),
+			'Offset A',
+			new Date(Date.now() - 60_000).toISOString()
+		),
+		lineageGeneration(
+			lineageJobId(2051),
+			lineageAssetId(2051),
+			'Offset B',
+			new Date(Date.now() - 100_000).toISOString()
+		)
+	];
+	roots[1].model_id = 'other-history-smoke';
+	const recentHistory = Array.from({ length: 49 }, (_, index) => {
+		const generation = lineageGeneration(
+			lineageJobId(2100 + index),
+			null,
+			`Recent failed history row ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		generation.state = 'failed';
+		return generation;
+	});
+	const offsets = {
+		[roots[0].id]: { x: 137, y: -82 },
+		[roots[1].id]: { x: -211, y: 93 }
+	};
+	const rootQueries = [];
+	const answers = {
+		'/api/v1/generations?limit=50': {
+			body: (url) =>
+				url.searchParams.get('state') === 'succeeded' ? roots : [...recentHistory, roots[0]]
+		},
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				const modelId = url.searchParams.get('model_id');
+				return modelId === null ? roots : roots.filter((root) => root.model_id === modelId);
+			}
+		},
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(savedOffsets) => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			localStorage.setItem(
+				'potocolom-view-v1:local:lineage-offsets',
+				JSON.stringify({ version: 1, section: 'lineage-offsets', value: savedOffsets })
+			);
+			window.__offsetRootLifecycle = { queries: [], completed: 0 };
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					window.__offsetRootLifecycle.queries.push(url.searchParams.toString());
+					return originalFetch(input, init).then((response) => {
+						window.__offsetRootLifecycle.completed += 1;
+						return response;
+					});
+				}
+				return originalFetch(input, init);
+			};
+		},
+		[offsets]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(() => window.__offsetRootLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__offsetRootLifecycle.completed === 2, {
+			timeout: WAIT_MS
+		});
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('model_id'), MODEL.id);
+		await clickButton(page, 'Grid');
+		await page.click('[aria-label="Clear model, size, and date filters"]');
+		await page.waitForFunction(
+			() => !document.querySelector('[aria-label="Clear model, size, and date filters"]'),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.evaluate(() => window.__offsetRootLifecycle.queries.length), 2);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			offsets,
+			'clearing a Grid filter keeps offsets for both the cached root and its omitted peer'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('turning off Starred in Grid keeps offsets outside the cached Starred roots', async () => {
+	const roots = [
+		lineageGeneration(
+			lineageJobId(2052),
+			lineageAssetId(2052),
+			'Starred offset root',
+			new Date(Date.now() - 60_000).toISOString()
+		),
+		lineageGeneration(
+			lineageJobId(2053),
+			lineageAssetId(2053),
+			'Unstarred offset root',
+			new Date(Date.now() - 100_000).toISOString()
+		)
+	];
+	roots[0].starred_at = roots[0].created_at;
+	roots[1].model_id = 'other-history-smoke';
+	const recentHistory = Array.from({ length: 49 }, (_, index) => {
+		const generation = lineageGeneration(
+			lineageJobId(2200 + index),
+			null,
+			`Recent failed history row ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		generation.state = 'failed';
+		return generation;
+	});
+	const offsets = {
+		[roots[0].id]: { x: 137, y: -82 },
+		[roots[1].id]: { x: -211, y: 93 }
+	};
+	const rootQueries = [];
+	const answers = {
+		'/api/v1/generations?limit=50': {
+			body: (url) =>
+				url.searchParams.get('state') === 'succeeded' ? roots : [...recentHistory, roots[0]]
+		},
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				return url.searchParams.has('starred') ? [roots[0]] : roots;
+			}
+		},
+		'/api/v1/generations?starred=true&limit=200': { body: [roots[0]] },
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(savedOffsets) => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			localStorage.setItem('potocolom-starred', '["13000000-0000-4000-8000-000000002052"]');
+			localStorage.setItem(
+				'potocolom-view-v1:local:lineage-offsets',
+				JSON.stringify({ version: 1, section: 'lineage-offsets', value: savedOffsets })
+			);
+			window.__starredOffsetLifecycle = { queries: [], completed: 0 };
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					window.__starredOffsetLifecycle.queries.push(url.searchParams.toString());
+					return originalFetch(input, init).then((response) => {
+						window.__starredOffsetLifecycle.completed += 1;
+						return response;
+					});
+				}
+				return originalFetch(input, init);
+			};
+		},
+		[offsets]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.click('[aria-label="Filter images"] button:nth-of-type(2)');
+		await page.waitForFunction(() => window.__starredOffsetLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__starredOffsetLifecycle.completed === 2, {
+			timeout: WAIT_MS
+		});
+		await pause(100);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('starred'), 'true');
+		await clickButton(page, 'Grid');
+		await page.click('[aria-label="Filter images"] button:nth-of-type(2)');
+		await page.waitForFunction(
+			() =>
+				document
+					.querySelector('[aria-label="Filter images"] button:nth-of-type(2)')
+					?.getAttribute('aria-pressed') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.evaluate(() => window.__starredOffsetLifecycle.queries.length), 2);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			offsets,
+			'turning Starred off keeps offsets for the cached root and its omitted peer'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a failed unfiltered Lineage replacement keeps offsets outside its filtered roots', async () => {
+	const roots = [
+		lineageGeneration(
+			lineageJobId(2060),
+			lineageAssetId(2060),
+			'Offset A',
+			new Date(Date.now() - 60_000).toISOString()
+		),
+		lineageGeneration(
+			lineageJobId(2061),
+			lineageAssetId(2061),
+			'Offset B',
+			new Date(Date.now() - 100_000).toISOString()
+		)
+	];
+	roots[1].model_id = 'other-history-smoke';
+	const recentHistory = Array.from({ length: 49 }, (_, index) => {
+		const generation = lineageGeneration(
+			lineageJobId(2150 + index),
+			null,
+			`Recent failed history row ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		);
+		generation.state = 'failed';
+		return generation;
+	});
+	const offsets = {
+		[roots[0].id]: { x: 137, y: -82 },
+		[roots[1].id]: { x: -211, y: 93 }
+	};
+	const rootQueries = [];
+	let failNextUnfiltered = false;
+	const answers = {
+		'/api/v1/generations?limit=50': {
+			body: (url) =>
+				url.searchParams.get('state') === 'succeeded' ? roots : [...recentHistory, roots[0]]
+		},
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: (url) => {
+				rootQueries.push(url.searchParams.toString());
+				const modelId = url.searchParams.get('model_id');
+				if (modelId === null && failNextUnfiltered) {
+					failNextUnfiltered = false;
+					throw new Error('simulated unfiltered root replacement failure');
+				}
+				return modelId === null ? roots : roots.filter((root) => root.model_id === modelId);
+			}
+		},
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{ body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]) }
+			])
+		)
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(savedOffsets) => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			localStorage.setItem(
+				'potocolom-view-v1:local:lineage-offsets',
+				JSON.stringify({ version: 1, section: 'lineage-offsets', value: savedOffsets })
+			);
+			window.__offsetRootLifecycle = { queries: [], completed: 0 };
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					window.__offsetRootLifecycle.queries.push(url.searchParams.toString());
+					return originalFetch(input, init).then((response) => {
+						window.__offsetRootLifecycle.completed += 1;
+						return response;
+					});
+				}
+				return originalFetch(input, init);
+			};
+		},
+		[offsets]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(() => window.__offsetRootLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__offsetRootLifecycle.completed === 2, {
+			timeout: WAIT_MS
+		});
+		failNextUnfiltered = true;
+		await page.click('[aria-label="Clear model, size, and date filters"]');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('model_id'), null);
+		await pause(100);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			offsets,
+			'a failed replacement keeps offsets for roots omitted by the cached filtered page'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('un-starring a root in Grid invalidates cached Starred roots for Lineage', async () => {
+	const fixtures = imageGridFixtures(1);
+	const root = fixtures.rows[0];
+	let rootIsStarred = true;
+	const rootQueries = [];
+	const answers = fixtures.answers;
+	answers['/api/v1/generations?roots_only=true&limit=50'] = {
+		body: (url) => {
+			rootQueries.push(url.searchParams.toString());
+			return url.searchParams.has('starred') ? (rootIsStarred ? [root] : []) : [root];
+		}
+	};
+	answers['/api/v1/generations?starred=true&limit=200'] = {
+		body: () => (rootIsStarred ? [root] : [])
+	};
+	answers[`/api/v1/generations/${root.id}/star`] = {
+		body: (_url, request) => {
+			rootIsStarred = request.method !== 'DELETE';
+			return {};
+		}
+	};
+	answers[`/api/v1/generations/${root.id}/subtree`] = {
+		body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		localStorage.setItem('potocolom-starred', '["13000000-0000-4000-8000-000000000201"]');
+		window.__starRootLifecycle = { queries: [], completed: 0 };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__starRootLifecycle.queries.push(url.searchParams.toString());
+				return originalFetch(input, init).then((response) => {
+					window.__starRootLifecycle.completed += 1;
+					return response;
+				});
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${root.assets[0].id}"]`, { timeout: WAIT_MS });
+		await page.click('[aria-label="Filter images"] button:nth-of-type(2)');
+		await page.waitForFunction(() => window.__starRootLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__starRootLifecycle.completed === 2, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Grid');
+		await page.waitForSelector(`[data-generation-id="${root.id}"]`, { timeout: WAIT_MS });
+		await page.click(`[data-generation-id="${root.id}"]`);
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 0, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Lineage');
+		await page.waitForFunction(() => window.__starRootLifecycle.queries.length === 3, {
+			timeout: 1800
+		});
+		assert.equal(new URLSearchParams(rootQueries.at(-1)).get('starred'), 'true');
+		assert.equal(await page.$(`[data-lineage-node="${root.assets[0].id}"]`), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('a canceled forced Starred root reload is repeated when Lineage returns', async () => {
+	const root = lineageGeneration(
+		lineageJobId(2080),
+		lineageAssetId(2080),
+		'Canceled starred root reload',
+		new Date().toISOString()
+	);
+	root.starred_at = root.created_at;
+	let rootIsStarred = true;
+	let holdNextStarredPage = false;
+	let releaseHeldPage = () => {};
+	const rootQueries = [];
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': {
+			body: async (url) => {
+				rootQueries.push(url.searchParams.toString());
+				if (url.searchParams.has('starred') && holdNextStarredPage) {
+					holdNextStarredPage = false;
+					await new Promise((resolve) => (releaseHeldPage = resolve));
+				}
+				return url.searchParams.has('starred') ? (rootIsStarred ? [root] : []) : [root];
+			}
+		},
+		'/api/v1/generations?limit=50&starred=true': {
+			body: () => (rootIsStarred ? [root] : [])
+		},
+		'/api/v1/generations?starred=true&limit=200': {
+			body: () => (rootIsStarred ? [root] : [])
+		},
+		[`/api/v1/generations/${root.id}/star`]: {
+			body: (_url, request) => {
+				rootIsStarred = request.method === 'POST';
+				return {};
+			}
+		},
+		[`/api/v1/generations/${root.id}/subtree`]: {
+			body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		localStorage.setItem('potocolom-starred', '["13000000-0000-4000-8000-000000002080"]');
+		window.__starRootLifecycle = { queries: [], completed: 0, aborts: 0 };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+				window.__starRootLifecycle.queries.push(url.searchParams.toString());
+				init?.signal?.addEventListener('abort', () => {
+					window.__starRootLifecycle.aborts += 1;
+				});
+				return originalFetch(input, init).then((response) => {
+					window.__starRootLifecycle.completed += 1;
+					return response;
+				});
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${root.assets[0].id}"]`, { timeout: WAIT_MS });
+		await page.click(`[data-lineage-node="${root.assets[0].id}"]`);
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.click('[aria-label="Filter images"] button:nth-of-type(2)');
+		await page.waitForFunction(() => window.__starRootLifecycle.queries.length === 2, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__starRootLifecycle.completed === 2, {
+			timeout: WAIT_MS
+		});
+		holdNextStarredPage = true;
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(() => window.__starRootLifecycle.queries.length === 3, {
+			timeout: WAIT_MS
+		});
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__starRootLifecycle.aborts > 0, {
+			timeout: WAIT_MS
+		});
+		releaseHeldPage();
+		await clickButton(page, 'Lineage');
+		await page.waitForFunction(() => window.__starRootLifecycle.queries.length === 4, {
+			timeout: 1800
+		});
+		assert.equal(
+			new URLSearchParams(rootQueries.at(-1)).get('starred'),
+			'true',
+			'returning to Lineage repeats the canceled forced root query'
+		);
+		assert.equal(await page.$(`[data-lineage-node="${root.assets[0].id}"]`), null);
+	} finally {
+		releaseHeldPage();
+		await harness.close();
+	}
+});
+
+test('grid paging pins preset dates and defers grid requests until Grid mode', async () => {
+	const rows = Array.from({ length: 50 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(280 + index),
+			lineageAssetId(280 + index),
+			`Paged image ${index + 1}`,
+			new Date().toISOString()
+		)
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50&': {
+			body: (url) => (url.searchParams.has('cursor') ? [] : rows)
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			localStorage.setItem('potocolom-images-mode', 'lineage');
+			window.__gridRequests = [];
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (
+					url.pathname === '/api/v1/generations' &&
+					url.searchParams.get('limit') === '50' &&
+					!url.searchParams.has('roots_only') &&
+					!url.searchParams.has('fields')
+				) {
+					window.__gridRequests.push(url.searchParams.toString());
+				}
+				return originalFetch(input, init);
+			};
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('[aria-label="Filter by creation date"]', { timeout: WAIT_MS });
+		assert.equal(
+			await page.evaluate(() => window.__gridRequests.length),
+			1,
+			'Lineage loads the shared history feed once and no grid page'
+		);
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__gridRequests.length === 2, { timeout: WAIT_MS });
+		await page.evaluate(() => (window.__gridRequests = []));
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.waitForFunction(
+			() =>
+				document.querySelectorAll('.grid-tile').length === 50 && window.__gridRequests.length > 0,
+			{ timeout: WAIT_MS }
+		);
+		const firstPage = new URLSearchParams(await page.evaluate(() => window.__gridRequests.at(-1)));
+		const firstPageBounds = {
+			from: firstPage.get('created_from'),
+			before: firstPage.get('created_before')
+		};
+		assert.ok(firstPageBounds.from && firstPageBounds.before);
+		await page.evaluate(() => {
+			const NativeDate = Date;
+			window.Date = class extends NativeDate {
+				constructor(...args) {
+					super(...(args.length ? args : ['2042-04-17T12:00:00Z']));
+				}
+				static now() {
+					return NativeDate.parse('2042-04-17T12:00:00Z');
+				}
+			};
+		});
+		await clickButton(page, 'More matching results');
+		await page.waitForFunction(() => window.__gridRequests.length >= 2, { timeout: WAIT_MS });
+		const nextPage = new URLSearchParams(await page.evaluate(() => window.__gridRequests.at(-1)));
+		assert.equal(nextPage.get('created_from'), firstPageBounds.from);
+		assert.equal(nextPage.get('created_before'), firstPageBounds.before);
+		assert.equal(nextPage.get('cursor'), rows.at(-1).id);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('new matching history appears in the grid while nonmatching history stays out', async () => {
+	const initial = lineageGeneration(
+		lineageJobId(250),
+		lineageAssetId(250),
+		'Other model still running',
+		new Date().toISOString()
+	);
+	initial.model_id = 'other-history-smoke';
+	initial.state = 'running';
+	const matching = lineageGeneration(
+		lineageJobId(251),
+		lineageAssetId(251),
+		'New matching completion',
+		new Date().toISOString()
+	);
+	const nonmatching = lineageGeneration(
+		lineageJobId(252),
+		lineageAssetId(252),
+		'New different model completion',
+		new Date().toISOString()
+	);
+	nonmatching.model_id = 'other-history-smoke';
+	let historyReads = 0;
+	const answers = {
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?limit=50': {
+			body: () => {
+				historyReads += 1;
+				return historyReads < 3 ? [initial] : [matching, nonmatching];
+			}
+		},
+		'/api/v1/generations?limit=50&': { body: [] },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.EventSource = class {
+			constructor() {
+				setTimeout(() => this.onerror?.(new Event('error')), 0);
+			}
+			close() {}
+		};
+	});
+	try {
+		const { page } = harness;
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('.grid-tile')].some(
+					(tile) => tile.title === 'New matching completion'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.$('[title="New different model completion"]'),
+			null,
+			'a live row outside the model selection is not rendered'
+		);
+		await page.$eval(`[data-generation-id="${matching.id}"]`, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		const readsBeforeIncompleteDate = historyReads;
+		await chooseImageOption(page, 'Filter by creation date', 'Custom dates');
+		await page.waitForSelector('#image-filter-from');
+		await page.$eval('#image-filter-from', (input) => {
+			input.value = '2035-01-01';
+			input.dispatchEvent(new Event('change', { bubbles: true }));
+		});
+		await page.waitForFunction(() => document.body.textContent.includes('Choose both dates'));
+		await pause(250);
+		assert.equal(historyReads, readsBeforeIncompleteDate, 'incomplete dates send no grid request');
+		assert.notEqual(
+			await page.$('[title="New matching completion"]'),
+			null,
+			'an incomplete date edit keeps a matching live row visible'
+		);
+		assert.notEqual(
+			await page.$('.selection-inspector'),
+			null,
+			'an incomplete date edit keeps the selected inspector open'
+		);
+		const retainedPreferences = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.deepEqual(retainedPreferences.value.filters.models, [MODEL.id]);
+		assert.equal(retainedPreferences.value.filters.range, 'all');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('refreshing a selected image keeps keyboard focus in the search field', async () => {
+	const selected = lineageGeneration(
+		lineageJobId(260),
+		lineageAssetId(260),
+		'Keyboard focus result',
+		new Date().toISOString()
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('roots_only')) return [];
+				if (url.searchParams.has('fields')) return { ids: [selected.id] };
+				return [selected];
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__focusGridPages = { started: [], completed: [] };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			const isGridPage =
+				url.pathname === '/api/v1/generations' &&
+				url.searchParams.get('state') === 'succeeded' &&
+				url.searchParams.has('limit') &&
+				!url.searchParams.has('fields') &&
+				!url.searchParams.has('roots_only');
+			if (!isGridPage) return originalFetch(input, init);
+			const query = url.searchParams.toString();
+			window.__focusGridPages.started.push(query);
+			return originalFetch(input, init).then((response) => {
+				window.__focusGridPages.completed.push(query);
+				return response;
+			});
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-generation-id="${selected.id}"]`, { timeout: WAIT_MS });
+		await page.$eval(`[data-generation-id="${selected.id}"]`, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.focus('[aria-label="Search prompts"]');
+		await page.keyboard.type('focus');
+		await page.waitForFunction(
+			() =>
+				window.__focusGridPages.completed.some((query) => {
+					const params = new URLSearchParams(query);
+					return params.get('q') === 'focus' && params.get('state') === 'succeeded';
+				}),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+			'Search prompts',
+			'the owned page refresh keeps focus in the search field'
+		);
+		await page.keyboard.type(' next');
+		assert.equal(
+			await page.$eval('[aria-label="Search prompts"]', (input) => input.value),
+			'focus next'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('active search admits completed matches only after refreshed server IDs confirm them', async () => {
+	const today = new Date();
+	today.setHours(12, 0, 0, 0);
+	const createdAt = today.toISOString();
+	const pending = lineageGeneration(lineageJobId(260), null, 'Needle pending result', createdAt);
+	pending.state = 'running';
+	pending.starred_at = createdAt;
+	const pendingFinished = lineageGeneration(
+		pending.id,
+		lineageAssetId(260),
+		'Needle pending result',
+		createdAt
+	);
+	pendingFinished.starred_at = createdAt;
+	const newlyMatched = lineageGeneration(
+		lineageJobId(261),
+		lineageAssetId(261),
+		'Needle new completion',
+		createdAt
+	);
+	newlyMatched.starred_at = createdAt;
+	const wrongAction = lineageGeneration(
+		lineageJobId(262),
+		lineageAssetId(262),
+		'Needle image edit',
+		createdAt,
+		lineageAssetId(899)
+	);
+	wrongAction.starred_at = createdAt;
+	const wrongSearch = lineageGeneration(
+		lineageJobId(263),
+		lineageAssetId(263),
+		'Unrelated prompt',
+		createdAt
+	);
+	wrongSearch.starred_at = createdAt;
+	const wrongModel = lineageGeneration(
+		lineageJobId(264),
+		lineageAssetId(264),
+		'Needle other model',
+		createdAt
+	);
+	wrongModel.model_id = 'other-history-smoke';
+	wrongModel.starred_at = createdAt;
+	const wrongDate = lineageGeneration(
+		lineageJobId(265),
+		lineageAssetId(265),
+		'Needle old result',
+		new Date(Date.UTC(2000, 0, 1, 12)).toISOString()
+	);
+	wrongDate.starred_at = wrongDate.created_at;
+	const wrongStar = lineageGeneration(
+		lineageJobId(266),
+		lineageAssetId(266),
+		'Needle not starred',
+		createdAt
+	);
+	const favorites = [pending, newlyMatched, wrongAction, wrongSearch, wrongModel, wrongDate];
+	let historyReads = 0;
+	let searchBounds = null;
+	const answers = {
+		'/api/v1/generations/models': {
+			body: {
+				models: [MODEL, { ...MODEL, id: 'other-history-smoke', name: 'Other history model' }]
+			}
+		},
+		'/api/v1/generations?limit=50': {
+			body: () => {
+				historyReads += 1;
+				return historyReads < 3
+					? [pending]
+					: [
+							pendingFinished,
+							newlyMatched,
+							wrongAction,
+							wrongSearch,
+							wrongModel,
+							wrongDate,
+							wrongStar
+						];
+			}
+		},
+		'/api/v1/generations?limit=50&': { body: [] },
+		'/api/v1/generations?fields=ids': {
+			body: (url) => {
+				assert.equal(url.searchParams.get('q'), 'needle');
+				assert.equal(url.searchParams.get('starred'), 'true');
+				assert.equal(url.searchParams.get('model_id'), MODEL.id);
+				assert.ok(url.searchParams.has('created_from'));
+				assert.ok(url.searchParams.has('created_before'));
+				const bounds = {
+					from: url.searchParams.get('created_from'),
+					before: url.searchParams.get('created_before')
+				};
+				if (searchBounds === null) searchBounds = bounds;
+				else
+					assert.deepEqual(
+						bounds,
+						searchBounds,
+						'refreshed ID searches keep the selected date window'
+					);
+				return {
+					ids:
+						historyReads < 3
+							? [pending.id, wrongAction.id]
+							: [pending.id, newlyMatched.id, wrongAction.id]
+				};
+			}
+		},
+		'/api/v1/generations?starred=true&limit=200': { body: favorites },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.EventSource = class {
+			constructor() {
+				setTimeout(() => this.onerror?.(new Event('error')), 0);
+			}
+			close() {}
+		};
+	});
+	try {
+		const { page } = harness;
+		await clickButton(page, 'Starred');
+		await page.$eval('[aria-label="Filter images"] button:nth-of-type(3)', (button) =>
+			button.click()
+		);
+		await chooseImageModel(page, 'History smoke model');
+		await chooseImageOption(page, 'Filter by creation date', 'Today');
+		await page.evaluate(() => {
+			const NativeDate = Date;
+			window.Date = class extends NativeDate {
+				constructor(...args) {
+					super(...(args.length ? args : ['2042-04-17T12:00:00Z']));
+				}
+				static now() {
+					return NativeDate.parse('2042-04-17T12:00:00Z');
+				}
+			};
+		});
+		await page.type('input[name="q"]', 'needle');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 0, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('input[name="q"]')].some(
+					(input) => input.value === 'needle'
+				) && document.body.innerText.includes('Grid'),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('.grid-tile')].some(
+					(tile) => tile.title === 'Needle pending result'
+				) &&
+				[...document.querySelectorAll('.grid-tile')].some(
+					(tile) => tile.title === 'Needle new completion'
+				),
+			{ timeout: WAIT_MS }
+		);
+		const visibleTitles = await page.$$eval('.grid-tile', (tiles) =>
+			tiles.map((tile) => tile.title)
+		);
+		assert.deepEqual(visibleTitles.sort(), ['Needle new completion', 'Needle pending result']);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid restores a bounded cursor window and offers Newest without filling a history gap', async () => {
+	const rows = Array.from({ length: 320 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(700 + index),
+			lineageAssetId(700 + index),
+			`Cursor resume image ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const anchor = rows[120];
+	const predecessor = rows[119];
+	const selected = rows[130];
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: { id: anchor.id, beforeCursor: predecessor.id, offset: 24 },
+			gridSelectionId: selected.id,
+			lineageSelection: null
+		}
+	};
+	const requests = [];
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=200': {
+			body: (url) => {
+				requests.push(url.searchParams.toString());
+				assert.equal(url.searchParams.get('cursor'), predecessor.id);
+				assert.equal(url.searchParams.get('state'), 'succeeded');
+				return rows.slice(120, 320);
+			}
+		},
+		'/api/v1/generations?limit=50': {
+			body: (url) => {
+				requests.push(url.searchParams.toString());
+				return rows.slice(0, 50);
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(seededPreferences) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(seededPreferences));
+		},
+		[preferences]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-generation-id="${anchor.id}"]`, { timeout: WAIT_MS });
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.notEqual(await page.$(`[data-generation-id="${selected.id}"]`), null);
+		assert.equal(
+			await page.$eval(
+				'.selection-inspector',
+				(element, prompt) => element.textContent?.includes(prompt),
+				selected.params.prompt
+			),
+			true
+		);
+		assert.ok(
+			requests.some((query) => new URLSearchParams(query).get('cursor') === predecessor.id)
+		);
+		assert.equal(
+			await page.evaluate(() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === 'Newest'
+				)
+			),
+			true
+		);
+		assert.equal(
+			await page.$eval('button[aria-label="Newest"]', (button) => {
+				const rect = button.getBoundingClientRect();
+				return (
+					button.textContent?.trim() === 'Newest' && rect.top >= 0 && rect.bottom <= innerHeight
+				);
+			}),
+			true,
+			'the accessible Newest control stays visible above the result window'
+		);
+		const tileCountBeforeNewest = await page.$$eval('.grid-tile', (tiles) => tiles.length);
+		assert.equal(tileCountBeforeNewest, 200, 'restore reads at most one bounded page');
+		await page.$eval('button[aria-label="Newest"]', (button) => button.click());
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		assert.equal(new URLSearchParams(requests.at(-1)).has('cursor'), false);
+		assert.equal(
+			await page.evaluate(() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === 'Newest'
+				)
+			),
+			false
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid drops a deleted saved cursor and fetches newest once', async () => {
+	const rows = Array.from({ length: 12 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1100 + index),
+			lineageAssetId(1100 + index),
+			`Deleted cursor fallback ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const staleCursor = lineageJobId(1099);
+	const staleAnchor = lineageJobId(1098);
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: { id: staleAnchor, beforeCursor: staleCursor, offset: 0 },
+			gridSelectionId: null,
+			lineageSelection: null
+		}
+	};
+	const requests = [];
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=200': {
+			status: 404,
+			body: (url) => {
+				requests.push(url.searchParams.toString());
+				return null;
+			}
+		},
+		'/api/v1/generations?limit=50': {
+			body: (url) => {
+				requests.push(url.searchParams.toString());
+				return rows;
+			}
+		},
+		'/api/v1/generations?limit=50&': {
+			body: (url) => {
+				requests.push(url.searchParams.toString());
+				return rows;
+			}
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(seededPreferences) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(seededPreferences));
+		},
+		[preferences]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 12, {
+			timeout: WAIT_MS
+		});
+		assert.equal(
+			requests.filter((query) => {
+				const params = new URLSearchParams(query);
+				return params.get('limit') === '50' && params.get('state') === 'succeeded';
+			}).length,
+			1,
+			'a stale cursor causes exactly one newest fallback request'
+		);
+		assert.equal(new URLSearchParams(requests.at(-1)).has('cursor'), false);
+		assert.equal(
+			await page.evaluate(() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === 'Newest'
+				)
+			),
+			false
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid saves applied filters, search, action, scroll, and selection across navigation and reload', async () => {
+	const rows = Array.from({ length: 60 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1300 + index),
+			lineageAssetId(1300 + index),
+			`Retained prompt ${String(index).padStart(2, '0')}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('roots_only')) return [];
+				if (url.searchParams.has('fields')) return { ids: rows.map((row) => row.id) };
+				const cursor = url.searchParams.get('cursor');
+				const start = cursor === null ? 0 : rows.findIndex((row) => row.id === cursor) + 1;
+				assert.ok(start >= 0, 'the requested cursor belongs to this matching row set');
+				const limit = Number(url.searchParams.get('limit') ?? '50');
+				return rows.slice(start, start + limit);
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__gridPageReads = { started: [], completed: [] };
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (
+				url.pathname === '/api/v1/generations' &&
+				url.searchParams.get('state') === 'succeeded' &&
+				url.searchParams.has('limit') &&
+				!url.searchParams.has('fields') &&
+				!url.searchParams.has('roots_only')
+			) {
+				const query = url.searchParams.toString();
+				window.__gridPageReads.started.push(query);
+				return originalFetch(input, init).then((response) => {
+					window.__gridPageReads.completed.push(query);
+					return response;
+				});
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await clickButton(page, 'Grid');
+		await chooseImageModel(page, 'History smoke model');
+		await page.evaluate(() => {
+			const action = [...document.querySelectorAll('.filter-pill')].find(
+				(button) => button.textContent?.trim() === 'Generated'
+			);
+			if (!action) throw new Error('Grid Generated action filter was not found');
+			action.click();
+		});
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.$eval('[aria-label="Search prompts"]', (input) => {
+			input.value = 'retained';
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+		});
+		await page.waitForFunction(
+			() =>
+				window.__gridPageReads.completed.some((query) => {
+					const params = new URLSearchParams(query);
+					return params.get('q') === 'retained' && params.get('action') === 'generate';
+				}),
+			{ timeout: WAIT_MS }
+		);
+		await page.waitForSelector(`[data-generation-id="${rows[25].id}"]`, { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		await page.$eval(`[data-generation-id="${rows[25].id}"]`, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		const selectionPrefs = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(
+			selectionPrefs.value.gridSelectionId,
+			rows[25].id,
+			`selection was not persisted after click: ${JSON.stringify(selectionPrefs.value)}`
+		);
+		await page.$eval(`[data-generation-id="${rows[32].id}"]`, (tile) =>
+			tile.scrollIntoView({ block: 'center' })
+		);
+		await pause(50);
+		const afterScroll = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(
+			afterScroll.value.gridSelectionId,
+			rows[25].id,
+			`scroll cleared selection before anchor save: ${JSON.stringify(afterScroll.value)}`
+		);
+		await pause(400);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.mode, 'grid');
+		assert.deepEqual(saved.value.filters.models, [MODEL.id]);
+		assert.equal(saved.value.filters.range, 'last7');
+		assert.equal(saved.value.action, 'generate');
+		assert.equal(saved.value.search, 'retained');
+		assert.equal(saved.value.gridSelectionId, rows[25].id, JSON.stringify(saved.value));
+		assert.ok(saved.value.gridAnchor);
+
+		await clickStudioView(page, 'metrics');
+		await page.waitForFunction(() => document.body.innerText.includes('GPU activity'), {
+			timeout: WAIT_MS
+		});
+		await clickStudioView(page, 'images', '.grid-scroller');
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.equal(
+			await page.$eval('[aria-label="Search prompts"]', (input) => input.value),
+			'retained'
+		);
+		await page.reload({ waitUntil: 'domcontentloaded' });
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.equal(
+			await page.$eval('[aria-label="Search prompts"]', (input) => input.value),
+			'retained'
+		);
+		assert.notEqual(await page.$(`[data-generation-id="${rows[25].id}"]`), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid warm return keeps the newest window and brings new images to the top', async () => {
+	const rows = Array.from({ length: 100 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1400 + index),
+			lineageAssetId(1400 + index),
+			`Warm newest image ${String(index).padStart(2, '0')}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const added = lineageGeneration(
+		lineageJobId(1550),
+		lineageAssetId(1550),
+		'Newly finished image',
+		new Date(Date.now() + 1000).toISOString()
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('roots_only')) return [];
+				const cursor = url.searchParams.get('cursor');
+				const start = cursor === null ? 0 : rows.findIndex((row) => row.id === cursor) + 1;
+				assert.ok(start >= 0, 'the cursor belongs to the newest fixture history');
+				return rows.slice(start, start + Number(url.searchParams.get('limit') ?? '50'));
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__warmNewestQueries = [];
+		const nativeStartViewTransition = document.startViewTransition?.bind(document);
+		window.__warmNewestTransitions = {
+			supported: Boolean(nativeStartViewTransition),
+			started: 0,
+			active: 0
+		};
+		if (nativeStartViewTransition) {
+			document.startViewTransition = (update) => {
+				const transition = nativeStartViewTransition(update);
+				window.__warmNewestTransitions.started += 1;
+				window.__warmNewestTransitions.active += 1;
+				transition.finished.then(
+					() => (window.__warmNewestTransitions.active -= 1),
+					() => (window.__warmNewestTransitions.active -= 1)
+				);
+				return transition;
+			};
+		}
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.get('state') === 'succeeded') {
+				window.__warmNewestQueries.push(url.searchParams.toString());
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await page.$eval(`[data-generation-id="${rows[30].id}"]`, (tile) =>
+			tile.scrollIntoView({ block: 'center' })
+		);
+		await page.waitForFunction(
+			() => {
+				const envelope = JSON.parse(
+					localStorage.getItem('potocolom-view-v1:local:images') ?? 'null'
+				);
+				return envelope?.value?.gridAnchor?.id !== undefined;
+			},
+			{ timeout: WAIT_MS }
+		);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.ok(saved.value.gridAnchor?.beforeCursor);
+
+		const beforeGenerateTransition = await page.evaluate(
+			() => window.__warmNewestTransitions.started
+		);
+		await clickButton(page, 'Generate');
+		await page.waitForFunction(() => new URL(location.href).searchParams.get('view') === null, {
+			timeout: WAIT_MS
+		});
+		await page.waitForSelector('#gen-prompt', { timeout: WAIT_MS });
+		await page.waitForFunction(
+			(before) =>
+				window.__warmNewestTransitions.started > before &&
+				window.__warmNewestTransitions.active === 0,
+			{ timeout: WAIT_MS },
+			beforeGenerateTransition
+		);
+		rows.unshift(added);
+		const queryStart = await page.evaluate(() => window.__warmNewestQueries.length);
+		const beforeImagesTransition = await page.evaluate(
+			() => window.__warmNewestTransitions.started
+		);
+		await clickButton(page, 'Images');
+		await page.waitForFunction(
+			(before) =>
+				window.__warmNewestTransitions.started > before &&
+				window.__warmNewestTransitions.active === 0,
+			{ timeout: WAIT_MS },
+			beforeImagesTransition
+		);
+		await page
+			.waitForFunction(
+				() =>
+					document.querySelectorAll('.grid-tile').length >= 50 &&
+					document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+				{ timeout: WAIT_MS }
+			)
+			.catch(async (error) => {
+				const state = await page.evaluate(() => ({
+					url: location.href,
+					rows: document.querySelectorAll('.grid-tile').length,
+					busy: document.querySelector('.grid-scroller')?.getAttribute('aria-busy'),
+					mode: [...document.querySelectorAll('[role="group"] button')].map((button) => ({
+						text: button.textContent?.trim(),
+						pressed: button.getAttribute('aria-pressed')
+					})),
+					requests: window.__warmNewestQueries,
+					prefs: localStorage.getItem('potocolom-view-v1:local:images')
+				}));
+				throw new Error(`${error.message}; warm newest state ${JSON.stringify(state)}`);
+			});
+		const newRequests = await page.evaluate(
+			(start) => window.__warmNewestQueries.slice(start),
+			queryStart
+		);
+		const resumed = newRequests
+			.map((query) => new URLSearchParams(query))
+			.find((params) => params.get('limit') === '200');
+		assert.ok(resumed, `expected a bounded warm refresh: ${JSON.stringify(newRequests)}`);
+		assert.equal(resumed.get('cursor'), null, 'a warm newest window refresh has no cursor');
+		assert.equal(await page.$('button[aria-label="Newest"]'), null);
+		await page.waitForSelector(`[data-generation-id="${added.id}"]`, { timeout: WAIT_MS });
+		const rowIds = await page.$$eval('.grid-tile', (tiles) =>
+			tiles.map((tile) => tile.getAttribute('data-generation-id'))
+		);
+		assert.equal(rowIds[0], added.id, 'the new completed image appears at the newest edge');
+		assert.ok(
+			rows.slice(1, 31).every((row) => rowIds.includes(row.id)),
+			'previously loaded images above the saved anchor remain reachable in the warm window'
+		);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return Boolean(
+					scroller &&
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			saved.value.gridAnchor
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid warm newest refresh makes one bounded cursor request when the anchor moves past row 200', async () => {
+	const rows = Array.from({ length: 450 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(3000 + index),
+			lineageAssetId(3000 + index),
+			`Bounded warm image ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('roots_only')) return [];
+				const cursor = url.searchParams.get('cursor');
+				const start = cursor === null ? 0 : rows.findIndex((row) => row.id === cursor) + 1;
+				assert.ok(start >= 0, 'the cursor belongs to the matching fixture history');
+				return rows.slice(start, start + Number(url.searchParams.get('limit') ?? '50'));
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__boundedWarmQueries = [];
+		const nativeStartViewTransition = document.startViewTransition?.bind(document);
+		window.__boundedWarmTransitions = {
+			supported: Boolean(nativeStartViewTransition),
+			started: 0,
+			active: 0
+		};
+		if (nativeStartViewTransition) {
+			document.startViewTransition = (update) => {
+				const transition = nativeStartViewTransition(update);
+				window.__boundedWarmTransitions.started += 1;
+				window.__boundedWarmTransitions.active += 1;
+				transition.finished.then(
+					() => (window.__boundedWarmTransitions.active -= 1),
+					() => (window.__boundedWarmTransitions.active -= 1)
+				);
+				return transition;
+			};
+		}
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations' && url.searchParams.get('state') === 'succeeded')
+				window.__boundedWarmQueries.push(url.searchParams.toString());
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		for (const expectedCount of [50, 100, 150, 200]) {
+			await page.waitForFunction(
+				(count) => document.querySelectorAll('.grid-tile').length === count,
+				{ timeout: WAIT_MS },
+				expectedCount
+			);
+			if (expectedCount < 200) await clickButton(page, 'More matching results');
+		}
+		const anchorCandidate = rows[180];
+		await page.$eval(`[data-generation-id="${anchorCandidate.id}"]`, (tile) =>
+			tile.scrollIntoView({ block: 'center' })
+		);
+		await page.waitForFunction(
+			() => {
+				const envelope = JSON.parse(
+					localStorage.getItem('potocolom-view-v1:local:images') ?? 'null'
+				);
+				return Boolean(envelope?.value?.gridAnchor?.beforeCursor);
+			},
+			{ timeout: WAIT_MS }
+		);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		const originalAnchorIndex = rows.findIndex((row) => row.id === saved.value.gridAnchor.id);
+		assert.ok(
+			originalAnchorIndex >= 100 && originalAnchorIndex < 200,
+			`anchor index ${originalAnchorIndex}`
+		);
+
+		const beforeGenerateTransition = await page.evaluate(
+			() => window.__boundedWarmTransitions.started
+		);
+		await clickButton(page, 'Generate');
+		await page.waitForFunction(() => new URL(location.href).searchParams.get('view') === null, {
+			timeout: WAIT_MS
+		});
+		await page.waitForSelector('#gen-prompt', { timeout: WAIT_MS });
+		await page.waitForFunction(
+			(before) =>
+				window.__boundedWarmTransitions.started > before &&
+				window.__boundedWarmTransitions.active === 0,
+			{ timeout: WAIT_MS },
+			beforeGenerateTransition
+		);
+		const inserted = Array.from({ length: 100 }, (_, index) =>
+			lineageGeneration(
+				lineageJobId(3600 + index),
+				lineageAssetId(3600 + index),
+				`New warm completion ${index}`,
+				new Date(Date.now() + (100 - index) * 1000).toISOString()
+			)
+		);
+		rows.unshift(...inserted);
+		const queryStart = await page.evaluate(() => window.__boundedWarmQueries.length);
+		const beforeImagesTransition = await page.evaluate(
+			() => window.__boundedWarmTransitions.started
+		);
+		await clickButton(page, 'Images');
+		await page.waitForFunction(
+			(before) =>
+				window.__boundedWarmTransitions.started > before &&
+				window.__boundedWarmTransitions.active === 0,
+			{ timeout: WAIT_MS },
+			beforeImagesTransition
+		);
+		await page.waitForFunction(
+			(start) => window.__boundedWarmQueries.length >= start + 1,
+			{ timeout: WAIT_MS },
+			queryStart
+		);
+		const firstRequest = await page.evaluate(
+			(start) => window.__boundedWarmQueries[start],
+			queryStart
+		);
+		const firstParams = new URLSearchParams(firstRequest);
+		assert.equal(firstParams.get('limit'), '200');
+		assert.equal(
+			firstParams.get('cursor'),
+			null,
+			`the first refresh asks for the newest bounded page: ${firstRequest}`
+		);
+		await page.waitForFunction(
+			(start) => window.__boundedWarmQueries.length >= start + 2,
+			{ timeout: WAIT_MS },
+			queryStart
+		);
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const requests = await page.evaluate(
+			(start) => window.__boundedWarmQueries.slice(start),
+			queryStart
+		);
+		const params = requests.map((query) => new URLSearchParams(query));
+		assert.equal(
+			params.length,
+			2,
+			`one newest page plus one cursor recovery: ${JSON.stringify(requests)}`
+		);
+		assert.equal(params[1].get('limit'), '200');
+		assert.equal(params[1].get('cursor'), saved.value.gridAnchor.beforeCursor);
+		assert.notEqual(await page.$(`[data-generation-id="${saved.value.gridAnchor.id}"]`), null);
+		assert.equal(
+			(await page.$('button[aria-label="Newest"]')) === null,
+			false,
+			'the restored cursor window keeps the Newest action'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid selection survives leaving Images while its cold resume is pending', async () => {
+	const rows = Array.from({ length: 260 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1600 + index),
+			lineageAssetId(1600 + index),
+			`Pending selection image ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	let announceResume;
+	let releaseResume;
+	const resumeStarted = new Promise((resolve) => (announceResume = resolve));
+	const heldResume = new Promise((resolve) => (releaseResume = resolve));
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: { id: rows[1].id, beforeCursor: rows[0].id, offset: 24 },
+			gridSelectionId: rows[25].id,
+			lineageSelection: null
+		}
+	};
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=200': {
+			body: async (url) => {
+				if (url.searchParams.has('cursor')) {
+					announceResume();
+					await heldResume;
+				}
+				const cursor = url.searchParams.get('cursor');
+				const start = cursor === null ? 0 : rows.findIndex((row) => row.id === cursor) + 1;
+				return rows.slice(start, start + Number(url.searchParams.get('limit') ?? '50'));
+			}
+		},
+		'/api/v1/generations?limit=50': { body: rows.slice(0, 50) }
+	};
+	const harness = await launchStudio(
+		'en',
+		(seededPreferences) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(seededPreferences));
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images',
+		[preferences]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await waitFixture(resumeStarted, 'the saved selection resume did not begin');
+		await clickButton(page, 'Metrics');
+		await page.waitForFunction(
+			() =>
+				new URL(location.href).searchParams.get('view') === 'metrics' &&
+				document.body.innerText.includes('GPU activity') &&
+				!document.querySelector('[aria-label="Filter by model"]') &&
+				!document.querySelector('.grid-scroller'),
+			{ timeout: WAIT_MS }
+		);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridSelectionId, rows[25].id);
+	} finally {
+		releaseResume();
+		await harness.close();
+	}
+});
+
+test('a cold restored selection does not steal focus from a Grid control', async () => {
+	const rows = Array.from({ length: 80 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1700 + index),
+			lineageAssetId(1700 + index),
+			`Cold focus image ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	let announceResume;
+	let releaseResume;
+	const resumeStarted = new Promise((resolve) => (announceResume = resolve));
+	const heldResume = new Promise((resolve) => (releaseResume = resolve));
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: { id: rows[1].id, beforeCursor: rows[0].id, offset: 18 },
+			gridSelectionId: rows[25].id,
+			lineageSelection: null
+		}
+	};
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=200': {
+			body: async (url) => {
+				if (url.searchParams.has('cursor')) {
+					announceResume();
+					await heldResume;
+				}
+				return rows.slice(1, 1 + Number(url.searchParams.get('limit') ?? '50'));
+			}
+		},
+		'/api/v1/generations?limit=50': { body: rows.slice(0, 50) }
+	};
+	const harness = await launchStudio(
+		'en',
+		(seededPreferences) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(seededPreferences));
+		},
+		answers,
+		'domcontentloaded',
+		'/app?view=images',
+		[preferences]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('[aria-label="Filter by model"]', { timeout: WAIT_MS });
+		await waitFixture(resumeStarted, 'the cold selection restore did not start');
+		await page.focus('[aria-label="Search prompts"]');
+		releaseResume();
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+			'Search prompts',
+			'a cold restored inspector leaves the focused Grid control active'
+		);
+	} finally {
+		releaseResume();
+		await harness.close();
+	}
+});
+
+test('Grid reload selection closes on one Back before leaving Images', async () => {
+	const fixtures = imageGridFixtures(1);
+	const harness = await openGenerateThenImages(fixtures.answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+	});
+	try {
+		const { page } = harness;
+		const tile = `[data-generation-id="${fixtures.rows[0].id}"]`;
+		await page.waitForSelector(tile, { timeout: WAIT_MS });
+		await page.$eval(tile, (element) => element.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.reload({ waitUntil: 'domcontentloaded' });
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(
+			() =>
+				!document.querySelector('.selection-inspector') &&
+				new URL(location.href).searchParams.get('view') === 'images',
+			{ timeout: WAIT_MS }
+		);
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(
+			(previousUrl) => location.href === previousUrl,
+			{
+				timeout: WAIT_MS
+			},
+			harness.previousUrl
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Lineage reload selection closes on one Back, including a repeated reload', async () => {
+	const root = lineageGeneration(
+		lineageJobId(1750),
+		lineageAssetId(1750),
+		'Lineage Back root',
+		new Date().toISOString(),
+		null,
+		{ hasDerivatives: true }
+	);
+	const child = lineageGeneration(
+		lineageJobId(1751),
+		lineageAssetId(1751),
+		'Lineage Back child',
+		new Date(Date.now() - 1000).toISOString(),
+		root.assets[0].id
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': { body: [root, child] },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [root] },
+		[`/api/v1/generations/${root.id}/subtree`]: {
+			body: lineageSubtree([
+				lineageSubtreeNode(root, root.assets[0].id, null),
+				lineageSubtreeNode(child, child.assets[0].id, root.id)
+			])
+		}
+	};
+	const harness = await openGenerateThenImages(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+	});
+	try {
+		const { page } = harness;
+		const node = `[data-lineage-node="${child.assets[0].id}"]`;
+		await page.waitForSelector(node, { timeout: WAIT_MS });
+		await page.$eval(node, (element) => element.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			await page.reload({ waitUntil: 'domcontentloaded' });
+			await page.waitForSelector(node, { timeout: WAIT_MS });
+			await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+			await page.evaluate(() => history.back());
+			await page.waitForFunction(
+				() =>
+					!document.querySelector('.selection-inspector') &&
+					new URL(location.href).searchParams.get('view') === 'images',
+				{ timeout: WAIT_MS }
+			);
+			if (attempt === 0) {
+				await page.$eval(node, (element) => element.click());
+				await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+			}
+		}
+		await page.evaluate(() => history.back());
+		await page.waitForFunction(
+			(previousUrl) => location.href === previousUrl,
+			{
+				timeout: WAIT_MS
+			},
+			harness.previousUrl
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Grid user scrolling cancels a delayed saved-position restore after a warm return', async () => {
+	const rows = Array.from({ length: 100 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1500 + index),
+			lineageAssetId(1500 + index),
+			`Warm resume image ${String(index).padStart(2, '0')}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const pageRows = (url) => {
+		const cursor = url.searchParams.get('cursor');
+		const start = cursor === null ? 0 : rows.findIndex((row) => row.id === cursor) + 1;
+		assert.ok(start >= 0, 'resume cursor belongs to the successful fixture history');
+		return rows.slice(start, start + Number(url.searchParams.get('limit') ?? '50'));
+	};
+	let announceResumeRequest;
+	let releaseResumeResponse;
+	const resumeRequestStarted = new Promise((resolve) => (announceResumeRequest = resolve));
+	const heldResumeResponse = new Promise((resolve) => (releaseResumeResponse = resolve));
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=200': {
+			body: async (url) => {
+				announceResumeRequest();
+				await heldResumeResponse;
+				return pageRows(url);
+			}
+		},
+		'/api/v1/generations?limit=50&': { body: pageRows },
+		'/api/v1/generations?limit=50': { body: rows.slice(0, 50) },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'grid');
+		window.__warmGridResume = { started: 0, completed: 0, requests: [] };
+		const nativeStartViewTransition = document.startViewTransition?.bind(document);
+		window.__warmGridTransitions = {
+			supported: Boolean(nativeStartViewTransition),
+			started: 0,
+			active: 0
+		};
+		if (nativeStartViewTransition) {
+			document.startViewTransition = (update) => {
+				const transition = nativeStartViewTransition(update);
+				window.__warmGridTransitions.started += 1;
+				window.__warmGridTransitions.active += 1;
+				transition.finished.then(
+					() => (window.__warmGridTransitions.active -= 1),
+					() => (window.__warmGridTransitions.active -= 1)
+				);
+				return transition;
+			};
+		}
+		const originalFetch = window.fetch.bind(window);
+		window.fetch = (input, init) => {
+			const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+			if (url.pathname === '/api/v1/generations') {
+				window.__warmGridResume.requests.push(url.searchParams.toString());
+			}
+			if (
+				url.pathname === '/api/v1/generations' &&
+				url.searchParams.get('limit') === '200' &&
+				url.searchParams.get('state') === 'succeeded'
+			) {
+				window.__warmGridResume.started += 1;
+				return originalFetch(input, init).then((response) => {
+					window.__warmGridResume.completed += 1;
+					return response;
+				});
+			}
+			return originalFetch(input, init);
+		};
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await page.$eval(
+			'.grid-scroller',
+			(scroller, anchorId) => {
+				scroller.style.overflowAnchor = 'none';
+				document.querySelector(`[data-generation-id="${anchorId}"]`).scrollIntoView({
+					block: 'center'
+				});
+			},
+			rows[35].id
+		);
+		await page.waitForFunction(
+			async () => {
+				const value = JSON.parse(localStorage.getItem('potocolom-view-v1:local:images') ?? 'null');
+				return value?.value?.gridAnchor?.id !== undefined;
+			},
+			{ timeout: WAIT_MS }
+		);
+		await pause(300);
+		const savedPrefs = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.ok(savedPrefs.value.gridAnchor);
+		assert.ok(savedPrefs.value.gridAnchor.beforeCursor);
+
+		await clickButton(page, 'Metrics');
+		await page.waitForFunction(
+			() => new URL(location.href).searchParams.get('view') === 'metrics',
+			{ timeout: WAIT_MS }
+		);
+		const transitionsBeforeReturn = await page.evaluate(() => window.__warmGridTransitions.started);
+		await clickButton(page, 'Images');
+		await page.waitForFunction(() => document.querySelectorAll('.grid-tile').length === 50, {
+			timeout: WAIT_MS
+		});
+		await waitFixture(resumeRequestStarted, 'saved cursor request did not start on return');
+		await page.waitForFunction(
+			(before) =>
+				window.__warmGridTransitions.supported &&
+				window.__warmGridTransitions.started > before &&
+				window.__warmGridTransitions.active === 0,
+			{ timeout: WAIT_MS },
+			transitionsBeforeReturn
+		);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				if (!scroller || !tile) return false;
+				return (
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			savedPrefs.value.gridAnchor
+		);
+		await page
+			.waitForFunction(() => window.__warmGridResume.started === 1, { timeout: WAIT_MS })
+			.catch(async (error) => {
+				const state = await page.evaluate(() => ({
+					url: location.href,
+					prefs: localStorage.getItem('potocolom-view-v1:local:images'),
+					requests: window.__warmGridResume?.requests,
+					started: window.__warmGridResume?.started,
+					completed: window.__warmGridResume?.completed,
+					busy: document.querySelector('.grid-scroller')?.getAttribute('aria-busy'),
+					rows: [...document.querySelectorAll('.grid-tile')].map((tile) =>
+						tile.getAttribute('data-generation-id')
+					)
+				}));
+				throw new Error(`${error.message}; warm resume state: ${JSON.stringify(state)}`);
+			});
+		const resumeQuery = await page.evaluate(() =>
+			window.__warmGridResume.requests.find((query) => {
+				const params = new URLSearchParams(query);
+				return params.get('limit') === '200' && params.get('state') === 'succeeded';
+			})
+		);
+		assert.ok(resumeQuery, 'the warm response uses the bounded successful-history request');
+		assert.equal(
+			new URLSearchParams(resumeQuery).get('cursor'),
+			null,
+			'a newest-first warm snapshot refresh does not request a middle window'
+		);
+		const scroller = await page.$('.grid-scroller');
+		const bounds = await scroller.boundingBox();
+		assert.ok(bounds);
+		const beforeWheel = await page.$eval('.grid-scroller', (element) => {
+			element.addEventListener('wheel', () => (window.__sawGridWheel = true), { once: true });
+			return element.scrollTop;
+		});
+		const wheelDelta = await page.$eval('.grid-scroller', (element) => {
+			const maxScrollTop = element.scrollHeight - element.clientHeight;
+			return element.scrollTop >= maxScrollTop - 1 ? -160 : 160;
+		});
+		await page.mouse.move(bounds.x + 40, bounds.y + 40);
+		await page.mouse.wheel({ deltaY: wheelDelta });
+		await page.waitForFunction(
+			({ before, deltaY }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				if (!scroller || window.__sawGridWheel !== true) return false;
+				return deltaY < 0 ? scroller.scrollTop < before : scroller.scrollTop > before;
+			},
+			{ timeout: WAIT_MS },
+			{ before: beforeWheel, deltaY: wheelDelta }
+		);
+		const userScrollTop = await page.$eval('.grid-scroller', (element) => element.scrollTop);
+		const warmRowsBeforeResponse = await page.$$eval('.grid-tile', (tiles) =>
+			tiles.map((tile) => tile.getAttribute('data-generation-id'))
+		);
+		const viewportBeforeRefresh = await page.$eval('.grid-scroller', (element) => ({
+			visible: [...element.querySelectorAll('.grid-tile')]
+				.filter((tile) => {
+					const rect = tile.getBoundingClientRect();
+					const scroller = element.getBoundingClientRect();
+					return rect.bottom > scroller.top && rect.top < scroller.bottom;
+				})
+				.map((tile) => tile.getAttribute('data-generation-id')),
+			height: element.scrollHeight,
+			client: element.clientHeight
+		}));
+		assert.ok(
+			wheelDelta < 0 ? userScrollTop < beforeWheel : userScrollTop > beforeWheel,
+			`wheel input moves warm grid before refresh completes: ${beforeWheel} to ${userScrollTop} (delta ${wheelDelta})`
+		);
+		releaseResumeResponse();
+		await page.waitForFunction(
+			() =>
+				window.__warmGridResume.completed === 1 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		await pause(100);
+		const afterRefresh = await page.$eval('.grid-scroller', (element) => ({
+			top: element.scrollTop,
+			height: element.scrollHeight,
+			client: element.clientHeight,
+			rows: [...element.querySelectorAll('.grid-tile')].map((tile) =>
+				tile.getAttribute('data-generation-id')
+			),
+			visible: [...element.querySelectorAll('.grid-tile')]
+				.filter((tile) => {
+					const rect = tile.getBoundingClientRect();
+					const scroller = element.getBoundingClientRect();
+					return rect.bottom > scroller.top && rect.top < scroller.bottom;
+				})
+				.map((tile) => tile.getAttribute('data-generation-id'))
+		}));
+		assert.ok(
+			Math.abs(afterRefresh.top - userScrollTop) < 2,
+			`refresh kept the user scroll position: ${userScrollTop} to ${afterRefresh.top}; before=${JSON.stringify(viewportBeforeRefresh)} after=${JSON.stringify(afterRefresh)}`
+		);
+		assert.deepEqual(
+			afterRefresh.rows,
+			warmRowsBeforeResponse,
+			'a canceled warm resume keeps its already committed row window'
+		);
+	} finally {
+		releaseResumeResponse();
+		await harness.close();
+	}
+});
+
+test('Lineage keeps a selected child and its viewport across navigation and reload', async () => {
+	const createdAt = new Date().toISOString();
+	const root = lineageGeneration(
+		lineageJobId(1800),
+		lineageAssetId(1800),
+		'Restored lineage root',
+		createdAt,
+		null,
+		{ hasDerivatives: true }
+	);
+	const child = lineageGeneration(
+		lineageJobId(1801),
+		lineageAssetId(1801),
+		'Restored lineage child',
+		new Date(Date.now() - 1000).toISOString(),
+		root.assets[0].id
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': { body: [root, child] },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [root] },
+		[`/api/v1/generations/${root.id}/subtree`]: {
+			body: lineageSubtree([
+				lineageSubtreeNode(root, root.assets[0].id, null),
+				lineageSubtreeNode(child, child.assets[0].id, root.id)
+			])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+	});
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${child.assets[0].id}"]`, { timeout: WAIT_MS });
+		await page.$eval(`[data-lineage-node="${child.assets[0].id}"]`, (tile) => tile.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/Restored lineage child/
+		);
+		await pause(350);
+		const savedImages = await readViewPrefs(page, { kind: 'local' }, 'images');
+		const savedViewport = await readViewPrefs(page, { kind: 'local' }, 'lineage-viewport');
+		assert.deepEqual(savedImages.value.lineageSelection, {
+			rootId: root.id,
+			assetId: child.assets[0].id
+		});
+		assert.ok(savedViewport, 'the viewport has a saved owner-scoped value');
+
+		await clickStudioView(page, 'metrics');
+		await clickStudioView(page, 'images', '.lineage-viewport');
+		await page.waitForSelector(`[data-lineage-node="${child.assets[0].id}"]`, { timeout: WAIT_MS });
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/Restored lineage child/
+		);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'images')).value.lineageSelection,
+			savedImages.value.lineageSelection
+		);
+		assert.deepEqual(
+			await readViewPrefs(page, { kind: 'local' }, 'lineage-viewport'),
+			savedViewport
+		);
+
+		await page.reload({ waitUntil: 'domcontentloaded' });
+		await page.waitForSelector(`[data-lineage-node="${child.assets[0].id}"]`, { timeout: WAIT_MS });
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/Restored lineage child/
+		);
+		assert.equal(
+			await page.$eval(`[data-lineage-node="${child.assets[0].id}"]`, (tile) =>
+				tile.classList.contains('is-selected')
+			),
+			true
+		);
+		assert.deepEqual(
+			await readViewPrefs(page, { kind: 'local' }, 'lineage-viewport'),
+			savedViewport
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Lineage drops a missing child from a complete loaded subtree while more roots remain', async () => {
+	const roots = Array.from({ length: 50 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(1900 + index),
+			lineageAssetId(1900 + index),
+			`Missing selection root ${index}`,
+			new Date(Date.now() - index * 1000).toISOString(),
+			null,
+			{ hasDerivatives: index === 0 }
+		)
+	);
+	const removedAssetId = lineageAssetId(1999);
+	const unrelatedOffsets = { [roots[49].id]: { x: 42, y: -31 } };
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'lineage',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: null,
+			gridSelectionId: null,
+			lineageSelection: { rootId: roots[0].id, assetId: removedAssetId }
+		}
+	};
+	const offsetsPreferences = {
+		version: 1,
+		section: 'lineage-offsets',
+		value: unrelatedOffsets
+	};
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': { body: roots },
+		'/api/v1/generations?roots_only=true&limit=50': { body: roots },
+		...Object.fromEntries(
+			roots.map((root) => [
+				`/api/v1/generations/${root.id}/subtree`,
+				{
+					body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+				}
+			])
+		)
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(imagesPrefs, offsetsPrefs) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(imagesPrefs));
+			localStorage.setItem('potocolom-view-v1:local:lineage-offsets', JSON.stringify(offsetsPrefs));
+			window.__missingSelectionRoots = 0;
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+					return originalFetch(input, init).then(async (response) => {
+						window.__missingSelectionRoots = (await response.clone().json()).length;
+						return response;
+					});
+				}
+				return originalFetch(input, init);
+			};
+		},
+		[preferences, offsetsPreferences]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${roots[0].assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(() => window.__missingSelectionRoots === 50, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(
+			async () => {
+				const value = JSON.parse(localStorage.getItem('potocolom-view-v1:local:images') ?? 'null');
+				return value?.value?.lineageSelection === null;
+			},
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.$('.selection-inspector'), null);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'lineage-offsets')).value,
+			unrelatedOffsets,
+			'dropping a missing selection keeps offsets for unrelated roots'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Lineage retains a missing child hint when its loaded subtree is truncated', async () => {
+	const root = lineageGeneration(
+		lineageJobId(2000),
+		lineageAssetId(2000),
+		'Truncated selection root',
+		new Date().toISOString(),
+		null,
+		{ hasDerivatives: true }
+	);
+	const missingSelection = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'lineage',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: null,
+			gridSelectionId: null,
+			lineageSelection: { rootId: root.id, assetId: lineageAssetId(2099) }
+		}
+	};
+	const truncatedSubtree = {
+		...lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)]),
+		truncated: true,
+		remaining_count_lower_bound: 1
+	};
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': { body: [root] },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [root] },
+		[`/api/v1/generations/${root.id}/subtree`]: { body: truncatedSubtree }
+	};
+	const harness = await openImagesGrid(
+		answers,
+		(preferences) => {
+			localStorage.setItem('potocolom-view-v1:local:images', JSON.stringify(preferences));
+		},
+		[missingSelection]
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-lineage-node="${root.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.waitForFunction(
+			() =>
+				document
+					.querySelector('.lineage-world')
+					?.textContent?.includes('At least 1 more not loaded'),
+			{ timeout: WAIT_MS }
+		);
+		assert.deepEqual(
+			(await readViewPrefs(page, { kind: 'local' }, 'images')).value.lineageSelection,
+			missingSelection.value.lineageSelection,
+			'a truncated subtree cannot prove that the saved child was deleted'
+		);
+		assert.equal(await page.$('.selection-inspector'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
 async function waitForStrip(page, thumbs) {
 	await page.waitForFunction(
 		(expected) => document.querySelectorAll('button[data-strip-thumb]').length === expected,
@@ -3264,6 +8260,10 @@ test('expired lineage roots stay visible beside their descendants and the root g
 		assert.match(
 			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
 			/Image unavailable/
+		);
+		assert.match(
+			await page.$eval('.selection-inspector', (inspector) => inspector.innerText),
+			/GPU time\s+42 ms/
 		);
 		await page.waitForFunction(
 			(ids) => ids.every((id) => document.querySelector(`[data-lineage-node="${id}"]`)),
@@ -3601,7 +8601,7 @@ test('a shape drawn with a pen saves without pressure on its points', async () =
 			behavior: 'allow',
 			downloadPath: downloadDirectory
 		});
-		await page.select('#realtime-tool', 'rectangle');
+		await selectTool(page, 'rectangle');
 		await pointerStroke(page, 'pen', 1, [
 			{ x: 0.2, y: 0.2, pressure: 0.4 },
 			{ x: 0.8, y: 0.8, pressure: 0.9 }

@@ -23,7 +23,7 @@ const SLICE_ORDER: JobStatusSlice['id'][] = ['succeeded', 'running', 'queued', '
 const SLICE_META: Record<JobStatusSlice['id'], { labelKey: JobLabelKey; color: string }> = {
 	succeeded: { labelKey: 'app.metrics.job_succeeded', color: 'var(--status-success)' },
 	running: { labelKey: 'app.metrics.job_running', color: 'var(--status-running)' },
-	queued: { labelKey: 'app.metrics.job_queued', color: 'var(--status-neutral)' },
+	queued: { labelKey: 'app.metrics.job_queued', color: 'var(--status-warning)' },
 	failed: { labelKey: 'app.metrics.job_failed', color: 'var(--status-error)' }
 };
 

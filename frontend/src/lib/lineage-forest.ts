@@ -37,8 +37,13 @@ type LineageForestOptions = {
 	sessionCache?: Map<string, LineageTree>;
 };
 
-const sharedSessionCache = new Map<string, LineageTree>();
+let sharedSessionCache = new Map<string, LineageTree>();
 const MAX_CONCURRENT_LOADS = 4;
+
+/** Swap the session cache at an owner boundary so old forests cannot refill it. */
+export function resetLineageForestSessionCache(): void {
+	sharedSessionCache = new Map();
+}
 
 type CachedNode = {
 	id: string;
