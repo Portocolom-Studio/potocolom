@@ -2195,7 +2195,7 @@ whole-body timeout that makes a large report fail on slow links.
 
 Every page uses the landing's horizon footer. The home page owns its footer
 inside the entrance gate; the root layout supplies the same component on all
-other routes, including the studio, auth and error pages. Document layouts
+other routes and on errors for the home route. Document layouts
 do not add another footer. The footer owns its font and dark tokens so it
 does not depend on a parent landing surface. Its copyright row has a dark
 translucent backing so bright water cannot remove the text contrast.

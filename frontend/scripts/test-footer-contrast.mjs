@@ -160,6 +160,58 @@ try {
 		headless: true,
 		args: ['--no-sandbox', '--disable-gpu']
 	});
+	const homeHtml = await readFile(join(build, 'index.html'), 'utf8');
+	const nodeIds = homeHtml
+		.match(/node_ids:\s*\[([\d,\s]+)\]/)?.[1]
+		.split(',')
+		.map(Number);
+	assert.ok(nodeIds?.length, 'built home must identify its route nodes');
+	const homeNode = nodeIds.at(-1);
+	const brokenHome = await browser.newPage();
+	await brokenHome.setCacheEnabled(false);
+	await brokenHome.goto(`${baseUrl}/privacy`, { waitUntil: 'networkidle0' });
+	let homeFaults = 0;
+	await brokenHome.setRequestInterception(true);
+	const interceptHome = (request) => {
+		const path = new URL(request.url()).pathname;
+		if (
+			homeFaults === 0 &&
+			new RegExp(`/_app/immutable/nodes/${homeNode}\\.[^/]+\\.js$`).test(path)
+		) {
+			homeFaults += 1;
+			void request.respond({
+				status: 200,
+				contentType: 'application/javascript',
+				body: 'throw new Error("home node test failure");'
+			});
+		} else {
+			void request.continue();
+		}
+	};
+	brokenHome.on('request', interceptHome);
+	await brokenHome.$eval('footer.horizon .mark', (link) => link.click());
+	await brokenHome.waitForFunction(
+		() => location.pathname === '/' && document.querySelector('main h1')
+	);
+	assert.equal(homeFaults, 1, 'home route module fault must occur');
+	assert.equal(await brokenHome.$eval('main p', (element) => element.textContent.trim()), '500');
+	assert.equal(
+		await brokenHome.$$eval('footer.horizon', (footers) => footers.length),
+		1,
+		'home error has one footer'
+	);
+	brokenHome.off('request', interceptHome);
+	await brokenHome.setRequestInterception(false);
+	await brokenHome.reload({ waitUntil: 'networkidle0' });
+	await brokenHome.waitForSelector('header.landing-content');
+	await brokenHome.waitForSelector('footer.horizon');
+	assert.equal(
+		await brokenHome.$$eval('footer.horizon', (footers) => footers.length),
+		1,
+		'healthy home has one footer'
+	);
+	await brokenHome.close();
+
 	const studio = await browser.newPage();
 	await studio.setViewport({ width: 1280, height: 900 });
 	await studio.goto(`${baseUrl}/app`, { waitUntil: 'networkidle0' });

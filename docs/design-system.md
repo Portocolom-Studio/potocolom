@@ -224,7 +224,8 @@ them rather than hand-rolled markup.
   canvas starts.
 - **Footer**: every page uses the same `SiteFooter.svelte` with the sea's
   `footer` variant. The home page keeps it inside its entrance gate; the root
-  layout supplies it on all other pages, including auth, the studio and errors.
+  layout supplies it on all other pages, including auth and the studio, and
+  on error pages even when the failed route is home.
   Each page has one footer. Its Lato font and dark colours are self-contained.
   The horizon
   sits just above the wordmark, which is `#07090f` so it reads as a silhouette
