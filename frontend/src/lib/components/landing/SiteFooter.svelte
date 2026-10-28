@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
-	import ArrowUpIcon from '@lucide/svelte/icons/arrow-up';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ParticleSea from './ParticleSea.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -10,24 +9,7 @@
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const year = new Date().getFullYear();
-
-	function toTop() {
-		window.scrollTo({
-			top: 0,
-			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-		});
-	}
 </script>
-
-{#snippet bottomLine()}
-	<div class="bottom">
-		<span>{t('footer.copyright').replace('{year}', String(year))}</span>
-		<button type="button" class="to-top" onclick={toTop}>
-			{t('nav.scroll_to_top')}
-			<ArrowUpIcon aria-hidden="true" />
-		</button>
-	</div>
-{/snippet}
 
 <footer class="horizon">
 	<div class="top">
@@ -74,10 +56,13 @@
 		</p>
 	</section>
 
+	<div class="bottom">
+		<span>{t('footer.copyright').replace('{year}', String(year))}</span>
+	</div>
+
 	<div class="band">
 		<ParticleSea variant="footer" horizonAt={wordmark} />
 		<p class="wordmark" aria-hidden="true" bind:this={wordmark}>potocolom</p>
-		{@render bottomLine()}
 	</div>
 </footer>
 
@@ -95,7 +80,8 @@
 
 	/* The sea's glow rises behind the columns, so they sit above it. */
 	.top,
-	.trust {
+	.trust,
+	.bottom {
 		position: relative;
 		z-index: 1;
 	}
@@ -203,6 +189,7 @@
 		width: 100%;
 		max-width: 78rem;
 		margin-inline: auto;
+		color: #f7f8fa;
 		font-size: 0.8rem;
 	}
 
@@ -262,8 +249,7 @@
 	/* The band holds the sea: the horizon sits just above the wordmark, which
 	   is set in the page colour so it reads as a silhouette against the glow
 	   and the water. The glow and fade are CSS, so without a canvas the band is
-	   still a sunrise over a dark page. The wordmark and the copyright stack at
-	   its foot, and the page's own floating controls sit in the bottom corners. */
+	   still a sunrise over a dark page. */
 	.band {
 		position: relative;
 		display: flex;
@@ -281,8 +267,7 @@
 	}
 
 	.wordmark {
-		/* The 0.2em clears the descender of the p; the rem is the gap above the
-		   copyright line. */
+		/* The 0.2em clears the descender of the p. */
 		position: relative;
 		z-index: 1;
 		margin: 0 0 calc(0.2em + 1rem);
@@ -295,54 +280,6 @@
 		white-space: nowrap;
 		opacity: 0.92;
 		pointer-events: none;
-	}
-
-	/* The band bleeds to the footer's edges, so its copyright line takes the
-	   footer's gutter back to line up with the columns above. */
-	.band .bottom {
-		position: relative;
-		z-index: 1;
-		box-sizing: border-box;
-		max-width: calc(78rem + 2 * clamp(1rem, 4vw, 3rem));
-		align-items: center;
-		/* The floating language and theme pill sits over this row; both clear
-		   the home indicator. */
-		padding-block-end: calc(4.5rem + env(safe-area-inset-bottom));
-		padding-inline: clamp(1rem, 4vw, 3rem);
-		background: rgb(7 9 15 / 88%);
-		color: #a6abb5;
-		font-size: 0.75rem;
-		font-weight: 700;
-		line-height: 1rem;
-	}
-
-	.to-top {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.375rem;
-		min-block-size: 2.75rem;
-		padding: 0;
-		border: 0;
-		background: none;
-		color: inherit;
-		font: inherit;
-		text-decoration: underline;
-		text-underline-offset: 0.2em;
-		cursor: pointer;
-	}
-
-	.to-top:hover {
-		color: #f7f8fa;
-	}
-
-	.to-top :global(svg) {
-		inline-size: 0.875rem;
-		block-size: 0.875rem;
-	}
-
-	.to-top:focus-visible {
-		outline: 2px solid currentColor;
-		outline-offset: 3px;
 	}
 
 	@media (min-width: 48rem) {
