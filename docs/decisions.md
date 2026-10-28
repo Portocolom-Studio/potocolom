@@ -2190,3 +2190,34 @@ every point of a dense timeline; retaining outgoing chart copies; downloading
 immutable cached bodies on every selection; polling; server revisions for a
 report-update operation that the supported API does not expose; and a short
 whole-body timeout that makes a large report fail on slow links.
+
+## One horizon footer and an official-site install shortcut
+
+Every page uses the landing's horizon footer. The home page owns its footer
+inside the entrance gate; the root layout supplies the same component on all
+other routes, including the studio, auth and error pages. Document layouts
+do not add another footer. The footer owns its font and dark tokens so it
+does not depend on a parent landing surface. Its copyright row has a dark
+translucent backing so bright water cannot remove the text contrast.
+The studio's viewport shell creates its own stacking context, which keeps
+its fixed sidebar below the shared footer. Studio panes keep their own
+scroll; document scroll makes the footer reachable.
+
+Language buttons use local SVG flags with accessible language names. The
+existing language preference and keyboard controls remain shared. Landing
+and document header calls to action open the waitlist tab when configured,
+or sign-in when no waitlist endpoint exists.
+
+The landing advertises
+`curl -fsSL https://potocolom.leonfuller.com/install.sh | bash`.
+The marketing build copies a Cloudflare Pages `_redirects` rule that answers
+`/install.sh` with a 302 to the existing GitHub
+`releases/latest/download/install.sh`. GitHub remains the release source;
+the script still installs its own exact tag and verifies the release bundle.
+This shortcut requires deployment of the marketing site's redirect. Plain
+static self-hosted servers do not interpret `_redirects`; the advertised
+command deliberately uses the public marketing domain.
+
+Rejected alternatives: separate footer copies for each page; emoji flags
+whose rendering varies by platform; a second installer or a backend proxy;
+and a third-party URL shortener that adds another service to the install path.

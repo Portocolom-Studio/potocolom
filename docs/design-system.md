@@ -222,15 +222,32 @@ them rather than hand-rolled markup.
   vertex shader; Canvas 2D draws a coarser grid at 30 fps. The glow and the
   fade back to `#07090f` are CSS, so the page still has its sunrise when no
   canvas starts.
-- **Footer**: `SiteFooter.svelte` with the sea's `footer` variant. The horizon
+- **Footer**: every page uses the same `SiteFooter.svelte` with the sea's
+  `footer` variant. The home page keeps it inside its entrance gate; the root
+  layout supplies it on all other pages, including auth, the studio and errors.
+  Each page has one footer. Its Lato font and dark colours are self-contained.
+  The horizon
   sits just above the wordmark, which is `#07090f` so it reads as a silhouette
   against the glow; the bottom row is `#a6abb5` on the dark page and the
-  particles dim behind it. `npm run test:footer` checks contrast over the live
-  sea and over the fallback, and focus.
+  particles dim behind it. A dark translucent backing keeps the copyright
+  and back-to-top row readable above bright water. The studio has its own
+  stacking context so its fixed sidebar cannot cover the footer.
+  `npm run test:footer` checks contrast over the live
+  sea and over the fallback, focus, footer style parity, page changes,
+  studio footer access and phone-width overflow.
+- **Language buttons**: the shared `LanguageToggle.svelte` uses local SVG
+  flags for English and Spanish, with language names, keyboard controls and
+  a selected state. The selected language remains stored across page loads.
 - **Sign in and join**: `AuthSplit.svelte` with the sea's `field` variant,
   the horizon at 42% of the field's height. The
   waitlist is a tab on `/login` (`WaitlistForm.svelte`), shown only when
-  `PUBLIC_WAITLIST_URL` is set.
+  `PUBLIC_WAITLIST_URL` is set. The landing and document header buttons open
+  this tab when it is configured; otherwise they open sign-in. The login
+  field omits the open-source kicker.
+- **Install command**: the landing uses
+  `curl -fsSL https://potocolom.leonfuller.com/install.sh | bash`. The marketing
+  site's static redirect sends this URL to the latest published GitHub
+  release installer. The installer and its version checks remain in the release.
 
 ## Motion and performance
 

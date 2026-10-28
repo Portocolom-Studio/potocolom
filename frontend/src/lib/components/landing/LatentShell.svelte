@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { PUBLIC_WAITLIST_URL } from '$env/static/public';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import LatentCanvas from '$lib/components/LatentCanvas.svelte';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import ModeToggle from './ModeToggle.svelte';
-	import SiteFooter from './SiteFooter.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import type { Snippet } from 'svelte';
 
@@ -40,13 +40,16 @@
 		<div class="chrome-actions">
 			<LanguageToggle />
 			<ModeToggle />
-			<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
+			<a
+				class="pill pill-ghost"
+				href={PUBLIC_WAITLIST_URL ? `${resolve('/login')}?tab=waitlist` : resolve('/login')}
+			>
+				{PUBLIC_WAITLIST_URL ? t('wl.cta') : t('auth.login.title')}
+			</a>
 		</div>
 	</header>
 
 	{@render children()}
-
-	<SiteFooter />
 </div>
 
 <style>

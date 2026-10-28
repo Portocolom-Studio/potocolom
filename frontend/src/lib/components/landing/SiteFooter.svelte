@@ -6,12 +6,6 @@
 	import ParticleSea from './ParticleSea.svelte';
 	import { t } from '$lib/i18n.svelte';
 
-	let {
-		/** Dark footer whose wordmark sets into a particle sea under a blue
-		 * sunrise. */
-		horizon = false
-	}: { horizon?: boolean } = $props();
-
 	let wordmark: HTMLElement | undefined = $state();
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
@@ -28,26 +22,22 @@
 {#snippet bottomLine()}
 	<div class="bottom">
 		<span>{t('footer.copyright').replace('{year}', String(year))}</span>
-		{#if horizon}
-			<button type="button" class="to-top" onclick={toTop}>
-				{t('nav.scroll_to_top')}
-				<ArrowUpIcon aria-hidden="true" />
-			</button>
-		{/if}
+		<button type="button" class="to-top" onclick={toTop}>
+			{t('nav.scroll_to_top')}
+			<ArrowUpIcon aria-hidden="true" />
+		</button>
 	</div>
 {/snippet}
 
-<footer class:horizon>
+<footer class="horizon">
 	<div class="top">
 		<div class="brand">
 			<a class="mark" href={resolve('/')}><BrandMark /></a>
 			<p>{t('footer.tagline')}</p>
-			{#if horizon}
-				<div class="ctas">
-					<a class="cta cta-solid" href={resolve('/app')}>{t('nav.launch')}</a>
-					<a class="cta cta-ghost" href={repoUrl}>{t('hero.cta_selfhost')}</a>
-				</div>
-			{/if}
+			<div class="ctas">
+				<a class="cta cta-solid" href={resolve('/app')}>{t('nav.launch')}</a>
+				<a class="cta cta-ghost" href={repoUrl}>{t('hero.cta_selfhost')}</a>
+			</div>
 		</div>
 
 		<nav class="columns" aria-label={t('nav.footer')}>
@@ -84,15 +74,11 @@
 		</p>
 	</section>
 
-	{#if horizon}
-		<div class="band">
-			<ParticleSea variant="footer" horizonAt={wordmark} />
-			<p class="wordmark" aria-hidden="true" bind:this={wordmark}>potocolom</p>
-			{@render bottomLine()}
-		</div>
-	{:else}
+	<div class="band">
+		<ParticleSea variant="footer" horizonAt={wordmark} />
+		<p class="wordmark" aria-hidden="true" bind:this={wordmark}>potocolom</p>
 		{@render bottomLine()}
-	{/if}
+	</div>
 </footer>
 
 <style>
@@ -102,15 +88,9 @@
 		display: grid;
 		gap: 2.25rem;
 		padding: 3rem clamp(1rem, 4vw, 3rem) calc(2rem + env(safe-area-inset-bottom));
-		border-block-start: 1px solid var(--k-line);
-		background: oklch(0.08 0.012 265 / 72%);
 		color: var(--k-muted);
+		font-family: Lato, sans-serif;
 		font-size: 0.875rem;
-		backdrop-filter: blur(28px);
-	}
-
-	:global(:root[data-landing-mode='light']) footer {
-		background: oklch(0.97 0.004 255 / 78%);
 	}
 
 	/* The sea's glow rises behind the columns, so they sit above it. */
@@ -158,13 +138,17 @@
 		align-content: start;
 	}
 
-	h2 {
-		margin-block-end: 0.2rem;
+	footer.horizon h2 {
+		margin: 0;
 		color: var(--k-ink);
 		font-size: 0.8rem;
-		font-weight: 700;
-		letter-spacing: 0.06em;
+		font-weight: 800;
+		letter-spacing: -0.045em;
 		text-transform: uppercase;
+	}
+
+	footer.horizon a {
+		white-space: nowrap;
 	}
 
 	a:hover {
@@ -230,12 +214,6 @@
 		--k-line: rgb(255 255 255 / 12%);
 		overflow: hidden;
 		padding-block-end: 0;
-		border-block-start: 0;
-		background: #07090f;
-		backdrop-filter: none;
-	}
-
-	:global(:root[data-landing-mode='light']) footer.horizon {
 		background: #07090f;
 	}
 
@@ -331,6 +309,7 @@
 		   the home indicator. */
 		padding-block-end: calc(4.5rem + env(safe-area-inset-bottom));
 		padding-inline: clamp(1rem, 4vw, 3rem);
+		background: rgb(7 9 15 / 88%);
 		color: #a6abb5;
 		font-size: 0.75rem;
 		font-weight: 700;

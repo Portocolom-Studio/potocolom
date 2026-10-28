@@ -31,8 +31,7 @@
 	// The waitlist lives in the sign-in page's second tab; without an endpoint
 	// the cloud half offers the studio preview instead.
 	const waitlistHref = `${resolve('/login')}?tab=waitlist`;
-	const installCommand =
-		'curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash';
+	const installCommand = 'curl -fsSL https://potocolom.leonfuller.com/install.sh | bash';
 	const wall: SalonTile[] = makingImages.map((image) => ({
 		key: image.id,
 		alt: image.alt,
@@ -215,7 +214,9 @@
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
 		</nav>
-		<a class="pill pill-ghost" href={resolve('/app')}>{t('nav.launch')}</a>
+		<a class="pill pill-ghost" href={PUBLIC_WAITLIST_URL ? waitlistHref : resolve('/login')}>
+			{PUBLIC_WAITLIST_URL ? t('wl.cta') : t('auth.login.title')}
+		</a>
 	</header>
 
 	<main
@@ -459,7 +460,7 @@
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
-		<SiteFooter horizon />
+		<SiteFooter />
 	</div>
 </div>
 

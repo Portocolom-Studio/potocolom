@@ -201,12 +201,7 @@
 
 <Seo titleKey="seo.login_title" descriptionKey="seo.login_description" path="/login" noindex />
 
-<AuthSplit
-	fieldSide="end"
-	kicker={t('hero.kicker')}
-	heading={t('hero.title1')}
-	headingTail={t('hero.title2')}
->
+<AuthSplit fieldSide="end" heading={t('hero.title1')} headingTail={t('hero.title2')}>
 	{#if waitlistEndpoint}
 		<div class="auth-tabs" role="tablist" aria-label={t('auth.tabs_label')}>
 			{#each tabs as option (option)}

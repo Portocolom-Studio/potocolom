@@ -55,7 +55,7 @@ async function serveBuild() {
 				clean,
 				clean + '.html',
 				join(clean, 'index.html'),
-				join(build, 'index.html')
+				join(build, '404.html')
 			]) {
 				if (
 					await stat(candidate).then(
@@ -160,6 +160,28 @@ try {
 		headless: true,
 		args: ['--no-sandbox', '--disable-gpu']
 	});
+	const studio = await browser.newPage();
+	await studio.setViewport({ width: 1280, height: 900 });
+	await studio.goto(`${baseUrl}/app`, { waitUntil: 'networkidle0' });
+	await studio.waitForSelector('[data-slot="sidebar-container"]', { visible: true });
+	const studioHeight = await studio.$eval(
+		'[data-studio-shell] > div',
+		(shell) => shell.getBoundingClientRect().height
+	);
+	assert.equal(studioHeight, 900, 'studio shell fills the initial viewport');
+	await studio.$eval('footer.horizon', (footer) => footer.scrollIntoView({ block: 'start' }));
+	for (const selector of ['.mark', '.cta-solid']) {
+		const hit = await studio.$eval(`footer.horizon ${selector}`, (link) => {
+			const box = link.getBoundingClientRect();
+			const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+			return target === link || link.contains(target);
+		});
+		assert.equal(hit, true, `studio footer ${selector} must be clickable`);
+	}
+	await studio.click('footer.horizon .to-top');
+	await studio.waitForFunction(() => window.scrollY === 0);
+	await studio.close();
+
 	// The band is a particle sea drawn on a canvas over a CSS glow and fade.
 	// Check the live sea first: screenshot the copyright line with its text
 	// hidden, and compare the text colour with the lightest background behind
@@ -193,12 +215,20 @@ try {
 			return context;
 		};
 	});
+	await livePage.bringToFront();
 	await livePage.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await livePage.waitForFunction(() => {
+		const header = document.querySelector('header.landing-content');
+		return header && !header.hasAttribute('inert') && !document.querySelector('.landing-loader');
+	});
 	for (const [width, height, label] of [
 		[1280, 900, 'desktop'],
 		[390, 844, 'phone']
 	]) {
 		await livePage.setViewport({ width, height });
+		await livePage.evaluate(
+			() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+		);
 		await livePage.waitForSelector('footer.horizon .band .bottom');
 		await livePage.$eval('footer.horizon', (footer) => footer.scrollIntoView({ block: 'end' }));
 		await livePage.waitForSelector('footer.horizon .particle-sea canvas[data-live]');
@@ -211,6 +241,12 @@ try {
 			console.log(`Footer particle engine: ${JSON.stringify(engineRun)}`);
 			liveEngineRun = engineRun;
 		}
+		const uncovered = await livePage.$eval('footer.horizon .band .bottom > span', (span) => {
+			const box = span.getBoundingClientRect();
+			const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+			return target === span || span.contains(target);
+		});
+		assert.ok(uncovered, `${label} copyright must be visible before sampling`);
 		const line = await livePage.$eval('footer.horizon .band .bottom > span', (span) => {
 			const box = span.getBoundingClientRect();
 			const foreground = getComputedStyle(span).color;
@@ -269,6 +305,10 @@ try {
 
 	await page.setViewport({ width: 1280, height: 900 });
 	await page.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await page.waitForFunction(() => {
+		const header = document.querySelector('header.landing-content');
+		return header && !header.hasAttribute('inert') && !document.querySelector('.landing-loader');
+	});
 	await page.waitForSelector('footer.horizon .band .bottom');
 	const canvasBlocked = await page.$eval(
 		'footer.horizon .particle-sea',
@@ -296,6 +336,19 @@ try {
 	const phoneScale = await page.$eval('footer.horizon .particle-sea', (sea) =>
 		Number.parseFloat(getComputedStyle(sea).getPropertyValue('--sea-scale'))
 	);
+	await page.$eval('footer.horizon .band', (band) => {
+		band.style.background = '#fff';
+		band.querySelector('.particle-sea').style.visibility = 'hidden';
+	});
+	const bright = await sampleCopyrightBackground(page, reader);
+	assert.ok(
+		contrastRatio(bright.foreground, bright.background) >= 4.5,
+		`copyright must contrast with a white background behind its row (fg ${bright.foreground}, bg ${bright.background})`
+	);
+	await page.$eval('footer.horizon .band', (band) => {
+		band.style.background = '';
+		band.querySelector('.particle-sea').style.visibility = '';
+	});
 	assert.notEqual(phoneScale, desktopScale, 'the CSS fallback sea scale follows the phone resize');
 	assert.ok(
 		contrastRatio(phone.foreground, phone.background) >= 4.5,
@@ -332,7 +385,118 @@ try {
 	assert.equal(focus.outlineStyle, 'solid', 'keyboard focus must show an outline');
 	assert.equal(focus.outlineColor, focus.color, 'focus outline must follow currentColor');
 
-	console.log('Footer contrast and keyboard-focus regression checks passed.');
+	const parity = await browser.newPage();
+	await parity.setViewport({ width: 390, height: 844 });
+	async function footerStyles(path) {
+		await parity.goto(`${baseUrl}${path}`, { waitUntil: 'networkidle0' });
+		await parity.waitForSelector('footer.horizon');
+		return parity.evaluate(() => {
+			const footers = document.querySelectorAll('footer.horizon');
+			const styles = (selector) => {
+				const element = footers[0].querySelector(selector);
+				const style = getComputedStyle(element);
+				return {
+					fontFamily: style.fontFamily,
+					fontSize: style.fontSize,
+					fontWeight: style.fontWeight,
+					letterSpacing: style.letterSpacing,
+					lineHeight: style.lineHeight,
+					textTransform: style.textTransform,
+					marginBottom: style.marginBottom,
+					whiteSpace: style.whiteSpace
+				};
+			};
+			return {
+				count: footers.length,
+				overflow: document.documentElement.scrollWidth > innerWidth,
+				heading: styles('.columns h2'),
+				link: styles('.columns a')
+			};
+		});
+	}
+	const homeStyles = await footerStyles('/');
+	assert.equal(homeStyles.count, 1);
+	assert.equal(homeStyles.overflow, false);
+	for (const path of ['/login', '/whitepaper', '/privacy']) {
+		assert.deepEqual(await footerStyles(path), homeStyles, `${path} footer must match home`);
+	}
+	await parity.close();
+
+	const navigation = await browser.newPage();
+	const hydrationErrors = [];
+	navigation.on('pageerror', (error) => hydrationErrors.push(error.message));
+	navigation.on('console', (message) => {
+		if (message.type() === 'error' && /hydrat/i.test(message.text()))
+			hydrationErrors.push(message.text());
+	});
+	await navigation.setViewport({ width: 390, height: 844 });
+	await navigation.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await navigation.waitForFunction(() => {
+		const header = document.querySelector('header.landing-content');
+		return header && !header.hasAttribute('inert');
+	});
+	async function checkFooter() {
+		assert.equal(await navigation.$$eval('footer.horizon', (footers) => footers.length), 1);
+		assert.equal(
+			await navigation.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+			true,
+			'page must not overflow horizontally'
+		);
+	}
+	await checkFooter();
+	const expectedHeader = process.env.PUBLIC_WAITLIST_URL ? '/login?tab=waitlist' : '/login';
+	assert.equal(
+		await navigation.$eval(
+			'header.landing-content a.pill-ghost',
+			(link) => new URL(link.href).pathname + new URL(link.href).search
+		),
+		expectedHeader
+	);
+	await navigation.click('header.landing-content a.pill-ghost');
+	await navigation.waitForFunction(() => location.pathname.endsWith('/login'));
+	await checkFooter();
+	const flagSize = await navigation.$eval('[aria-label="Espa\u00f1ol"] svg', (flag) => {
+		const box = flag.getBoundingClientRect();
+		return [box.width, box.height];
+	});
+	assert.deepEqual(flagSize, [24, 16], 'language flags keep their proportions');
+	await navigation.click('[aria-label="Espa\u00f1ol"]');
+	await navigation.waitForFunction(
+		() => document.documentElement.lang === 'es' && localStorage.getItem('locale') === 'es'
+	);
+	await navigation.click('[aria-label="Espa\u00f1ol"]');
+	assert.equal(
+		await navigation.$eval('[aria-label="Espa\u00f1ol"]', (button) =>
+			button.getAttribute('aria-checked')
+		),
+		'true',
+		'clicking the selected language keeps it selected'
+	);
+	await navigation.reload({ waitUntil: 'networkidle0' });
+	await navigation.waitForFunction(() => document.documentElement.lang === 'es');
+	assert.equal(
+		await navigation.$eval('[aria-label="Espa\u00f1ol"]', (button) =>
+			button.getAttribute('aria-checked')
+		),
+		'true'
+	);
+	await navigation.click('footer.horizon a[href$="whitepaper"]');
+	await navigation.waitForFunction(() => location.pathname.endsWith('/whitepaper'));
+	assert.equal(
+		await navigation.$eval(
+			'header a.pill-ghost',
+			(link) => new URL(link.href).pathname + new URL(link.href).search
+		),
+		expectedHeader
+	);
+	await checkFooter();
+	await navigation.goto(`${baseUrl}/missing-page`, { waitUntil: 'networkidle0' });
+	await navigation.waitForSelector('footer.horizon');
+	await checkFooter();
+	assert.deepEqual(hydrationErrors, [], 'navigation must hydrate without errors');
+	await navigation.close();
+
+	console.log('Footer contrast, focus, navigation, language, and mobile checks passed.');
 } finally {
 	if (browser) await browser.close();
 	if (server)

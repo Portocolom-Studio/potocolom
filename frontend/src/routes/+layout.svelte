@@ -1,6 +1,8 @@
 <script lang="ts">
 	import '../app.css';
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
+	import SiteFooter from '$lib/components/landing/SiteFooter.svelte';
 	import { initializeLocale } from '$lib/i18n.svelte';
 
 	let { children } = $props();
@@ -15,3 +17,7 @@
 </svelte:head>
 
 {@render children()}
+
+{#if page.route.id !== '/'}
+	<SiteFooter />
+{/if}
