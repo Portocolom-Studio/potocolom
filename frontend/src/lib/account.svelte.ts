@@ -5,4 +5,8 @@ import type { Role } from './account-display';
 
 export type Account = { email: string; role: Role };
 
-export const account = $state<{ current: Account | null }>({ current: null });
+export const account = $state<{
+	current: Account | null;
+	ownerId: string | null;
+	localModeConfirmed: boolean;
+}>({ current: null, ownerId: null, localModeConfirmed: false });

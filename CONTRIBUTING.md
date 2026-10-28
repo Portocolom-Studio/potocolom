@@ -27,4 +27,5 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 - Run `make verify` locally before opening or updating a PR; it runs exactly what CI runs.
 - Merge only when every required check is green; update stale tests or CI steps in the same PR, and never skip, disable or loosen a check to get green.
 - Apply the [security and recovery checks](docs/security-checklist.md) to each affected path and record the evidence in the PR.
+- For UI changes, follow the [design system](docs/design-system.md), and update it in the same PR when a token, component contract or rule changes.
 - Mermaid diagrams must render; run `make verify-mermaid` before pushing.

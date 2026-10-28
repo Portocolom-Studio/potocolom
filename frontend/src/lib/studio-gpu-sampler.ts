@@ -25,11 +25,14 @@ export type GpuSample = {
 
 const MAX_SAMPLES = 150;
 const SAMPLE_MS = 2000;
+const SAMPLE_TIMEOUT_MS = 5000;
 
 let samples: GpuSample[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let listeners = new Set<() => void>();
 let lastHardware: GpuHardware | null = null;
+let samplerEpoch = 0;
+let activeTick: { epoch: number; controller: AbortController } | null = null;
 
 function notify(): void {
 	for (const listener of listeners) {
@@ -81,9 +84,9 @@ function sampleFromHistory(history: Generation[], hardware: GpuHardware | null):
 	};
 }
 
-async function fetchHardware(): Promise<GpuHardware | null> {
+async function fetchHardware(signal: AbortSignal): Promise<GpuHardware | null> {
 	try {
-		const response = await fetch('/api/v1/studio/gpu');
+		const response = await fetch('/api/v1/studio/gpu', { signal });
 		if (!response.ok) return null;
 		const body = (await response.json()) as { gpu?: GpuHardware };
 		return body.gpu ?? null;
@@ -104,24 +107,50 @@ export function subscribeGpuSamples(listener: () => void): () => void {
 export function startGpuSampler(history: () => Generation[]): void {
 	if (timer !== null) return;
 	const tick = async () => {
-		const fetched = await fetchHardware();
-		if (fetched) lastHardware = fetched;
-		const hardware = fetched ?? lastHardware;
-		const point = sampleFromHistory(history(), hardware);
-		samples = [...samples, point].slice(-MAX_SAMPLES);
-		notify();
+		if (activeTick !== null || timer === null) return;
+		const request = { epoch: samplerEpoch, controller: new AbortController() };
+		activeTick = request;
+		const timeout = setTimeout(() => request.controller.abort(), SAMPLE_TIMEOUT_MS);
+		try {
+			const fetched = await fetchHardware(request.controller.signal);
+			if (
+				request.controller.signal.aborted ||
+				request.epoch !== samplerEpoch ||
+				timer === null ||
+				activeTick !== request
+			)
+				return;
+			if (fetched) lastHardware = fetched;
+			const hardware = fetched ?? lastHardware;
+			const point = sampleFromHistory(history(), hardware);
+			samples = [...samples, point].slice(-MAX_SAMPLES);
+			notify();
+		} finally {
+			clearTimeout(timeout);
+			if (activeTick === request) activeTick = null;
+		}
 	};
-	void tick();
+	samplerEpoch += 1;
 	timer = setInterval(() => void tick(), SAMPLE_MS);
+	void tick();
 }
 
 export function stopGpuSampler(): void {
-	if (timer === null) return;
-	clearInterval(timer);
-	timer = null;
+	samplerEpoch += 1;
+	if (timer !== null) {
+		clearInterval(timer);
+		timer = null;
+	}
+	const request = activeTick;
+	activeTick = null;
+	request?.controller.abort();
 }
 
 export function clearGpuSamples(): void {
+	samplerEpoch += 1;
+	const request = activeTick;
+	activeTick = null;
+	request?.controller.abort();
 	samples = [];
 	lastHardware = null;
 	notify();

@@ -1,11 +1,11 @@
 import asyncio
 import json
-import sys
 import time
 import uuid
-from threading import Event, Thread
+from threading import Event
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app import command_store, command_subjects, db, jobs, realtime, sessions as account_sessions, worker_authority
@@ -15,6 +15,8 @@ from app.protocol6 import decode_control
 from app.settings import get_settings
 from app.tables import User
 from test_fleet_protocol6 import (
+    FLEET_HEADERS,
+    drop_worker_rows,
     hello,
     manifest,
     protocol6_client,
@@ -319,7 +321,6 @@ def test_shutdown_waits_for_the_disconnect_finalizer(accounts, monkeypatch):
     model_id = f"s1-finalizer-shutdown-model-{uuid.uuid4()}"
     close_started = asyncio.Event()
     release_close = Event()
-    shutdown_drain_started = Event()
     events = []
     original_close = worker_authority.close_worker
     original_dispose = db.dispose
@@ -327,7 +328,8 @@ def test_shutdown_waits_for_the_disconnect_finalizer(accounts, monkeypatch):
 
     async def held_close(target_id, incarnation):
         close_started.set()
-        await asyncio.to_thread(release_close.wait, 8)
+        released = await asyncio.to_thread(release_close.wait, 8)
+        assert released, "shutdown did not release the held worker close"
         result = await original_close(target_id, incarnation)
         events.append("close-returned")
         return result
@@ -336,44 +338,87 @@ def test_shutdown_waits_for_the_disconnect_finalizer(accounts, monkeypatch):
         events.append("dispose")
         return await original_dispose()
 
+    async def remove_worker_rows_if_present():
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            present = await session.scalar(
+                text("SELECT count(*) FROM workers WHERE worker_id = :worker_id"),
+                {"worker_id": worker_id},
+            )
+        if present:
+            await drop_worker_rows(worker_id)
+
     async def observed_drain():
-        shutdown_drain_started.set()
-        return await original_drain()
+        pending = [
+            task
+            for task, owner in realtime._worker_delivery_owners.items()
+            if owner is worker and not task.done()
+        ]
+        events.append("finalizer-pending-at-drain" if pending else "finalizer-not-pending-at-drain")
+        drain = asyncio.create_task(original_drain())
+        await asyncio.sleep(0)
+        events.append("drain-waited-for-finalizer" if not drain.done() else "drain-returned-early")
+        release_close.set()
+        return await drain
 
     monkeypatch.setattr(worker_authority, "close_worker", held_close)
     monkeypatch.setattr(db, "dispose", observed_dispose)
     monkeypatch.setattr(main_module, "drain_worker_deliveries", observed_drain)
-    with protocol6_client(worker_id) as client:
+    client = TestClient(main_module.app, headers=FLEET_HEADERS)
+    entered = False
+    exited = False
+    browser_exited = False
+    browser = None
+    fleet = None
+    worker = None
+    closing = None
+    try:
+        client.__enter__()
+        entered = True
         _authenticate_browser(client)
-        worker_ws, worker, _grant, _open_command, browser_ws, browser, fleet = (
-            open_live_session(client, worker_id, model_id)
+        worker_ws, worker, _grant, _open_command, browser_ws, browser, fleet = open_live_session(
+            client, worker_id, model_id
         )
-        closing = client.portal.start_task_soon(
-            asyncio.to_thread, fleet.__exit__, None, None, None
-        )
-        releaser = Thread(target=lambda: (
-            shutdown_drain_started.wait(8), release_close.set()
-        ))
+        closing = client.portal.start_task_soon(asyncio.to_thread, fleet.__exit__, None, None, None)
+        client.portal.call(_wait, close_started)
+        browser.__exit__(None, None, None)
+        browser_exited = True
         try:
-            client.portal.call(_wait, close_started)
-            releaser.start()
-            browser.__exit__(None, None, None)
+            client.__exit__(None, None, None)
         finally:
-            if releaser.ident is None:
-                release_close.set()
-                shutdown_drain_started.set()
-            if sys.exc_info()[0] is not None:
-                release_close.set()
-                shutdown_drain_started.set()
-                if releaser.ident is not None:
-                    releaser.join(8)
-                if closing is not None:
-                    closing.result(timeout=8)
-    closing.result(timeout=8)
-    if releaser.ident is not None:
-        releaser.join(8)
-    assert events.index("close-returned") < events.index("dispose")
-    assert not releaser.is_alive()
+            exited = True
+        closing.result(timeout=8)
+        assert "finalizer-pending-at-drain" in events
+        assert "drain-waited-for-finalizer" in events
+        assert "drain-returned-early" not in events
+        assert events.index("close-returned") < events.index("dispose")
+    finally:
+        release_close.set()
+        if browser is not None and not browser_exited:
+            try:
+                browser.__exit__(None, None, None)
+            except BaseException:
+                pass
+        if fleet is not None and closing is None:
+            try:
+                fleet.__exit__(None, None, None)
+            except BaseException:
+                pass
+        if entered and not exited:
+            try:
+                client.__exit__(None, None, None)
+            except BaseException:
+                pass
+        if closing is not None:
+            try:
+                closing.result(timeout=8)
+            except BaseException:
+                pass
+        if entered:
+            if db.session_factory is None:
+                accounts(db.connect())
+            accounts(remove_worker_rows_if_present())
+            accounts(db.dispose())
 
 
 @pytest.mark.db

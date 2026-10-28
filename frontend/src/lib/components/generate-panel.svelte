@@ -1,17 +1,25 @@
 <script lang="ts">
-	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
+	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
+	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import DownloadIcon from '@lucide/svelte/icons/download';
-	import PencilIcon from '@lucide/svelte/icons/pencil';
-	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
+	import HistoryIcon from '@lucide/svelte/icons/history';
+	import LayersIcon from '@lucide/svelte/icons/layers';
+	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
+	import MinusIcon from '@lucide/svelte/icons/minus';
+	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
+	import * as Collapsible from '$lib/components/ui/collapsible';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
 	import * as ToggleGroup from '$lib/components/ui/toggle-group';
+	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		defaultSizeIndex,
@@ -29,6 +37,10 @@
 	} from '$lib/model-params';
 	import { countError, seedError } from '$lib/generate-validation';
 	import { apiFetch } from '$lib/api';
+	import { shortcutLabel } from '$lib/platform.svelte';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { toggleStarWithUndo } from '$lib/studio-toasts';
+	import { revealOnLoad } from '$lib/image-reveal';
 	import { formatMs } from '$lib/benchmark';
 	import { estimateGpuMs, estimateUpscaleGpuMs } from '$lib/gpu-estimate';
 	import { estimatePromptTokens, exceedsWindow } from '$lib/prompt-tokens';
@@ -42,6 +54,7 @@
 		loadHistory,
 		openService,
 		pollWhileWorking,
+		recentPrompts,
 		selectGeneration,
 		studio,
 		toggleStarred,
@@ -54,17 +67,18 @@
 
 	let { mode }: { mode: 'generate' | 'image_to_image' | 'upscale' } = $props();
 
-	// Matches the Input component's field styling for the native controls it
-	// does not vendor (select, textarea).
+	// The field look of the studio's native controls (the prompt textarea).
 	const fieldClass =
-		'dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 ' +
-		'placeholder:text-muted-foreground w-full min-w-0 rounded-lg border bg-transparent ' +
-		'px-2.5 py-1 font-sans text-base transition-colors outline-none focus-visible:ring-3 md:text-sm ' +
+		'bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 w-full min-w-0 ' +
+		'rounded-md border px-2.5 py-2 font-sans text-[13px] leading-normal outline-none focus-visible:ring-2 ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
-	// Default toggle `data-[state=on]:bg-muted` is nearly invisible on the card;
-	// match LanguageToggle so Fast/Quality/factor picks read clearly.
-	const toggleOnClass =
-		'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:hover:bg-primary/90';
+	// A segmented control: the chosen segment lifts off the track.
+	const segmentRootClass =
+		'bg-field border-line-strong flex w-full gap-0.5 rounded-[7px] border p-0.5';
+	const segmentItemClass =
+		'text-muted-foreground h-[30px] min-w-0 flex-1 rounded-[5px]! border-0 text-xs font-medium tabular-nums ' +
+		'hover:bg-transparent hover:text-foreground data-[state=on]:bg-hover data-[state=on]:text-foreground ' +
+		'data-[state=on]:ring-line-strong data-[state=on]:ring-1 data-[state=on]:ring-inset';
 
 	let stepsNorm = $state(0);
 	let guidanceNorm = $state(0);
@@ -439,7 +453,9 @@
 	}
 
 	function starShown(): void {
-		if (shown !== null) void toggleStarred(shown.id);
+		if (shown === null) return;
+		const id = shown.id;
+		void toggleStarWithUndo(id, () => toggleStarred(id));
 	}
 
 	function editShown(): void {
@@ -490,33 +506,186 @@
 	function selectLineage(entry: LineageEntry): void {
 		if (entry.job_id !== null) void selectGeneration(entry.job_id);
 	}
+
+	const jobCount = $derived(Math.min(Math.max(Number(count) || 1, 1), 8));
+	const totalEstimateLabel = $derived(
+		gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs * jobCount)}` : null
+	);
+	const tokenLabel = $derived(
+		promptWindow > 0
+			? t('app.realtime_canvas.tokens_of')
+					.replace('{tokens}', String(promptTokens))
+					.replace('{limit}', String(promptWindow))
+			: t('app.realtime_canvas.tokens').replace('{tokens}', String(promptTokens))
+	);
+	const prompts = $derived(recentPrompts());
+	const shownModel = $derived(
+		shown === null ? undefined : studio.models.find((model) => model.id === shown.model_id)
+	);
+	const shownSize = $derived(
+		shown !== null && shown.assets.length > 0
+			? `${shown.assets[0].width} × ${shown.assets[0].height}`
+			: null
+	);
+	const shownSeed = $derived(typeof shown?.params.seed === 'number' ? shown.params.seed : null);
+	const shownSteps = $derived(typeof shown?.params.steps === 'number' ? shown.params.steps : null);
+	const shownGuidance = $derived(
+		typeof shown?.params.guidance === 'number' ? shown.params.guidance : null
+	);
+
+	function modelInitial(model: Model | undefined): string {
+		return model?.name.trim().charAt(0).toUpperCase() ?? '-';
+	}
+
+	function modelMeta(model: Model | undefined): string {
+		if (!model) return '';
+		const parts: string[] = [];
+		if (model.estimated_gpu_ms_default != null)
+			parts.push(`~${formatMs(model.estimated_gpu_ms_default)} GPU`);
+		if (model.min_vram_gb > 0) parts.push(`${model.min_vram_gb} GB`);
+		return parts.join(' · ');
+	}
+
+	function stepCount(delta: number): void {
+		count = String(Math.min(COUNT_MAX, Math.max(COUNT_MIN, (Number(count) || COUNT_MIN) + delta)));
+	}
+
+	/** Cmd or Ctrl and Enter submits the form from the prompt. */
+	// requestSubmit() fires even while the submit button is disabled, so the
+	// shortcut checks the same conditions as the button.
+	const canGenerate = $derived(
+		!submitLock.busy &&
+			studio.prompt.trim() !== '' &&
+			countProblem === null &&
+			seedProblem === null &&
+			!(mode === 'image_to_image' && sourceAssetId === null)
+	);
+
+	function onPromptKeydown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter' || event.isComposing || !(event.metaKey || event.ctrlKey)) return;
+		event.preventDefault();
+		if (canGenerate) (event.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
+	}
+
+	const MODES = [
+		{ view: 'generate', label: 'app.service.generate' },
+		{ view: 'image_to_image', label: 'app.service.image_to_image' },
+		{ view: 'upscale', label: 'app.service.upscale' }
+	] as const;
+
+	useStudioHeader(() => ({ actions: modeSwitch }));
 </script>
 
-<div class="grid h-full min-h-0 gap-4 font-sans lg:grid-cols-[minmax(300px,380px)_1fr]">
-	<Card.Root class="no-scrollbar flex min-h-0 flex-col overflow-y-auto">
-		<Card.Header class="gap-3">
-			<div class="flex flex-col gap-1.5">
-				<h1 data-slot="card-title" class="text-base font-medium">{panelTitle}</h1>
-				<Card.Description>{panelSub}</Card.Description>
+{#snippet modeSwitch()}
+	<div
+		class="bg-field border-line-strong hidden gap-0.5 rounded-[7px] border p-0.5 md:flex"
+		role="group"
+		aria-label={panelTitle}
+	>
+		{#each MODES as option (option.view)}
+			<button
+				type="button"
+				class={'flex h-[26px] min-w-28 items-center justify-center rounded-[5px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+					(mode === option.view
+						? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
+						: 'text-muted-foreground hover:text-foreground')}
+				aria-pressed={mode === option.view}
+				onclick={() => openService(option.view)}
+			>
+				{t(option.label)}
+			</button>
+		{/each}
+	</div>
+{/snippet}
+
+{#snippet modelCard(model: Model | undefined)}
+	<span
+		class="bg-raised ring-line-strong grid size-7 shrink-0 place-items-center rounded-md text-xs font-semibold ring-1 ring-inset"
+		aria-hidden="true">{modelInitial(model)}</span
+	>
+	<span class="grid min-w-0 flex-1 text-start leading-tight">
+		<span class="text-foreground truncate font-medium">{model?.name ?? t('app.gen.model')}</span>
+		{#if modelMeta(model) !== ''}
+			<span class="text-dim truncate text-[11px] tabular-nums">{modelMeta(model)}</span>
+		{/if}
+	</span>
+{/snippet}
+
+{#snippet progress()}
+	{#if working > 0}
+		<div class="mt-3">
+			<div class="text-dim flex items-center justify-between text-[11.5px] tabular-nums">
+				<span role="status" title={t('app.gen.working_suffix')}
+					>{working} {t('app.gen.working_short')}</span
+				>
+				{#if runningProgress !== null}
+					<span aria-hidden="true">{Math.round(runningProgress * 100)}%</span>
+				{/if}
 			</div>
-		</Card.Header>
-		<Card.Content class="flex min-h-0 flex-1 flex-col">
-			{#if mode !== 'upscale'}
-				{#if diffusionModels.length === 0}
-					<p class="text-muted-foreground text-sm leading-relaxed">
-						{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
-					</p>
-				{:else}
-					<form class="flex min-h-0 flex-1 flex-col gap-4" novalidate onsubmit={generate}>
-						<div class="flex flex-col gap-2">
-							<Label for="gen-model">{t('app.gen.model')}</Label>
+			{#if runningProgress !== null}
+				<div class="bg-line-strong mt-1.5 h-0.5 overflow-hidden rounded-full" aria-hidden="true">
+					<div
+						class="bg-brand h-full rounded-full"
+						style:width={`${Math.round(runningProgress * 100)}%`}
+					></div>
+				</div>
+			{/if}
+		</div>
+	{/if}
+	{#if errorText !== ''}
+		<p role="alert" class="text-destructive mt-2 text-[13px] leading-relaxed">{errorText}</p>
+	{/if}
+{/snippet}
+
+<div class="flex h-full min-h-0 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+	<aside
+		class="bg-panel border-border flex min-h-0 flex-none flex-col border-b lg:w-[340px] lg:border-e lg:border-b-0"
+		aria-label={panelTitle}
+	>
+		<h1 class="sr-only">{panelTitle}</h1>
+		<p class="sr-only">{panelSub}</p>
+		{#if !studio.modelsLoaded}
+			<!-- The parameter column's shape while the models load. -->
+			<div role="status" class="flex flex-col gap-4 p-4">
+				<span class="sr-only">{t('app.models.loading')}</span>
+				<div class="flex flex-col gap-2" aria-hidden="true">
+					<Skeleton class="h-3 w-12 rounded" />
+					<Skeleton class="h-[46px] rounded-md" />
+				</div>
+				<div class="flex flex-col gap-2" aria-hidden="true">
+					<Skeleton class="h-3 w-14 rounded" />
+					<Skeleton class="h-[136px] rounded-md" />
+				</div>
+				{#each [0, 1] as index (index)}
+					<div class="flex flex-col gap-2" aria-hidden="true">
+						<Skeleton class="h-3 w-20 rounded" />
+						<Skeleton class="h-1 rounded-full" />
+					</div>
+				{/each}
+				<Skeleton class="mt-2 h-9 rounded-md" aria-hidden="true" />
+			</div>
+		{:else if mode !== 'upscale'}
+			{#if diffusionModels.length === 0}
+				<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+					{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
+				</p>
+			{:else}
+				<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
+					<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
+						<div class="border-border border-b p-4">
+							<Label for="gen-model" class="text-muted-foreground mb-2 text-xs font-medium"
+								>{t('app.gen.model')}</Label
+							>
 							<Select.Root
 								type="single"
 								value={activeModelId}
 								onValueChange={(value) => value && onModelChange(value)}
 							>
-								<Select.Trigger id="gen-model" class="w-full font-sans" size="sm">
-									{modelOptionLabel(
+								<Select.Trigger
+									id="gen-model"
+									class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
+								>
+									{@render modelCard(
 										diffusionModels.find((model) => model.id === activeModelId) ??
 											diffusionModels[0]
 									)}
@@ -530,35 +699,40 @@
 								</Select.Content>
 							</Select.Root>
 							{#if selectedModel?.requires_attribution}
-								<p class="text-muted-foreground text-xs">{selectedModel.requires_attribution}</p>
+								<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
 							{/if}
 						</div>
 						{#if mode === 'image_to_image'}
-							<div class="flex flex-col gap-2">
-								<p class="text-sm font-medium leading-none">{t('app.image_to_image.source')}</p>
+							<div class="border-border border-b p-4">
+								<p class="text-muted-foreground mb-2 text-xs font-medium">
+									{t('app.image_to_image.source')}
+								</p>
 								<div
-									class="border-border bg-muted/20 flex min-h-20 items-center gap-3 rounded-lg border border-dashed p-3"
+									class="border-line-strong flex min-h-16 items-center gap-3 rounded-md border border-dashed p-2.5"
 								>
 									{#if sourceAsset !== null}
 										<img
 											src={sourceAsset.thumbnail_url ?? sourceAsset.url}
 											alt={t('app.image_to_image.source')}
-											class="size-14 rounded-md object-cover"
-											width="56"
-											height="56"
+											class="size-12 rounded-md object-cover"
+											width="48"
+											height="48"
 										/>
-										<p class="min-w-0 flex-1 truncate text-sm">{t('app.image_to_image.ready')}</p>
+										<p class="min-w-0 flex-1 truncate text-[13px]">
+											{t('app.image_to_image.ready')}
+										</p>
 									{:else}
-										<p class="text-muted-foreground flex-1 text-sm">
+										<p class="text-muted-foreground flex-1 text-[13px]">
 											{t('app.image_to_image.source_empty')}
 										</p>
 									{/if}
 								</div>
-								<div class="flex flex-col gap-2">
+								<div class="mt-2 flex gap-2">
 									<Button
 										type="button"
 										variant="outline"
 										size="sm"
+										class="flex-1"
 										disabled={shown === null || shown.assets.length === 0}
 										onclick={() => {
 											if (shown !== null && shown.assets.length > 0) {
@@ -580,15 +754,22 @@
 								</div>
 							</div>
 						{/if}
-						<div class="flex flex-col gap-2">
-							<Label for="gen-prompt">{t('app.gen.prompt')}</Label>
+						<div class="border-border border-b p-4">
+							<div class="mb-2 flex items-center justify-between gap-2">
+								<Label for="gen-prompt" class="text-muted-foreground text-xs font-medium"
+									>{t('app.gen.prompt')}</Label
+								>
+								<span class="text-dim text-[11px] tabular-nums">{tokenLabel}</span>
+							</div>
 							<textarea
 								id="gen-prompt"
 								name="prompt"
 								autocomplete="off"
-								class={fieldClass + ' no-scrollbar h-44 resize-none overflow-y-auto py-2'}
+								class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
 								placeholder={t('app.gen.prompt_placeholder')}
 								aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
+								aria-keyshortcuts="Meta+Enter Control+Enter"
+								onkeydown={onPromptKeydown}
 								bind:value={studio.prompt}></textarea>
 							{#if promptTokenNotice}
 								<!-- Described by the field rather than announced from a live region:
@@ -596,211 +777,255 @@
 								read out again and again while the user is still typing. -->
 								<p
 									id="gen-prompt-window"
-									class="text-muted-foreground text-sm leading-relaxed tabular-nums"
+									class="text-status-warning mt-1.5 text-xs leading-relaxed tabular-nums"
 								>
 									{promptTokenNotice}
 								</p>
 							{/if}
-						</div>
-						<div class="grid grid-cols-2 gap-3">
-							<div class="flex flex-col gap-2">
-								<Label for="gen-count">{t('app.gen.count')}</Label>
-								<Input
-									id="gen-count"
-									name="count"
-									autocomplete="off"
-									inputmode="numeric"
-									class="tabular-nums"
-									type="number"
-									min="1"
-									max="8"
-									aria-describedby={countProblem ? 'gen-count-error' : undefined}
-									bind:value={count}
-								/>
-								{#if countProblem}
-									<p id="gen-count-error" class="text-destructive text-sm leading-relaxed">
-										{t(countProblem)
-											.replace('{min}', String(COUNT_MIN))
-											.replace('{max}', String(COUNT_MAX))}
-									</p>
-								{/if}
-							</div>
-							<div class="flex flex-col gap-2">
-								<Label for="gen-seed">{t('app.gen.seed')}</Label>
-								<Input
-									id="gen-seed"
-									name="seed"
-									autocomplete="off"
-									inputmode="numeric"
-									class="tabular-nums"
-									type="number"
-									placeholder={t('app.gen.seed_placeholder')}
-									aria-describedby={seedProblem ? 'gen-seed-error' : undefined}
-									bind:value={seed}
-								/>
-								{#if seedProblem}
-									<p id="gen-seed-error" class="text-destructive text-sm leading-relaxed">
-										{t(seedProblem)}
-									</p>
-								{/if}
+							<div class="mt-2 flex flex-wrap gap-1.5">
+								<DropdownMenu.Root>
+									<DropdownMenu.Trigger>
+										{#snippet child({ props })}
+											<button
+												type="button"
+												{...props}
+												class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-[11.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											>
+												<HistoryIcon class="size-3" aria-hidden="true" />
+												{t('app.gen.prompt_history')}
+											</button>
+										{/snippet}
+									</DropdownMenu.Trigger>
+									<DropdownMenu.Content class="w-80 max-w-[calc(100vw-2rem)]" align="start">
+										{#each prompts as recent (recent)}
+											<DropdownMenu.Item title={recent} onclick={() => (studio.prompt = recent)}>
+												<span class="line-clamp-2 text-[13px]">{recent}</span>
+											</DropdownMenu.Item>
+										{:else}
+											<p class="text-muted-foreground px-2 py-1.5 text-[13px]">
+												{t('app.shell.prompt_history_empty')}
+											</p>
+										{/each}
+									</DropdownMenu.Content>
+								</DropdownMenu.Root>
+								<button
+									type="button"
+									class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-[11.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+									disabled={shownPrompt === ''}
+									onclick={insertPrompt}
+								>
+									<ClipboardPasteIcon class="size-3" aria-hidden="true" />
+									{t('app.gen.insert_prompt')}
+								</button>
 							</div>
 						</div>
-						<div class="flex flex-col gap-2">
-							<Label id="gen-size-label">{t('app.gen.size')}</Label>
+						<div class="border-border border-b p-4">
+							<Label id="gen-size-label" class="text-muted-foreground mb-2 text-xs font-medium"
+								>{t('app.gen.size')}</Label
+							>
 							<ToggleGroup.Root
 								type="single"
 								aria-labelledby="gen-size-label"
-								variant="outline"
 								spacing={0}
-								class="flex w-full"
+								class={segmentRootClass}
 								value={sizeKey}
 								onValueChange={onSizeChange}
 							>
 								{#each sizeOptions as option (option)}
 									<ToggleGroup.Item
 										value={String(option)}
-										class={`min-w-0 flex-1 text-xs tabular-nums ${toggleOnClass}`}
+										aria-label={`${option} x ${option}`}
+										class={segmentItemClass}
 									>
-										{option} x {option}
+										{option}²
 									</ToggleGroup.Item>
 								{/each}
 							</ToggleGroup.Root>
+							<div class="mt-3.5 grid grid-cols-2 gap-3">
+								<div class="flex flex-col gap-2">
+									<Label for="gen-count" class="text-muted-foreground text-xs font-medium"
+										>{t('app.gen.count')}</Label
+									>
+									<div class="relative">
+										<Input
+											id="gen-count"
+											name="count"
+											autocomplete="off"
+											inputmode="numeric"
+											class="pe-14 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+											type="number"
+											min="1"
+											max="8"
+											aria-describedby={countProblem ? 'gen-count-error' : undefined}
+											bind:value={count}
+										/>
+										<div class="absolute inset-y-0 end-1 flex items-center">
+											<button
+												type="button"
+												class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												aria-label={t('app.gen.count_less')}
+												onclick={() => stepCount(-1)}
+												><MinusIcon class="size-3.5" aria-hidden="true" /></button
+											>
+											<button
+												type="button"
+												class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												aria-label={t('app.gen.count_more')}
+												onclick={() => stepCount(1)}
+												><PlusIcon class="size-3.5" aria-hidden="true" /></button
+											>
+										</div>
+									</div>
+									{#if countProblem}
+										<p id="gen-count-error" class="text-destructive text-xs leading-relaxed">
+											{t(countProblem)
+												.replace('{min}', String(COUNT_MIN))
+												.replace('{max}', String(COUNT_MAX))}
+										</p>
+									{/if}
+								</div>
+								<div class="flex flex-col gap-2">
+									<Label for="gen-seed" class="text-muted-foreground text-xs font-medium"
+										>{t('app.gen.seed')}</Label
+									>
+									<div class="relative">
+										<Input
+											id="gen-seed"
+											name="seed"
+											autocomplete="off"
+											inputmode="numeric"
+											class="pe-8 font-mono tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+											type="number"
+											placeholder={t('app.gen.seed_random')}
+											aria-describedby={seedProblem ? 'gen-seed-error' : undefined}
+											bind:value={seed}
+										/>
+										<button
+											type="button"
+											class="text-dim hover:text-foreground absolute inset-y-0 end-1 my-auto grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											aria-label={t('app.gen.seed_clear')}
+											title={t('app.gen.seed_clear')}
+											onclick={() => (seed = null)}
+											><RefreshCwIcon class="size-3.5" aria-hidden="true" /></button
+										>
+									</div>
+									{#if seedProblem}
+										<p id="gen-seed-error" class="text-destructive text-xs leading-relaxed">
+											{t(seedProblem)}
+										</p>
+									{/if}
+								</div>
+							</div>
 						</div>
 						{#if normsReady}
-							<div class="flex flex-col gap-4">
-								<ParamSliderField
-									id="gen-steps"
-									label={t('app.gen.steps')}
-									bind:norm={stepsNorm}
-									steps={trackSteps(stepsRange)}
-									minLabel={formatParamValue(stepsRange.min, stepsRange)}
-									maxLabel={formatParamValue(stepsRange.max, stepsRange)}
-									valueLabel={formatParamValue(stepsValue, stepsRange)}
-								/>
-								<ParamSliderField
-									id="gen-guidance"
-									label={t('app.gen.guidance')}
-									bind:norm={guidanceNorm}
-									steps={trackSteps(guidanceRange)}
-									minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
-									maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
-									valueLabel={formatParamValue(guidanceValue, guidanceRange)}
-								/>
-								{#if mode === 'image_to_image'}
-									<ParamSliderField
-										id="gen-strength"
-										label={t('app.image_to_image.strength')}
-										bind:norm={strengthNorm}
-										steps={trackSteps(strengthRange)}
-										minLabel={formatParamValue(strengthRange.min, strengthRange)}
-										maxLabel={formatParamValue(strengthRange.max, strengthRange)}
-										valueLabel={formatParamValue(strengthValue, strengthRange)}
+							<Collapsible.Root open class="group/advanced p-4">
+								<Collapsible.Trigger
+									class="flex w-full items-center justify-between rounded text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								>
+									{t('app.gen.advanced')}
+									<ChevronDownIcon
+										class="text-dim size-3.5 transition-transform group-data-[state=closed]/advanced:-rotate-90"
+										aria-hidden="true"
 									/>
-								{/if}
-							</div>
+								</Collapsible.Trigger>
+								<Collapsible.Content class="mt-3.5 flex flex-col gap-4">
+									<ParamSliderField
+										id="gen-steps"
+										label={t('app.gen.steps')}
+										bind:norm={stepsNorm}
+										steps={trackSteps(stepsRange)}
+										minLabel={formatParamValue(stepsRange.min, stepsRange)}
+										maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+										valueLabel={formatParamValue(stepsValue, stepsRange)}
+									/>
+									<ParamSliderField
+										id="gen-guidance"
+										label={t('app.gen.guidance')}
+										bind:norm={guidanceNorm}
+										steps={trackSteps(guidanceRange)}
+										minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
+										maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
+										valueLabel={formatParamValue(guidanceValue, guidanceRange)}
+									/>
+									{#if mode === 'image_to_image'}
+										<ParamSliderField
+											id="gen-strength"
+											label={t('app.image_to_image.strength')}
+											bind:norm={strengthNorm}
+											steps={trackSteps(strengthRange)}
+											minLabel={formatParamValue(strengthRange.min, strengthRange)}
+											maxLabel={formatParamValue(strengthRange.max, strengthRange)}
+											valueLabel={formatParamValue(strengthValue, strengthRange)}
+										/>
+									{/if}
+								</Collapsible.Content>
+							</Collapsible.Root>
 						{/if}
+					</div>
+					<div class="border-border border-t p-4">
 						<Button
 							type="submit"
-							class="tabular-nums"
-							disabled={submitLock.busy ||
-								studio.prompt.trim() === '' ||
-								countProblem !== null ||
-								seedProblem !== null ||
-								(mode === 'image_to_image' && sourceAssetId === null)}
+							variant="brand"
+							class="h-9 w-full tabular-nums"
+							disabled={!canGenerate}
 						>
-							{mode === 'image_to_image'
-								? t('app.image_to_image.generate')
-								: t('app.gen.generate')}{gpuEstimateLabel != null ? ` ${gpuEstimateLabel}` : ''}
+							<SparklesIcon />
+							{mode === 'image_to_image' ? t('app.image_to_image.generate') : t('app.gen.generate')}
+							{jobCount > 1 ? jobCount : ''}
+							{#if totalEstimateLabel != null}
+								<span class="opacity-75">{totalEstimateLabel}</span>
+							{/if}
+							<kbd
+								class="ms-1 rounded border border-white/30 px-1 font-sans text-[11px] leading-[15px] text-[#dfe6ff]"
+								>{shortcutLabel(['mod', 'enter'])}</kbd
+							>
 						</Button>
-						<div class="border-border flex flex-col gap-2 border-t pt-4">
-							<div class="grid grid-cols-2 gap-2">
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									class="justify-start"
-									disabled={shownPrompt === ''}
-									onclick={insertPrompt}
-								>
-									<ClipboardPasteIcon />
-									{t('app.gen.insert_prompt')}
-								</Button>
-								<Button
-									type="button"
-									variant={shownStarred ? 'secondary' : 'outline'}
-									size="sm"
-									class="justify-start"
-									disabled={shown === null}
-									onclick={starShown}
-								>
-									<StarIcon class={shownStarred ? 'fill-current' : ''} />
-									{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-								</Button>
-								<Button
-									type="button"
-									variant={sourceAssetId !== null ? 'secondary' : 'outline'}
-									size="sm"
-									class="justify-start"
-									disabled={!canEdit}
-									onclick={editShown}
-								>
-									<PencilIcon />
-									{t('app.image_to_image.use_action')}
-								</Button>
-							</div>
-						</div>
-						{#if working > 0}
-							<p class="text-muted-foreground text-sm tabular-nums">
-								<span role="status">{working} {t('app.gen.working_suffix')}</span><span
-									aria-hidden="true"
-									>{runningProgress !== null
-										? ` (${Math.round(runningProgress * 100)}%)`
-										: ''}</span
-								>
-							</p>
-						{/if}
-						{#if errorText !== ''}
-							<p role="alert" class="text-destructive text-sm leading-relaxed">{errorText}</p>
-						{/if}
-					</form>
-				{/if}
-			{:else if upscaleModels.length === 0}
-				<p class="text-muted-foreground text-sm leading-relaxed">
-					{compatibleModelsRegistered ? t('app.models.none_available') : t('app.upscale.no_models')}
-				</p>
-			{:else if !canUpscale}
-				<div class="flex min-h-0 flex-1 flex-col gap-4">
-					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.upscale.need_image')}</p>
-					{#if shown !== null}
-						<Button
-							type="button"
-							variant={shownStarred ? 'secondary' : 'outline'}
-							size="sm"
-							class="w-fit justify-start"
-							onclick={starShown}
-						>
-							<StarIcon class={shownStarred ? 'fill-current' : ''} />
-							{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-						</Button>
-					{/if}
-				</div>
-			{:else}
-				<div class="flex min-h-0 flex-1 flex-col gap-4">
-					<div class="flex flex-col gap-2">
-						<p class="text-sm font-medium leading-none">{t('app.upscale.source')}</p>
-						<p class="text-muted-foreground truncate text-sm">
-							{shownPrompt !== '' ? shownPrompt : t('app.gen.result')}
-						</p>
+						{@render progress()}
 					</div>
-					<div class="flex flex-col gap-2">
-						<Label for="upscale-model">{t('app.gen.upscaler')}</Label>
+				</form>
+			{/if}
+		{:else if upscaleModels.length === 0}
+			<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+				{compatibleModelsRegistered ? t('app.models.none_available') : t('app.upscale.no_models')}
+			</p>
+		{:else if !canUpscale}
+			<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+				{t('app.upscale.need_image')}
+			</p>
+		{:else}
+			<div class="flex min-h-0 flex-1 flex-col">
+				<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
+					<div class="border-border border-b p-4">
+						<p class="text-muted-foreground mb-2 text-xs font-medium">{t('app.upscale.source')}</p>
+						<div class="border-line-strong flex items-center gap-3 rounded-md border p-2.5">
+							{#if upscaleSourceAsset !== null}
+								<img
+									src={upscaleSourceAsset.thumbnail_url ?? upscaleSourceAsset.url}
+									alt=""
+									class="size-12 rounded-md object-cover"
+									width="48"
+									height="48"
+								/>
+							{/if}
+							<p class="text-muted-foreground min-w-0 flex-1 truncate text-[13px]">
+								{shownPrompt !== '' ? shownPrompt : t('app.gen.result')}
+							</p>
+						</div>
+					</div>
+					<div class="border-border border-b p-4">
+						<Label for="upscale-model" class="text-muted-foreground mb-2 text-xs font-medium"
+							>{t('app.gen.upscaler')}</Label
+						>
 						<Select.Root
 							type="single"
 							value={upscaleModelId}
 							onValueChange={(value) => value && onUpscaleModelChange(value)}
 						>
-							<Select.Trigger id="upscale-model" class="w-full font-sans" size="sm">
-								{modelOptionLabel(upscaleModel)}
+							<Select.Trigger
+								id="upscale-model"
+								class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
+							>
+								{@render modelCard(upscaleModel)}
 							</Select.Trigger>
 							<Select.Content>
 								<Select.Group>
@@ -811,235 +1036,294 @@
 							</Select.Content>
 						</Select.Root>
 						{#if upscaleChoiceLabel != null}
-							<p class="text-muted-foreground text-xs leading-relaxed">{upscaleChoiceLabel}</p>
+							<p class="text-dim mt-2 text-xs leading-relaxed tabular-nums">{upscaleChoiceLabel}</p>
 						{/if}
 					</div>
-					<div class="flex flex-col gap-2">
-						<Label id="upscale-factor-label">{t('app.upscale.factor')}</Label>
+					<div class="p-4">
+						<Label id="upscale-factor-label" class="text-muted-foreground mb-2 text-xs font-medium"
+							>{t('app.upscale.factor')}</Label
+						>
 						<ToggleGroup.Root
 							type="single"
 							aria-labelledby="upscale-factor-label"
-							variant="outline"
 							spacing={0}
-							class="flex w-full"
+							class={segmentRootClass}
 							value={String(upscaleFactor)}
 							onValueChange={onUpscaleFactorChange}
 						>
-							<ToggleGroup.Item value="2" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
+							<ToggleGroup.Item value="2" class={segmentItemClass}>
 								{t('app.gen.upscale_x2')}
 							</ToggleGroup.Item>
-							<ToggleGroup.Item value="4" class={`min-w-0 flex-1 text-xs ${toggleOnClass}`}>
+							<ToggleGroup.Item value="4" class={segmentItemClass}>
 								{t('app.gen.upscale_x4')}
 							</ToggleGroup.Item>
 						</ToggleGroup.Root>
 					</div>
+				</div>
+				<div class="border-border border-t p-4">
 					<Button
 						type="button"
-						class="tabular-nums"
+						variant="brand"
+						class="h-9 w-full tabular-nums"
 						disabled={submitLock.busy || !canUpscale}
 						onclick={upscaleShown}
 					>
-						<ScanLineIcon />
+						<Maximize2Icon />
 						{t('app.gen.upscale')}{upscaleEstimateLabel != null ? ` ${upscaleEstimateLabel}` : ''}
 					</Button>
-					<div class="border-border flex flex-col gap-2 border-t pt-4">
-						<Button
+					{@render progress()}
+				</div>
+			</div>
+		{/if}
+	</aside>
+
+	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
+	<section class="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={t('app.gen.result')}>
+		<div
+			class="border-border flex min-h-[50px] flex-wrap items-center gap-2 border-b px-4 py-2 lg:flex-nowrap"
+		>
+			{#if shown !== null && lineage !== null}
+				<div
+					class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+					role="group"
+					aria-label={t('app.lineage.ancestors')}
+				>
+					{#each lineage.ancestors as entry (entry.asset_id)}
+						<button
 							type="button"
-							variant={shownStarred ? 'secondary' : 'outline'}
-							size="sm"
-							class="w-fit justify-start"
-							disabled={shown === null}
-							onclick={starShown}
+							class="text-muted-foreground hover:text-foreground hover:bg-hover flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+							disabled={entry.job_id === null}
+							title={lineageActionLabel(entry.action)}
+							onclick={() => selectLineage(entry)}
 						>
-							<StarIcon class={shownStarred ? 'fill-current' : ''} />
-							{shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-						</Button>
+							{#if entry.thumbnail_url !== null}
+								<img
+									src={entry.thumbnail_url}
+									alt=""
+									class="size-8 rounded object-cover"
+									width="32"
+									height="32"
+									loading="lazy"
+								/>
+							{:else}
+								<span
+									class="border-line-strong text-dim grid size-8 place-items-center rounded border border-dashed text-[9px]"
+									>?</span
+								>
+							{/if}
+							<span class="truncate">{lineageActionLabel(entry.action)}</span>
+						</button>
+						<ChevronRightIcon class="text-dim size-3 shrink-0" aria-hidden="true" />
+					{/each}
+					<div
+						class="text-foreground flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs"
+						aria-current="true"
+					>
+						{#if shownThumbnail !== null}
+							<img
+								src={shownThumbnail}
+								alt=""
+								class="ring-brand size-8 rounded object-cover ring-1"
+								width="32"
+								height="32"
+								loading="lazy"
+							/>
+						{/if}
+						<span class="truncate">
+							{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
+							{shownFactor != null ? ` ×${shownFactor}` : ''}
+						</span>
 					</div>
-					{#if working > 0}
-						<p class="text-muted-foreground text-sm tabular-nums">
-							<span role="status">{working} {t('app.gen.working_suffix')}</span><span
-								aria-hidden="true"
-								>{runningProgress !== null ? ` (${Math.round(runningProgress * 100)}%)` : ''}</span
-							>
-						</p>
-					{/if}
-					{#if errorText !== ''}
-						<p role="alert" class="text-destructive text-sm leading-relaxed">{errorText}</p>
+				</div>
+			{:else}
+				<div class="flex-1"></div>
+			{/if}
+			{#if shown !== null}
+				<div class="flex shrink-0 items-center gap-1.5">
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-sm"
+						class={'hit-slop relative [--hit-slop-x:3px] ' +
+							(shownStarred ? 'text-status-warning' : 'text-muted-foreground')}
+						aria-pressed={shownStarred}
+						aria-label={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+						title={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+						onclick={starShown}
+					>
+						<StarIcon class={shownStarred ? 'fill-current' : ''} />
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						aria-pressed={sourceAssetId !== null && mode === 'image_to_image'}
+						disabled={!canEdit}
+						onclick={editShown}
+					>
+						<LayersIcon />
+						{t('app.gen.use_as_source')}
+					</Button>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						disabled={shown.assets.length === 0 ||
+							shown.state !== 'succeeded' ||
+							mode === 'upscale'}
+						onclick={() => openService('upscale')}
+					>
+						<Maximize2Icon />
+						{t('app.gen.upscale')}
+					</Button>
+					{#if shown.assets.length > 0}
+						<Button href={shown.assets[0].download_url} variant="outline" size="sm">
+							<DownloadIcon />
+							{t('app.gen.download')}
+						</Button>
 					{/if}
 				</div>
 			{/if}
-		</Card.Content>
-	</Card.Root>
+		</div>
 
-	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the grid track -->
-	<div class="flex min-h-0 min-w-0 flex-col gap-3">
-		<Card.Root class="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto lg:overflow-hidden">
-			<Card.Content class="flex min-h-0 flex-1 flex-col gap-2 p-4">
-				{#if shown !== null}
-					{#if lineage !== null}
-						<div class="shrink-0">
-							<p class="text-muted-foreground mb-1 text-[0.65rem] font-medium uppercase">
-								{t('app.lineage.ancestors')}
-							</p>
-							<div
-								class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
-								role="group"
-								aria-label={t('app.lineage.ancestors')}
-							>
-								{#each lineage.ancestors as entry (entry.asset_id)}
-									<button
-										type="button"
-										class="border-border bg-muted/30 hover:bg-muted focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem] disabled:cursor-default"
-										disabled={entry.job_id === null}
-										title={lineageActionLabel(entry.action)}
-										onclick={() => selectLineage(entry)}
-									>
-										{#if entry.thumbnail_url !== null}
-											<img
-												src={entry.thumbnail_url}
-												alt={lineageActionLabel(entry.action)}
-												class="size-12 rounded object-cover"
-												width="48"
-												height="48"
-												loading="lazy"
-											/>
-										{:else}
-											<span
-												class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
-											>
-												{t('app.lineage.missing')}
-											</span>
-										{/if}
-										<span class="w-full truncate">{lineageActionLabel(entry.action)}</span>
-									</button>
-									<ChevronRightIcon class="text-muted-foreground size-3 shrink-0" />
-								{/each}
-								<div
-									class="border-primary bg-primary/10 flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
-									aria-current="true"
-								>
-									{#if shownThumbnail !== null}
-										<img
-											src={shownThumbnail}
-											alt={shown.params.prompt ?? t('app.gen.result')}
-											class="size-12 rounded object-cover"
-											width="48"
-											height="48"
-											loading="lazy"
-										/>
-									{:else}
-										<span
-											class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
-										>
-											{t('app.lineage.missing')}
-										</span>
-									{/if}
-									<span class="w-full truncate">
-										{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
-									</span>
-								</div>
-							</div>
-						</div>
-					{/if}
+		<div class="flex min-h-0 flex-1 flex-col lg:flex-row">
+			{#if shown !== null}
+				<div class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10">
 					{#if shown.assets.length > 0}
-						<div class="relative min-h-64 flex-1 lg:min-h-0">
-							<a
-								href={shown.assets[0].url}
-								target="_blank"
-								rel="noopener"
-								class="block h-full"
-								title={t('app.gen.open_full')}
-							>
+						{@const asset = shown.assets[0]}
+						<!-- The thumbnail, blurred, holds the frame while the full image
+						     loads, in the same grid cell so both take the same box. -->
+						<a
+							href={asset.url}
+							target="_blank"
+							rel="noopener"
+							class="reveal-stack grid h-full max-h-full w-full grid-cols-1 grid-rows-[minmax(0,1fr)]"
+							title={t('app.gen.open_full')}
+						>
+							{#if asset.thumbnail_url !== null && asset.thumbnail_url !== asset.url}
 								<img
-									src={shown.assets[0].url}
-									alt={shown.params.prompt ?? t('app.gen.result')}
-									class="h-full w-full rounded-lg object-contain"
-									width={shown.assets[0].width}
-									height={shown.assets[0].height}
+									src={asset.thumbnail_url}
+									alt=""
+									aria-hidden="true"
+									class="img-placeholder col-start-1 row-start-1 mx-auto h-full max-h-full w-auto max-w-full rounded-[10px] object-contain"
+									width={asset.width}
+									height={asset.height}
 								/>
-							</a>
-							<Button
-								href={shown.assets[0].download_url}
-								variant="secondary"
-								size="sm"
-								class="absolute top-2 right-2"
-							>
-								<DownloadIcon />
-								{t('app.gen.download')}
-							</Button>
-						</div>
+							{/if}
+							<img
+								src={asset.url}
+								alt={shown.params.prompt ?? t('app.gen.result')}
+								class="img-reveal col-start-1 row-start-1 mx-auto h-full max-h-full w-auto max-w-full rounded-[10px] object-contain"
+								width={asset.width}
+								height={asset.height}
+								{@attach revealOnLoad(asset.url)}
+							/>
+						</a>
 					{:else}
 						<div
-							class="border-border text-muted-foreground grid min-h-64 flex-1 place-items-center rounded-lg border border-dashed text-sm lg:min-h-0"
+							class="border-line-strong text-muted-foreground grid h-full min-h-64 w-full place-items-center rounded-[10px] border border-dashed text-[13px]"
 						>
 							{t('app.lineage.missing')}
 						</div>
 					{/if}
-					<p class="text-muted-foreground min-w-0 truncate text-center text-xs tabular-nums">
-						{#if shown.params.prompt}
-							{shown.params.prompt}
-						{:else}
-							{shown.model_id}{shownFactor != null ? ` | x${shownFactor}` : ''}
-							{#if shown.assets.length > 0}
-								| {shown.assets[0].width}x{shown.assets[0].height}
-							{/if}
-						{/if}
-						{#if shown.gpu_ms != null}
-							<span class="text-foreground/70">
-								| {t('app.gen.gpu_time')} {formatMs(shown.gpu_ms)}</span
-							>
-						{/if}
-					</p>
-					{#if lineage !== null}
-						<div class="shrink-0">
-							<p class="text-muted-foreground mb-1 text-[0.65rem] font-medium uppercase">
-								{t('app.lineage.derivatives')}
-							</p>
-							{#if lineage.children.length > 0}
-								<div class="no-scrollbar flex min-w-0 gap-2 overflow-x-auto">
-									{#each lineage.children as entry (entry.asset_id)}
-										<button
-											type="button"
-											class="border-border bg-muted/30 hover:bg-muted focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none flex w-20 shrink-0 flex-col items-center gap-1 rounded-md border p-1 text-[0.6rem]"
-											title={lineageActionLabel(entry.action)}
-											onclick={() => selectLineage(entry)}
-										>
-											{#if entry.thumbnail_url !== null}
-												<img
-													src={entry.thumbnail_url}
-													alt={lineageActionLabel(entry.action)}
-													class="size-12 rounded object-cover"
-													width="48"
-													height="48"
-													loading="lazy"
-												/>
-											{:else}
-												<span
-													class="border-border text-muted-foreground grid size-12 place-items-center rounded border border-dashed px-1 text-center leading-tight"
-												>
-													{t('app.lineage.missing')}
-												</span>
-											{/if}
-											<span class="w-full truncate">{lineageActionLabel(entry.action)}</span>
-										</button>
-									{/each}
-								</div>
-							{:else}
-								<p class="text-muted-foreground text-xs">{t('app.lineage.no_derivatives')}</p>
-							{/if}
+				</div>
+				<dl
+					class="border-border flex shrink-0 flex-col gap-3.5 border-t px-6 py-5 text-[13px] lg:w-[260px] lg:justify-center lg:border-t-0 lg:ps-0"
+				>
+					{#if shownPrompt !== ''}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.gen.prompt')}</dt>
+							<dd class="mt-0.5 break-words">{shownPrompt}</dd>
 						</div>
 					{/if}
-				{:else}
-					<div
-						class="text-foreground/55 grid h-full place-items-center px-6 text-center font-sans text-xs tracking-[0.14em] uppercase"
-					>
-						{t('app.gen.result_hint')}
+					<div>
+						<dt class="text-dim text-[11.5px]">{t('app.gen.model')}</dt>
+						<dd class="mt-0.5">{shownModel?.name ?? shown.model_id}</dd>
 					</div>
-				{/if}
-			</Card.Content>
-		</Card.Root>
-		<div class="min-w-0 shrink-0">
+					{#if shownSize !== null}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.gen.size')}</dt>
+							<dd class="mt-0.5 tabular-nums">{shownSize}</dd>
+						</div>
+					{/if}
+					{#if shownSeed !== null}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.gen.seed')}</dt>
+							<dd class="mt-0.5 font-mono">{shownSeed}</dd>
+						</div>
+					{/if}
+					{#if shownSteps !== null || shownGuidance !== null}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.gen.steps')} · {t('app.gen.guidance')}</dt>
+							<dd class="mt-0.5 tabular-nums">
+								{shownSteps ?? '-'} · {shownGuidance ?? '-'}
+							</dd>
+						</div>
+					{/if}
+					{#if shown.gpu_ms != null}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.gen.gpu_time')}</dt>
+							<dd class="mt-0.5 tabular-nums">{formatMs(shown.gpu_ms)}</dd>
+						</div>
+					{/if}
+					{#if lineage !== null}
+						<div>
+							<dt class="text-dim text-[11.5px]">{t('app.lineage.derivatives')}</dt>
+							<dd class="mt-1">
+								{#if lineage.children.length > 0}
+									<div class="flex flex-wrap gap-1.5">
+										{#each lineage.children as entry (entry.asset_id)}
+											<button
+												type="button"
+												class="ring-line-strong hover:ring-foreground rounded ring-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												title={lineageActionLabel(entry.action)}
+												onclick={() => selectLineage(entry)}
+											>
+												{#if entry.thumbnail_url !== null}
+													<img
+														src={entry.thumbnail_url}
+														alt={lineageActionLabel(entry.action)}
+														class="size-10 rounded object-cover"
+														width="40"
+														height="40"
+														loading="lazy"
+													/>
+												{:else}
+													<span class="text-dim grid size-10 place-items-center text-[9px]"
+														>{lineageActionLabel(entry.action)}</span
+													>
+												{/if}
+											</button>
+										{/each}
+									</div>
+								{:else}
+									<span>{t('app.lineage.no_derivatives')}</span>
+								{/if}
+							</dd>
+						</div>
+					{/if}
+				</dl>
+			{:else if !studio.historyLoaded}
+				<div
+					role="status"
+					class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10"
+				>
+					<span class="sr-only">{t('app.gen.history_loading')}</span>
+					<Skeleton
+						class="aspect-square h-full max-h-full max-w-full rounded-[10px]"
+						aria-hidden="true"
+					/>
+				</div>
+			{:else}
+				<div
+					class="text-dim grid min-h-72 flex-1 place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
+				>
+					{t('app.gen.result_hint')}
+				</div>
+			{/if}
+		</div>
+		<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
 			<HistoryStrip />
 		</div>
-	</div>
+	</section>
 </div>

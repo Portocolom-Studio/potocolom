@@ -5,6 +5,11 @@
 @import '@fontsource/lato/latin-400.css';
 @import '@fontsource/lato/latin-700.css';
 @import '@fontsource/lato/latin-900.css';
+@import '@fontsource/geist/latin-400.css';
+@import '@fontsource/geist/latin-500.css';
+@import '@fontsource/geist/latin-600.css';
+@import '@fontsource/geist-mono/latin-400.css';
+@import '@fontsource/geist-mono/latin-500.css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -44,6 +49,7 @@
 	--status-success: #27a35a;
 	--status-error: #d95f58;
 	--status-running: #45b8d4;
+	--status-warning: #d9a03a;
 	--status-neutral: #7a7f8c;
 	--sidebar: oklch(0.17 0.02 268);
 	--sidebar-foreground: oklch(0.985 0.002 265);
@@ -58,7 +64,82 @@
 	color-scheme: dark;
 }
 
-@theme inline {
+/* The signed-in studio (/app) runs its own neutral system: Geist type, grey
+   surfaces, solid hairlines, 6px controls and 10px cards. It is scoped to the
+   document while the studio shell is mounted, so portalled menus, tooltips and
+   dialogs pick it up too, and the landing and sign-in pages keep the tokens
+   above. Brand blue is reserved for the actions that spend GPU time. */
+:root:has([data-studio-shell]) {
+	--radius: 0.375rem;
+	--radius-sm: 0.25rem;
+	--radius-md: 0.375rem;
+	--radius-lg: 0.375rem;
+	--radius-xl: 0.625rem;
+	--radius-2xl: 0.625rem;
+	--radius-3xl: 0.625rem;
+	--radius-4xl: 0.375rem;
+	--font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+	--text-sm: 0.8125rem;
+	--text-sm--line-height: 1.5;
+	--background: #0a0a0a;
+	--foreground: #ededed;
+	--card: #0f0f0f;
+	--card-foreground: #ededed;
+	--popover: #161616;
+	--popover-foreground: #ededed;
+	--primary: #ededed;
+	--primary-foreground: #0a0a0a;
+	--secondary: #161616;
+	--secondary-foreground: #ededed;
+	--muted: #161616;
+	--muted-foreground: #a1a1a1;
+	--accent: #1f1f1f;
+	--accent-foreground: #ededed;
+	--destructive: #f85149;
+	--border: #1f1f1f;
+	--input: #2e2e2e;
+	--ring: #6e96f8;
+	--panel: #0f0f0f;
+	--raised: #161616;
+	--hover: #1f1f1f;
+	--line-strong: #2e2e2e;
+	--dim: #707070;
+	--field: #0b0b0b;
+	--brand: #3a64f0;
+	--brand-foreground: #ffffff;
+	--brand-soft: rgb(58 100 240 / 14%);
+	--chart-1: #3a64f0;
+	--chart-2: #8a8a8a;
+	--chart-3: #2fb5a3;
+	--chart-4: #a371f7;
+	--chart-5: #e26d9a;
+	--chart-6: #b08d57;
+	--status-success: #3fb950;
+	--status-error: #f85149;
+	--status-running: #4493f8;
+	--status-warning: #d29922;
+	--status-neutral: #707070;
+	--sidebar: #0f0f0f;
+	--sidebar-foreground: #a1a1a1;
+	--sidebar-primary: #ededed;
+	--sidebar-primary-foreground: #0a0a0a;
+	--sidebar-accent: #1f1f1f;
+	--sidebar-accent-foreground: #ededed;
+	--sidebar-border: #1f1f1f;
+	--sidebar-ring: #6e96f8;
+}
+
+:root:has([data-studio-shell]) body {
+	font-size: 0.8125rem;
+	line-height: 1.5;
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'ss01';
+}
+
+/* Not inline: utilities read these through var(), so the studio scope above
+   can swap the face and the radius scale without touching other pages. */
+@theme {
 	--font-sans: 'Lato', sans-serif;
 	--radius-sm: calc(var(--radius) - 4px);
 	--radius-md: calc(var(--radius) - 2px);
@@ -67,6 +148,23 @@
 	--radius-2xl: calc(var(--radius) * 1.8);
 	--radius-3xl: calc(var(--radius) * 2.2);
 	--radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@theme inline {
+	--color-panel: var(--panel);
+	--color-raised: var(--raised);
+	--color-hover: var(--hover);
+	--color-line-strong: var(--line-strong);
+	--color-dim: var(--dim);
+	--color-field: var(--field);
+	--color-brand: var(--brand);
+	--color-brand-foreground: var(--brand-foreground);
+	--color-brand-soft: var(--brand-soft);
+	--color-status-success: var(--status-success);
+	--color-status-error: var(--status-error);
+	--color-status-running: var(--status-running);
+	--color-status-warning: var(--status-warning);
+	--color-status-neutral: var(--status-neutral);
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
 	--color-card: var(--card);
@@ -125,12 +223,184 @@
 		font-variant-numeric: tabular-nums;
 	}
 
+	/* Headings balance their lines; body copy avoids a lone last word. Both
+	   are hints a browser without them ignores. */
+	h1,
+	h2,
+	h3,
+	h4,
+	h5,
+	h6 {
+		text-wrap: balance;
+	}
+
+	p,
+	li,
+	dd,
+	blockquote,
+	figcaption {
+		text-wrap: pretty;
+	}
+
 	::selection {
 		@apply bg-primary/40;
 	}
 }
 
+/* Studio pieces shared across views: outlined status tags with a dot and
+   keyboard hints. */
+@layer components {
+	:where([data-studio-shell]) .tag {
+		display: inline-flex;
+		height: 20px;
+		align-items: center;
+		gap: 6px;
+		border: 1px solid var(--line-strong);
+		border-radius: 999px;
+		padding: 0 7px;
+		color: var(--muted-foreground);
+		font-size: 11.5px;
+		font-weight: 500;
+		line-height: 1;
+		white-space: nowrap;
+	}
+	:where([data-studio-shell]) :is(.tag-success, .tag-info, .tag-warning, .tag-danger) {
+		&::before {
+			content: '';
+			width: 6px;
+			height: 6px;
+			flex: none;
+			border-radius: 999px;
+			background: currentColor;
+		}
+	}
+	:where([data-studio-shell]) .tag-success {
+		border-color: rgb(63 185 80 / 30%);
+		color: var(--status-success);
+	}
+	:where([data-studio-shell]) .tag-info {
+		border-color: rgb(68 147 248 / 30%);
+		color: var(--status-running);
+	}
+	:where([data-studio-shell]) .tag-warning {
+		border-color: rgb(210 153 34 / 30%);
+		color: var(--status-warning);
+	}
+	:where([data-studio-shell]) .tag-danger {
+		border-color: rgb(248 81 73 / 30%);
+		color: var(--status-error);
+	}
+	:where([data-studio-shell]) .kbd {
+		border: 1px solid var(--line-strong);
+		border-bottom-width: 2px;
+		border-radius: 4px;
+		padding: 0 4px;
+		color: var(--dim);
+		font: 500 11px var(--font-sans);
+		line-height: 15px;
+	}
+}
+
+/* Progressive images (see $lib/image-reveal.ts): the full image fades in
+   over its blurred thumbnail, and a grid tile shimmers until its picture
+   arrives. Without motion the swap is immediate and nothing shimmers. */
+@layer components {
+	.img-reveal {
+		opacity: 0;
+		transition: opacity 320ms ease-out;
+	}
+	.img-reveal[data-loaded] {
+		opacity: 1;
+	}
+	.img-placeholder {
+		filter: blur(14px) saturate(1.1);
+		/* The blur bleeds past the box; keep it inside the rounded frame. */
+		clip-path: inset(0 round var(--placeholder-radius, 10px));
+		transition: visibility 0s linear 320ms;
+	}
+	.reveal-stack:has(> .img-reveal[data-loaded]) > .img-placeholder {
+		visibility: hidden;
+	}
+	.shimmer {
+		background: linear-gradient(100deg, var(--raised) 30%, var(--hover) 50%, var(--raised) 70%)
+			var(--raised);
+		background-size: 300% 100%;
+		animation: shimmer 1.6s linear infinite;
+	}
+	.shimmer:has(> img[data-loaded]) {
+		animation: none;
+		background: none;
+	}
+	@keyframes shimmer {
+		from {
+			background-position: 100% 0;
+		}
+		to {
+			background-position: 0 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.img-reveal,
+		.img-placeholder {
+			transition: none;
+		}
+		.shimmer {
+			animation: none;
+		}
+	}
+}
+
+/* Continuous corners where the browser draws them: studio cards, buttons
+   and fields, and the landing page's pill buttons, keep their radius but
+   take a squircle curve. Nothing changes where corner-shape is unknown,
+   and nothing else picks it up. */
+@supports (corner-shape: squircle) {
+	:where([data-studio-shell])
+		:is(
+			[data-slot='card'],
+			.bg-card,
+			[data-slot='button'],
+			.rail-button,
+			.icon-button,
+			[data-slot='input'],
+			[data-slot='select-trigger'],
+			textarea
+		),
+	.landing-surface .pill,
+	footer .cta {
+		corner-shape: squircle;
+	}
+}
+
+/* View transitions (see $lib/view-transition.ts): a short crossfade for
+   studio view changes and the canvas layout switch. The script skips them
+   under reduced motion; this stops any that start anyway. */
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation-duration: 180ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	::view-transition-group(*),
+	::view-transition-old(*),
+	::view-transition-new(*) {
+		animation: none !important;
+	}
+}
+
 @layer utilities {
+	/* A small control's pointer target grows to at least 40px square around
+	   it without changing what it draws. --hit-slop-x and --hit-slop-y cap how
+	   far it reaches on each side, for controls closer than that to their
+	   neighbours: half the gap keeps two targets from overlapping. The control
+	   must be positioned (relative or absolute) for the area to sit on it. */
+	.hit-slop::after {
+		content: '';
+		position: absolute;
+		inset-inline: max(calc(var(--hit-slop-x, 40px) * -1), min(0px, calc((100% - 40px) / 2)));
+		inset-block: max(calc(var(--hit-slop-y, 40px) * -1), min(0px, calc((100% - 40px) / 2)));
+	}
+
 	.no-scrollbar {
 		-ms-overflow-style: none;
 		scrollbar-width: none;

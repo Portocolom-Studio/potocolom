@@ -5,7 +5,11 @@ declare global {
 		// interface Error {}
 		// interface Locals {}
 		// interface PageData {}
-		// interface PageState {}
+		interface PageState {
+			/** The transient studio UI open on this history entry; Back closes it
+			 * (see $lib/overlay-history.ts). */
+			studioOverlay?: 'inspector' | 'command' | 'sidebar';
+		}
 		// interface Platform {}
 	}
 }

@@ -31,7 +31,7 @@
 	const chartHeight = $derived(rows.length * 56 + 48);
 </script>
 
-<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
+<Card.Root data-benchmark-chart="bars" class="overflow-hidden p-0 [--card-spacing:0]">
 	<Card.Header class="border-border border-b px-5 py-4">
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
@@ -73,7 +73,7 @@
 					}
 				]}
 				props={{
-					bars: { motion: 'tween', 'stroke-width': 0 },
+					bars: { motion: 'none', 'stroke-width': 0 },
 					xAxis: { format: (v: number) => formatMs(v) },
 					yAxis: {
 						format: (label: string) => (label.length > 14 ? `${label.slice(0, 13)}…` : label)

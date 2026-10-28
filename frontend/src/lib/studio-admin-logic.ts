@@ -1,6 +1,7 @@
 import { account } from './account.svelte';
-import { parseAccount, type Role } from './account-display';
-import { apiFetch } from './api';
+import { type Role } from './account-display';
+import { probeAccount } from './account-probe';
+import { activateViewOwner, viewOwnerEpoch } from './studio.svelte';
 
 export type AuditFilters = {
 	actor_user_id: string;
@@ -79,14 +80,32 @@ export function isRecentAuthenticationRequired(detail: unknown): boolean {
 // its account.current (and the openViewFor fallback that watches it from
 // +page.svelte) catches up with the account's current role.
 export async function recheckAdminAccess(): Promise<void> {
-	try {
-		const response = await apiFetch('/api/v1/account');
-		// Only a 401 means signed out; a passing server error must not sign an
-		// administrator out of the studio.
-		if (response.ok) account.current = parseAccount(await response.json());
-		else if (response.status === 401) account.current = null;
-	} catch {
-		// Best effort: a failed recheck leaves the stale account in place,
-		// and the next privileged action retries it.
+	const epoch = viewOwnerEpoch();
+	const result = await probeAccount();
+	if (epoch !== viewOwnerEpoch() || result.kind === 'failed') return;
+	if (result.kind === 'signed_out') {
+		account.current = null;
+		account.ownerId = null;
+		account.localModeConfirmed = false;
+		activateViewOwner(null, null);
+		return;
 	}
+	let current: typeof account.current = null;
+	let ownerId: string | null = null;
+	let localModeConfirmed = false;
+	if (result.kind === 'account') {
+		current = result.current;
+		ownerId = result.ownerId;
+	} else if (result.kind === 'unknown') {
+		current = result.current;
+	} else if (result.kind === 'local') {
+		localModeConfirmed = true;
+	}
+	account.current = current;
+	account.ownerId = ownerId;
+	account.localModeConfirmed = localModeConfirmed;
+	activateViewOwner(
+		ownerId ? { kind: 'account', id: ownerId } : localModeConfirmed ? { kind: 'local' } : null,
+		current?.role ?? null
+	);
 }

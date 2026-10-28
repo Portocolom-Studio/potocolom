@@ -16,6 +16,16 @@ export function parseAccount(body: unknown): { email: string; role: Role } | nul
 	return { email, role: role as Role };
 }
 
+/** Return a stable account identity without changing display/role validation. */
+export function accountOwnerId(body: unknown): string | null {
+	if (typeof body !== 'object' || body === null) return null;
+	const id = (body as { id?: unknown }).id;
+	return typeof id === 'string' &&
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+		? id.toLowerCase()
+		: null;
+}
+
 export function accountInitial(email: string): string {
 	return email.trim().charAt(0).toUpperCase();
 }

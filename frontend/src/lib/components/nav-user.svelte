@@ -1,12 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import BadgeCheckIcon from '@lucide/svelte/icons/badge-check';
-	import BellIcon from '@lucide/svelte/icons/bell';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
-	import CreditCardIcon from '@lucide/svelte/icons/credit-card';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
-	import SparklesIcon from '@lucide/svelte/icons/sparkles';
+	import UserIcon from '@lucide/svelte/icons/user';
 
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -15,9 +12,12 @@
 	import { accountInitial, accountRoleLabelKey } from '$lib/account-display';
 	import { account as accountState, type Account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
-	import { openAccount } from '$lib/studio.svelte';
+	import { activateViewOwner, openAccount } from '$lib/studio.svelte';
 
-	let { account }: { account: Account } = $props();
+	let {
+		account,
+		navigate = (run) => run()
+	}: { account: Account; navigate?: (run: () => unknown) => unknown } = $props();
 
 	const sidebar = Sidebar.useSidebar();
 	const initial = $derived(accountInitial(account.email));
@@ -40,7 +40,12 @@
 			logOutFailed = true;
 			return;
 		}
-		await goto(resolve('/login'));
+		// The next account to sign in in this tab must not see this one's data.
+		activateViewOwner(null, null);
+		accountState.current = null;
+		accountState.ownerId = null;
+		accountState.localModeConfirmed = false;
+		await navigate(() => goto(resolve('/login')));
 	}
 </script>
 
@@ -49,65 +54,55 @@
 		<DropdownMenu.Root>
 			<DropdownMenu.Trigger>
 				{#snippet child({ props })}
-					<Sidebar.MenuButton size="lg" class="data-[state=open]:text-foreground" {...props}>
-						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
+					<Sidebar.MenuButton
+						size="lg"
+						class="data-[state=open]:bg-sidebar-accent h-12 gap-2.5 px-1.5 group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-0.5!"
+						tooltipContent={account.email}
+						{...props}
+					>
+						<Avatar.Root class="size-7 rounded-full">
+							<Avatar.Fallback
+								class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-[#333] ring-inset"
 								>{initial}</Avatar.Fallback
 							>
 						</Avatar.Root>
-						<div class="grid flex-1 text-start text-sm leading-tight">
-							<span class="truncate font-medium">{account.email}</span>
-							<span class="truncate text-xs">{roleLabel}</span>
+						<div class="grid flex-1 text-start leading-tight">
+							<span class="text-foreground truncate text-[12.5px] font-medium">{account.email}</span
+							>
+							<span class="text-dim truncate text-[11px]">{roleLabel}</span>
 						</div>
-						<ChevronsUpDownIcon class="ms-auto size-4" />
+						<ChevronsUpDownIcon class="text-dim ms-auto size-3.5" />
 					</Sidebar.MenuButton>
 				{/snippet}
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Content
-				class="w-(--bits-dropdown-menu-anchor-width) min-w-56 rounded-lg"
+				class="w-(--bits-dropdown-menu-anchor-width) min-w-56"
 				side={sidebar.isMobile ? 'bottom' : 'right'}
 				align="end"
-				sideOffset={4}
+				sideOffset={8}
 			>
 				<DropdownMenu.Label class="p-0 font-normal">
-					<div class="flex items-center gap-2 px-1 py-1.5 text-start text-sm">
-						<Avatar.Root class="size-8 rounded-lg">
-							<Avatar.Fallback class="rounded-lg border border-border bg-transparent"
+					<div class="flex items-center gap-2 px-1 py-1.5 text-start">
+						<Avatar.Root class="size-7 rounded-full">
+							<Avatar.Fallback
+								class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-[#333] ring-inset"
 								>{initial}</Avatar.Fallback
 							>
 						</Avatar.Root>
-						<div class="grid flex-1 text-start text-sm leading-tight">
-							<span class="truncate font-medium">{account.email}</span>
-							<span class="truncate text-xs">{roleLabel}</span>
+						<div class="grid flex-1 text-start leading-tight">
+							<span class="truncate text-[13px] font-medium">{account.email}</span>
+							<span class="text-dim truncate text-xs">{roleLabel}</span>
 						</div>
 					</div>
 				</DropdownMenu.Label>
 				<DropdownMenu.Separator />
-				<DropdownMenu.Group>
-					<DropdownMenu.Item>
-						<SparklesIcon />
-						{t('app.shell.upgrade_pro')}
+				{#if accountState.current}
+					<!-- Hidden without a signed-in account: AUTH_MODE=none has none to open. -->
+					<DropdownMenu.Item onclick={() => navigate(openAccount)}>
+						<UserIcon />
+						{t('app.shell.account')}
 					</DropdownMenu.Item>
-				</DropdownMenu.Group>
-				<DropdownMenu.Separator />
-				<DropdownMenu.Group>
-					{#if accountState.current}
-						<!-- Hidden without a signed-in account: AUTH_MODE=none has none to open. -->
-						<DropdownMenu.Item onclick={openAccount}>
-							<BadgeCheckIcon />
-							{t('app.shell.account')}
-						</DropdownMenu.Item>
-					{/if}
-					<DropdownMenu.Item>
-						<CreditCardIcon />
-						{t('app.shell.billing')}
-					</DropdownMenu.Item>
-					<DropdownMenu.Item>
-						<BellIcon />
-						{t('app.shell.notifications')}
-					</DropdownMenu.Item>
-				</DropdownMenu.Group>
-				<DropdownMenu.Separator />
+				{/if}
 				<DropdownMenu.Item onclick={logOut}>
 					<LogOutIcon />
 					{t('app.shell.log_out')}

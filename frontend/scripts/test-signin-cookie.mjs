@@ -138,6 +138,65 @@ function waitForUnsafeRequest(page, url) {
 	});
 }
 
+async function signIn(page, email) {
+	await page.waitForSelector('#login-email');
+	await page.waitForFunction(() => !document.activeViewTransition, { timeout: 2000 });
+	await page.$eval('#login-email', (input) => {
+		input.value = '';
+	});
+	await page.type('#login-email', email);
+	await page.$eval('#login-password', (input) => {
+		input.value = '';
+	});
+	await page.type('#login-password', PASSWORD);
+	await page.click('button[type="submit"]');
+	await page.waitForFunction(() => location.pathname === '/app', { timeout: WAIT_MS });
+	await page.waitForFunction(() => document.querySelector('[data-studio-shell]'), {
+		timeout: WAIT_MS
+	});
+}
+
+async function signOut(page, email) {
+	await page.evaluate((selectedEmail) => {
+		const button = [...document.querySelectorAll('button')].find((item) =>
+			item.textContent?.includes(selectedEmail)
+		);
+		if (!button) throw new Error('account menu button not found');
+		button.click();
+	}, email);
+	await page.waitForSelector('[role="menuitem"]');
+	await page.evaluate(() => {
+		const item = [...document.querySelectorAll('[role="menuitem"]')].find(
+			(entry) => entry.textContent?.trim() === 'Log out'
+		);
+		if (!item) throw new Error('Log out menu item not found');
+		item.click();
+	});
+	await page.waitForFunction(() => location.pathname === '/login', { timeout: WAIT_MS });
+}
+
+async function clickButtonText(page, label) {
+	await page.evaluate((selectedLabel) => {
+		const button = [...document.querySelectorAll('button')].find(
+			(item) => item.textContent?.trim() === selectedLabel
+		);
+		if (!button) throw new Error(`button not found: ${selectedLabel}`);
+		button.click();
+	}, label);
+}
+
+async function accountId(page) {
+	const account = await page.evaluate(async () => {
+		const response = await fetch('/api/v1/account', { credentials: 'include' });
+		return response.ok ? response.json() : null;
+	});
+	assert.match(
+		account?.id ?? '',
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+	);
+	return account.id.toLowerCase();
+}
+
 async function stopApi(api) {
 	// An API that already exited is done; there is no 'exit' left to wait for.
 	if (!api || api.exitCode !== null) return;
@@ -214,6 +273,9 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 		try {
 			const page = await browser.newPage();
 			page.setDefaultTimeout(WAIT_MS);
+			await page.evaluateOnNewDocument(() => {
+				window.__signinDocumentMarker = crypto.randomUUID();
+			});
 			const client = await page.createCDPSession();
 			// The claim set cookies on node's fetch, not on this browser, but
 			// the browser starts signed out regardless: clear the store anyway.
@@ -239,15 +301,138 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 			assert.ok(sessionCookie.value, 'the session cookie must not be empty');
 			assert.ok(csrfCookie.value, 'the CSRF cookie must not be empty');
 
+			const documentMarker = await page.evaluate(() => window.__signinDocumentMarker);
+			const ownerA = await accountId(page);
+			const invitation = await page.evaluate(async (email) => {
+				const token = document.cookie.match(/(?:^|;\s*)potocolom_csrf=([^;]*)/)?.[1];
+				const response = await fetch('/api/v1/invitations', {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json', 'x-csrf-token': token ?? '' },
+					body: JSON.stringify({ email, role: 'user' })
+				});
+				return { status: response.status, body: await response.json() };
+			}, 'member@example.com');
+			assert.equal(invitation.status, 201, 'account A can create a real account B invitation');
+			const invitationToken = invitation.body.token;
+			assert.ok(invitationToken);
+			const imageSelection = '550e8400-e29b-41d4-a716-446655440002';
+			await page.evaluate(
+				({ ownerId, selectedId }) => {
+					localStorage.setItem(
+						`potocolom-view-v1:account-${ownerId}:metrics`,
+						JSON.stringify({
+							version: 1,
+							section: 'metrics',
+							value: {
+								tab: 'benchmarks',
+								usageRange: '24h',
+								mineRange: '7d',
+								selectedSessionId: '2026-10-27T12:00:00Z'
+							}
+						})
+					);
+					localStorage.setItem(
+						`potocolom-view-v1:account-${ownerId}:images`,
+						JSON.stringify({
+							version: 1,
+							section: 'images',
+							value: {
+								mode: 'grid',
+								filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+								action: 'all',
+								search: 'owner-a-only',
+								starredOnly: false,
+								gridAnchor: null,
+								gridSelectionId: selectedId,
+								lineageSelection: null
+							}
+						})
+					);
+				},
+				{ ownerId: ownerA, selectedId: imageSelection }
+			);
+
+			await signOut(page, EMAIL);
+			await page.evaluate((token) => {
+				const link = document.createElement('a');
+				link.href = `/join#${token}`;
+				document.body.append(link);
+				link.click();
+				link.remove();
+			}, invitationToken);
+			await page.waitForSelector('#join-password');
+			await page.type('#join-password', PASSWORD);
+			await page.type('#join-confirm', PASSWORD);
+			await page.click('button[type="submit"]');
+			await page.waitForFunction(() => location.pathname === '/app', { timeout: WAIT_MS });
+			const ownerB = await accountId(page);
+			assert.notEqual(ownerB, ownerA, 'the second sign-in must have a different account UUID');
+			assert.equal(
+				await page.evaluate(() => window.__signinDocumentMarker),
+				documentMarker,
+				'account changes stay in the same SPA document'
+			);
+			const bImagePrefs = await page.evaluate((ownerId) => {
+				const raw = localStorage.getItem(`potocolom-view-v1:account-${ownerId}:images`);
+				return raw === null ? null : JSON.parse(raw);
+			}, ownerB);
+			assert.ok(bImagePrefs === null || bImagePrefs.value.search !== 'owner-a-only');
+			await clickButtonText(page, 'Images');
+			await page.waitForSelector('input[aria-label="Search prompts"]');
+			assert.equal(
+				await page.$eval('input[aria-label="Search prompts"]', (input) => input.value),
+				'',
+				'account B starts with its own empty Images search'
+			);
+			assert.equal(
+				await page.evaluate(
+					async () => (await fetch('/api/v1/users', { credentials: 'include' })).status
+				),
+				403,
+				'the role check still refuses account B an admin endpoint'
+			);
+
+			await signOut(page, 'member@example.com');
+			await signIn(page, EMAIL);
+			assert.equal(await accountId(page), ownerA, 'the original account UUID returns');
+			assert.equal(
+				await page.evaluate(() => window.__signinDocumentMarker),
+				documentMarker,
+				'returning to account A does not reload the browser document'
+			);
+			await clickButtonText(page, 'Images');
+			await page.waitForSelector('input[aria-label="Search prompts"]');
+			await page.waitForFunction(
+				() => document.querySelector('input[aria-label="Search prompts"]')?.value === 'owner-a-only'
+			);
+			assert.equal(
+				await page.$eval('input[aria-label="Search prompts"]', (input) => input.value),
+				'owner-a-only'
+			);
+			await clickButtonText(page, 'Metrics');
+			await page.waitForFunction(
+				() => new URL(location.href).searchParams.get('view') === 'metrics'
+			);
+			assert.equal(
+				new URL(page.url()).searchParams.get('tab'),
+				'benchmarks',
+				'account A restores its allowed Metrics tab'
+			);
+
 			const resetRequest = waitForUnsafeRequest(page, '/api/v1/auth/reset');
 			await page.goto(`${publicUrl}/reset`, { waitUntil: 'networkidle0' });
 			await page.waitForSelector('#reset-email');
 			await page.type('#reset-email', EMAIL);
+			const currentCsrfCookie = await page.evaluate(
+				() => document.cookie.match(/(?:^|;\s*)potocolom_csrf=([^;]*)/)?.[1] ?? null
+			);
+			assert.ok(currentCsrfCookie, 'the active account must have a readable CSRF cookie');
 			await page.click('button[type="submit"]');
 			const request = await resetRequest;
 			const sent = request.headers()['x-csrf-token'];
 			assert.ok(sent, 'the shipped apiFetch must send x-csrf-token');
-			assert.equal(sent, csrfCookie.value, 'x-csrf-token must match the CSRF cookie');
+			assert.ok(sent === currentCsrfCookie, 'x-csrf-token must match the active CSRF cookie');
 		} finally {
 			await browser.close();
 		}

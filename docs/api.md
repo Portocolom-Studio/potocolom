@@ -51,6 +51,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
 | GET `/api/v1/generations` | implemented (#16) | generation history: jobs with nested opaque asset-ID URLs, cursor paging |
+| GET `/api/v1/generations/models` | implemented | model IDs and names used by the current user's saved images, including historical models |
 | GET `/api/v1/generations/{id}/events` | implemented (#16) | server-sent-events stream of job progress (polling the job endpoint is the fallback) |
 | POST, DELETE `/api/v1/generations/{id}/star` | implemented (#124) | idempotently star or unstar an owned generation |
 | GET `/api/v1/generations/{id}/lineage` | implemented (#129) | ancestry, direct derivatives and subtree size of an owned generation |
@@ -243,6 +244,40 @@ GET /api/v1/generations      generation history: a list of jobs, each with its n
                              whitespace q is unfiltered. ?fields=ids returns {"ids": [...]} with the
                              same WHERE, cap 5000, so the canvas can overlay matches without
                              relayout. Cursors must also match q.
+                             Repeat ?model_id= to select one or more models. The model values
+                             combine with OR. Other filters combine with AND.
+                             ?created_from= is inclusive; ?created_before= is exclusive.
+                             Both accept ISO 8601 timestamps with a timezone. A timestamp
+                             without a timezone, or from >= before, answers 422.
+                             ?action=generate|image_to_image|upscale selects the image action.
+                             Generate has no source asset. Upscale has a source asset and
+                             a model with the upscale capability. Image-to-image has a
+                             source asset and a model without that capability.
+                             With roots_only=true, model, date and size filters keep a root if
+                             the root or any descendant matches. Subtree responses keep
+                             related images for context. When state is supplied, the
+                             matching descendant must also have that state. Every ancestor
+                             hop stays within the same owner's jobs and assets. Cursors
+                             must match all active filters.
+                             Repeat ?size=512|768|1k|2k|4k|above_4k|unknown to filter by
+                             common longest-side size class. Selected sizes combine with
+                             OR, then AND with every other filter. Unknown values are 422.
+                             Owned master assets determine max(width,height); thumbnail
+                             files never count. Positive dimensions classify as:
+                             512: [1,640), 768: [640,896), 1k: [896,1536),
+                             2k: [1536,3072), 4k: [3072,6144), above_4k: [6144,infinity).
+                             Thus 1920 px is 2k and 3840 px UHD is 4k. Unknown means no
+                             owned master has both positive width and height. Expired
+                             stored masters retain their size. Any matching master admits
+                             its job. Size constraints also apply to fields=ids, cursor
+                             membership and matching-descendant root selection.
+                             The Images view sends state=succeeded for its grid, roots
+                             and search IDs. Failed or pending jobs cannot fill an image page.
+
+GET /api/v1/generations/models   {"models": [{"id": "z-image-turbo", "name": "Z-Image Turbo"}, ...]}
+                                  Sorted model IDs and names used by the current user's jobs
+                                  with saved assets. Includes historical and benchmark-only
+                                  models. Does not change the normal /api/v1/models list.
 
 GET /api/v1/generations/{id}/events   server-sent events: progress ticks until a terminal state
 

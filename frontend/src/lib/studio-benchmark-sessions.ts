@@ -14,6 +14,66 @@ export type BenchmarkSession = {
 	report: BenchmarkReport | null;
 };
 
+export const BENCHMARK_REPORT_CACHE_LIMIT = 4;
+
+/** Keep the active report and a few recent reports in the tab-local cache. */
+export function retainBenchmarkReports(
+	sessions: readonly BenchmarkSession[],
+	selectedSessionId: string | null,
+	limit = BENCHMARK_REPORT_CACHE_LIMIT
+): BenchmarkSession[] {
+	const boundedLimit = Math.max(0, Math.floor(limit));
+	const reports = sessions.filter((session) => session.report !== null);
+	const retained = new Set<string>();
+	if (
+		boundedLimit > 0 &&
+		selectedSessionId &&
+		reports.some((session) => session.id === selectedSessionId)
+	) {
+		retained.add(selectedSessionId);
+	}
+	const recent = [...reports].sort((left, right) => {
+		const leftAt = Date.parse(left.createdAt);
+		const rightAt = Date.parse(right.createdAt);
+		if (Number.isFinite(leftAt) && Number.isFinite(rightAt)) return rightAt - leftAt;
+		if (Number.isFinite(leftAt)) return -1;
+		if (Number.isFinite(rightAt)) return 1;
+		return 0;
+	});
+	for (const session of recent) {
+		if (retained.size >= boundedLimit) break;
+		retained.add(session.id);
+	}
+	return sessions.map((session) =>
+		session.report !== null && !retained.has(session.id) ? { ...session, report: null } : session
+	);
+}
+
+/** Merge a refreshed list without dropping reports already loaded in this tab. */
+export function mergeBenchmarkSessions(
+	loaded: readonly BenchmarkSession[],
+	previous: readonly BenchmarkSession[],
+	selectedSessionId: string | null
+): { sessions: BenchmarkSession[]; selectedSessionId: string | null } {
+	const previousReports = new Map(
+		previous
+			.filter((session) => session.report !== null)
+			.map((session) => [session.id, session.report])
+	);
+	const sessions = loaded.map((session) => ({
+		...session,
+		report: session.report ?? previousReports.get(session.id) ?? null
+	}));
+	const nextSelectedId =
+		selectedSessionId && sessions.some((session) => session.id === selectedSessionId)
+			? selectedSessionId
+			: (sessions[0]?.id ?? null);
+	return {
+		sessions: retainBenchmarkReports(sessions, nextSelectedId),
+		selectedSessionId: nextSelectedId
+	};
+}
+
 function sessionLabel(createdAt: string): string {
 	const date = new Date(createdAt);
 	if (Number.isNaN(date.getTime())) return createdAt;
@@ -26,10 +86,15 @@ function sessionLabel(createdAt: string): string {
 	});
 }
 
-export async function loadBenchmarkSessions(allowApi = true): Promise<BenchmarkSession[]> {
+export async function loadBenchmarkSessions(
+	allowApi = true,
+	signal?: AbortSignal,
+	options: { fallbackToStaticOnApiFailure?: boolean } = {}
+): Promise<BenchmarkSession[]> {
+	if (signal?.aborted) return [];
 	if (!landing && allowApi) {
 		try {
-			const response = await fetch('/api/v1/benchmark/sessions');
+			const response = await fetch('/api/v1/benchmark/sessions', { signal });
 			if (response.ok) {
 				const summaries = (await response.json()) as { id: string; created_at: string }[];
 				// An install that has never ingested a run still ships the committed
@@ -43,11 +108,15 @@ export async function loadBenchmarkSessions(allowApi = true): Promise<BenchmarkS
 					}));
 				}
 			}
+			if (!response.ok && options.fallbackToStaticOnApiFailure === false) return [];
 		} catch {
+			if (signal?.aborted) return [];
+			if (options.fallbackToStaticOnApiFailure === false) return [];
 			// An install without a reachable API still has the committed report.
 		}
 	}
-	const response = await fetch('/benchmark/results.json');
+	if (signal?.aborted) return [];
+	const response = await fetch('/benchmark/results.json', { signal });
 	if (!response.ok) return [];
 	let report: BenchmarkReport;
 	try {
@@ -72,12 +141,15 @@ export async function loadBenchmarkSessions(allowApi = true): Promise<BenchmarkS
 	];
 }
 
-export async function loadBenchmarkSessionReport(id: string): Promise<BenchmarkReport | null> {
+export async function loadBenchmarkSessionReport(
+	id: string,
+	signal?: AbortSignal
+): Promise<BenchmarkReport | null> {
 	// Same guard as the listing above: this module ships in the marketing bundle
 	// too, where there is no API to answer.
 	if (landing) return null;
 	try {
-		const response = await fetch(`/api/v1/benchmark/sessions/${id}`);
+		const response = await fetch(`/api/v1/benchmark/sessions/${id}`, { signal });
 		if (!response.ok) return null;
 		return (await response.json()) as BenchmarkReport;
 	} catch {

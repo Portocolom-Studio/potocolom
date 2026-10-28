@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LineageForest, type LineageNodeData, type LineageTree } from './lineage-forest.ts';
+import {
+	LineageForest,
+	resetLineageForestSessionCache,
+	type LineageNodeData,
+	type LineageTree
+} from './lineage-forest.ts';
 import { layoutLineageTree } from './lineage-layout.ts';
 import type { Generation, GenerationSubtree } from './studio.svelte.ts';
 
@@ -73,6 +78,77 @@ function fallback(root: Generation) {
 		children: []
 	});
 }
+
+test('owner reset fences late forests from the next session cache', async () => {
+	const root = {
+		...generation('550e8400-e29b-41d4-a716-446655440000', '550e8400-e29b-41d4-a716-446655440001'),
+		has_derivatives: true
+	};
+	let firstResolve!: (value: GenerationSubtree) => void;
+	let secondResolve!: (value: GenerationSubtree) => void;
+	let thirdResolve!: (value: GenerationSubtree) => void;
+	const first = new Promise<GenerationSubtree>((resolve) => {
+		firstResolve = resolve;
+	});
+	const second = new Promise<GenerationSubtree>((resolve) => {
+		secondResolve = resolve;
+	});
+	const third = new Promise<GenerationSubtree>((resolve) => {
+		thirdResolve = resolve;
+	});
+	let secondCalls = 0;
+	let thirdCalls = 0;
+	const oldForest = new LineageForest({
+		fetchSubtree: () => first,
+		initialHistory: [root],
+		history: () => [root],
+		onTreesChanged: () => {},
+		onRootLoaded: () => {},
+		onArrived: () => {}
+	});
+	oldForest.ensureVisible(root, fallback(root));
+	resetLineageForestSessionCache();
+	const newForest = new LineageForest({
+		fetchSubtree: () => {
+			secondCalls += 1;
+			return second;
+		},
+		initialHistory: [root],
+		history: () => [root],
+		onTreesChanged: () => {},
+		onRootLoaded: () => {},
+		onArrived: () => {}
+	});
+	newForest.ensureVisible(root, fallback(root));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(secondCalls, 1);
+	firstResolve(subtree(root));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(newForest.trees.get(root.id)?.status, 'loading');
+	const thirdForest = new LineageForest({
+		fetchSubtree: () => {
+			thirdCalls += 1;
+			return third;
+		},
+		initialHistory: [root],
+		history: () => [root],
+		onTreesChanged: () => {},
+		onRootLoaded: () => {},
+		onArrived: () => {}
+	});
+	thirdForest.ensureVisible(root, fallback(root));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(thirdCalls, 1);
+	secondResolve(subtree(root));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(newForest.trees.get(root.id)?.status, 'loaded');
+	thirdResolve(subtree(root));
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(thirdForest.trees.get(root.id)?.status, 'loaded');
+	thirdForest.stop();
+	newForest.stop();
+	oldForest.stop();
+});
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;

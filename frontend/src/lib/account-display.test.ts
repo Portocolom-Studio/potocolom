@@ -5,6 +5,7 @@ import {
 	accountInitial,
 	accountRoleLabelKey,
 	openViewFor,
+	accountOwnerId,
 	parseAccount,
 	sectionNeeds,
 	type GatedSection
@@ -35,6 +36,26 @@ test('parseAccount keeps a well-formed account and refuses anything else', () =>
 	assert.equal(parseAccount({ email: '', role: 'admin' }), null);
 	assert.equal(parseAccount({ email: 'a@example.com', role: 'member' }), null);
 	assert.equal(parseAccount({ email: 'a@example.com', role: 'toString' }), null);
+	assert.equal(
+		parseAccount({
+			email: 'a@example.com',
+			role: 'unknown',
+			id: '550e8400-e29b-41d4-a716-446655440000'
+		}),
+		null
+	);
+});
+
+test('accountOwnerId accepts only a UUID and does not change role parsing', () => {
+	const body = {
+		email: 'a@example.com',
+		role: 'viewer',
+		id: '550e8400-e29b-41d4-a716-446655440000'
+	};
+	assert.equal(accountOwnerId(body), body.id);
+	assert.equal(parseAccount({ ...body, id: 'malformed' })?.role, 'viewer');
+	assert.equal(accountOwnerId({ ...body, id: 'malformed' }), null);
+	assert.equal(accountOwnerId(null), null);
 });
 
 test('sectionNeeds marks user-only sections for a viewer only', () => {

@@ -9,9 +9,10 @@
 		recheckAdminAccess
 	} from '$lib/studio-admin-logic';
 	import { formatDateTime, t } from '$lib/i18n.svelte';
+	import SearchIcon from '@lucide/svelte/icons/search';
 	import { Button } from '$lib/components/ui/button';
-	import * as Card from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { accountInitial } from '$lib/account-display';
 	import { Dialog } from 'bits-ui';
 	import type { Role } from '$lib/account-display';
 	import type { Generation } from '$lib/studio.svelte';
@@ -104,6 +105,13 @@
 		if (state === 'deletion_pending') return 'app.admin.state_deletion_pending';
 		if (state === 'purging') return 'app.admin.state_purging';
 		return 'app.admin.state_active';
+	}
+
+	function stateTone(state: AdminUser['state']): string {
+		if (state === 'active') return 'tag-success';
+		if (state === 'suspended') return 'tag-warning';
+		if (state === 'deletion_pending' || state === 'purging') return 'tag-danger';
+		return '';
 	}
 
 	async function apiError(response: Response): Promise<string> {
@@ -293,62 +301,104 @@
 	});
 </script>
 
-<div class="grid min-h-0 gap-4 xl:grid-cols-[minmax(18rem,0.85fr)_minmax(0,1.65fr)]">
-	<Card.Root class="min-h-0 overflow-hidden p-0 [--card-spacing:0]">
-		<Card.Header class="border-border border-b px-4 py-3">
-			<div class="flex items-center justify-between gap-3">
-				<div>
-					<Card.Title class="text-base">{t('app.admin.users_title')}</Card.Title>
-					<Card.Description>{t('app.admin.users_sub')}</Card.Description>
-				</div>
-				<span data-testid="admin-user-count" class="text-muted-foreground text-xs tabular-nums">
-					{t('app.admin.users_count').replace('{count}', String(users.length))}
-				</span>
-			</div>
-			<Input
-				type="search"
-				name="q"
-				autocomplete="off"
-				spellcheck={false}
-				data-testid="admin-user-search"
-				class="mt-3"
-				aria-label={t('app.admin.search_users')}
-				placeholder={t('app.admin.search_users')}
-				bind:value={searchQuery}
-			/>
-		</Card.Header>
-		<Card.Content class="max-h-[55svh] overflow-auto p-0 xl:max-h-none xl:h-full">
+<div class="flex h-full min-h-0 flex-col overflow-y-auto xl:flex-row xl:overflow-hidden">
+	<section class="flex min-h-0 min-w-0 flex-1 flex-col gap-3 p-4 md:p-5 xl:overflow-y-auto">
+		<h2 class="sr-only">{t('app.admin.users_title')}</h2>
+		<div class="flex flex-wrap items-center gap-3">
+			<label
+				class="bg-field border-line-strong focus-within:ring-ring/60 flex h-8 w-full max-w-[300px] items-center gap-2 rounded-md border px-2.5 focus-within:ring-2"
+			>
+				<SearchIcon class="text-dim size-3.5 shrink-0" aria-hidden="true" />
+				<input
+					type="search"
+					name="q"
+					autocomplete="off"
+					spellcheck={false}
+					data-testid="admin-user-search"
+					class="placeholder:text-dim min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+					aria-label={t('app.admin.search_users')}
+					placeholder={t('app.admin.search_users')}
+					bind:value={searchQuery}
+				/>
+			</label>
+			<span class="flex-1"></span>
+			<span data-testid="admin-user-count" class="text-dim text-xs tabular-nums">
+				{t('app.admin.users_count').replace('{count}', String(users.length))}
+			</span>
+		</div>
+		<div class="bg-card border-border overflow-x-auto rounded-[10px] border">
 			{#if usersLoading}
-				<p role="status" class="text-muted-foreground p-4 text-sm">
-					{t('app.admin.loading_users')}
-				</p>
-			{:else if usersError}
-				<p role="alert" class="text-destructive p-4 text-sm">{usersError}</p>
-			{:else if users.length === 0}
-				<p class="text-muted-foreground p-4 text-sm">{t('app.admin.users_empty')}</p>
-			{:else}
-				<div class="divide-border divide-y">
-					{#each users as user (user.id)}
-						<button
-							type="button"
-							data-testid="admin-user-row"
-							class="hover:bg-muted/60 flex w-full flex-col items-start gap-1 px-4 py-3 text-left transition-colors"
-							class:bg-muted={selectedId === user.id}
-							aria-pressed={selectedId === user.id}
-							onclick={() => selectUser(user.id)}
-						>
-							<span class="max-w-full truncate text-sm font-medium">{user.email}</span>
-							<span class="text-muted-foreground flex flex-wrap gap-x-2 text-xs">
-								<span>{t(roleLabelKey(user.role))}</span>
-								<span>{t(stateLabelKey(user.state))}</span>
-							</span>
-						</button>
-					{/each}
+				<div role="status">
+					<span class="sr-only">{t('app.admin.loading_users')}</span>
+					<div class="min-w-[560px]" aria-hidden="true">
+						<div class="border-border flex h-[34px] items-center gap-6 border-b px-3">
+							<Skeleton class="h-2.5 w-16 rounded" />
+							<Skeleton class="h-2.5 w-10 rounded" />
+							<Skeleton class="h-2.5 w-10 rounded" />
+						</div>
+						{#each [0, 1, 2, 3, 4, 5] as index (index)}
+							<div class="border-border flex h-11 items-center gap-2.5 px-3 not-first:border-t">
+								<Skeleton class="size-6 rounded-md" />
+								<Skeleton class="h-3 w-48 rounded" />
+								<span class="flex-1"></span>
+								<Skeleton class="h-5 w-16 rounded-full" />
+								<Skeleton class="h-3 w-24 rounded" />
+							</div>
+						{/each}
+					</div>
 				</div>
+			{:else if usersError}
+				<p role="alert" class="text-destructive p-4 text-[13px]">{usersError}</p>
+			{:else if users.length === 0}
+				<p class="text-muted-foreground p-4 text-[13px]">{t('app.admin.users_empty')}</p>
+			{:else}
+				<table class="w-full min-w-[560px] border-collapse text-[12.5px]">
+					<thead>
+						<tr class="text-muted-foreground border-border border-b text-xs">
+							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.col_account')}</th>
+							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.role')}</th>
+							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.state')}</th>
+							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.generations')}</th>
+							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.created')}</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each users as user (user.id)}
+							<tr
+								class={'border-border border-b last:border-b-0 ' +
+									(selectedId === user.id ? 'bg-[#141414]' : 'hover:bg-[#121212]')}
+							>
+								<td class="h-11 px-3">
+									<button
+										type="button"
+										data-testid="admin-user-row"
+										class="flex max-w-full items-center gap-2.5 rounded text-start outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										aria-pressed={selectedId === user.id}
+										onclick={() => selectUser(user.id)}
+									>
+										<span
+											class="ring-line-strong bg-raised grid size-6 shrink-0 place-items-center rounded-md text-[11px] font-medium ring-1 ring-inset"
+											aria-hidden="true">{accountInitial(user.email)}</span
+										>
+										<span class="truncate">{user.email}</span>
+									</button>
+								</td>
+								<td class="text-muted-foreground px-3">{t(roleLabelKey(user.role))}</td>
+								<td class="px-3">
+									<span class={'tag ' + stateTone(user.state)}>{t(stateLabelKey(user.state))}</span>
+								</td>
+								<td class="px-3 tabular-nums">{user.generations ?? '-'}</td>
+								<td class="text-muted-foreground px-3 whitespace-nowrap"
+									>{formatDateTime(user.created_at)}</td
+								>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
 				{#if nextCursor !== null}
-					<div class="p-3">
+					<div class="border-border border-t px-3 py-2.5">
 						<Button
-							variant="outline"
+							variant="ghost"
 							size="sm"
 							data-testid="admin-users-load-more"
 							disabled={loadingMore}
@@ -357,79 +407,108 @@
 							{loadingMore ? t('app.admin.loading_users') : t('app.admin.load_more')}
 						</Button>
 						{#if loadMoreError}
-							<p role="alert" class="text-destructive mt-2 text-sm">{loadMoreError}</p>
+							<p role="alert" class="text-destructive mt-2 text-[13px]">{loadMoreError}</p>
 						{/if}
 					</div>
 				{/if}
 			{/if}
-		</Card.Content>
-	</Card.Root>
+		</div>
+	</section>
 
-	<Card.Root class="min-h-0 overflow-auto p-0 [--card-spacing:0]">
+	<aside
+		class="bg-panel border-border min-h-0 shrink-0 border-t xl:w-[360px] xl:overflow-y-auto xl:border-t-0 xl:border-s"
+		aria-label={t('app.admin.user_detail')}
+	>
 		{#if detailLoading && !detail}
-			<p role="status" class="text-muted-foreground p-5 text-sm">
-				{t('app.admin.loading_user')}
-			</p>
-		{:else if detailError && !detail}
-			<p role="alert" class="text-destructive p-5 text-sm">{detailError}</p>
-		{:else if detail}
-			<Card.Header class="border-border border-b px-5 py-4">
-				<Card.Title class="break-all text-lg">{detail.email}</Card.Title>
-				<Card.Description>
-					{t('app.admin.created')}: {formatDateTime(detail.created_at)}
-				</Card.Description>
-			</Card.Header>
-			<Card.Content class="flex flex-col gap-5 p-5">
-				<div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-					<div class="bg-muted/50 rounded-lg p-3">
-						<p class="text-muted-foreground text-xs">{t('app.admin.role')}</p>
-						<p class="mt-1 text-sm font-medium">{t(roleLabelKey(detail.role))}</p>
+			<div role="status">
+				<span class="sr-only">{t('app.admin.loading_user')}</span>
+				<div aria-hidden="true">
+					<div class="border-border flex items-center gap-3 border-b px-4 py-4">
+						<Skeleton class="size-10 rounded-lg" />
+						<div class="flex flex-1 flex-col gap-2">
+							<Skeleton class="h-3 w-40 rounded" />
+							<Skeleton class="h-2.5 w-28 rounded" />
+						</div>
 					</div>
-					<div class="bg-muted/50 rounded-lg p-3">
-						<p class="text-muted-foreground text-xs">{t('app.admin.state')}</p>
-						<p class="mt-1 text-sm font-medium">{t(stateLabelKey(detail.state))}</p>
-					</div>
-					<div class="bg-muted/50 rounded-lg p-3">
-						<p class="text-muted-foreground text-xs">{t('app.admin.generations')}</p>
-						<p class="mt-1 text-sm font-medium tabular-nums">{detail.generations ?? 0}</p>
-					</div>
-					<div class="bg-muted/50 rounded-lg p-3">
-						<p class="text-muted-foreground text-xs">{t('app.admin.assets')}</p>
-						<p class="mt-1 text-sm font-medium tabular-nums">{detail.assets ?? 0}</p>
+					<div class="flex flex-col gap-3 p-4">
+						{#each [0, 1, 2] as index (index)}
+							<Skeleton class="h-9 w-full rounded-md" />
+						{/each}
 					</div>
 				</div>
+			</div>
+		{:else if detailError && !detail}
+			<p role="alert" class="text-destructive p-5 text-[13px]">{detailError}</p>
+		{:else if detail}
+			<div class="border-border flex items-center gap-3 border-b px-4 py-4">
+				<span
+					class="ring-line-strong bg-raised grid size-10 shrink-0 place-items-center rounded-lg text-base font-medium ring-1 ring-inset"
+					aria-hidden="true">{accountInitial(detail.email)}</span
+				>
+				<div class="min-w-0">
+					<h2 class="truncate text-[13px] font-semibold">{detail.email}</h2>
+					<p class="text-dim text-[11.5px]">
+						{t('app.admin.created')}: {formatDateTime(detail.created_at)}{detail.mail_verified
+							? ` · ${t('app.admin.verified')}`
+							: ''}
+					</p>
+				</div>
+			</div>
+			<dl class="border-border grid grid-cols-2 border-b">
+				<div class="border-border border-e px-4 py-3">
+					<dt class="text-dim text-[11px]">{t('app.admin.generations')}</dt>
+					<dd class="mt-0.5 text-sm tabular-nums">{detail.generations ?? 0}</dd>
+				</div>
+				<div class="px-4 py-3">
+					<dt class="text-dim text-[11px]">{t('app.admin.assets')}</dt>
+					<dd class="mt-0.5 text-sm tabular-nums">{detail.assets ?? 0}</dd>
+				</div>
+			</dl>
 
-				<div class="flex flex-wrap items-end gap-3">
-					<label class="flex min-w-40 flex-col gap-1 text-xs font-medium">
-						{t('app.admin.change_role')}
-						<select
-							class="border-input bg-background h-9 rounded-md border px-2 text-sm"
-							bind:value={selectedRole}
-						>
-							<option value="admin">{t('app.admin.role_admin')}</option>
-							<option value="user">{t('app.admin.role_user')}</option>
-							<option value="viewer">{t('app.admin.role_viewer')}</option>
-						</select>
-					</label>
-					<Button
-						variant="outline"
-						disabled={selectedRole === detail.role || actionSubmitting}
-						onclick={requestRoleChange}
+			<div class="border-border flex flex-col gap-4 border-b px-4 py-4">
+				<div>
+					<p id="admin-role-label" class="mb-2 text-xs font-semibold">{t('app.admin.role')}</p>
+					<div
+						class="bg-field border-line-strong flex gap-0.5 rounded-[7px] border p-0.5"
+						role="group"
+						aria-labelledby="admin-role-label"
 					>
-						{t('app.admin.change_role_action')}
-					</Button>
+						{#each ['viewer', 'user', 'admin'] as const as role (role)}
+							<button
+								type="button"
+								aria-pressed={selectedRole === role}
+								class={'h-[30px] flex-1 rounded-[5px] text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+									(selectedRole === role
+										? 'bg-hover text-foreground ring-line-strong ring-1 ring-inset'
+										: 'text-muted-foreground hover:text-foreground')}
+								onclick={() => (selectedRole = role)}>{t(roleLabelKey(role))}</button
+							>
+						{/each}
+					</div>
+					{#if selectedRole !== detail.role}
+						<Button
+							variant="outline"
+							size="sm"
+							class="mt-2"
+							disabled={actionSubmitting}
+							onclick={requestRoleChange}
+						>
+							{t('app.admin.change_role_action')}
+						</Button>
+					{/if}
+				</div>
+				<div>
 					{#if detail.state === 'purging'}
-						<div class="flex min-w-44 flex-col gap-1 text-xs font-medium">
-							<span>{t('app.admin.change_state')}</span>
-							<span class="text-muted-foreground h-9 content-center text-sm font-normal">
-								{t('app.admin.state_purging')}
-							</span>
-						</div>
+						<p class="mb-2 text-xs font-semibold">{t('app.admin.change_state')}</p>
+						<span class="tag tag-danger">{t('app.admin.state_purging')}</span>
 					{:else}
-						<label class="flex min-w-44 flex-col gap-1 text-xs font-medium">
-							{t('app.admin.change_state')}
+						<label for="admin-state" class="mb-2 block text-xs font-semibold"
+							>{t('app.admin.state')}</label
+						>
+						<div class="flex gap-2">
 							<select
-								class="border-input bg-background h-9 rounded-md border px-2 text-sm"
+								id="admin-state"
+								class="bg-field border-line-strong focus-visible:ring-ring/60 h-8 min-w-0 flex-1 rounded-md border px-2 text-[13px] outline-none focus-visible:ring-2"
 								bind:value={selectedState}
 							>
 								<option value="active">{t('app.admin.state_active')}</option>
@@ -437,75 +516,72 @@
 								<option value="disabled">{t('app.admin.state_disabled')}</option>
 								<option value="deletion_pending">{t('app.admin.state_deletion_pending')}</option>
 							</select>
-						</label>
-						<Button
-							variant="outline"
-							disabled={selectedState === detail.state || actionSubmitting}
-							onclick={requestStateChange}
-						>
-							{t('app.admin.change_state_action')}
-						</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={selectedState === detail.state || actionSubmitting}
+								onclick={requestStateChange}
+							>
+								{t('app.admin.change_state_action')}
+							</Button>
+						</div>
 					{/if}
 					{#if detail.state === 'deletion_pending'}
 						<Button
 							variant="outline"
-							class="border-primary/40"
+							size="sm"
+							class="mt-2"
 							disabled={actionSubmitting}
 							onclick={() => detail && requestAction(detail, { kind: 'restore' })}
 						>
 							{t('app.admin.restore')}
 						</Button>
 					{/if}
+					<p class="text-dim mt-2 text-[11.5px]">{t('app.admin.changes_audited')}</p>
 				</div>
-
 				{#if detailError}
-					<p role="alert" class="text-destructive text-sm">{detailError}</p>
+					<p role="alert" class="text-destructive text-[13px]">{detailError}</p>
 				{/if}
+			</div>
 
-				<section class="flex flex-col gap-2">
-					<div class="flex items-center justify-between gap-3">
-						<h2 class="text-sm font-semibold">{t('app.admin.recent_generations')}</h2>
-						<span
-							data-testid="admin-generation-count"
-							class="text-muted-foreground text-xs tabular-nums"
-						>
-							{generations.length}
-						</span>
+			<section class="flex flex-col gap-2.5 px-4 py-4">
+				<div class="flex items-center justify-between gap-3">
+					<h2 class="text-xs font-semibold">{t('app.admin.recent_generations')}</h2>
+					<span data-testid="admin-generation-count" class="text-dim text-xs tabular-nums">
+						{generations.length}
+					</span>
+				</div>
+				{#if generations.length === 0}
+					<p class="text-muted-foreground text-[13px]">{t('app.admin.generations_empty')}</p>
+				{:else}
+					<div class="grid grid-cols-4 gap-1.5">
+						{#each generations as generation (generation.id)}
+							{#if generation.assets.length > 0}
+								<img
+									src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
+									alt={generation.params.prompt ?? t('app.admin.untitled_generation')}
+									title={generation.params.prompt ?? generation.model_id}
+									class="ring-line-strong aspect-square w-full rounded-md object-cover ring-1"
+									width="80"
+									height="80"
+									loading="lazy"
+								/>
+							{/if}
+						{/each}
 					</div>
-					{#if generations.length === 0}
-						<p class="text-muted-foreground text-sm">{t('app.admin.generations_empty')}</p>
-					{:else}
-						<div class="no-scrollbar flex gap-2 overflow-x-auto pb-1">
-							{#each generations as generation (generation.id)}
-								{#if generation.assets.length > 0}
-									<img
-										src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
-										alt={generation.params.prompt ?? t('app.admin.untitled_generation')}
-										title={generation.params.prompt ?? generation.model_id}
-										class="border-border h-24 w-24 shrink-0 rounded-lg border object-cover"
-										width="96"
-										height="96"
-										loading="lazy"
-									/>
-								{/if}
-							{/each}
-						</div>
-					{/if}
-				</section>
-			</Card.Content>
+				{/if}
+			</section>
 		{:else}
-			<Card.Content class="p-5">
-				<p class="text-muted-foreground text-sm">{t('app.admin.select_user')}</p>
-			</Card.Content>
+			<p class="text-muted-foreground p-5 text-[13px]">{t('app.admin.select_user')}</p>
 		{/if}
-	</Card.Root>
+	</aside>
 </div>
 
 <Dialog.Root bind:open={confirmationOpen}>
 	<Dialog.Portal>
-		<Dialog.Overlay class="bg-background/80 fixed inset-0 z-50 backdrop-blur-sm" />
+		<Dialog.Overlay class="fixed inset-0 z-50 bg-black/60" />
 		<Dialog.Content
-			class="bg-popover text-popover-foreground fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-lg border p-6 shadow-lg"
+			class="bg-popover text-popover-foreground border-line-strong fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border p-6 shadow-[0_12px_40px_rgba(0,0,0,0.45)]"
 		>
 			<Dialog.Title class="text-lg font-semibold">{t('app.admin.confirmation_title')}</Dialog.Title>
 			<Dialog.Description class="text-muted-foreground mt-2 text-sm">

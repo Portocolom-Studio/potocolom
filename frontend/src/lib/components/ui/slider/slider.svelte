@@ -37,7 +37,7 @@ get along, so we shut typescript up by casting `value` to `never`.
 	data-slot="slider"
 	{orientation}
 	class={cn(
-		'data-vertical:min-h-40 relative flex w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col',
+		'data-vertical:min-h-40 relative flex h-4 w-full touch-none items-center select-none data-disabled:opacity-50 data-vertical:h-full data-vertical:w-auto data-vertical:flex-col',
 		className
 	)}
 	{...restProps}
@@ -47,12 +47,12 @@ get along, so we shut typescript up by casting `value` to `never`.
 			data-slot="slider-track"
 			data-orientation={orientation}
 			class={cn(
-				'bg-muted rounded-4xl data-horizontal:h-3 data-horizontal:w-full data-vertical:h-full data-vertical:w-3 bg-muted relative grow overflow-hidden data-horizontal:w-full data-vertical:h-full'
+				'bg-line-strong rounded-full data-horizontal:h-0.5 data-horizontal:w-full data-vertical:h-full data-vertical:w-0.5 relative grow overflow-hidden'
 			)}
 		>
 			<SliderPrimitive.Range
 				data-slot="slider-range"
-				class={cn('bg-primary absolute select-none data-horizontal:h-full data-vertical:w-full')}
+				class={cn('bg-foreground absolute select-none data-horizontal:h-full data-vertical:w-full')}
 			/>
 		</span>
 		{#each thumbItems as thumb (thumb.index)}
@@ -62,7 +62,7 @@ get along, so we shut typescript up by casting `value` to `never`.
 				id={thumbId}
 				aria-labelledby={labelledBy}
 				aria-valuetext={valueText}
-				class="border-primary ring-ring/50 size-4 rounded-4xl border bg-white shadow-sm transition-colors hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden block shrink-0 select-none disabled:pointer-events-none disabled:opacity-50"
+				class="ring-ring/50 hit-slop block size-3 shrink-0 rounded-full bg-white shadow-[0_1px_2px_rgba(0,0,0,0.6)] transition-shadow select-none hover:ring-4 focus-visible:ring-4 focus-visible:outline-hidden disabled:pointer-events-none disabled:opacity-50"
 			/>
 		{/each}
 	{/snippet}

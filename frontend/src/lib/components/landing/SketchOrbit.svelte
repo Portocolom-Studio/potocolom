@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { PUBLIC_WAITLIST_URL } from '$env/static/public';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ForkTerminal from '$lib/components/ForkTerminal.svelte';
 	import PromptMarquee from '$lib/components/PromptMarquee.svelte';
@@ -16,7 +17,6 @@
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import LandingFaq from './LandingFaq.svelte';
-	import LandingWaitlist from './LandingWaitlist.svelte';
 	import LandingLoader, {
 		hasCompletedLandingEntrance,
 		type LandingAsset,
@@ -28,6 +28,9 @@
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const forkUrl = `${repoUrl}/fork`;
+	// The waitlist lives in the sign-in page's second tab; without an endpoint
+	// the cloud half offers the studio preview instead.
+	const waitlistHref = `${resolve('/login')}?tab=waitlist`;
 	const installCommand =
 		'curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | bash';
 	const wall: SalonTile[] = makingImages.map((image) => ({
@@ -382,7 +385,7 @@
 			</div>
 		</section>
 
-		<!-- Particles under the split; waitlist keeps its LatentCanvas field. -->
+		<!-- Particles under the split, then the FAQ. -->
 		<section class="close">
 			<div class="split">
 				<div class="close-field" aria-hidden="true">
@@ -439,12 +442,15 @@
 						<span class="quiet">{t('split.cloud_title')}</span>
 						{t('wl.title')}
 					</h2>
-					<a class="pill pill-accent" href="#waitlist">{t('wl.cta')}</a>
+					{#if PUBLIC_WAITLIST_URL}
+						<a class="pill pill-accent" href={waitlistHref}>{t('wl.cta')}</a>
+					{:else}
+						<a class="pill pill-accent" href={resolve('/app')}>{t('hero.cta_launch')}</a>
+					{/if}
 				</div>
 			</div>
 
 			<LandingFaq />
-			<LandingWaitlist />
 		</section>
 	</main>
 
@@ -453,7 +459,7 @@
 		inert={entrancePhase !== 'ready'}
 		aria-hidden={entrancePhase !== 'ready'}
 	>
-		<SiteFooter />
+		<SiteFooter horizon />
 	</div>
 </div>
 
@@ -1052,7 +1058,7 @@
 		justify-content: flex-start;
 	}
 
-	/* Close: particles stay in the split; waitlist brings its LatentCanvas. */
+	/* Close: particles stay in the split, above the FAQ. */
 	.close {
 		position: relative;
 		isolation: isolate;
@@ -1074,7 +1080,7 @@
 		inset: 0;
 		z-index: 0;
 		pointer-events: none;
-		/* Soft exit so the particle band does not hard-cut into the waitlist. */
+		/* Soft exit so the particle band does not hard-cut into the FAQ. */
 		-webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 100%);
 		mask-image: linear-gradient(to bottom, #000 0%, #000 62%, transparent 100%);
 	}

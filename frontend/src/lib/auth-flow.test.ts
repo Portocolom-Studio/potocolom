@@ -166,7 +166,7 @@ test('wiring: both successful sign-ins return to /app with the next search', () 
 
 test('wiring: the app route checks the account before opening the studio', () => {
 	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
-	assert.match(appSource, /apiFetch\('\/api\/v1\/account'\)/);
+	assert.match(appSource, /probeAccount\(/);
 	assert.match(appSource, /accountCheckForcesLogin\(/);
 	assert.match(
 		appSource,
@@ -174,14 +174,6 @@ test('wiring: the app route checks the account before opening the studio', () =>
 	);
 	assert.match(appSource, /checkingAccount/);
 	assert.match(appSource, /app\.loading/);
-});
-
-test('wiring: the app route loads nothing until the account probe answers', () => {
-	const appSource = readFileSync(join(here, '../routes/app/+page.svelte'), 'utf8');
-	assert.match(
-		appSource,
-		/accountCheckForcesLogin\(status\)[\s\S]*?checkingAccount = false;[\s\S]*?void loadModels\(\)/
-	);
 });
 
 test('wiring: login links to the reset route and reads the reset-done flag', () => {

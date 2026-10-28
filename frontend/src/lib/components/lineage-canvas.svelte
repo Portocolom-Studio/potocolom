@@ -19,9 +19,30 @@
 	import StarIcon from '@lucide/svelte/icons/star';
 	import WandSparklesIcon from '@lucide/svelte/icons/wand-sparkles';
 	import XIcon from '@lucide/svelte/icons/x';
+	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import LayoutGridIcon from '@lucide/svelte/icons/layout-grid';
+	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import { toggleStarWithUndo } from '$lib/studio-toasts';
+	import { revealOnLoad } from '$lib/image-reveal';
+	import { MediaQuery } from 'svelte/reactivity';
+	import { page } from '$app/state';
+	import { closeOnHistoryStep, forgetOverlay, popOverlay, pushOverlay } from '$lib/overlay-history';
+	import { attachSwipeDismiss } from '$lib/swipe-dismiss';
 	import { getLocale, t } from '$lib/i18n.svelte';
+	import { formatMs } from '$lib/benchmark';
+	import ImageFilterControls from '$lib/components/image-filter-controls.svelte';
+	import {
+		defaultImageFilters,
+		generationMatchesImageFilters,
+		imageFiltersActive,
+		imageFiltersEqual,
+		withImageFilters,
+		type ImageFilters,
+		type ImageModelOption
+	} from '$lib/image-filters';
 	import {
 		clampLineageCoordinate,
 		buildLineageRover,
@@ -62,6 +83,20 @@
 		type PositionedLineageNode
 	} from '$lib/lineage-layout';
 	import { account } from '$lib/account.svelte';
+	import { studioCache } from '$lib/swr-cache';
+	import {
+		GRID_RESUME_LIMIT,
+		imagesGridSnapshotKey,
+		makeGridVisitSnapshot,
+		mayPrependLiveGridRows,
+		restoredGridAnchor,
+		rowsForSnapshot,
+		selectionInGridWindow,
+		snapshotMatchesCriteria,
+		type GridResumeAnchor,
+		type GridVisitSnapshot
+	} from '$lib/images-grid-resume';
+	import { dragScroll } from '$lib/drag-scroll';
 	import { sectionNeeds } from '$lib/account-display';
 	import { collapsePromptDiff, paramDeltas, promptWordDiff } from '$lib/prompt-diff';
 	import {
@@ -76,11 +111,14 @@
 		filterTextToImageModels,
 		filterUpscaleModels,
 		generationById,
+		getImagesPreferences,
 		isStarred,
 		openService,
 		saveLineageTreeOffsets,
 		saveLineageViewport,
+		saveImagesPreferences,
 		selectGeneration,
+		viewOwnerEpoch,
 		studio,
 		toggleStarred,
 		type Generation,
@@ -89,6 +127,18 @@
 	} from '$lib/studio.svelte';
 
 	const ROOT_LIMIT = 50;
+	const restoredImagesPreferences = getImagesPreferences();
+	const componentOwnerEpoch = viewOwnerEpoch();
+	const gridSnapshotKey = imagesGridSnapshotKey(componentOwnerEpoch);
+	function copyImageFilters(filters: ImageFilters): ImageFilters {
+		return {
+			models: [...filters.models],
+			sizes: [...filters.sizes],
+			range: filters.range,
+			from: filters.from,
+			through: filters.through
+		};
+	}
 	// A saved viewport names the root it was anchored to, and that root may sit
 	// several pages back. Hunting it costs one round trip per page with nothing
 	// drawn yet, and it never resolves at all when the anchor has since expired,
@@ -116,9 +166,11 @@
 	};
 
 	type PointerSample = { x: number; y: number; time: number };
+	class InvalidGridResume extends Error {}
 	const restoredViewport = studio.lineageViewport;
 
 	let sectionEl = $state<HTMLDivElement | null>(null);
+	let imagesHeaderEl = $state<HTMLDivElement | null>(null);
 	let viewportEl = $state<HTMLDivElement | null>(null);
 	let inspectorEl = $state<HTMLElement | null>(null);
 	let viewportWidth = $state(0);
@@ -131,16 +183,40 @@
 	let rootsLoading = $state(false);
 	let rootsInitialized = $state(false);
 	let rootsFailed = $state(false);
+	let rootsFailedAppend = $state(false);
 	let rootsHaveMore = $state(false);
-	let starredOnly = $state(false);
-	let searchDraft = $state('');
-	let searchQuery = $state('');
+	let rootsCommittedFilterModeEpoch = $state<number | null>(null);
+	// Shared with the sidebar's Starred entry, which opens this view filtered.
+	let starredOnly = $state(restoredImagesPreferences.starredOnly);
+	let imageFilters = $state<ImageFilters>(copyImageFilters(restoredImagesPreferences.filters));
+	let persistedImageFilters = copyImageFilters(restoredImagesPreferences.filters);
+	let imageFilterReferenceDate = $state(new Date());
+	let imageModelOptions = $state<ImageModelOption[]>([]);
+	let imageModelsLoading = $state(true);
+	let imageModelsFailed = $state(false);
+	let gridServerRows = $state<Generation[]>([]);
+	let gridServerRowsQueryKey = $state<string | null>(null);
+	let gridLiveRows = $state<Generation[]>([]);
+	let gridLoading = $state(false);
+	let gridFailed = $state(false);
+	let gridHasMore = $state(false);
+	let gridServerCursor = $state<string | null>(null);
+	let gridFailedAppend = $state(false);
+	let gridScrollerEl = $state<HTMLDivElement | null>(null);
+	let gridScrollAnchor: { id: string; top: number } | null = null;
+	let gridScrollIntentEpoch = 0;
+	let gridRequestEpoch = 0;
+	let gridRequestController: AbortController | null = null;
+	let searchDraft = $state(restoredImagesPreferences.search);
+	let searchQuery = $state(restoredImagesPreferences.search);
 	let searchMatchIds = $state<Set<string> | null>(null);
 	let searchMatchIndex = $state(-1);
 	let searchRequestEpoch = 0;
+	let searchCriteriaKey = '';
 	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
 	let rootsFilterModeEpoch = 0;
 	let rootsRequestEpoch = 0;
+	let rootsRequestController: AbortController | null = null;
 	let rootStarReconciliation: LineageRootStarReconciliation = { pending: 0, dirty: false };
 	let recenterAfterFilter = false;
 	let anchorSearchPages = 0;
@@ -180,8 +256,11 @@
 		fetchSubtree: fetchLineageSubtree,
 		initialHistory: studio.history,
 		history: () => studio.history,
-		onTreesChanged: (trees) => (treeCache = new Map(trees)),
+		onTreesChanged: (trees) => {
+			if (viewOwnerEpoch() === componentOwnerEpoch) treeCache = new Map(trees);
+		},
 		onRootLoaded: (root) => {
+			if (viewOwnerEpoch() !== componentOwnerEpoch) return;
 			roots = roots.map((item) => (item.id === root.id ? { ...root } : item));
 		},
 		onArrived: markArrived
@@ -190,6 +269,13 @@
 
 	const persistedRoots = $derived(
 		roots.filter((root) => root.assets.length > 0 || root.expired === true)
+	);
+	const completedHistorySignature = $derived(
+		studio.history
+			.filter((generation) => generation.assets.length > 0)
+			.map((generation) => generation.id)
+			.sort()
+			.join('\0')
 	);
 	const lod = $derived(lineageLod(scale));
 	const worldRect = $derived(
@@ -271,6 +357,702 @@
 	const forestRight = $derived(
 		Math.max(0, ...packedTrees.map((packed) => packed.x + packed.layout.width))
 	);
+	// Grid lays the loaded history out as a plain grid; Lineage is the canvas
+	// of trees. Both read data the studio already loads.
+	type ImagesMode = 'grid' | 'lineage';
+	let imagesMode = $state<ImagesMode>(restoredImagesPreferences.mode);
+	type GridFilter = 'all' | 'generate' | 'image_to_image' | 'upscale';
+	let gridFilter = $state<GridFilter>(restoredImagesPreferences.action);
+	let gridSelectedId = $state<string | null>(null);
+	let requestedGridSelectionId = restoredImagesPreferences.gridSelectionId;
+	let pendingGridResumeAnchor: GridResumeAnchor | null = restoredImagesPreferences.gridAnchor;
+	let gridWindowBeforeCursor: string | null = pendingGridResumeAnchor?.beforeCursor ?? null;
+	let gridResumeFallbackUsed = false;
+	let gridMiddleWindow = $state(false);
+	let gridSnapshotSeededCriteria = '';
+	let pendingLineageSelection = restoredImagesPreferences.lineageSelection;
+	let gridAnchorSaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function persistImagesPreferences(): void {
+		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+		saveImagesPreferences({
+			...getImagesPreferences(),
+			mode: imagesMode,
+			filters: persistedImageFilters,
+			action: gridFilter,
+			search: searchQuery,
+			starredOnly,
+			gridAnchor: pendingGridResumeAnchor,
+			gridSelectionId: gridSelectedId ?? requestedGridSelectionId,
+			lineageSelection: pendingLineageSelection
+		});
+	}
+
+	function saveViewportForOwner(viewport: ReturnType<typeof lineageViewport>): void {
+		if (viewOwnerEpoch() === componentOwnerEpoch) saveLineageViewport(viewport);
+	}
+
+	function saveTreeOffsetsForOwner(offsets: Record<string, { x: number; y: number }>): void {
+		if (viewOwnerEpoch() === componentOwnerEpoch) saveLineageTreeOffsets(offsets);
+	}
+
+	function capturePersistedGridAnchor(): GridResumeAnchor | null {
+		const scroller = gridScrollerEl;
+		if (!scroller || gridServerRowsQueryKey !== gridCriteriaKey) return null;
+		const scrollerTop = scroller.getBoundingClientRect().top;
+		for (const tile of scroller.querySelectorAll<HTMLButtonElement>('.grid-tile')) {
+			const rect = tile.getBoundingClientRect();
+			const id = tile.dataset.generationId;
+			if (
+				!id ||
+				rect.bottom <= scrollerTop ||
+				rect.top >= scroller.getBoundingClientRect().bottom
+			) {
+				continue;
+			}
+			const rowIndex = gridServerRows.findIndex((row) => row.id === id);
+			if (rowIndex === -1) continue;
+			return {
+				id,
+				beforeCursor: gridServerRows[rowIndex - 1]?.id ?? gridWindowBeforeCursor,
+				offset: rect.top - scrollerTop
+			};
+		}
+		return null;
+	}
+
+	function saveGridAnchorSoon(): void {
+		if (gridAnchorSaveTimer !== undefined) clearTimeout(gridAnchorSaveTimer);
+		gridAnchorSaveTimer = setTimeout(() => {
+			gridAnchorSaveTimer = undefined;
+			if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+			const anchor = capturePersistedGridAnchor();
+			if (anchor === null) return;
+			pendingGridResumeAnchor = anchor;
+			persistImagesPreferences();
+		}, 250);
+	}
+
+	function setImagesMode(mode: ImagesMode): void {
+		if (imagesMode === mode) return;
+		// The inspector belongs to the mode it opened in: close it, and its
+		// history entry, rather than leave a selection to reopen unmarked later.
+		const outgoing = imagesMode === 'grid' ? gridSelectedId : studio.lineageSelectedAssetId;
+		if (outgoing !== null) {
+			stopLeaving();
+			void popOverlay('inspector');
+			selectionOrigin = null;
+			if (imagesMode === 'grid') {
+				gridSelectedId = null;
+			} else {
+				studio.lineageSelectedAssetId = null;
+				studio.selectedId = null;
+			}
+		}
+		if (imagesMode === 'lineage') pendingLineageSelection = null;
+		gridSelectedId = null;
+		requestedGridSelectionId = null;
+		imagesMode = mode;
+		gridScrollAnchor = null;
+		persistImagesPreferences();
+		if (mode === 'lineage') reloadRoots();
+		else {
+			cancelRootsRequest();
+			recenterAfterFilter = false;
+		}
+	}
+
+	function generationAction(generation: Generation): LineageEntry['action'] {
+		if (generation.source_asset_id === null) return 'generate';
+		return studio.models
+			.find((model) => model.id === generation.model_id)
+			?.capabilities.includes('upscale')
+			? 'upscale'
+			: 'image_to_image';
+	}
+
+	function generationMatchesGridAction(generation: Generation): boolean {
+		return generationMatchesGridActionFor(generation, gridFilter) === true;
+	}
+
+	function generationMatchesGridKnownImageFilters(
+		generation: Generation,
+		filters: ImageFilters = imageFilters,
+		referenceDate: Date = imageFilterReferenceDate
+	): boolean {
+		if (withImageFilters(new URLSearchParams(), filters, referenceDate) === null) return true;
+		return generationMatchesImageFilters(generation, { ...filters, sizes: [] }, referenceDate);
+	}
+
+	function generationMatchesRetainedGridFilters(
+		generation: Generation,
+		filters: ImageFilters,
+		filter: GridFilter,
+		starred: boolean
+	): boolean {
+		return (
+			generationMatchesGridKnownImageFilters(generation, filters) &&
+			generationMatchesGridActionFor(generation, filter) !== false &&
+			(!starred || generation.starred_at !== null || isStarred(generation.id))
+		);
+	}
+
+	function attachGridDragScroll(scroller: HTMLElement): () => void {
+		gridCriteriaKey;
+		imagesMode;
+		const stopDragScroll = dragScroll(scroller, () => {
+			gridScrollAnchor = null;
+		});
+		const onPointerDown = (event: PointerEvent) => {
+			if (event.pointerType !== 'touch') noteGridScrollIntent();
+		};
+		const onTouchStart = () => noteGridScrollIntent();
+		scroller.addEventListener('pointerdown', onPointerDown, { passive: true });
+		scroller.addEventListener('touchstart', onTouchStart, { passive: true });
+		scroller.addEventListener('wheel', noteGridScrollIntent, { passive: true });
+		scroller.addEventListener('keydown', onGridKeydown);
+		return () => {
+			stopDragScroll();
+			scroller.removeEventListener('pointerdown', onPointerDown);
+			scroller.removeEventListener('touchstart', onTouchStart);
+			scroller.removeEventListener('wheel', noteGridScrollIntent);
+			scroller.removeEventListener('keydown', onGridKeydown);
+		};
+	}
+
+	function generationMatchesGridActionFor(
+		generation: Generation,
+		filter: GridFilter
+	): boolean | null {
+		if (filter === 'all') return true;
+		if (filter === 'generate') return generation.source_asset_id === null;
+		if (generation.source_asset_id === null) return false;
+		const model = studio.models.find((item) => item.id === generation.model_id);
+		if (model === undefined) return null;
+		return (model.capabilities.includes('upscale') ? 'upscale' : 'image_to_image') === filter;
+	}
+
+	function captureGridScrollAnchor(
+		filters: ImageFilters,
+		filter: GridFilter = gridFilter,
+		starred: boolean = starredOnly
+	): { id: string; top: number } | null {
+		if (!gridScrollerEl) return null;
+		const scroller = gridScrollerEl.getBoundingClientRect();
+		let fallback: { id: string; top: number } | null = null;
+		for (const tile of gridScrollerEl.querySelectorAll<HTMLButtonElement>('.grid-tile')) {
+			const rect = tile.getBoundingClientRect();
+			if (rect.bottom <= scroller.top || rect.top >= scroller.bottom) continue;
+			const id = tile.dataset.generationId;
+			const generation = gridItems.find((item) => item.id === id);
+			if (
+				id &&
+				generation &&
+				generationMatchesRetainedGridFilters(generation, filters, filter, starred)
+			) {
+				const anchor = { id, top: rect.top };
+				fallback ??= anchor;
+				if (
+					filters.sizes.length === 0 ||
+					generationMatchesImageFilters(generation, filters, imageFilterReferenceDate)
+				)
+					return anchor;
+			}
+		}
+		return fallback;
+	}
+
+	function restorePersistedGridAnchor(anchor: GridResumeAnchor | null, intentEpoch: number): void {
+		if (
+			!anchor ||
+			!canvasActive ||
+			viewOwnerEpoch() !== componentOwnerEpoch ||
+			intentEpoch !== gridScrollIntentEpoch ||
+			!gridScrollerEl
+		)
+			return;
+		restoreGridScrollAnchor({
+			id: anchor.id,
+			top: gridScrollerEl.getBoundingClientRect().top + anchor.offset
+		});
+	}
+
+	function noteGridScrollIntent(): void {
+		gridScrollIntentEpoch += 1;
+		gridScrollAnchor = null;
+	}
+
+	function onGridKeydown(event: KeyboardEvent): void {
+		if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key))
+			noteGridScrollIntent();
+	}
+
+	function restoreGridScrollAnchor(anchor: { id: string; top: number } | null): void {
+		if (!anchor || !gridScrollerEl) return;
+		const tile = gridScrollerEl.querySelector<HTMLButtonElement>(
+			`[data-generation-id="${CSS.escape(anchor.id)}"]`
+		);
+		if (!tile) return;
+		gridScrollerEl.scrollTop += tile.getBoundingClientRect().top - anchor.top;
+	}
+
+	const imageFilterKey = $derived(
+		withImageFilters(new URLSearchParams(), imageFilters, imageFilterReferenceDate)?.toString() ??
+			null
+	);
+	const gridCriteriaKey = $derived(
+		JSON.stringify({
+			filters: imageFilterKey,
+			query: searchQuery,
+			starred: starredOnly,
+			action: gridFilter
+		})
+	);
+	const gridServerPageLoaded = $derived(gridServerRowsQueryKey !== null);
+
+	function seedGridSnapshot(criteriaKey: string): void {
+		if (gridSnapshotSeededCriteria === criteriaKey) return;
+		gridSnapshotSeededCriteria = criteriaKey;
+		const snapshot = studioCache.read<GridVisitSnapshot>(gridSnapshotKey);
+		if (!snapshotMatchesCriteria(snapshot, criteriaKey)) return;
+		gridServerRows = rowsForSnapshot(snapshot, criteriaKey);
+		gridServerRowsQueryKey = criteriaKey;
+		gridWindowBeforeCursor = snapshot.beforeCursor;
+		gridServerCursor = snapshot.cursor;
+		gridHasMore = snapshot.hasMore;
+		gridMiddleWindow = snapshot.window === 'cursor';
+		if (pendingGridResumeAnchor === null) {
+			gridSelectedId = selectionInGridWindow(gridServerRows, requestedGridSelectionId);
+		}
+		const anchor = restoredGridAnchor(gridServerRows, pendingGridResumeAnchor);
+		if (anchor) {
+			gridScrollAnchor = {
+				id: anchor.id,
+				top: (gridScrollerEl?.getBoundingClientRect().top ?? 0) + anchor.offset
+			};
+		}
+		const intentEpoch = gridScrollIntentEpoch;
+		void tick().then(() => restorePersistedGridAnchor(anchor, intentEpoch));
+	}
+
+	const gridItems = $derived.by(() => {
+		const serverIds = new Set(gridServerRows.map((generation) => generation.id));
+		const liveById = new Map(gridLiveRows.map((generation) => [generation.id, generation]));
+		const orderTime = (generation: Generation) => {
+			const timestamp = Date.parse(
+				starredOnly ? (generation.starred_at ?? '') : generation.created_at
+			);
+			return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+		};
+		const compareServerOrder = (left: Generation, right: Generation) =>
+			orderTime(right) - orderTime(left) || right.id.localeCompare(left.id);
+		const firstServerRow = gridServerRows[0];
+		const newLiveRows = gridLiveRows
+			.filter(() => mayPrependLiveGridRows(gridMiddleWindow ? 'cursor' : 'newest'))
+			.filter((generation) => !serverIds.has(generation.id) && generation.assets.length > 0)
+			.filter((generation) =>
+				firstServerRow ? compareServerOrder(generation, firstServerRow) < 0 : gridServerPageLoaded
+			)
+			.sort(compareServerOrder);
+		const seen = new Set<string>();
+		return [
+			...newLiveRows,
+			...gridServerRows.map((generation) => liveById.get(generation.id) ?? generation)
+		]
+			.filter((generation) => {
+				if (generation.assets.length === 0 || seen.has(generation.id)) return false;
+				seen.add(generation.id);
+				return true;
+			})
+			.filter((generation) => {
+				if (imageFilterKey === null) return true;
+				const isCurrentServerResult =
+					serverIds.has(generation.id) && gridServerRowsQueryKey === gridCriteriaKey;
+				if (isCurrentServerResult) return true;
+				const isLiveOnly = !serverIds.has(generation.id);
+				return isLiveOnly
+					? generation.state === 'succeeded' &&
+							generationMatchesImageFilters(generation, imageFilters, imageFilterReferenceDate) &&
+							generationMatchesGridActionFor(generation, gridFilter) === true &&
+							(!starredOnly || generation.starred_at !== null || isStarred(generation.id))
+					: generationMatchesRetainedGridFilters(generation, imageFilters, gridFilter, starredOnly);
+			});
+	});
+
+	// Lineage ignores the action filter, so there it always shows everything.
+	const allFilterOn = $derived(
+		!starredOnly &&
+			(imagesMode === 'lineage' || gridFilter === 'all') &&
+			!imageFiltersActive(imageFilters)
+	);
+
+	const gridSelectedData = $derived.by<CanvasNodeData | null>(() => {
+		if (gridSelectedId === null) return null;
+		const generation = gridItems.find((row) => row.id === gridSelectedId);
+		if (!generation || generation.assets.length === 0) return null;
+		const asset = generation.assets[0];
+		return {
+			output_asset_ids: generation.assets.map((item) => item.id),
+			entry: {
+				job_id: generation.id,
+				asset_id: asset.id,
+				action: generationAction(generation),
+				model_id: generation.model_id,
+				created_at: generation.created_at,
+				state: generation.state,
+				thumbnail_url: asset.thumbnail_url,
+				missing: generation.expired === true
+			},
+			generation
+		};
+	});
+
+	async function loadGridPage(
+		append: boolean,
+		resumeAnchor: GridResumeAnchor | null = null,
+		cursorResume = resumeAnchor !== null
+	): Promise<void> {
+		if (imagesMode !== 'grid' || gridLoading) return;
+		const pageLimit = resumeAnchor ? GRID_RESUME_LIMIT : 50;
+		const query = withImageFilters(
+			new URLSearchParams({ limit: String(pageLimit) }),
+			imageFilters,
+			imageFilterReferenceDate
+		);
+		if (query === null) {
+			return;
+		}
+		const requestKey = gridCriteriaKey;
+		const resumingWarmWindow =
+			resumeAnchor !== null && gridServerRowsQueryKey === requestKey && gridServerRows.length > 0;
+		if (searchQuery !== '') query.append('q', searchQuery);
+		if (starredOnly) query.set('starred', 'true');
+		if (gridFilter !== 'all') query.set('action', gridFilter);
+		const cursor = append
+			? gridServerCursor
+			: cursorResume
+				? (resumeAnchor?.beforeCursor ?? null)
+				: null;
+		if (cursor) query.set('cursor', cursor);
+		query.append('state', 'succeeded');
+		const epoch = gridRequestEpoch;
+		const scrollIntentEpoch = gridScrollIntentEpoch;
+		const warmResumeWasSuperseded = () =>
+			resumingWarmWindow &&
+			(!canvasActive ||
+				epoch !== gridRequestEpoch ||
+				viewOwnerEpoch() !== componentOwnerEpoch ||
+				scrollIntentEpoch !== gridScrollIntentEpoch);
+		gridRequestController?.abort();
+		const controller = new AbortController();
+		gridRequestController = controller;
+		requestControllers.add(controller);
+		gridLoading = true;
+		gridFailed = false;
+		gridFailedAppend = false;
+		let invalidResume = false;
+		let pageCursorResume = cursorResume;
+		let restoredAnchor: GridResumeAnchor | null = null;
+		let restoredSelectionId: string | null = null;
+		try {
+			const response = await fetch(`/api/v1/generations?${query}`, { signal: controller.signal });
+			if (warmResumeWasSuperseded()) return;
+			if (!response.ok) {
+				if (resumeAnchor && response.status === 404) invalidResume = true;
+				else throw new Error('grid request failed');
+			}
+			if (invalidResume) throw new InvalidGridResume();
+			let page = (await response.json()) as Generation[];
+			if (warmResumeWasSuperseded()) return;
+			if (!canvasActive || epoch !== gridRequestEpoch || viewOwnerEpoch() !== componentOwnerEpoch)
+				return;
+			restoredAnchor = resumeAnchor ? restoredGridAnchor(page, resumeAnchor) : null;
+			if (
+				resumingWarmWindow &&
+				!pageCursorResume &&
+				resumeAnchor?.beforeCursor &&
+				restoredAnchor === null
+			) {
+				const cursorQuery = new URLSearchParams(query);
+				cursorQuery.set('cursor', resumeAnchor.beforeCursor);
+				const cursorResponse = await fetch(`/api/v1/generations?${cursorQuery}`, {
+					signal: controller.signal
+				});
+				if (warmResumeWasSuperseded()) return;
+				if (!cursorResponse.ok) {
+					if (cursorResponse.status === 404) invalidResume = true;
+					else throw new Error('grid cursor recovery failed');
+				}
+				if (invalidResume) throw new InvalidGridResume();
+				page = (await cursorResponse.json()) as Generation[];
+				if (warmResumeWasSuperseded()) return;
+				pageCursorResume = true;
+				restoredAnchor = restoredGridAnchor(page, resumeAnchor);
+			}
+			if (pageCursorResume && resumeAnchor && restoredAnchor === null) {
+				invalidResume = true;
+				throw new InvalidGridResume();
+			}
+			const activeSelectionId = gridSelectedId;
+			gridServerRows = append ? [...gridServerRows, ...page] : page;
+			if (!append) gridServerRowsQueryKey = requestKey;
+			if (!append) gridServerCursor = page.at(-1)?.id ?? null;
+			else if (page.length > 0) gridServerCursor = page.at(-1)?.id ?? gridServerCursor;
+			gridHasMore = page.length === pageLimit;
+			if (resumeAnchor) {
+				if (scrollIntentEpoch === gridScrollIntentEpoch)
+					pendingGridResumeAnchor = restoredAnchor ? resumeAnchor : null;
+				gridWindowBeforeCursor = pageCursorResume ? resumeAnchor.beforeCursor : null;
+				gridMiddleWindow = pageCursorResume && resumeAnchor.beforeCursor !== null;
+			} else if (!append) {
+				gridWindowBeforeCursor = null;
+				gridMiddleWindow = false;
+			}
+			if (!append) {
+				if (
+					activeSelectionId !== null &&
+					gridItems.some((generation) => generation.id === activeSelectionId)
+				) {
+					requestedGridSelectionId = activeSelectionId;
+				} else {
+					gridSelectedId = selectionInGridWindow(page, requestedGridSelectionId);
+					requestedGridSelectionId = gridSelectedId;
+					if (activeSelectionId === null) restoredSelectionId = gridSelectedId;
+				}
+			}
+			if (viewOwnerEpoch() === componentOwnerEpoch && requestKey === gridCriteriaKey) {
+				studioCache.write(
+					gridSnapshotKey,
+					makeGridVisitSnapshot({
+						criteriaKey: requestKey,
+						rows: gridServerRows,
+						beforeCursor: gridWindowBeforeCursor,
+						hasMore: gridHasMore,
+						window: gridMiddleWindow ? 'cursor' : 'newest'
+					})
+				);
+				persistImagesPreferences();
+			}
+			if (!append) {
+				await tick();
+				if (
+					epoch === gridRequestEpoch &&
+					canvasActive &&
+					viewOwnerEpoch() === componentOwnerEpoch
+				) {
+					if (restoredAnchor) restorePersistedGridAnchor(restoredAnchor, scrollIntentEpoch);
+					else if (scrollIntentEpoch === gridScrollIntentEpoch)
+						restoreGridScrollAnchor(gridScrollAnchor);
+					gridScrollAnchor = null;
+					if (restoredSelectionId !== null && gridSelectedId === restoredSelectionId) {
+						inspectorOpened();
+						if (
+							!sectionEl?.contains(document.activeElement) &&
+							!imagesHeaderEl?.contains(document.activeElement)
+						)
+							inspectorEl?.focus({ preventScroll: true });
+					}
+				}
+			}
+		} catch (error) {
+			if (warmResumeWasSuperseded()) return;
+			if (error instanceof InvalidGridResume) {
+				invalidResume = true;
+			} else {
+				if (error instanceof DOMException && error.name === 'AbortError') return;
+				if (epoch !== gridRequestEpoch || viewOwnerEpoch() !== componentOwnerEpoch) return;
+				if (!append) gridScrollAnchor = null;
+				gridFailedAppend = append;
+				gridFailed = true;
+			}
+		} finally {
+			requestControllers.delete(controller);
+			if (gridRequestController === controller) gridRequestController = null;
+			if (epoch === gridRequestEpoch && viewOwnerEpoch() === componentOwnerEpoch)
+				gridLoading = false;
+		}
+		if (
+			invalidResume &&
+			epoch === gridRequestEpoch &&
+			canvasActive &&
+			viewOwnerEpoch() === componentOwnerEpoch &&
+			!gridResumeFallbackUsed
+		) {
+			gridResumeFallbackUsed = true;
+			pendingGridResumeAnchor = null;
+			gridMiddleWindow = false;
+			gridSelectedId = null;
+			requestedGridSelectionId = null;
+			gridScrollAnchor = null;
+			studioCache.delete(gridSnapshotKey);
+			persistImagesPreferences();
+			gridRequestEpoch += 1;
+			gridLoading = false;
+			gridServerRows = [];
+			gridServerRowsQueryKey = null;
+			gridWindowBeforeCursor = null;
+			gridServerCursor = null;
+			gridHasMore = false;
+			void loadGridPage(false);
+		}
+	}
+
+	function reloadGrid(): void {
+		gridScrollAnchor ??= captureGridScrollAnchor(imageFilters);
+		gridRequestEpoch += 1;
+		gridRequestController?.abort();
+		gridFailed = false;
+		gridLoading = false;
+		const resumeAnchor = pendingGridResumeAnchor;
+		if (resumeAnchor) gridResumeFallbackUsed = false;
+		const warmNewestResume =
+			resumeAnchor !== null &&
+			gridServerRowsQueryKey === gridCriteriaKey &&
+			gridServerRows.length > 0 &&
+			!gridMiddleWindow &&
+			gridServerRows.slice(0, GRID_RESUME_LIMIT).some((row) => row.id === resumeAnchor.id);
+		void loadGridPage(false, resumeAnchor, !warmNewestResume);
+	}
+
+	function loadNewestGridPage(): void {
+		if (!gridMiddleWindow || gridLoading) return;
+		pendingGridResumeAnchor = null;
+		gridScrollAnchor = null;
+		gridSelectedId = null;
+		requestedGridSelectionId = null;
+		persistImagesPreferences();
+		gridRequestEpoch += 1;
+		gridRequestController?.abort();
+		gridFailed = false;
+		gridLoading = false;
+		void loadGridPage(false);
+	}
+
+	function setImageFilters(next: ImageFilters): void {
+		if (imageFiltersEqual(imageFilters, next)) return;
+		const referenceDate = new Date();
+		const canApply = withImageFilters(new URLSearchParams(), next, referenceDate) !== null;
+		if (canApply) {
+			gridScrollAnchor = captureGridScrollAnchor(next);
+			pendingGridResumeAnchor = null;
+			gridMiddleWindow = false;
+			persistedImageFilters = copyImageFilters(next);
+			persistImagesPreferences();
+		}
+		imageFilters = next;
+		imageFilterReferenceDate = referenceDate;
+		const anchor = gridScrollAnchor;
+		const scrollIntentEpoch = gridScrollIntentEpoch;
+		if (canApply)
+			void tick().then(() => {
+				if (
+					canvasActive &&
+					viewOwnerEpoch() === componentOwnerEpoch &&
+					scrollIntentEpoch === gridScrollIntentEpoch
+				)
+					restoreGridScrollAnchor(anchor);
+			});
+		rootsFilterModeEpoch += 1;
+		if (imagesMode === 'lineage' && canApply) {
+			reloadRoots();
+		} else if (imagesMode === 'lineage') {
+			cancelRootsRequest();
+			recenterAfterFilter = false;
+		}
+	}
+
+	$effect(() => {
+		gridCriteriaKey;
+		imagesMode;
+		if (imagesMode === 'grid' && imageFilterKey !== null) {
+			untrack(() => {
+				seedGridSnapshot(gridCriteriaKey);
+				reloadGrid();
+			});
+		} else {
+			gridRequestEpoch += 1;
+			gridRequestController?.abort();
+			gridLoading = false;
+		}
+	});
+
+	$effect(() => {
+		const saved = pendingLineageSelection;
+		if (!saved || imagesMode !== 'lineage' || viewOwnerEpoch() !== componentOwnerEpoch) return;
+		const root = persistedRoots.find((item) => item.id === saved.rootId);
+		if (root) {
+			if (studio.lineageSelectedAssetId === saved.assetId) return;
+			untrack(() => forest.ensureVisible(root, layoutLineageTree(rootLayoutNode(root))));
+			const cached = treeCache.get(root.id);
+			if (cached?.status === 'loaded' && cached.layout) {
+				const node = cached.layout.nodes.find((item) => item.id === saved.assetId);
+				const missingRoot = cached.layout.nodes.find(
+					(item) => item.data.entry.job_id === saved.assetId && item.data.entry.missing
+				);
+				if (node || missingRoot) {
+					studio.lineageSelectedAssetId = saved.assetId;
+					void tick().then(() => {
+						if (
+							!canvasActive ||
+							viewOwnerEpoch() !== componentOwnerEpoch ||
+							studio.lineageSelectedAssetId !== saved.assetId
+						)
+							return;
+						inspectorOpened();
+						if (
+							!sectionEl?.contains(document.activeElement) &&
+							!imagesHeaderEl?.contains(document.activeElement)
+						)
+							inspectorEl?.focus({ preventScroll: true });
+					});
+				} else if (!cached.truncated) {
+					pendingLineageSelection = null;
+					persistImagesPreferences();
+				}
+				return;
+			}
+			return;
+		}
+		if (
+			rootsInitialized &&
+			!rootsLoading &&
+			(!rootsHaveMore || anchorSearchPages >= MAX_ANCHOR_SEARCH_PAGES)
+		) {
+			pendingLineageSelection = null;
+			persistImagesPreferences();
+		}
+	});
+
+	$effect(() => {
+		const history = studio.history;
+		const filters = imageFilters;
+		const referenceDate = imageFilterReferenceDate;
+		const query = searchQuery;
+		const serverMatches = searchMatchIds;
+		const starred = starredOnly;
+		if (imageFilterKey === null) return;
+		const matching = history.filter(
+			(generation) =>
+				generation.assets.length > 0 &&
+				(query === '' || serverMatches?.has(generation.id) === true) &&
+				(!starred || isStarred(generation.id)) &&
+				generationMatchesImageFilters(generation, filters, referenceDate) &&
+				generationMatchesGridAction(generation)
+		);
+		gridLiveRows = matching;
+		if (
+			gridSelectedId !== null &&
+			!matching.some((item) => item.id === gridSelectedId) &&
+			!gridServerRows.some((item) => item.id === gridSelectedId && item.assets.length > 0)
+		) {
+			gridSelectedId = null;
+			requestedGridSelectionId = null;
+			persistImagesPreferences();
+		}
+	});
+
+	useStudioHeader(() => ({ actions: imagesHeader }));
+
 	const selectedNode = $derived.by(() => {
 		if (studio.lineageSelectedAssetId === null) return null;
 		for (const tree of packedTrees) {
@@ -284,7 +1066,9 @@
 		}
 		return null;
 	});
-	const selectedData = $derived(selectedNode?.data ?? null);
+	const selectedData = $derived(
+		imagesMode === 'grid' ? gridSelectedData : (selectedNode?.data ?? null)
+	);
 	const selectedGeneration = $derived(
 		selectedData?.generation ??
 			(selectedData?.entry.job_id ? (generationById(selectedData.entry.job_id) ?? null) : null)
@@ -293,10 +1077,19 @@
 		selectedGeneration !== null && isStarred(selectedGeneration.id)
 	);
 	const selectedAsset = $derived(
-		selectedGeneration?.assets.find((asset) => asset.id === studio.lineageSelectedAssetId) ?? null
+		selectedGeneration?.assets.find(
+			(asset) =>
+				asset.id ===
+				(imagesMode === 'grid' ? selectedData?.entry.asset_id : studio.lineageSelectedAssetId)
+		) ?? null
 	);
 	const selectedImageUrl = $derived(
 		selectedData !== null && !selectedData.entry.missing ? (selectedAsset?.url ?? null) : null
+	);
+	const selectedThumbnailUrl = $derived(
+		selectedImageUrl === null
+			? null
+			: (selectedAsset?.thumbnail_url ?? selectedData?.entry.thumbnail_url ?? null)
 	);
 	const selectedPrompt = $derived((selectedGeneration?.params.prompt ?? '').trim());
 	const selectedParams = $derived(
@@ -358,14 +1151,21 @@
 		return response.json() as Promise<GenerationSubtree>;
 	}
 
-	async function fetchCanvasJson<T>(url: string, failure: string): Promise<T> {
-		const controller = new AbortController();
+	async function fetchCanvasJson<T>(
+		url: string,
+		failure: string,
+		controller = new AbortController()
+	): Promise<T> {
 		requestControllers.add(controller);
 		try {
 			const response = await fetch(url, { signal: controller.signal });
 			if (!response.ok) throw new Error(failure);
 			const value = (await response.json()) as T;
-			if (!canvasActive || canvasEpoch !== canvasEpochSequence) {
+			if (
+				!canvasActive ||
+				canvasEpoch !== canvasEpochSequence ||
+				viewOwnerEpoch() !== componentOwnerEpoch
+			) {
 				throw new DOMException('stale canvas request', 'AbortError');
 			}
 			return value;
@@ -374,8 +1174,17 @@
 		}
 	}
 
-	async function loadRoots(): Promise<void> {
-		if (rootsLoading || (!rootsHaveMore && roots.length > 0)) return;
+	async function loadRoots(replace = false): Promise<void> {
+		if (
+			imagesMode !== 'lineage' ||
+			imageFilterKey === null ||
+			rootsLoading ||
+			(!replace && rootsCommittedFilterModeEpoch !== rootsFilterModeEpoch) ||
+			(!replace && !rootsHaveMore && roots.length > 0)
+		)
+			return;
+		const controller = new AbortController();
+		rootsRequestController = controller;
 		const filterModeEpoch = rootsFilterModeEpoch;
 		const requestEpoch = rootsRequestEpoch;
 		const filterStarredOnly = starredOnly;
@@ -387,28 +1196,38 @@
 		const stillCurrent = () =>
 			canvasActive &&
 			canvasEpoch === canvasEpochSequence &&
+			viewOwnerEpoch() === componentOwnerEpoch &&
 			filterModeEpoch === rootsFilterModeEpoch &&
 			requestEpoch === rootsRequestEpoch;
 		rootsLoading = true;
 		rootsFailed = false;
-		const cursor = roots.at(-1)?.id;
+		rootsFailedAppend = false;
+		const cursor = replace ? undefined : roots.at(-1)?.id;
 		let loaded = false;
 		try {
 			const query = new URLSearchParams({ roots_only: 'true', limit: String(ROOT_LIMIT) });
 			if (filterStarredOnly) query.set('starred', 'true');
-			if (cursor !== undefined) query.set('cursor', cursor);
+			const filteredQuery = withImageFilters(query, imageFilters, imageFilterReferenceDate);
+			if (filteredQuery === null) return;
+			if (cursor !== undefined) filteredQuery.set('cursor', cursor);
+			filteredQuery.append('state', 'succeeded');
 			// Starred mode selects starred roots, then keeps each returned root's
 			// complete subtree. Filtering descendants individually would sever the
 			// provenance that makes this a forest rather than a list of cards.
 			const page = await fetchCanvasJson<Generation[]>(
-				`/api/v1/generations?${query.toString()}`,
-				'history request failed'
+				`/api/v1/generations?${filteredQuery.toString()}`,
+				'history request failed',
+				controller
 			);
 			if (filterModeEpoch !== rootsFilterModeEpoch || requestEpoch !== rootsRequestEpoch) {
 				return;
 			}
-			const existing = new Set(roots.map((root) => root.id));
-			roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
+			if (replace) roots = page;
+			else {
+				const existing = new Set(roots.map((root) => root.id));
+				roots = [...roots, ...page.filter((root) => !existing.has(root.id))];
+			}
+			if (replace) rootsCommittedFilterModeEpoch = filterModeEpoch;
 			rootsHaveMore = page.length === ROOT_LIMIT;
 			rootsInitialized = true;
 			loaded = true;
@@ -416,8 +1235,11 @@
 			if (error instanceof DOMException && error.name === 'AbortError') return;
 			if (filterModeEpoch === rootsFilterModeEpoch && requestEpoch === rootsRequestEpoch) {
 				rootsFailed = true;
+				rootsFailedAppend = !replace && cursor !== undefined;
+				if (replace) rootsHaveMore = false;
 			}
 		} finally {
+			if (rootsRequestController === controller) rootsRequestController = null;
 			if (stillCurrent()) {
 				rootsLoading = false;
 			}
@@ -444,36 +1266,87 @@
 		}
 	}
 
-	function reloadRoots(): void {
+	function cancelRootsRequest(): void {
 		rootsRequestEpoch += 1;
-		roots = [];
+		rootsRequestController?.abort();
+		rootsRequestController = null;
 		rootsLoading = false;
-		rootsInitialized = false;
+	}
+
+	function reloadRoots(force = false): void {
+		if (force) rootsCommittedFilterModeEpoch = null;
+		if (imagesMode !== 'lineage' || imageFilterKey === null) {
+			cancelRootsRequest();
+			recenterAfterFilter = false;
+			return;
+		}
+		if (!force && rootsCommittedFilterModeEpoch === rootsFilterModeEpoch) {
+			recenterAfterFilter = false;
+			return;
+		}
+		cancelRootsRequest();
 		rootsFailed = false;
-		rootsHaveMore = false;
+		rootsFailedAppend = false;
 		recenterAfterFilter = viewportReady;
 		lastPageLoadWorld = { right: Number.NEGATIVE_INFINITY, bottom: Number.NEGATIVE_INFINITY };
-		void loadRoots();
+		void loadRoots(true);
 	}
 
 	function setStarredOnly(value: boolean): void {
+		studio.imagesStarredOnly = value;
 		if (starredOnly === value) return;
+		gridScrollAnchor = captureGridScrollAnchor(imageFilters, gridFilter, value);
 		rootsFilterModeEpoch += 1;
 		starredOnly = value;
-		reloadRoots();
+		pendingGridResumeAnchor = null;
+		gridMiddleWindow = false;
+		persistImagesPreferences();
+		if (imagesMode === 'lineage') reloadRoots();
+		else cancelRootsRequest();
 	}
+
+	function setGridFilter(value: GridFilter): void {
+		if (gridFilter === value) return;
+		gridScrollAnchor = captureGridScrollAnchor(imageFilters, value);
+		gridFilter = value;
+		pendingGridResumeAnchor = null;
+		gridMiddleWindow = false;
+		persistImagesPreferences();
+	}
+
+	$effect(() => {
+		const requested = studio.imagesStarredOnly;
+		untrack(() => setStarredOnly(requested));
+	});
 
 	function scheduleSearchQuery(value: string): void {
 		if (searchDebounce !== undefined) clearTimeout(searchDebounce);
 		searchDebounce = setTimeout(() => {
-			searchQuery = value.trim();
+			const next = value.trim();
+			if (searchQuery === next) return;
+			searchQuery = next;
+			if (imageFilterKey === null) return;
+			pendingGridResumeAnchor = null;
+			gridMiddleWindow = false;
+			persistImagesPreferences();
 		}, 200);
 	}
 
 	$effect(() => {
+		completedHistorySignature;
 		const q = searchQuery;
 		const filterStarred = starredOnly;
-		const epoch = (searchRequestEpoch += 1);
+		const filters = imageFilters;
+		const referenceDate = imageFilterReferenceDate;
+		if (imageFilterKey === null) return;
+		const criteriaKey = JSON.stringify({ q, starred: filterStarred, imageFilterKey });
+		const criteriaChanged = criteriaKey !== searchCriteriaKey;
+		searchCriteriaKey = criteriaKey;
+		const epoch = ++searchRequestEpoch;
+		if (criteriaChanged) {
+			searchMatchIds = null;
+			searchMatchIndex = -1;
+		}
 		if (q === '') {
 			searchMatchIds = null;
 			searchMatchIndex = -1;
@@ -486,9 +1359,15 @@
 			});
 			search.set('q', q);
 			if (filterStarred) search.set('starred', 'true');
+			const filteredSearch = withImageFilters(search, filters, referenceDate);
+			if (filteredSearch === null) {
+				if (epoch === searchRequestEpoch) searchMatchIds = new Set();
+				return;
+			}
+			filteredSearch.append('state', 'succeeded');
 			try {
 				const body = await fetchCanvasJson<{ ids: string[] }>(
-					`/api/v1/generations?${search.toString()}`,
+					`/api/v1/generations?${filteredSearch.toString()}`,
 					'search request failed'
 				);
 				if (epoch !== searchRequestEpoch) return;
@@ -497,8 +1376,7 @@
 			} catch (error) {
 				if (error instanceof DOMException && error.name === 'AbortError') return;
 				if (epoch !== searchRequestEpoch) return;
-				searchMatchIds = new Set();
-				searchMatchIndex = -1;
+				if (criteriaChanged) searchMatchIds = new Set();
 			}
 		})();
 	});
@@ -518,6 +1396,12 @@
 	async function toggleSelectedStar(): Promise<void> {
 		if (selectedGeneration === null) return;
 		const generation = selectedGeneration;
+		await toggleStarWithUndo(generation.id, () => toggleGenerationStar(generation));
+	}
+
+	// The Undo offer calls this again after the selection may have moved on,
+	// so it takes the generation rather than reading the selection.
+	async function toggleGenerationStar(generation: Generation): Promise<boolean> {
 		const changesRootFilter = generation.source_asset_id === null;
 		if (changesRootFilter) {
 			rootStarReconciliation = {
@@ -528,6 +1412,21 @@
 		let succeeded = false;
 		try {
 			succeeded = await toggleStarred(generation.id);
+			if (succeeded && starredOnly && !isStarred(generation.id)) {
+				gridServerRows = gridServerRows.filter((row) => row.id !== generation.id);
+				if (gridServerCursor === generation.id) {
+					gridServerCursor = gridServerRows.at(-1)?.id ?? null;
+				}
+				if (gridSelectedId === generation.id) {
+					gridSelectedId = null;
+					requestedGridSelectionId = null;
+					persistImagesPreferences();
+				}
+			} else if (succeeded && starredOnly && isStarred(generation.id)) {
+				// The earlier Unstar removed this row from the committed server page.
+				// Re-star from Undo must restore authoritative page order and membership.
+				reloadGrid();
+			}
 		} finally {
 			if (changesRootFilter) {
 				const decision = settleLineageRootStarReconciliation(
@@ -536,16 +1435,17 @@
 					starredOnly
 				);
 				rootStarReconciliation = decision.state;
-				if (decision.reload) reloadRoots();
+				if (decision.reload) reloadRoots(true);
 			}
 		}
+		return succeeded;
 	}
 
 	// Arrival markers have to come back off again. Tiles unmount once they leave
 	// the viewport, so an id left in the set replays its entry animation every
 	// time that tile is panned back into view.
 	function markArrived(ids: string[]): void {
-		if (reducedMotion || ids.length === 0) return;
+		if (viewOwnerEpoch() !== componentOwnerEpoch || reducedMotion || ids.length === 0) return;
 		newNodeIds = new Set([...newNodeIds, ...ids]);
 		setTimeout(() => {
 			newNodeIds = new Set([...newNodeIds].filter((id) => !ids.includes(id)));
@@ -572,14 +1472,24 @@
 			worldRect.right >= forestRight - 320 && worldRect.right >= lastPageLoadWorld.right + 320;
 		const reachedBottom =
 			worldRect.bottom >= forestBottom - 320 && worldRect.bottom >= lastPageLoadWorld.bottom + 320;
-		if (rootsHaveMore && (reachedRight || reachedBottom)) {
+		if (
+			rootsHaveMore &&
+			!rootsFailed &&
+			rootsCommittedFilterModeEpoch === rootsFilterModeEpoch &&
+			(reachedRight || reachedBottom)
+		) {
 			lastPageLoadWorld = { right: worldRect.right, bottom: worldRect.bottom };
 			void loadRoots();
 		}
 	});
 
 	$effect(() => {
-		const finished = studio.history.filter((generation) => generation.assets.length > 0);
+		const finished = studio.history.filter(
+			(generation) =>
+				generation.assets.length > 0 &&
+				(!imageFiltersActive(imageFilters) ||
+					generationMatchesImageFilters(generation, imageFilters, imageFilterReferenceDate))
+		);
 		roots = forest.reconcileFinished(roots, finished, starredOnly, isStarred);
 	});
 
@@ -588,12 +1498,23 @@
 	});
 
 	$effect(() => {
-		if (!rootsInitialized || rootsLoading || rootsHaveMore) return;
+		if (
+			!rootsInitialized ||
+			rootsLoading ||
+			rootsHaveMore ||
+			rootsFailed ||
+			rootsCommittedFilterModeEpoch !== rootsFilterModeEpoch
+		)
+			return;
 		const rootIds = new Set(persistedRoots.map((root) => root.id));
-		const bounded = retainedLineageTreeOffsets(treeOffsets, rootIds, starredOnly);
+		const bounded = retainedLineageTreeOffsets(
+			treeOffsets,
+			rootIds,
+			starredOnly || imageFiltersActive(imageFilters)
+		);
 		if (Object.keys(bounded).length !== Object.keys(treeOffsets).length) {
 			treeOffsets = bounded;
-			saveLineageTreeOffsets(bounded);
+			saveTreeOffsetsForOwner(bounded);
 		}
 	});
 
@@ -645,7 +1566,7 @@
 		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
-		viewportSaveTimer = setTimeout(() => saveLineageViewport(viewport), VIEWPORT_SAVE_DELAY);
+		viewportSaveTimer = setTimeout(() => saveViewportForOwner(viewport), VIEWPORT_SAVE_DELAY);
 		return () => {
 			if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 		};
@@ -794,7 +1715,7 @@
 				setTimeout(() => {
 					if (suppressTreeClick === rootId) suppressTreeClick = null;
 				});
-				saveLineageTreeOffsets(treeOffsets);
+				saveTreeOffsetsForOwner(treeOffsets);
 			}
 			dragMoved = false;
 			return;
@@ -846,19 +1767,19 @@
 				y: clampLineageCoordinate(current.y + direction.y * step)
 			}
 		};
-		saveLineageTreeOffsets(treeOffsets);
+		saveTreeOffsetsForOwner(treeOffsets);
 	}
 
 	function resetTreePosition(rootId: string): void {
 		const { [rootId]: removed, ...remaining } = treeOffsets;
 		void removed;
 		treeOffsets = remaining;
-		saveLineageTreeOffsets(treeOffsets);
+		saveTreeOffsetsForOwner(treeOffsets);
 	}
 
 	function resetAllTreePositions(): void {
 		treeOffsets = {};
-		saveLineageTreeOffsets(treeOffsets);
+		saveTreeOffsetsForOwner(treeOffsets);
 	}
 
 	function recenterNewest(animate = true): { rootId: string; x: number; y: number } | null {
@@ -933,9 +1854,11 @@
 				rootsLoading,
 				pagesUsed: anchorSearchPages,
 				maxPages: MAX_ANCHOR_SEARCH_PAGES,
-				missingAnchor: Boolean(
-					restoredViewport?.rootId &&
-					!persistedRoots.some((root) => root.id === restoredViewport.rootId)
+				missingAnchor: [restoredViewport?.rootId, pendingLineageSelection?.rootId].some(
+					(rootId) =>
+						rootId !== null &&
+						rootId !== undefined &&
+						!persistedRoots.some((root) => root.id === rootId)
 				)
 			})
 		) {
@@ -1088,9 +2011,15 @@
 		return JSON.stringify(value);
 	}
 
-	async function selectNode(data: CanvasNodeData, origin: HTMLButtonElement): Promise<void> {
+	async function selectNode(
+		data: CanvasNodeData,
+		rootId: string,
+		origin: HTMLButtonElement
+	): Promise<void> {
 		selectionOrigin = origin;
 		studio.lineageSelectedAssetId = data.entry.asset_id;
+		pendingLineageSelection = { rootId, assetId: data.entry.asset_id };
+		persistImagesPreferences();
 		if (data.generation && generationById(data.generation.id) === undefined) {
 			studio.selectedExtra = data.generation;
 		}
@@ -1099,8 +2028,12 @@
 		} else {
 			studio.selectedId = null;
 		}
+		inspectorOpened();
 		await tick();
-		inspectorEl?.focus();
+		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+		// preventScroll: the overlay slides in from off screen, and focusing it
+		// mid-slide would scroll the clipped studio column sideways to reach it.
+		inspectorEl?.focus({ preventScroll: true });
 	}
 
 	function onTileClick(
@@ -1113,12 +2046,121 @@
 			suppressTreeClick = null;
 			return;
 		}
-		void selectNode(data, event.currentTarget);
+		void selectNode(data, rootId, event.currentTarget);
 	}
 
+	// Grid selection moves focus into the inspector, as lineage selection does,
+	// so keyboard users do not keep tabbing through tiles behind the overlay.
+	async function selectGridTile(id: string, origin: HTMLButtonElement): Promise<void> {
+		gridSelectedId = id;
+		requestedGridSelectionId = id;
+		persistImagesPreferences();
+		selectionOrigin = origin;
+		inspectorOpened();
+		await tick();
+		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+		// preventScroll: the overlay slides in from off screen, and focusing it
+		// mid-slide would scroll the clipped studio column sideways to reach it.
+		inspectorEl?.focus({ preventScroll: true });
+	}
+
+	// On a narrow screen the inspector is an overlay that slides in from the
+	// end edge with a CSS transition, slides back out before it unmounts, and
+	// can be swiped away. A new selection while it is sliding out reverses
+	// the slide from wherever it is.
+	const narrowScreen = new MediaQuery('max-width: 47.99rem', false);
+	let inspectorLeaving = $state(false);
+	let leaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function stopLeaving(): void {
+		if (leaveTimer !== null) clearTimeout(leaveTimer);
+		leaveTimer = null;
+		inspectorLeaving = false;
+	}
+
+	/** A selection opened (or kept open) the inspector: give it a history
+	 * entry for Back, and cancel a slide out in progress. */
+	function inspectorOpened(): void {
+		stopLeaving();
+		pushOverlay('inspector');
+	}
+
+	const inspectorIsOpen = () =>
+		(imagesMode === 'grid' ? gridSelectedId : studio.lineageSelectedAssetId) !== null &&
+		!inspectorLeaving;
+
+	/** Close the inspector from a button, Escape or a swipe: drop its
+	 * history entry too. */
 	function closeInspector(): void {
+		if (!inspectorIsOpen()) return;
+		void popOverlay('inspector');
+		dismissInspector();
+	}
+
+	/** Close the inspector without touching the history: Back or Forward
+	 * has already moved off its entry, and stepping back again would skip
+	 * one. */
+	function dismissInspector(): void {
+		if (!inspectorIsOpen()) return;
+		const panel = inspectorEl;
+		if (!narrowScreen.current || reducedMotion || panel === null) {
+			clearInspectorSelection();
+			return;
+		}
+		inspectorLeaving = true;
+		const finish = () => {
+			panel.removeEventListener('transitionend', onEnd);
+			if (!inspectorLeaving) return;
+			stopLeaving();
+			clearInspectorSelection();
+		};
+		const onEnd = (event: TransitionEvent) => {
+			if (event.target === panel && event.propertyName === 'translate') finish();
+		};
+		panel.addEventListener('transitionend', onEnd);
+		leaveTimer = setTimeout(finish, 400);
+	}
+
+	$effect(() => closeOnHistoryStep('inspector', inspectorIsOpen, dismissInspector));
+
+	// An inspector entry with no inspector (the selection went away some
+	// other way, or Back returned to a grid whose selection did not survive
+	// the view) is cleared in place: a Back that changes nothing is a dead step.
+	$effect(() => {
+		const selected = imagesMode === 'grid' ? gridSelectedId : studio.lineageSelectedAssetId;
+		if (selected === null && !inspectorLeaving && page.state.studioOverlay === 'inspector') {
+			untrack(() => forgetOverlay('inspector'));
+		}
+	});
+
+	// Swipe toward the end edge closes the overlay inspector.
+	$effect(() => {
+		const panel = inspectorEl;
+		if (panel === null) return;
+		return attachSwipeDismiss(panel, {
+			direction: 1,
+			enabled: () => narrowScreen.current,
+			onDismiss: closeInspector
+		});
+	});
+
+	function clearInspectorSelection(): void {
+		if (imagesMode === 'grid') {
+			if (gridSelectedId === null) return;
+			gridSelectedId = null;
+			requestedGridSelectionId = null;
+			persistImagesPreferences();
+			const origin = selectionOrigin?.isConnected ? selectionOrigin : null;
+			selectionOrigin = null;
+			void tick().then(() =>
+				(origin ?? sectionEl?.querySelector<HTMLElement>('.grid-tile, .filter-pill'))?.focus()
+			);
+			return;
+		}
 		if (studio.lineageSelectedAssetId === null) return;
 		studio.lineageSelectedAssetId = null;
+		pendingLineageSelection = null;
+		persistImagesPreferences();
 		studio.selectedId = null;
 		const target = selectionOrigin?.isConnected ? selectionOrigin : viewportEl;
 		selectionOrigin = null;
@@ -1130,7 +2172,11 @@
 	}
 
 	function onWindowKeyDown(event: KeyboardEvent): void {
-		if (event.key !== 'Escape' || studio.lineageSelectedAssetId === null) return;
+		if (
+			event.key !== 'Escape' ||
+			(imagesMode === 'grid' ? gridSelectedId : studio.lineageSelectedAssetId) === null
+		)
+			return;
 		if (modalIsOpen() || event.defaultPrevented) return;
 		const target = event.target as HTMLElement | null;
 		if (target?.closest('input, textarea, select')) return;
@@ -1181,7 +2227,7 @@
 	}
 
 	function saveViewport(): void {
-		saveLineageViewport(lineageViewport());
+		saveViewportForOwner(lineageViewport());
 	}
 
 	function openFromNode(
@@ -1333,6 +2379,26 @@
 
 	onMount(() => {
 		reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		if (imagesMode === 'lineage') void loadRoots(true);
+		void (async () => {
+			try {
+				const response = await fetch('/api/v1/generations/models');
+				if (!response.ok) throw new Error('model options request failed');
+				const body = (await response.json()) as { models: ImageModelOption[] };
+				imageModelOptions = body.models;
+			} catch {
+				imageModelsFailed = true;
+			} finally {
+				imageModelsLoading = false;
+			}
+		})();
+	});
+
+	// The lineage viewport only exists in Lineage mode, so observe it whenever it
+	// mounts, including after switching from Grid, not just on first mount.
+	$effect(() => {
+		const el = viewportEl;
+		if (!el) return;
 		const resize = new ResizeObserver(([entry]) => {
 			viewportWidth = entry.contentRect.width;
 			viewportHeight = entry.contentRect.height;
@@ -1340,13 +2406,16 @@
 				initializeViewport();
 			}
 		});
-		if (viewportEl) resize.observe(viewportEl);
-		void loadRoots();
+		resize.observe(el);
 		return () => resize.disconnect();
 	});
 
 	onDestroy(() => {
-		if (viewportReady) saveViewport();
+		if (gridAnchorSaveTimer !== undefined) clearTimeout(gridAnchorSaveTimer);
+		const anchor = capturePersistedGridAnchor();
+		if (anchor !== null) pendingGridResumeAnchor = anchor;
+		persistImagesPreferences();
+		if (viewportReady) saveViewportForOwner(lineageViewport());
 		canvasActive = false;
 		for (const controller of requestControllers) controller.abort();
 		requestControllers.clear();
@@ -1356,460 +2425,667 @@
 		if (recenterTimer) clearTimeout(recenterTimer);
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 		if (searchDebounce !== undefined) clearTimeout(searchDebounce);
+		gridAnchorSaveTimer = undefined;
+		// A slide out cut short by unmounting still ends the selection it
+		// was closing, now rather than from a timer that outlives the view.
+		const wasLeaving = inspectorLeaving;
+		stopLeaving();
+		if (wasLeaving) clearInspectorSelection();
 	});
 </script>
 
 <svelte:window onkeydown={onWindowKeyDown} />
 
+{#snippet imagesHeader()}
+	<div bind:this={imagesHeaderEl} class="contents" data-images-header>
+		<div class="flex items-center gap-1.5" data-lineage-search>
+			<label
+				class="bg-field border-line-strong focus-within:ring-ring/60 flex h-[30px] w-36 min-w-0 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:w-64"
+			>
+				<SearchIcon class="text-dim size-3.5 shrink-0" aria-hidden="true" />
+				<input
+					type="search"
+					name="q"
+					autocomplete="off"
+					spellcheck={false}
+					class="placeholder:text-dim min-w-0 flex-1 bg-transparent text-[13px] outline-none"
+					bind:value={searchDraft}
+					placeholder={t('app.images.search')}
+					aria-label={t('app.images.search')}
+					oninput={() => scheduleSearchQuery(searchDraft)}
+				/>
+			</label>
+			{#if imagesMode === 'lineage'}
+				<Button
+					variant="outline"
+					size="sm"
+					class="hidden lg:inline-flex"
+					disabled={searchMatchIds === null || searchMatchIds.size === 0}
+					onclick={goToNextSearchMatch}
+				>
+					{t('app.images.next_match')}
+				</Button>
+			{/if}
+		</div>
+		<div
+			class="bg-field border-line-strong flex gap-0.5 rounded-[7px] border p-0.5"
+			role="group"
+			aria-label={t('app.images.layout')}
+		>
+			{#each [{ mode: 'grid', label: t('app.images.mode_grid'), icon: LayoutGridIcon }, { mode: 'lineage', label: t('app.images.mode_lineage'), icon: GitForkIcon }] as const as option (option.mode)}
+				<button
+					type="button"
+					class={'flex h-[26px] min-w-24 items-center justify-center gap-1.5 rounded-[5px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+						(imagesMode === option.mode
+							? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
+							: 'text-muted-foreground hover:text-foreground')}
+					aria-pressed={imagesMode === option.mode}
+					onclick={() => setImagesMode(option.mode)}
+				>
+					<option.icon class="size-3.5" aria-hidden="true" />
+					{option.label}
+				</button>
+			{/each}
+		</div>
+		{#if imagesMode === 'grid' && gridMiddleWindow}
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={gridLoading}
+				aria-label={t('app.images.newest')}
+				onclick={loadNewestGridPage}
+			>
+				{t('app.images.newest')}
+			</Button>
+		{/if}
+	</div>
+{/snippet}
+
 <div
 	bind:this={sectionEl}
-	class="lineage-section relative grid h-full min-h-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-[auto_minmax(0,1fr)] gap-3"
+	class="lineage-section relative grid h-full min-h-0 grid-cols-[minmax(0,1fr)_auto] grid-rows-[auto_minmax(0,1fr)]"
 >
-	<header class="col-span-2 shrink-0">
-		<h1 class="text-xl font-semibold">{t('app.images.title')}</h1>
-		<p class="text-muted-foreground mt-1 text-sm">{t('app.images.sub')}</p>
+	<header class="sr-only">
+		<h1>{t('app.images.title')}</h1>
+		<p>{t('app.images.sub')}</p>
 	</header>
+	<div class="col-start-1 row-start-1 flex flex-wrap items-center gap-2 px-4 pt-3 pb-3">
+		<div class="flex flex-wrap gap-1.5" role="group" aria-label={t('app.images.filters')}>
+			<button
+				type="button"
+				class={'filter-pill ' + (allFilterOn ? 'is-on' : '')}
+				aria-pressed={allFilterOn}
+				onclick={() => {
+					setGridFilter('all');
+					setStarredOnly(false);
+					setImageFilters({ ...defaultImageFilters, models: [] });
+				}}>{t('app.models.filter_all')}</button
+			>
+			<button
+				type="button"
+				class={'filter-pill ' + (starredOnly ? 'is-on' : '')}
+				aria-pressed={starredOnly}
+				onclick={() => setStarredOnly(!starredOnly)}>{t('app.shell.starred')}</button
+			>
+			{#if imagesMode === 'grid'}
+				{#each ['generate', 'image_to_image', 'upscale'] as const as action (action)}
+					<button
+						type="button"
+						class={'filter-pill ' + (gridFilter === action ? 'is-on' : '')}
+						aria-pressed={gridFilter === action}
+						onclick={() => {
+							const next = gridFilter === action ? 'all' : action;
+							setGridFilter(next);
+						}}>{actionLabel(action)}</button
+					>
+				{/each}
+			{/if}
+		</div>
+		<ImageFilterControls
+			filters={imageFilters}
+			options={imageModelOptions}
+			loading={imageModelsLoading}
+			failed={imageModelsFailed}
+			onchange={setImageFilters}
+		/>
+		{#if imagesMode === 'lineage' && imageFiltersActive(imageFilters)}
+			<span class="text-dim text-xs">{t('app.images.lineage_context')}</span>
+		{/if}
+		<span class="flex-1"></span>
+		{#if imagesMode === 'grid'}
+			<span class="text-dim text-xs tabular-nums">
+				{t('app.images.grid_count').replace('{count}', String(gridItems.length))}
+			</span>
+		{/if}
+	</div>
 	<p class="sr-only" role="status">
 		{#if rootsLoading && roots.length === 0}
 			{t('app.images.loading')}
 		{:else if rootsFailed}
 			{t('app.images.load_failed')}
 		{:else if persistedRoots.length === 0}
-			{starredOnly ? t('app.images.no_starred_roots') : t('app.gen.result_hint')}
+			{#if imageFiltersActive(imageFilters)}
+				{t('app.images.no_filter_matches')}
+			{:else if starredOnly}
+				{t('app.images.no_starred_roots')}
+			{:else}
+				{t('app.gen.result_hint')}
+			{/if}
 		{:else if searchQuery !== ''}
 			{t('app.images.matches').replace('{count}', String(searchMatchIds?.size ?? 0))}
 		{/if}
 	</p>
-	<!-- A focusable canvas region owns the documented pan and zoom keyboard controls. -->
-	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-	<div
-		bind:this={viewportEl}
-		{@attach canvasInteractions}
-		class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 min-h-0 min-w-0 overflow-hidden rounded-lg border"
-		class:is-panning={panPointerId !== null || pinch !== null || dragPointerId !== null}
-		role="application"
-		aria-label={t('app.images.canvas')}
-		tabindex="0"
-	>
-		<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
-			<div class="flex items-center gap-1" data-lineage-search>
-				<SearchIcon class="text-muted-foreground size-4 shrink-0" aria-hidden="true" />
-				<Input
-					type="search"
-					name="q"
-					autocomplete="off"
-					spellcheck={false}
-					class="h-8 w-40 rounded-md text-sm"
-					bind:value={searchDraft}
-					placeholder={t('app.images.search')}
-					aria-label={t('app.images.search')}
-					oninput={() => scheduleSearchQuery(searchDraft)}
-				/>
-				<Button
-					variant="secondary"
-					size="sm"
-					disabled={searchMatchIds === null || searchMatchIds.size === 0}
-					onclick={goToNextSearchMatch}
-					aria-label={t('app.images.next_match')}
-				>
-					{t('app.images.next_match')}
-				</Button>
-			</div>
-			<Button
-				variant={starredOnly ? 'default' : 'secondary'}
-				size="sm"
-				aria-pressed={starredOnly}
-				onclick={() => setStarredOnly(!starredOnly)}
-			>
-				<StarIcon class={starredOnly ? 'fill-current' : ''} />
-				{t('app.images.starred_only')}
-			</Button>
-			<Button
-				variant="secondary"
-				size="icon-sm"
-				disabled={!hasTreeOffsets}
-				title={t('app.images.reset_all_positions')}
-				aria-label={t('app.images.reset_all_positions')}
-				onclick={resetAllTreePositions}
-			>
-				<RotateCcwIcon />
-			</Button>
-			<Button
-				variant="secondary"
-				size="icon-sm"
-				title={t('app.images.zoom_out')}
-				aria-label={t('app.images.zoom_out')}
-				onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
-			>
-				<MinusIcon />
-			</Button>
-			<Button
-				variant="secondary"
-				size="icon-sm"
-				title={t('app.images.zoom_in')}
-				aria-label={t('app.images.zoom_in')}
-				onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
-			>
-				<PlusIcon />
-			</Button>
-			<Button
-				variant="secondary"
-				size="icon-sm"
-				title={t('app.images.recenter')}
-				aria-label={t('app.images.recenter')}
-				onclick={() => recenterNewest()}
-			>
-				<LocateFixedIcon />
-			</Button>
-		</div>
-
-		{#if rootsLoading && roots.length === 0}
-			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
-				<span class="flex items-center gap-2">
-					<LoaderCircleIcon class="size-4 animate-spin motion-reduce:animate-none" />
-					{t('app.images.loading')}
-				</span>
-			</div>
-		{:else if rootsFailed}
-			<div class="absolute inset-0 z-20 grid place-items-center text-sm">
-				<div class="flex flex-col items-center gap-3">
-					<span class="text-muted-foreground">{t('app.images.load_failed')}</span>
-					<Button variant="secondary" size="sm" onclick={() => void loadRoots()}>
-						{t('app.images.retry')}
+	{#if imagesMode === 'grid'}
+		<div
+			bind:this={gridScrollerEl}
+			{@attach attachGridDragScroll}
+			onscroll={saveGridAnchorSoon}
+			class="grid-scroller col-start-1 row-start-2 min-h-0 cursor-grab overflow-y-auto px-4 pb-4"
+			aria-busy={gridLoading}
+			role="region"
+			aria-label={t('app.images.mode_grid')}
+		>
+			{#if gridLoading && gridItems.length === 0}
+				<div role="status">
+					<span class="sr-only">{t('app.images.loading')}</span>
+					<ul class="image-grid" aria-hidden="true">
+						{#each Array.from({ length: 12 }, (_, index) => index) as index (index)}
+							<li><Skeleton class="aspect-square w-full rounded-lg" /></li>
+						{/each}
+					</ul>
+				</div>
+			{:else if gridFailed && gridItems.length === 0}
+				<p class="text-muted-foreground grid h-40 place-items-center text-[13px]" role="alert">
+					{t('app.images.load_failed')}
+				</p>
+			{:else if gridItems.length === 0 && !gridLoading}
+				<p class="text-muted-foreground grid h-40 place-items-center text-[13px]">
+					{starredOnly
+						? t('app.images.no_starred_roots')
+						: imageFiltersActive(imageFilters)
+							? t('app.images.no_filter_matches')
+							: t('app.gen.result_hint')}
+				</p>
+			{:else if gridItems.length > 0}
+				<ul class="image-grid" aria-label={t('app.images.title')} aria-busy={gridLoading}>
+					{#each gridItems as generation (generation.id)}
+						{@const tileLabel =
+							generation.params.prompt?.trim() || actionLabel(generationAction(generation))}
+						<li>
+							<button
+								type="button"
+								class={'grid-tile shimmer ' +
+									(gridSelectedId === generation.id ? 'is-selected' : '')}
+								data-generation-id={generation.id}
+								aria-pressed={gridSelectedId === generation.id}
+								title={tileLabel}
+								onclick={(event) => void selectGridTile(generation.id, event.currentTarget)}
+							>
+								<img
+									src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
+									alt={tileLabel}
+									loading="lazy"
+									decoding="async"
+									draggable="false"
+									class="img-reveal"
+									{@attach revealOnLoad(
+										generation.assets[0].thumbnail_url ?? generation.assets[0].url
+									)}
+								/>
+								{#if isStarred(generation.id)}
+									<span class="grid-star" aria-hidden="true"><StarIcon /></span>
+								{/if}
+								{#if typeof generation.params.factor === 'number'}
+									<span class="grid-factor" aria-hidden="true">×{generation.params.factor}</span>
+								{/if}
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+			{#if gridFailed && gridItems.length > 0}
+				<p class="text-muted-foreground mt-4 text-center text-[13px]" role="alert">
+					{t('app.images.load_failed')}
+				</p>
+			{/if}
+			{#if gridHasMore || gridFailed}
+				<div class="mt-4 flex justify-center">
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={gridLoading || imageFilterKey === null}
+						onclick={() => void loadGridPage(gridFailed ? gridFailedAppend : gridHasMore)}
+					>
+						{gridLoading
+							? t('app.images.loading')
+							: gridFailed
+								? t('app.images.retry')
+								: t('app.images.more_matches')}
 					</Button>
 				</div>
-			</div>
-		{:else if persistedRoots.length === 0}
-			<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
-				{starredOnly ? t('app.images.no_starred_roots') : t('app.gen.result_hint')}
-			</div>
-		{/if}
-
+			{/if}
+		</div>
+	{:else}
+		<!-- A focusable canvas region owns the documented pan and zoom keyboard controls. -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div
-			class={`lineage-world lod-${lod}`}
-			class:recentering
-			style={`transform: translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`}
+			bind:this={viewportEl}
+			{@attach canvasInteractions}
+			class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 mx-4 mb-4 min-h-0 min-w-0 overflow-hidden rounded-[10px] border"
+			class:is-panning={panPointerId !== null || pinch !== null || dragPointerId !== null}
+			role="application"
+			aria-label={t('app.images.canvas')}
+			tabindex="0"
 		>
-			<svg class="lineage-edges" aria-hidden="true">
-				<defs>
-					<marker
-						id="lineage-arrow"
-						viewBox="0 0 8 8"
-						refX="7"
-						refY="4"
-						markerWidth="8"
-						markerHeight="8"
-						markerUnits="userSpaceOnUse"
-						orient="auto"
-					>
-						<path d="M 0 0 L 8 4 L 0 8 z" />
-					</marker>
-				</defs>
-				{#each packedTrees as tree (tree.rootId)}
-					{#each tree.layout.edges as edge (edge.id)}
-						{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
-						{@const edgeTop = tree.y + Math.min(edge.source.y, edge.target.y)}
-						{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
-						{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
-						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
-							<g
-								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={(selectedNode !== null && !selectedPathEdgeIds.has(edge.id)) ||
-									(searchMatchIds !== null && !searchMatchRootIds.has(tree.rootId))}
-							>
-								<path
-									class="lineage-edge"
-									d={lineageEdgePath(edge.source, edge.target, tree.x, tree.y)}
-									marker-end="url(#lineage-arrow)"
-								/>
-								{#if lod !== 'cards'}
-									<text
-										x={tree.x + (edge.source.x + edge.target.x) / 2}
-										y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
-									>
-										{actionLabel(edge.target.data.entry.action)}
-									</text>
-								{/if}
-							</g>
-						{/if}
-					{/each}
-				{/each}
-			</svg>
+			<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
+				<Button
+					variant="secondary"
+					size="icon-sm"
+					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+					disabled={!hasTreeOffsets}
+					title={t('app.images.reset_all_positions')}
+					aria-label={t('app.images.reset_all_positions')}
+					onclick={resetAllTreePositions}
+				>
+					<RotateCcwIcon />
+				</Button>
+				<Button
+					variant="secondary"
+					size="icon-sm"
+					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+					title={t('app.images.zoom_out')}
+					aria-label={t('app.images.zoom_out')}
+					onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
+				>
+					<MinusIcon />
+				</Button>
+				<Button
+					variant="secondary"
+					size="icon-sm"
+					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+					title={t('app.images.zoom_in')}
+					aria-label={t('app.images.zoom_in')}
+					onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
+				>
+					<PlusIcon />
+				</Button>
+				<Button
+					variant="secondary"
+					size="icon-sm"
+					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+					title={t('app.images.recenter')}
+					aria-label={t('app.images.recenter')}
+					onclick={() => recenterNewest()}
+				>
+					<LocateFixedIcon />
+				</Button>
+			</div>
 
-			{#each packedTrees as tree (tree.rootId)}
-				<span class="cluster-time" style={`transform: translate(${tree.x}px, ${tree.y - 24}px)`}>
-					{timeLabel(tree.createdAt)}
-				</span>
-			{/each}
-
-			{#if lod === 'cards'}
-				{#each packedTrees as tree (tree.rootId)}
-					{#each tree.layout.edges as edge (edge.id)}
-						{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
-						{@const edgeTop = tree.y + Math.min(edge.source.y, edge.target.y)}
-						{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
-						{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
-						{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
-							{@const delta = edgeDelta(edge)}
-							<dl
-								class="edge-delta"
-								class:is-active={selectedPathEdgeIds.has(edge.id)}
-								class:is-dimmed={selectedNode !== null && !selectedPathEdgeIds.has(edge.id)}
-								style={`left: ${tree.x + (edge.source.x + edge.target.x) / 2}px; top: ${tree.y + (edge.source.y + edge.target.y) / 2}px`}
-							>
-								<div>
-									<dt>{t('app.images.delta_action')}</dt>
-									<dd>{actionLabel(edge.target.data.entry.action)}</dd>
-								</div>
-								{#each delta.prompt.tokens as token, tokenIndex (`${token.kind}:${tokenIndex}`)}
-									{#if token.kind === 'added' || token.kind === 'removed'}
-										<div>
-											<dt>
-												{token.kind === 'added'
-													? t('app.images.delta_added')
-													: t('app.images.delta_removed')}
-											</dt>
-											<dd>{token.text}</dd>
-										</div>
-									{/if}
-								{/each}
-								{#if delta.prompt.truncated}
-									<button
-										type="button"
-										class="edge-delta-expand"
-										onclick={(event) => {
-											event.stopPropagation();
-											expandedEdgeIds = new Set([...expandedEdgeIds, edge.id]);
-										}}
-									>
-										{t('app.images.delta_expand')}
-									</button>
-								{/if}
-								{#if delta.parentModel && delta.childModel && delta.parentModel !== delta.childModel}
-									<div>
-										<dt>{t('app.images.delta_model')}</dt>
-										<dd>{delta.parentModel} -> {delta.childModel}</dd>
-									</div>
-								{/if}
-								{#each delta.params as change (change.kind === 'new-seed' ? 'new-seed' : `${change.kind}:${change.key}`)}
-									<div>
-										{#if change.kind === 'new-seed'}
-											<dt>{t('app.images.delta_new_seed')}</dt>
-											<dd></dd>
-										{:else if change.kind === 'changed'}
-											<dt>{change.key}</dt>
-											<dd>{change.from} -> {change.to}</dd>
-										{:else if change.kind === 'added'}
-											<dt>{t('app.images.delta_added')}</dt>
-											<dd>{change.key}: {change.value}</dd>
-										{:else}
-											<dt>{t('app.images.delta_removed')}</dt>
-											<dd>{change.key}: {change.value}</dd>
-										{/if}
-									</div>
-								{/each}
-							</dl>
-						{/if}
-					{/each}
-				{/each}
+			{#if rootsLoading && roots.length === 0}
+				<!-- A tree's outline while the roots load; the status line above
+				     the canvas announces it. -->
+				<div class="absolute inset-0 grid place-items-center" aria-hidden="true">
+					<div class="flex flex-col items-center gap-6">
+						<Skeleton class="size-24 rounded-lg" />
+						<div class="flex gap-6">
+							<Skeleton class="size-[72px] rounded-lg" />
+							<Skeleton class="size-[72px] rounded-lg" />
+							<Skeleton class="size-[72px] rounded-lg" />
+						</div>
+					</div>
+				</div>
+			{:else if rootsFailed}
+				<div class="absolute inset-0 z-20 grid place-items-center text-sm">
+					<div class="flex flex-col items-center gap-3">
+						<span class="text-muted-foreground">{t('app.images.load_failed')}</span>
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={() => void loadRoots(!rootsFailedAppend)}
+						>
+							{t('app.images.retry')}
+						</Button>
+					</div>
+				</div>
+			{:else if persistedRoots.length === 0}
+				<div class="text-muted-foreground absolute inset-0 grid place-items-center text-sm">
+					{#if imageFiltersActive(imageFilters)}
+						{t('app.images.no_filter_matches')}
+					{:else if starredOnly}
+						{t('app.images.no_starred_roots')}
+					{:else}
+						{t('app.gen.result_hint')}
+					{/if}
+				</div>
 			{/if}
 
-			{#each visibleNodes as item (`${item.rootId}:${item.node.id}`)}
-				{@const data = item.node.data}
-				{@const shownImage = imageUrl(data, lod)}
-				{@const starred = data.entry.job_id !== null && isStarred(data.entry.job_id)}
-				{@const searchTone = lineageSearchTone(data.entry.job_id, searchMatchIds)}
-				<div
-					class="tile-shell"
-					class:is-new={newNodeIds.has(item.node.id)}
-					style={`transform: translate3d(${item.x - LINEAGE_TILE_WIDTH / 2}px, ${item.y - LINEAGE_TILE_HEIGHT / 2}px, 0)`}
-				>
-					<button
-						type="button"
-						class="lineage-tile"
-						class:is-root={item.isRoot}
-						class:is-dragging={draggedRootId === item.rootId}
-						class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id ||
-							(data.entry.missing && studio.lineageSelectedAssetId === data.entry.job_id)}
-						class:is-missing={data.entry.missing || shownImage === null}
-						class:is-starred={starred}
-						class:is-search-match={searchTone === 'match'}
-						class:is-search-dim={searchTone === 'dim'}
-						style={`--tile-pull: ${proximityScale(item)}`}
-						aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
-						title={promptLabel(data)}
-						tabindex={lineageTileTabIndex(item.node.id, focusedNodeId)}
-						data-lineage-node={item.node.id}
-						onfocus={() => (focusedNodeId = item.node.id)}
-						onpointerdown={(event) => {
-							if (item.isRoot) startTreeDrag(event, item.rootId);
-						}}
-						onkeydown={(event) => {
-							if (event.key === 'Escape') {
-								event.preventDefault();
-								event.stopPropagation();
-								viewportEl?.focus();
-								return;
-							}
-							if (event.altKey && item.isRoot) {
-								moveTreeFromKeyboard(event, item.rootId);
-								return;
-							}
-							if (event.altKey) return;
-							const next = nextLineageRoverId(lineageRover, item.node.id, event.key);
-							if (next === null) {
-								if (
-									event.key === 'ArrowLeft' ||
-									event.key === 'ArrowRight' ||
-									event.key === 'ArrowUp' ||
-									event.key === 'ArrowDown'
-								) {
+			<div
+				class={`lineage-world lod-${lod}`}
+				class:recentering
+				style={`transform: translate3d(${translateX}px, ${translateY}px, 0) scale(${scale})`}
+			>
+				<svg class="lineage-edges" aria-hidden="true">
+					<defs>
+						<marker
+							id="lineage-arrow"
+							viewBox="0 0 8 8"
+							refX="7"
+							refY="4"
+							markerWidth="8"
+							markerHeight="8"
+							markerUnits="userSpaceOnUse"
+							orient="auto"
+						>
+							<path d="M 0 0 L 8 4 L 0 8 z" />
+						</marker>
+					</defs>
+					{#each packedTrees as tree (tree.rootId)}
+						{#each tree.layout.edges as edge (edge.id)}
+							{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
+							{@const edgeTop = tree.y + Math.min(edge.source.y, edge.target.y)}
+							{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
+							{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
+							{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
+								<g
+									class:is-active={selectedPathEdgeIds.has(edge.id)}
+									class:is-dimmed={(selectedNode !== null && !selectedPathEdgeIds.has(edge.id)) ||
+										(searchMatchIds !== null && !searchMatchRootIds.has(tree.rootId))}
+								>
+									<path
+										class="lineage-edge"
+										d={lineageEdgePath(edge.source, edge.target, tree.x, tree.y)}
+										marker-end="url(#lineage-arrow)"
+									/>
+									{#if lod !== 'cards'}
+										<text
+											x={tree.x + (edge.source.x + edge.target.x) / 2}
+											y={tree.y + (edge.source.y + edge.target.y) / 2 - 7}
+										>
+											{actionLabel(edge.target.data.entry.action)}
+										</text>
+									{/if}
+								</g>
+							{/if}
+						{/each}
+					{/each}
+				</svg>
+
+				{#each packedTrees as tree (tree.rootId)}
+					<span class="cluster-time" style={`transform: translate(${tree.x}px, ${tree.y - 24}px)`}>
+						{timeLabel(tree.createdAt)}
+					</span>
+				{/each}
+
+				{#if lod === 'cards'}
+					{#each packedTrees as tree (tree.rootId)}
+						{#each tree.layout.edges as edge (edge.id)}
+							{@const edgeLeft = tree.x + Math.min(edge.source.x, edge.target.x)}
+							{@const edgeTop = tree.y + Math.min(edge.source.y, edge.target.y)}
+							{@const edgeRight = tree.x + Math.max(edge.source.x, edge.target.x)}
+							{@const edgeBottom = tree.y + Math.max(edge.source.y, edge.target.y)}
+							{#if rectsIntersect( worldRect, { left: edgeLeft, top: edgeTop, right: edgeRight, bottom: edgeBottom } )}
+								{@const delta = edgeDelta(edge)}
+								<dl
+									class="edge-delta"
+									class:is-active={selectedPathEdgeIds.has(edge.id)}
+									class:is-dimmed={selectedNode !== null && !selectedPathEdgeIds.has(edge.id)}
+									style={`left: ${tree.x + (edge.source.x + edge.target.x) / 2}px; top: ${tree.y + (edge.source.y + edge.target.y) / 2}px`}
+								>
+									<div>
+										<dt>{t('app.images.delta_action')}</dt>
+										<dd>{actionLabel(edge.target.data.entry.action)}</dd>
+									</div>
+									{#each delta.prompt.tokens as token, tokenIndex (`${token.kind}:${tokenIndex}`)}
+										{#if token.kind === 'added' || token.kind === 'removed'}
+											<div>
+												<dt>
+													{token.kind === 'added'
+														? t('app.images.delta_added')
+														: t('app.images.delta_removed')}
+												</dt>
+												<dd>{token.text}</dd>
+											</div>
+										{/if}
+									{/each}
+									{#if delta.prompt.truncated}
+										<button
+											type="button"
+											class="edge-delta-expand"
+											onclick={(event) => {
+												event.stopPropagation();
+												expandedEdgeIds = new Set([...expandedEdgeIds, edge.id]);
+											}}
+										>
+											{t('app.images.delta_expand')}
+										</button>
+									{/if}
+									{#if delta.parentModel && delta.childModel && delta.parentModel !== delta.childModel}
+										<div>
+											<dt>{t('app.images.delta_model')}</dt>
+											<dd>{delta.parentModel} -> {delta.childModel}</dd>
+										</div>
+									{/if}
+									{#each delta.params as change (change.kind === 'new-seed' ? 'new-seed' : `${change.kind}:${change.key}`)}
+										<div>
+											{#if change.kind === 'new-seed'}
+												<dt>{t('app.images.delta_new_seed')}</dt>
+												<dd></dd>
+											{:else if change.kind === 'changed'}
+												<dt>{change.key}</dt>
+												<dd>{change.from} -> {change.to}</dd>
+											{:else if change.kind === 'added'}
+												<dt>{t('app.images.delta_added')}</dt>
+												<dd>{change.key}: {change.value}</dd>
+											{:else}
+												<dt>{t('app.images.delta_removed')}</dt>
+												<dd>{change.key}: {change.value}</dd>
+											{/if}
+										</div>
+									{/each}
+								</dl>
+							{/if}
+						{/each}
+					{/each}
+				{/if}
+
+				{#each visibleNodes as item (`${item.rootId}:${item.node.id}`)}
+					{@const data = item.node.data}
+					{@const shownImage = imageUrl(data, lod)}
+					{@const starred = data.entry.job_id !== null && isStarred(data.entry.job_id)}
+					{@const searchTone = lineageSearchTone(data.entry.job_id, searchMatchIds)}
+					<div
+						class="tile-shell"
+						class:is-new={newNodeIds.has(item.node.id)}
+						style={`transform: translate3d(${item.x - LINEAGE_TILE_WIDTH / 2}px, ${item.y - LINEAGE_TILE_HEIGHT / 2}px, 0)`}
+					>
+						<button
+							type="button"
+							class="lineage-tile"
+							class:is-root={item.isRoot}
+							class:is-dragging={draggedRootId === item.rootId}
+							class:is-selected={studio.lineageSelectedAssetId === data.entry.asset_id ||
+								(data.entry.missing && studio.lineageSelectedAssetId === data.entry.job_id)}
+							class:is-missing={data.entry.missing || shownImage === null}
+							class:is-starred={starred}
+							class:is-search-match={searchTone === 'match'}
+							class:is-search-dim={searchTone === 'dim'}
+							style={`--tile-pull: ${proximityScale(item)}`}
+							aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
+							title={promptLabel(data)}
+							tabindex={lineageTileTabIndex(item.node.id, focusedNodeId)}
+							data-lineage-node={item.node.id}
+							onfocus={() => (focusedNodeId = item.node.id)}
+							onpointerdown={(event) => {
+								if (item.isRoot) startTreeDrag(event, item.rootId);
+							}}
+							onkeydown={(event) => {
+								if (event.key === 'Escape') {
 									event.preventDefault();
 									event.stopPropagation();
+									viewportEl?.focus();
+									return;
 								}
-								return;
-							}
-							event.preventDefault();
-							event.stopPropagation();
-							focusNode(next);
-						}}
-						onclick={(event) => onTileClick(event, data, item.rootId, item.isRoot)}
-						ondblclick={(event) => {
-							event.preventDefault();
-							event.stopPropagation();
-							branchFromNode(data);
-						}}
-					>
-						{#if item.isRoot}
-							<span
-								class="root-affordance"
-								title={item.treeStatus === 'loading'
-									? t('app.images.tree_loading')
-									: t('app.images.drag_tree')}
-								aria-hidden="true"
-							>
-								{#if item.treeStatus === 'loading'}
-									<LoaderCircleIcon class="animate-spin motion-reduce:animate-none" />
-								{:else}
-									<MoveIcon />
-								{/if}
-							</span>
-						{/if}
-						<span class="micro-content">
-							{#if shownImage !== null}
-								{#key shownImage}
-									<img
-										src={lod === 'constellation' ? shownImage : undefined}
-										alt=""
-										draggable="false"
-										onerror={() => void refreshImage(data)}
-									/>
-								{/key}
-							{:else}
-								<ImageOffIcon />
+								if (event.altKey && item.isRoot) {
+									moveTreeFromKeyboard(event, item.rootId);
+									return;
+								}
+								if (event.altKey) return;
+								const next = nextLineageRoverId(lineageRover, item.node.id, event.key);
+								if (next === null) {
+									if (
+										event.key === 'ArrowLeft' ||
+										event.key === 'ArrowRight' ||
+										event.key === 'ArrowUp' ||
+										event.key === 'ArrowDown'
+									) {
+										event.preventDefault();
+										event.stopPropagation();
+									}
+									return;
+								}
+								event.preventDefault();
+								event.stopPropagation();
+								focusNode(next);
+							}}
+							onclick={(event) => onTileClick(event, data, item.rootId, item.isRoot)}
+							ondblclick={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+								branchFromNode(data);
+							}}
+						>
+							{#if item.isRoot}
+								<span
+									class="root-affordance"
+									title={item.treeStatus === 'loading'
+										? t('app.images.tree_loading')
+										: t('app.images.drag_tree')}
+									aria-hidden="true"
+								>
+									{#if item.treeStatus === 'loading'}
+										<LoaderCircleIcon class="animate-spin motion-reduce:animate-none" />
+									{:else}
+										<MoveIcon />
+									{/if}
+								</span>
 							{/if}
-						</span>
-						<span class="tree-content">
-							{#if starred}
-								<span class="node-star" aria-hidden="true"><StarIcon /></span>
-							{/if}
-							{#if shownImage !== null}
-								{#key shownImage}
-									<img
-										src={lod === 'trees' ? shownImage : undefined}
-										alt=""
-										draggable="false"
-										onerror={() => void refreshImage(data)}
-									/>
-								{/key}
-							{:else}
-								<ImageOffIcon />
-							{/if}
-						</span>
-						<span class="card-content">
-							{#if starred}
-								<span class="node-star" aria-hidden="true"><StarIcon /></span>
-							{/if}
-							<span class="card-image">
+							<span class="micro-content">
 								{#if shownImage !== null}
 									{#key shownImage}
 										<img
-											src={lod === 'cards' ? shownImage : undefined}
+											src={lod === 'constellation' ? shownImage : undefined}
 											alt=""
 											draggable="false"
 											onerror={() => void refreshImage(data)}
 										/>
 									{/key}
-								{:else if refreshingImageIds.has(data.entry.asset_id)}
-									<LoaderCircleIcon class="animate-spin motion-reduce:animate-none" />
 								{:else}
 									<ImageOffIcon />
 								{/if}
 							</span>
-							<span class="card-copy">
-								<strong>{modelLabel(data)}</strong>
-								<span>{promptLabel(data)}</span>
-								<time datetime={data.entry.created_at}>{timeLabel(data.entry.created_at)}</time>
+							<span class="tree-content">
+								{#if starred}
+									<span class="node-star" aria-hidden="true"><StarIcon /></span>
+								{/if}
+								{#if shownImage !== null}
+									{#key shownImage}
+										<img
+											src={lod === 'trees' ? shownImage : undefined}
+											alt=""
+											draggable="false"
+											onerror={() => void refreshImage(data)}
+										/>
+									{/key}
+								{:else}
+									<ImageOffIcon />
+								{/if}
 							</span>
-						</span>
-					</button>
-					{#if item.isRoot && treeOffsets[item.rootId] !== undefined}
-						<button
-							type="button"
-							class="reset-tree-position"
-							title={t('app.images.reset_tree_position')}
-							aria-label={t('app.images.reset_tree_position')}
-							onpointerdown={(event) => event.stopPropagation()}
-							onclick={(event) => {
-								event.stopPropagation();
-								resetTreePosition(item.rootId);
-							}}
-						>
-							<RotateCcwIcon />
+							<span class="card-content">
+								{#if starred}
+									<span class="node-star" aria-hidden="true"><StarIcon /></span>
+								{/if}
+								<span class="card-image">
+									{#if shownImage !== null}
+										{#key shownImage}
+											<img
+												src={lod === 'cards' ? shownImage : undefined}
+												alt=""
+												draggable="false"
+												onerror={() => void refreshImage(data)}
+											/>
+										{/key}
+									{:else if refreshingImageIds.has(data.entry.asset_id)}
+										<LoaderCircleIcon class="animate-spin motion-reduce:animate-none" />
+									{:else}
+										<ImageOffIcon />
+									{/if}
+								</span>
+								<span class="card-copy">
+									<strong>{modelLabel(data)}</strong>
+									<span>{promptLabel(data)}</span>
+									<time datetime={data.entry.created_at}>{timeLabel(data.entry.created_at)}</time>
+								</span>
+							</span>
 						</button>
-					{/if}
-					{#if item.isRoot && item.treeStatus === 'error'}
-						{@const root = persistedRoots.find((entry) => entry.id === item.rootId)}
-						{#if root}
+						{#if item.isRoot && treeOffsets[item.rootId] !== undefined}
 							<button
 								type="button"
-								class="retry-tree-load"
-								title={t('app.images.retry_tree_load')}
-								aria-label={t('app.images.retry_tree_load')}
+								class="reset-tree-position"
+								title={t('app.images.reset_tree_position')}
+								aria-label={t('app.images.reset_tree_position')}
 								onpointerdown={(event) => event.stopPropagation()}
 								onclick={(event) => {
 									event.stopPropagation();
-									forest.force(root);
+									resetTreePosition(item.rootId);
 								}}
 							>
-								<RefreshCwIcon />
+								<RotateCcwIcon />
 							</button>
 						{/if}
-					{/if}
-					{#if item.isRoot && item.remainingCountLowerBound > 0}
-						<span class="truncated-count">
-							{t('app.images.truncated_more').replace(
-								'{count}',
-								String(item.remainingCountLowerBound)
-							)}
-						</span>
-					{/if}
-				</div>
-			{/each}
+						{#if item.isRoot && item.treeStatus === 'error'}
+							{@const root = persistedRoots.find((entry) => entry.id === item.rootId)}
+							{#if root}
+								<button
+									type="button"
+									class="retry-tree-load"
+									title={t('app.images.retry_tree_load')}
+									aria-label={t('app.images.retry_tree_load')}
+									onpointerdown={(event) => event.stopPropagation()}
+									onclick={(event) => {
+										event.stopPropagation();
+										forest.force(root);
+									}}
+								>
+									<RefreshCwIcon />
+								</button>
+							{/if}
+						{/if}
+						{#if item.isRoot && item.remainingCountLowerBound > 0}
+							<span class="truncated-count">
+								{t('app.images.truncated_more').replace(
+									'{count}',
+									String(item.remainingCountLowerBound)
+								)}
+							</span>
+						{/if}
+					</div>
+				{/each}
+			</div>
 		</div>
-	</div>
+	{/if}
 
 	{#if selectedData !== null}
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<aside
 			bind:this={inspectorEl}
-			class="selection-inspector border-border bg-card absolute inset-y-0 end-0 z-40 row-start-2 flex w-[min(22rem,calc(100%-1rem))] flex-col overflow-y-auto rounded-lg border p-4 shadow-xl md:relative md:inset-auto md:z-auto md:col-start-2 md:w-80 md:shadow-none xl:w-96"
+			data-leaving={inspectorLeaving ? '' : undefined}
+			class="selection-inspector border-border bg-panel absolute inset-y-0 end-0 z-40 row-span-2 row-start-1 flex w-[min(22rem,calc(100%-1rem))] flex-col overflow-y-auto border-s p-4 shadow-xl md:relative md:inset-auto md:z-auto md:col-start-2 md:w-80 md:shadow-none xl:w-[320px]"
 			aria-labelledby="selection-inspector-title"
 			tabindex="-1"
 		>
 			<div class="mb-4 flex items-start justify-between gap-3">
 				<div>
-					<h2 id="selection-inspector-title" class="font-semibold">
+					<h2 id="selection-inspector-title" class="text-[13px] font-semibold">
 						{t('app.images.inspector_title')}
 					</h2>
 					<p class="text-muted-foreground mt-1 text-xs">
@@ -1819,6 +3095,7 @@
 				<Button
 					variant="ghost"
 					size="icon-sm"
+					class="hit-slop relative"
 					title={t('app.images.close_inspector')}
 					aria-label={t('app.images.close_inspector')}
 					onclick={closeInspector}
@@ -1832,13 +3109,22 @@
 					href={selectedImageUrl}
 					target="_blank"
 					rel="noopener"
-					class="bg-muted mb-4 block aspect-square shrink-0 overflow-hidden rounded-lg"
+					class="reveal-stack bg-raised ring-line-strong relative mb-3 block aspect-square shrink-0 overflow-hidden rounded-lg ring-1"
 					title={t('app.gen.open_full')}
 				>
+					{#if selectedThumbnailUrl !== null && selectedThumbnailUrl !== selectedImageUrl}
+						<img
+							src={selectedThumbnailUrl}
+							alt=""
+							aria-hidden="true"
+							class="img-placeholder absolute inset-0 h-full w-full object-contain [--placeholder-radius:0px]"
+						/>
+					{/if}
 					<img
 						src={selectedImageUrl}
 						alt={selectedPrompt || t('app.gen.result')}
-						class="h-full w-full object-contain"
+						class="img-reveal relative h-full w-full object-contain"
+						{@attach revealOnLoad(selectedImageUrl)}
 					/>
 				</a>
 			{:else}
@@ -1852,20 +3138,20 @@
 				</div>
 			{/if}
 
-			<div class="border-border mb-4 grid gap-2 border-b pb-4">
+			<div class="mb-4 grid grid-cols-2 gap-2">
 				<Button
 					variant="outline"
-					class="justify-start"
+					size="sm"
 					disabled={selectedGeneration === null}
 					onclick={() => void toggleSelectedStar()}
 				>
-					<StarIcon class={selectedIsStarred ? 'fill-current' : ''} />
+					<StarIcon class={selectedIsStarred ? 'text-status-warning fill-current' : ''} />
 					{selectedIsStarred ? t('app.gen.unstar') : t('app.gen.star')}
 				</Button>
 				<Button
 					href={selectedAsset?.download_url}
 					variant="outline"
-					class="justify-start"
+					size="sm"
 					disabled={!selectedHasBytes}
 				>
 					<DownloadIcon />
@@ -1873,7 +3159,7 @@
 				</Button>
 				<Button
 					variant="outline"
-					class="justify-start"
+					size="sm"
 					disabled={!canUpscaleSelected}
 					onclick={() => openFromSelection('upscale')}
 				>
@@ -1882,7 +3168,7 @@
 				</Button>
 				<Button
 					variant="outline"
-					class="justify-start"
+					size="sm"
 					disabled={!canEditSelected}
 					onclick={() => openFromSelection('image_to_image')}
 				>
@@ -1890,8 +3176,9 @@
 					{t('app.images.action_edit')}
 				</Button>
 				<Button
-					variant="outline"
-					class="justify-start"
+					variant="brand"
+					size="sm"
+					class="col-span-2"
 					disabled={!canGenerateFromPrompt}
 					onclick={() => openFromSelection('generate')}
 				>
@@ -1900,7 +3187,7 @@
 				</Button>
 			</div>
 
-			<dl class="grid gap-3 text-sm">
+			<dl class="grid gap-3 text-[12.5px]">
 				<div>
 					<dt class="text-muted-foreground text-xs">{t('app.gen.prompt')}</dt>
 					<dd class="mt-1 whitespace-pre-wrap">{selectedPrompt || t('app.images.no_prompt')}</dd>
@@ -1923,6 +3210,12 @@
 						</time>
 					</dd>
 				</div>
+				{#if selectedGeneration?.gpu_ms != null}
+					<div>
+						<dt class="text-muted-foreground text-xs">{t('app.gen.gpu_time')}</dt>
+						<dd class="mt-1 tabular-nums">{formatMs(selectedGeneration.gpu_ms)}</dd>
+					</div>
+				{/if}
 				{#if selectedParams.length > 0}
 					<div>
 						<dt class="text-muted-foreground text-xs">{t('app.images.parameters')}</dt>
@@ -1942,6 +3235,84 @@
 </div>
 
 <style>
+	.filter-pill {
+		display: inline-flex;
+		height: 26px;
+		align-items: center;
+		border: 1px solid var(--line-strong);
+		border-radius: 999px;
+		padding: 0 10px;
+		color: var(--muted-foreground);
+		font-size: 12px;
+		font-weight: 500;
+		outline: none;
+	}
+	.filter-pill:hover {
+		color: var(--foreground);
+	}
+	.filter-pill.is-on {
+		border-color: var(--line-strong);
+		background: var(--hover);
+		color: var(--foreground);
+	}
+	.filter-pill:focus-visible,
+	.grid-tile:focus-visible {
+		box-shadow: 0 0 0 2px var(--ring);
+	}
+	.image-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+		gap: 9px;
+	}
+	.grid-tile {
+		position: relative;
+		display: block;
+		cursor: grab;
+		width: 100%;
+		aspect-ratio: 1;
+		overflow: hidden;
+		border-radius: 8px;
+		box-shadow: 0 0 0 1px var(--line-strong);
+		outline: none;
+	}
+	:global(.grid-scroller.is-drag-scrolling .grid-tile) {
+		cursor: grabbing;
+	}
+	.is-drag-scrolling {
+		cursor: grabbing;
+		user-select: none;
+	}
+	.grid-tile img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+	}
+	.grid-tile.is-selected {
+		box-shadow:
+			0 0 0 2px var(--brand),
+			0 0 0 1px var(--line-strong);
+	}
+	.grid-star {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		color: var(--status-warning);
+	}
+	.grid-star :global(svg) {
+		width: 14px;
+		height: 14px;
+	}
+	.grid-factor {
+		position: absolute;
+		bottom: 6px;
+		left: 6px;
+		border-radius: 4px;
+		background: rgb(0 0 0 / 55%);
+		padding: 0 5px;
+		color: #ededed;
+		font-size: 11px;
+	}
+
 	.lineage-viewport {
 		touch-action: none;
 		cursor: grab;
@@ -2258,6 +3629,31 @@
 	.lineage-tile.is-search-match {
 		outline: 2px solid var(--primary);
 		outline-offset: 2px;
+	}
+
+	/* Below md the inspector overlays the canvas: it slides in from the end
+	   edge and back out (data-leaving) with interruptible CSS transitions, and
+	   pan-y leaves horizontal drags to the swipe that dismisses it. */
+	@media (max-width: 47.99rem) {
+		.selection-inspector {
+			transition: translate 280ms cubic-bezier(0.32, 0.72, 0, 1);
+			touch-action: pan-y;
+		}
+		.selection-inspector[data-leaving] {
+			translate: 100% 0;
+			pointer-events: none;
+		}
+		@starting-style {
+			.selection-inspector {
+				translate: 100% 0;
+			}
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.selection-inspector {
+			transition: none;
+		}
 	}
 
 	.selection-inspector:focus:not(:focus-visible) {

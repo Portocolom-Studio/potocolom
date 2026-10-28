@@ -56,7 +56,7 @@
 	}
 </script>
 
-<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
+<Card.Root data-benchmark-chart="timeline" class="overflow-hidden p-0 [--card-spacing:0]">
 	<Card.Header class="border-border border-b px-5 py-4">
 		<div class="flex flex-wrap items-center justify-between gap-3">
 			<div>
@@ -85,7 +85,7 @@
 				rule={false}
 				points={false}
 				props={{
-					spline: { motion: 'tween', class: 'stroke-[1.5px]' },
+					spline: { motion: 'none', class: 'stroke-[1.5px]' },
 					xAxis: { format: formatElapsed, ticks: 6 },
 					yAxis: { format: (v: number) => formatMs(v) },
 					grid: { class: 'stroke-border/50' }

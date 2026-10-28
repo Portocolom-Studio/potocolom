@@ -2059,3 +2059,134 @@ Rejected alternatives: a simulated worker in production (it cannot generate
 real images); a new CPU inference image without an issue or qualification;
 requiring a GPU on API-only servers; treating detached Compose startup as
 readiness; replacing an unknown database password with a new random value.
+
+## The studio, landing and auth pages follow one written design system
+
+PR #774 redesigns the studio shell and views, the landing footer and the
+sign-in and join pages, and records the result in
+[design-system.md](design-system.md). The studio uses its own scoped tokens
+(neutral greys, Geist, 6px and 10px radii, solid borders, status colours that
+never reuse chart colours), reserves brand blue for actions that spend GPU
+time, and groups navigation by task: Create, Library and Platform. The
+landing and auth pages keep their own Lato tokens and share a particle sea
+under a blue sunrise: behind the footer wordmark and beside the sign-in and
+join forms. New UI follows that document, and a change to a token, component
+contract or rule updates it in the same PR.
+
+Rejected alternatives: keeping the square-cornered navy theme across the
+studio (it read as a prototype); one shared token set for landing and studio
+(the landing is image-led and needs different type and contrast); leaving the
+rules only in component code and a private design canvas (future sessions
+could not find them).
+
+## Images size filters use common longest-side groups
+
+Images groups each saved master by its longest side. The repeatable `size`
+filter selects 512, 768, 1K, 2K, 4K, 6K+, or unknown size. The exact ranges
+are in [api.md](api.md#generations-and-history). Thus 1920 px counts as 2K,
+and 3840 px UHD counts as 4K. A job matches any selected group among its
+owned masters. Thumbnails do not count; expired master metadata still counts.
+The server applies sizes to the full owned library, cursors, search IDs, and
+matching-descendant root selection. The browser uses the same ranges for
+newly completed jobs.
+
+The Images view requests `state=succeeded` for its grid, Lineage roots, and
+search IDs. A root retained through a matching descendant uses that state in
+the ancestor seed too. Recent failed or pending jobs therefore cannot fill an
+image page or keep a tree that has no matching saved image. The general
+history API still returns all states when `state` is omitted.
+
+Rejected alternatives: total pixel count, because the user chose longest side;
+strict power-of-two cutoffs, because they put 3840 px UHD in 2K; browser-only
+filtering, because it would miss saved images outside the loaded page.
+
+## Studio view choices belong to a confirmed browser account
+
+PR #774 keeps Metrics ranges and report choice, and Images filters, mode,
+position and selected item, in versioned browser preferences. Each account
+uses its immutable server user ID. The trusted-network profile has a separate
+local key, enabled only after the API confirms that accounts are disabled.
+An unknown identity gets temporary defaults. Email changes keep the same
+preferences; a confirmed different account or role clears cached private data and stops
+old replies from changing the new view.
+
+Startup, admin rechecks and foreground refresh share one account probe with a
+five-second deadline. A due visible foreground check confirms the identity
+before refreshing private data, at most once per 30 seconds. The same owner
+keeps its mounted view and streams. A failed or unreadable foreground probe
+keeps the last confirmed view and defers that refresh. Identity changes take
+effect when an account reply confirms them; the server checks the current
+session, role and ownership on each request.
+
+The URL still chooses the open view and tab. Saved choices let the sidebar
+reopen a tab; they cannot override Back, Forward, an explicit link or a role
+check. Browser preferences never grant access. The server still checks each
+image page, cursor, root and subtree against the current principal.
+
+Preferences include prompt search text, which can remain on a shared browser
+after sign-out, under that account's key. They contain no image or report
+bodies, asset URLs or session secrets. Separate bounded sections limit storage
+work and isolate corrupt values. Old account profiles are evicted with a
+fixed retention limit. Storage failures leave the current view usable.
+Legacy unscoped Images positions migrate only to the confirmed local profile;
+enabling accounts does not copy them to the first account, even when that
+account adopts the existing local user ID. Old keys stay untouched for rollback.
+
+This extends the previous memory-only Lineage selection rule. A saved selection
+is only a hint: restore it through current owned server data or close it.
+A Grid reload resumes one bounded filtered window from the saved predecessor
+cursor. It drops an invalid cursor or missing anchor and returns to the newest
+page once. A middle window does not prepend newer live rows across a gap; a
+Newest action returns to the start with the filters intact. Visit snapshots
+stay in memory with bounded row counts and committed-query provenance.
+A warm snapshot paints before its refresh completes. If a newest-first
+snapshot contains the saved row within the first 200 rows, refresh the newest
+window so earlier rows and new completions remain reachable. Cold reloads,
+middle windows and later saved rows use the owned cursor window. If the user
+makes no new input and new arrivals push the saved row out of that newest
+reply, try one bounded cursor window before dropping an invalid hint. If the user
+moves during a warm refresh, keep the last committed window and discard the
+obsolete resume result, including an invalid-cursor fallback. A cold resume
+still validates its saved hint against the owned response before using it.
+
+Static benchmark charts paint their final geometry without an entry tween.
+Switching Metrics tabs also avoids a whole-page view transition. Other studio
+transitions and the live-canvas exclusion keep their existing rules.
+
+Rejected alternatives: a new database table or preference endpoint, because
+these are browser view choices; email-derived identity, because email can
+change; copying unknown or local preferences into an account; retaining all
+hidden view DOM; unbounded report or image caches; walking every image page
+to recover a scroll position; treating a saved ID as proof of ownership.
+
+
+## Benchmarks refresh on tab entry and animate one report pane
+
+PR #774 refreshes the run list whenever Benchmarks opens, including a return
+from another Metrics tab. One pending list request is shared by rapid returns.
+A list reply merges with the reports present when it commits, so it cannot
+remove a report that finished downloading while that list was pending.
+Report downloads depend on the selected immutable session ID, not the identity
+of a summary object. Replacing summaries cannot cancel and restart the same
+report download. Existing owner epochs and request cancellation still reject
+obsolete replies. Four report bodies remain cached; the supported API creates
+immutable reports, so selecting a cached run does not download its body again.
+
+The ready report has one keyed subtree containing its badges, charts and table.
+It enters with a 200 ms fade from 40 percent opacity and a four-pixel rise.
+This local motion runs on Benchmarks entry and when the report ID changes.
+The selector stays outside that subtree, preserving keyboard focus. Reduced
+motion disables the effect. Chart paths still paint their final geometry;
+there is no dense path interpolation and no whole-page Metrics-tab transition.
+Only one report subtree exists, including during rapid selections.
+
+An uncached selection shows its own loading or error state. It never shows
+another report under the new selection. Loading can reserve the last measured
+report height, capped at the viewport height, without animating that dimension.
+A failed list refresh keeps a valid selected report and offers Retry.
+
+Rejected alternatives: a whole-page transition that blocks input; interpolating
+every point of a dense timeline; retaining outgoing chart copies; downloading
+immutable cached bodies on every selection; polling; server revisions for a
+report-update operation that the supported API does not expose; and a short
+whole-body timeout that makes a large report fail on slow links.
