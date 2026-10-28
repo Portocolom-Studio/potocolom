@@ -115,32 +115,18 @@ def test_shipped_manifests_load():
     manifests = load_manifests(str(models_dir))
     ids = {m.id for m in manifests}
     assert "sdxl-hypersd" in ids
-    assert "vega-rt" in ids
     assert "ssd-1b-lightning" in ids
     assert "realesrgan" in ids
     assert "realesrgan-fast" in ids
+    # The retired benchmark models must not ship in the bundled catalog.
+    assert "sd-turbo" not in ids
+    assert "vega-rt" not in ids
+    assert "dreamshaper-lcm" not in ids
+    assert "sana-sprint-06b" not in ids
+    assert "sdxl-turbo" not in ids
     hypersd = next(m for m in manifests if m.id == "sdxl-hypersd")
     assert hypersd.benchmark_only
     assert hypersd.scheduler == "euler-trailing"
-    sd_turbo = next(m for m in manifests if m.id == "sd-turbo")
-    assert sd_turbo.benchmark_only
-    sdxl_turbo = next(m for m in manifests if m.id == "sdxl-turbo")
-    assert not sdxl_turbo.benchmark_only  # studio-visible realtime tier
-    assert sdxl_turbo.default  # the realtime picker's declared default
-    assert sdxl_turbo.t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
-    assert sdxl_turbo.preview_decoder == "madebyollin/taesdxl"
-    assert sdxl_turbo.parameters["properties"]["structure_strength"]["default"] == 1.0
-    assert sdxl_turbo.parameters["properties"]["steps"]["maximum"] == 4
-    dreamshaper = next(m for m in manifests if m.id == "dreamshaper-lcm")
-    assert dreamshaper.benchmark_only
-    vega = next(m for m in manifests if m.id == "vega-rt")
-    assert not vega.benchmark_only
-    assert vega.scheduler == "lcm"
-    assert vega.preview_decoder == "madebyollin/taesdxl"
-    assert vega.license_id == "apache-2.0"
-    assert "realtime" in vega.capabilities
-    assert "image_to_image" in vega.capabilities
-    assert "strength" in vega.parameters["properties"]
     sd35 = next(m for m in manifests if m.id == "sd35-medium")
     # Gated Community License weights: attribution and the revenue cap must
     # reach the studio, and the T5 path is text_to_image only for now.
@@ -174,28 +160,23 @@ def test_shipped_manifests_load():
     assert fast.parameters["properties"]["factor"]["enum"] == [2, 4]
 
 
-def test_vega_rt_declares_sketch_adapter_and_structure_strength():
+def test_no_bundled_manifest_declares_realtime():
+    """sdxl-turbo was the last manifest offering realtime and it is retired, so
+    nothing left in the catalog may advertise the capability. A replacement
+    arrives as its own manifest with its own test, never by widening this.
+    """
     models_dir = Path(__file__).resolve().parents[1] / "models"
-    vega = next(m for m in load_manifests(str(models_dir)) if m.id == "vega-rt")
-    assert vega.t2i_adapter == "TencentARC/t2i-adapter-sketch-sdxl-1.0"
-    properties = vega.parameters["properties"]
-    # The realtime frame switches to conditioned text-to-image when a
-    # manifest names an adapter, and img2img keeps its own meaning for jobs:
-    # structure_strength is new, strength stays.
-    structure_strength = properties["structure_strength"]
-    assert structure_strength["type"] == "number"
-    assert structure_strength["minimum"] == 0
-    assert structure_strength["maximum"] == 1.5
-    assert structure_strength["default"] == 0.7
-    steps = properties["steps"]
-    assert steps["minimum"] == 2
-    assert steps["maximum"] == 8
-    assert steps["default"] == 4
-    assert "strength" in properties
-    # An adapter-only parameter must never appear on a manifest without one.
+    manifests = load_manifests(str(models_dir))
+    assert [m.id for m in manifests if "realtime" in m.capabilities] == []
+    assert [m.id for m in manifests
+            if m.studio_capabilities and "realtime" in m.studio_capabilities] == []
+
+
+def test_shipped_manifests_keep_adapter_only_params_off_the_wire():
+    """An adapter-only parameter must never appear on a manifest without one,
+    and no adapter reaches the API whichever manifest carries it."""
+    models_dir = Path(__file__).resolve().parents[1] / "models"
     for manifest in load_manifests(str(models_dir)):
-        if manifest.id == "vega-rt":
-            continue
         if not manifest.t2i_adapter:
             assert "structure_strength" not in manifest.parameters.get("properties", {})
         assert "t2i_adapter" not in manifest.wire()
@@ -278,7 +259,7 @@ def test_unknown_pipeline_stem_is_loud(value):
         Manifest(**{**SD_TURBO, "pipeline": value})
 
 
-CANDIDATE_MANIFESTS = ("flux2-klein-4b", "z-image-turbo", "sana-sprint-06b")
+CANDIDATE_MANIFESTS = ("flux2-klein-4b", "z-image-turbo")
 
 
 @pytest.mark.parametrize("model_id", CANDIDATE_MANIFESTS)
@@ -370,11 +351,11 @@ def test_every_shipped_reference_is_pinned_to_a_commit():
             checked += 1
     # A floor, not a census: it fails if the loop degenerates to checking
     # nothing, and adding a manifest does not make it lie.
-    assert checked >= 28
+    assert checked >= 20
 
 
 def test_one_repository_is_pinned_to_one_commit_across_manifests():
-    """Six manifests share the fp16 VAE and three share a base. Pinning one
+    """Five manifests share the fp16 VAE and three share a base. Pinning one
     copy and not its siblings would load two revisions of one repository into
     one fleet."""
     models_dir = Path(__file__).resolve().parents[1] / "models"
@@ -387,14 +368,3 @@ def test_one_repository_is_pinned_to_one_commit_across_manifests():
             repo = reference.rpartition("/")[0] if field == "lora" else reference
             pins.setdefault(repo, set()).add(getattr(manifest, f"{field}_revision"))
     assert {repo: found for repo, found in pins.items() if len(found) > 1} == {}
-
-
-def test_dreamshaper_names_the_canonical_repository_case():
-    """The hub answers `lykon/...` with a 307 to `Lykon/...`, so the old
-    lowercase id worked while nothing pinned it. A pin should name the
-    repository the sha belongs to rather than lean on a redirect."""
-    models_dir = Path(__file__).resolve().parents[1] / "models"
-    dreamshaper = next(
-        m for m in load_manifests(str(models_dir)) if m.id == "dreamshaper-lcm"
-    )
-    assert dreamshaper.source == "Lykon/dreamshaper-8-lcm"

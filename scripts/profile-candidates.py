@@ -14,7 +14,7 @@ no progress while holding all the VRAM. One model failing no longer cancels
 the rest of the run.
 
   worker/.venv/bin/python scripts/profile-candidates.py \
-      --models flux2-klein-4b,z-image-turbo,sana-sprint-06b
+      --models flux2-klein-4b,z-image-turbo
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ def main() -> int:
     parser.add_argument("--models-dir", default=str(ROOT / "worker" / "models"))
     parser.add_argument("--device", default="rocm", choices=("rocm", "cuda", "cpu"))
     parser.add_argument(
-        "--models", default="flux2-klein-4b,z-image-turbo,sana-sprint-06b")
+        "--models", default="flux2-klein-4b,z-image-turbo")
     parser.add_argument("--samples", type=int, default=8)
     parser.add_argument("--prompt", default="a red cube on a table, studio light")
     parser.add_argument("--out", default="")

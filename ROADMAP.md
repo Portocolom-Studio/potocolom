@@ -68,11 +68,10 @@ the authoritative, grouped (M2-M8) view of what is open.
   retries once, so model switching works on 16 GB.
 - Generation masters are lossless PNG; realtime frames and thumbnails are WebP.
 - Models shipped: SDXL Base (queued default, 1024, DPM++ 2M Karras), SDXL Fast
-  (Lightning 8-step), SSD-1B and SSD-1B-Lightning (fast batch tier), SD 3.5 Medium
-  (quality tier, gated weights), VegaRT (Apache-2.0 realtime), and SDXL Turbo
-  (studio realtime default via `studio_capabilities: ["realtime"]`). SD Turbo,
-  DreamShaper-LCM, SDXL Hyper-SD, FLUX.2 Klein 4B, SANA-Sprint 0.6B and Z-Image
-  Turbo remain `benchmark_only`.
+  (Lightning 8-step), SSD-1B and SSD-1B-Lightning (fast batch tier), and SD 3.5
+  Medium (quality tier, gated weights). No realtime model is bundled. SDXL
+  Hyper-SD, FLUX.2 Klein 4B, Z-Image Turbo, MOSS-Image SFT, Kromoss, Iris-3B
+  and FLUX 3 Image Klein remain `benchmark_only`.
 
 ### Upscale (post-generation, #76)
 

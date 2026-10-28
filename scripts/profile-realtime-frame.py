@@ -5,10 +5,11 @@ Not CI. Replaces the prototype-batch-sweep 160.2 / 219.8 pair as a baseline:
 that script passes prompts as strings and times sketch map plus WebP with the
 pipeline call. This script times DiffusersEngine.frame() the way the worker
 runs it. gpu_ms is occupancy under the GPU lock; wall_ms includes codec work
-off that lock.
+off that lock. custom-realtime stands for any realtime model the operator
+installed: no bundled manifest declares realtime, so the model list is
+required and names what to load.
 
-  worker/.venv/bin/python scripts/profile-realtime-frame.py
-  worker/.venv/bin/python scripts/profile-realtime-frame.py --models vega-rt
+  worker/.venv/bin/python scripts/profile-realtime-frame.py --models custom-realtime
 """
 
 from __future__ import annotations
@@ -136,7 +137,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models-dir", default=str(ROOT / "worker" / "models"))
     parser.add_argument("--device", default="rocm", choices=("rocm", "cuda", "cpu"))
-    parser.add_argument("--models", default="sdxl-turbo,vega-rt")
+    parser.add_argument("--models", required=True,
+                        help="comma-separated realtime model ids to profile")
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--prompt", default="a red cube on a table, studio light")
     parser.add_argument("--out", default="")

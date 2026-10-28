@@ -507,86 +507,33 @@ def test_route_returns_none_when_nothing_matches():
     assert registry.route(only_draft, "standard", "text_to_image", {}, estimate) is None
 
 
-def test_shipped_sdxl_turbo_is_a_public_conditioned_realtime_model(models_client):
-    # The shipped manifest is the contract the studio picker builds on:
-    # studio-visible (benchmark_only false), sketch-conditioned like vega-rt,
-    # with a steps ceiling that covers the shipped 512-4step benchmark entries,
-    # and advertised for realtime only since that is the only measured path.
+def test_shipped_catalog_excludes_turbo_and_keeps_the_queued_default(models_client):
     import json
     from pathlib import Path
 
-    from app import realtime
-    from app.manifests import Manifest
-
-    raw = json.loads(Path(__file__).resolve().parents[2].joinpath(
-        "worker", "models", "sdxl-turbo.json").read_text())
-    manifest = Manifest(**raw)
-    assert manifest.benchmark_only is False
-    assert manifest.studio_capabilities == ["realtime"]
-    assert "realtime" in manifest.capabilities
-    # The backend model is extra="ignore": worker-only weight fields never
-    # enter it, so they cannot leak into the /api/v1/models dump.
-    assert "t2i_adapter" not in manifest.model_dump()
-    properties = manifest.parameters["properties"]
-    assert properties["structure_strength"] == {
-        "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0,
-    }
-    assert properties["steps"]["maximum"] == 4
-    assert properties["steps"]["default"] == 1
-
-    worker = realtime.Worker(
-        id="w-sdxl", ws=None, realtime_slots=1, manifests=[manifest],
+    models_dir = Path(__file__).resolve().parents[2] / "worker" / "models"
+    manifests = [Manifest(**json.loads(path.read_text()))
+                 for path in sorted(models_dir.glob("*.json"))]
+    saved = dict(realtime.workers)
+    realtime.workers.clear()
+    realtime.workers["catalog"] = realtime.Worker(
+        id="catalog", ws=None, realtime_slots=0, manifests=manifests,
     )
-    realtime.workers[worker.id] = worker
     try:
-        payload = models_client.get("/api/v1/models").json()
+        response = models_client.get("/api/v1/models")
     finally:
-        realtime.workers.pop(worker.id, None)
-    entry = next(m for m in payload if m["id"] == "sdxl-turbo")
-    assert entry["capabilities"] == ["realtime"]
-
-
-def test_shipped_defaults_cannot_both_win():
-    # The queued default is the model whose `default` flag survives a
-    # text_to_image-filtered list. sdxl-turbo declares `default` for the
-    # realtime picker, but public() narrows its advertised capabilities to
-    # realtime alone, so it cannot appear in a capability-filtered queued
-    # list and its flag cannot win there. sdxl-base keeps the queued default.
-    import json
-    from pathlib import Path
-
-    from app.manifests import Manifest
-
-    models_dir = Path(__file__).resolve().parents[2].joinpath("worker", "models")
-    turbo_raw = json.loads((models_dir / "sdxl-turbo.json").read_text())
-    base_raw = json.loads((models_dir / "sdxl-base.json").read_text())
-    turbo = Manifest(**turbo_raw)
-    base = Manifest(**base_raw)
-    assert turbo.default is True
-    assert base.default is True
-    for worker_id, manifest in {
-        "w-turbo": turbo,
-        "w-base": base,
-    }.items():
-        realtime.workers[worker_id] = realtime.Worker(
-            id=worker_id, ws=None, realtime_slots=1, manifests=[manifest],
-        )
-    try:
-        advertised_turbo = registry.public()["sdxl-turbo"]
-        assert advertised_turbo.default is True
-        assert advertised_turbo.capabilities == ["realtime"]
-        advertised_base = registry.public()["sdxl-base"]
-        assert advertised_base.default is True
-        assert "text_to_image" in advertised_base.capabilities
-        text_to_image_models = [
-            manifest for manifest in registry.public().values()
-            if "text_to_image" in manifest.capabilities
-        ]
-        assert "sdxl-turbo" not in {manifest.id for manifest in text_to_image_models}
-        assert "sdxl-base" in {manifest.id for manifest in text_to_image_models}
-    finally:
-        realtime.workers.pop("w-turbo", None)
-        realtime.workers.pop("w-base", None)
+        realtime.workers.clear()
+        realtime.workers.update(saved)
+    assert response.status_code == 200
+    models = response.json()
+    assert "sdxl-turbo" not in {model["id"] for model in models}
+    assert not any("realtime" in model["capabilities"] for model in models)
+    queued_defaults = [model["id"] for model in models
+                       if model["default"] and "text_to_image" in model["capabilities"]]
+    assert queued_defaults == ["sdxl-base"]
+    for model in models:
+        assert "t2i_adapter" not in model
+        assert "source" not in model
 
 
 def test_benchmark_matrix_cells_validate_against_shipped_manifests():

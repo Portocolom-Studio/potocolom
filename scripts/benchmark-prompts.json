@@ -142,5 +142,77 @@
     "title": "Mountain chibi diorama",
     "category": "mixed",
     "prompt": "Isometric diorama of tiny chibi explorers crossing a snowy mountain pass, tilt-shift miniature effect, soft clay-like materials, pastel sky, cotton-ball clouds, toy photography lighting, whimsical scale with giant snow crystals in foreground, clean and collectible figurine aesthetic."
+  },
+  {
+    "id": 25,
+    "title": "Potter with visible hands",
+    "category": "photorealistic",
+    "prompt": "Natural portrait of a middle-aged potter seated at a workbench, both hands fully visible as she shapes a small clay bowl, relaxed direct gaze, simple linen apron, soft window light from the left, shelves of handmade pottery behind her, muted earth colors, documentary photography."
+  },
+  {
+    "id": 26,
+    "title": "Market runners in the rain",
+    "category": "photorealistic",
+    "prompt": "Three friends sprint together through a rainy outdoor market, one carrying a striped umbrella while another reaches back to help the third, stalls and hanging fruit behind them, splashing puddles underfoot, candid wide shot, overcast daylight, clear faces and energetic movement."
+  },
+  {
+    "id": 27,
+    "title": "English bakery sign",
+    "category": "graphic",
+    "prompt": "A small neighborhood bakery facade in morning light, with one large cream sign centered above the door that reads exactly OPEN DAILY in dark blue block letters, a baker arranging bread in the window, brick walls and two potted plants, straight-on view, legible simple lettering."
+  },
+  {
+    "id": 28,
+    "title": "Spanish fruit stand sign",
+    "category": "graphic",
+    "prompt": "A cheerful fruit stand beneath a striped awning, with a clear hand-painted sign that reads exactly FRUTA FRESCA in red capital letters, baskets of oranges and green pears below, a vendor smiling behind the counter, sunny Spanish plaza, eye-level view, uncluttered lettering."
+  },
+  {
+    "id": 29,
+    "title": "Five red pears",
+    "category": "photorealistic",
+    "prompt": "Still life of exactly five red pears arranged in a shallow white ceramic bowl, all five fruits fully visible and separate, on a pale wooden table beside a folded blue napkin, soft daylight from a nearby window, neutral kitchen wall, simple centered composition, realistic skin texture."
+  },
+  {
+    "id": 30,
+    "title": "Cup beside the blue book",
+    "category": "environment",
+    "prompt": "A quiet desk viewed from above, with a blue book on the left and a white tea cup on the right, a pencil placed horizontally between them, warm wood grain, morning sunlight crossing the surface, no other objects, crisp separation and clear spatial arrangement."
+  },
+  {
+    "id": 31,
+    "title": "Glass greenhouse after rain",
+    "category": "photorealistic",
+    "prompt": "Inside a small glass greenhouse after rain, a gardener seen through a clear pane watering tomato plants, faint reflections of clouds and roof beams on the glass, droplets along the edge, green leaves in the foreground, soft gray daylight, balanced view with both interior and reflection visible."
+  },
+  {
+    "id": 32,
+    "title": "Lantern in a dark cabin",
+    "category": "photorealistic",
+    "prompt": "A single oil lantern on a rough table in a nearly dark cabin, its small amber flame lighting a chipped mug and folded map, deep corners fading into shadow, faint blue moonlight through a narrow window, low-light photograph with visible details in both glow and darkness."
+  },
+  {
+    "id": 33,
+    "title": "Garden tools cut-paper illustration",
+    "category": "illustration",
+    "prompt": "Flat cut-paper illustration of a watering can, hand trowel, gloves, and three seed packets laid out on a coral background, bold clean shapes with slight paper texture, limited palette of coral, cream, leaf green, and navy, clear outlines, balanced poster composition with open space."
+  },
+  {
+    "id": 34,
+    "title": "Courtyard with arched entrance",
+    "category": "architecture",
+    "prompt": "A compact stone courtyard viewed straight on, one tall arched doorway centered in the back wall, a small fountain on the left and a wooden bench on the right, climbing vines above the arch, late afternoon shadows, pale limestone and terracotta, precise geometry and natural scale."
+  },
+  {
+    "id": 35,
+    "title": "Dew on a blue beetle",
+    "category": "macro",
+    "prompt": "Macro photograph of a small metallic blue beetle resting on a green leaf, round dew drops along the leaf edge, tiny hairs visible on its legs, soft dark garden background, one diffused highlight on the shell, shallow focus centered on the beetle's face and front legs."
+  },
+  {
+    "id": 36,
+    "title": "Stone, copper, and wool still life",
+    "category": "mixed",
+    "prompt": "A sculptural still life combining a rough gray stone, a polished copper loop, and a folded red wool cloth on a matte black plinth, each material clearly distinct, side light revealing texture and shine, charcoal studio background, simple three-quarter view, carefully balanced forms."
   }
 ]

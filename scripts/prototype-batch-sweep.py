@@ -21,8 +21,11 @@ timed for every batch size, because issue #288 records that the project does
 not yet agree on which one it means: the pipeline call alone, and the call plus
 the sketch-map preparation and the WebP encode that a real frame also pays.
 
-    ./worker/.venv/bin/python scripts/prototype-batch-sweep.py
-    ./worker/.venv/bin/python scripts/prototype-batch-sweep.py --model vega-rt --steps 4
+    ./worker/.venv/bin/python scripts/prototype-batch-sweep.py --model custom-realtime
+    ./worker/.venv/bin/python scripts/prototype-batch-sweep.py --model custom-realtime --steps 4
+
+custom-realtime stands for any realtime model the operator installed: no
+bundled manifest declares realtime, so --model is required.
 
 Reads a model's manifest for its source, adapter and defaults, so it measures
 what ships rather than a second description of it.
@@ -120,7 +123,8 @@ def main() -> None:
     global SIZE
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="sdxl-turbo")
+    ap.add_argument("--model", required=True,
+                    help="realtime model id to load from the models dir")
     ap.add_argument("--steps", type=int, default=None, help="default: the manifest's")
     ap.add_argument("--max-batch", type=int, default=4)
     ap.add_argument("--frames", type=int, default=120,

@@ -5,7 +5,7 @@ Usage (from repo root, worker venv with inference extra):
 
   worker/.venv/bin/python scripts/compile_ab.py \\
     --models-dir worker/models --device rocm \\
-    --models vega-rt,sdxl-fast --repeats 5
+    --models sdxl-fast,ssd-1b-lightning --repeats 5
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models-dir", default=str(ROOT / "worker" / "models"))
     parser.add_argument("--device", default="rocm", choices=("rocm", "cuda"))
-    parser.add_argument("--models", default="vega-rt,sdxl-fast")
+    parser.add_argument("--models", default="sdxl-fast,ssd-1b-lightning")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--prompt", default="a red cube on a table, studio light")
     parser.add_argument("--out", default="")

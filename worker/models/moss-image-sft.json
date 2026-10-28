@@ -1,19 +1,19 @@
 {
-  "id": "sana-sprint-06b",
-  "name": "SANA-Sprint 0.6B",
+  "id": "moss-image-sft",
+  "name": "MOSS-Image SFT",
   "capabilities": [
-    "text_to_image",
-    "image_to_image"
+    "text_to_image"
   ],
-  "tier": "draft",
-  "min_vram_gb": 12,
-  "prompt_token_limit": 300,
-  "source": "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers",
-  "source_revision": "aa76e7f4f4928f378716b6716a2130fba3caf5b1",
+  "tier": "premium",
+  "min_vram_gb": 32,
+  "model_offload_vram_gb": 12,
+  "prompt_token_limit": 4096,
+  "source": "OpenMOSS-Team/MOSS-Image-SFT",
+  "source_revision": "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9",
   "dtype": "bfloat16",
-  "pipeline": "SanaSprint",
+  "pipeline": "MOSSImage",
   "license_id": "apache-2.0",
-  "license_url": "https://huggingface.co/Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers/blob/main/README.md",
+  "license_url": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT/blob/main/README.md",
   "benchmark_only": true,
   "parameters": {
     "type": "object",
@@ -21,23 +21,17 @@
       "prompt": {
         "type": "string"
       },
-      "strength": {
-        "type": "number",
-        "minimum": 0.05,
-        "maximum": 1,
-        "default": 0.6
-      },
       "steps": {
         "type": "integer",
-        "minimum": 1,
-        "maximum": 4,
-        "default": 2
+        "minimum": 10,
+        "maximum": 100,
+        "default": 50
       },
       "guidance": {
         "type": "number",
         "minimum": 0,
         "maximum": 10,
-        "default": 4.5
+        "default": 3.0
       },
       "seed": {
         "type": "integer"
@@ -45,6 +39,8 @@
       "width": {
         "type": "integer",
         "enum": [
+          512,
+          768,
           1024
         ],
         "default": 1024
@@ -52,9 +48,15 @@
       "height": {
         "type": "integer",
         "enum": [
+          512,
+          768,
           1024
         ],
         "default": 1024
+      },
+      "negative_prompt": {
+        "type": "string",
+        "default": ""
       }
     },
     "required": [

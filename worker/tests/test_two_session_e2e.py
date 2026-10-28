@@ -1,10 +1,12 @@
 import importlib.util
 import io
+import sys
 import uuid
 from pathlib import Path
 from types import ModuleType
 
 from PIL import Image
+import pytest
 
 
 def load_script() -> ModuleType:
@@ -17,6 +19,29 @@ def load_script() -> ModuleType:
 
 
 SCRIPT = load_script()
+
+
+def test_simulated_cli_does_not_require_a_gpu_model(monkeypatch, capsys):
+    async def run(args):
+        assert args.sim is True
+        return {"cases": []}
+
+    monkeypatch.setattr(SCRIPT, "run_models", run)
+    monkeypatch.setattr(sys, "argv", ["profile-two-session-e2e.py", "--sim"])
+    assert SCRIPT.main() == 0
+    assert '"cases": []' in capsys.readouterr().out
+
+
+def test_gpu_cli_requires_a_model_before_starting_runtime(monkeypatch, capsys):
+    async def unexpected_runtime(_args):
+        raise AssertionError("runtime started without a model")
+
+    monkeypatch.setattr(SCRIPT, "run_models", unexpected_runtime)
+    monkeypatch.setattr(sys, "argv", ["profile-two-session-e2e.py"])
+    with pytest.raises(SystemExit) as error:
+        SCRIPT.main()
+    assert error.value.code == 2
+    assert "--models" in capsys.readouterr().err
 
 
 def test_canvas_bytes_is_a_512_png() -> None:

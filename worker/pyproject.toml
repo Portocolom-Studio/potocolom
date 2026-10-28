@@ -26,9 +26,11 @@ dev = [
 # install this extra. See docs/local-development.md for the ROCm notes.
 inference = [
     "torch>=2.5,<3",
-    "diffusers>=0.39,<1",
+    "diffusers @ https://github.com/huggingface/diffusers/archive/3b56af0c5268049588cf470e38955f4c18002498.tar.gz",
+    "huggingface-hub>=1.32,<2",
     "transformers>=5,<6",
     "accelerate>=1,<2",
+    "omegaconf>=2.3,<3",
     # Cap below 0.18 until the worker images move to torch 2.10
     # (Dockerfile.worker-cuda and Dockerfile.worker-rocm). torchao 0.18 imports
     # torch.nn.functional.ScalingType, which lands in torch 2.10, so an
@@ -40,10 +42,14 @@ inference = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["worker"]
+packages = ["worker", "vendor/iris3b"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100
+exclude = ["vendor/iris3b/**"]
 
 # Keep the pre-0.16 default set until we deliberately adopt the expanded rules.
 [tool.ruff.lint]
@@ -58,7 +64,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["torch.*", "torchao.*", "diffusers.*", "spandrel.*", "transformers.*"]
+module = ["torch.*", "torchao.*", "diffusers.*", "spandrel.*", "transformers.*", "iris3b.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

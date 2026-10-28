@@ -20,6 +20,3 @@ frontend/src/lib/hero-images.json:generic-api-key:117
 # hero-images.json line 189 today: a hero image file name, not a
 # credential.
 frontend/src/lib/hero-images.json:generic-api-key:189
-# benchmark/results.json line 1: a benchmark cell_key label (model and
-# resolution), not a credential.
-frontend/static/benchmark/results.json:generic-api-key:1

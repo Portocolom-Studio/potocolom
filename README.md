@@ -27,12 +27,15 @@ To run potocolom on your own machine. Contributing to it instead needs a differe
 | OS | Linux | What the project is developed, tested and released on. Docker Desktop hosts are untested. |
 | Docker | Engine with Compose v2 | Everything ships as containers; nothing is installed on the host. Your user must be in the `docker` group (`sudo usermod -aG docker $USER`, then log back in) or every command below needs `sudo`. |
 | GPU | NVIDIA or AMD, or none | NVIDIA needs the [Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html); AMD needs the ROCm kernel driver, so `/dev/kfd` and `/dev/dri` exist. Without a GPU the stack still runs against the simulated worker. |
-| VRAM | 8 GB minimum, 12-16 GB comfortable | 8 GB is the floor of the lowest selectable model (`ssd-1b`, `vega-rt`); 12-16 GB covers the SDXL class at 1024 px, and `sd35-medium` wants 14 GB. Each manifest declares its own floor. Below it the worker still loads the model, offloaded, but drops the `realtime` capability: you get stills, not the live loop. |
+| VRAM | 8 GB minimum, 12-16 GB comfortable | 8 GB is the floor of the lowest selectable model (`ssd-1b`, `ssd-1b-lightning`); 12-16 GB covers the SDXL class at 1024 px, and `sd35-medium` wants 14 GB. Each manifest declares its own floor. Below it the worker still loads the model, offloaded, but drops the `realtime` capability: you get stills, not the live loop. |
 | RAM | 8 GB, 16 GB comfortable | |
 | Disk | 20 GB free, 50 GB+ comfortable | Model weights are 2-7 GB each, plus your generated images. |
 | Network | Port 8080 free, outbound HTTPS | The studio is served on 8080; weights download from Hugging Face on first use of each model. |
 
 No account, no API key and no telemetry endpoint are required. [docs/self-hosting.md](docs/self-hosting.md) has the full breakdown, including GPU passthrough and what persists in which volume.
+
+This source catalog has no bundled model for live drawing. Still-image
+generation works; live drawing needs a compatible custom worker manifest.
 
 ## Self-hosting
 

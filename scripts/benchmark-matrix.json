@@ -8,11 +8,56 @@
       "commercial": "yes - no revenue cap; RAIL use restrictions (no illegal/harmful outputs)",
       "notes": "Full SDXL quality at 768/1024; ~16-20 gpu_s at 1024/20 steps on RX 7600 XT (issue #60).",
       "variants": [
-        { "label": "1024-default", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 6, "seed": 100 } },
-        { "label": "768-default", "params": { "width": 768, "height": 768, "steps": 20, "guidance": 6, "seed": 100 } },
-        { "label": "1024-fast", "params": { "width": 1024, "height": 1024, "steps": 15, "guidance": 5, "seed": 100 } },
-        { "label": "1024-high-guidance", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 8, "seed": 100 } },
-        { "label": "1024-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 6, "seed": 200 } }
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 6,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 20,
+            "guidance": 6,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-fast",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 15,
+            "guidance": 5,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-high-guidance",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 8,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 6,
+            "seed": 200
+          }
+        }
       ]
     },
     {
@@ -21,11 +66,56 @@
       "commercial": "yes - no revenue cap; RAIL use restrictions on base weights",
       "notes": "Lightning LoRA fused at load; ~3.9 gpu_s at 1024/8 steps on RX 7600 XT (issue #60).",
       "variants": [
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step-guidance1", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 1, "seed": 100 } },
-        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } }
+        {
+          "label": "1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-4step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-6step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 6,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-8step-guidance1",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 1,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-8step-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 200
+          }
+        }
       ]
     },
     {
@@ -34,50 +124,114 @@
       "commercial": "yes - unrestricted commercial use",
       "notes": "Distilled SDXL (~1.3B); good speed/quality tradeoff at 8 GB.",
       "variants": [
-        { "label": "1024-20step", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 7, "seed": 100 } },
-        { "label": "1024-25step", "params": { "width": 1024, "height": 1024, "steps": 25, "guidance": 6, "seed": 100 } },
-        { "label": "768-20step", "params": { "width": 768, "height": 768, "steps": 20, "guidance": 7, "seed": 100 } },
-        { "label": "1024-30step", "params": { "width": 1024, "height": 1024, "steps": 30, "guidance": 5, "seed": 200 } },
-        { "label": "1024-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 20, "guidance": 7, "seed": 300 } }
-      ]
-    },
-    {
-      "id": "dreamshaper-lcm",
-      "license": "CreativeML Open RAIL-M (SD 1.5 derivative)",
-      "commercial": "yes - no revenue cap; RAIL use restrictions",
-      "notes": "SD 1.5 LCM fine-tune; ~4-6 GB resident; strong stylized/illustration output.",
-      "variants": [
-        { "label": "4-step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "8-step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 1.5, "seed": 100 } },
-        { "label": "15-step", "params": { "width": 512, "height": 512, "steps": 15, "guidance": 2, "seed": 100 } },
-        { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 1.5, "seed": 200 } },
-        { "label": "4-step-alt-seed", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 300 } }
+        {
+          "label": "1024-20step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 7,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-25step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 25,
+            "guidance": 6,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-20step",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 20,
+            "guidance": 7,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-30step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 30,
+            "guidance": 5,
+            "seed": 200
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 7,
+            "seed": 300
+          }
+        }
       ]
     },
     {
       "id": "sdxl-hypersd",
-      "license": "CreativeML Open RAIL++-M (base); Hyper-SD LoRA has NO declared license",
-      "commercial": "unclear - the LoRA card declares no license (verified 2026-07-14)",
+      "license": "CreativeML Open RAIL++-M (base and SDXL Hyper-SD LoRA)",
+      "commercial": "yes - no revenue cap; RAIL use restrictions",
       "notes": "Hyper-SD 8-step LoRA on SDXL base; euler-trailing scheduler (issue #75).",
       "variants": [
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } },
-        { "label": "1024-8step-guidance1", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 1, "seed": 100 } }
-      ]
-    },
-    {
-      "id": "vega-rt",
-      "license": "Apache 2.0 (Segmind-Vega base + VegaRT LoRA)",
-      "commercial": "yes - unrestricted commercial use",
-      "notes": "Segmind-Vega + VegaRT LCM LoRA; turbo-class candidate with no revenue cap (issue #75).",
-      "variants": [
-        { "label": "512-2step", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0, "seed": 100 } },
-        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "512-8step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } }
+        {
+          "label": "1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-4step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-6step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 6,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-8step-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "1024-8step-guidance1",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 1,
+            "seed": 100
+          }
+        }
       ]
     },
     {
@@ -86,39 +240,116 @@
       "commercial": "yes - RAIL use policy applies; combo may fail load if LoRA does not map to pruned UNet",
       "notes": "Experimental SSD-1B + SDXL Lightning LoRA; a failed load is a valid benchmark result (issue #75).",
       "variants": [
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-6step", "params": { "width": 1024, "height": 1024, "steps": 6, "guidance": 0, "seed": 100 } },
-        { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 0, "seed": 200 } },
-        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 300 } }
+        {
+          "label": "1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-4step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-6step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 6,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-8step",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "1024-8step-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 300
+          }
+        }
       ]
     }
   ],
   "capped_commercial": [
     {
-      "id": "sd-turbo",
+      "id": "sd35-medium",
       "license": "Stability AI Community License",
-      "commercial": "yes while annual revenue ≤ $1M; register at stability.ai/community-license",
-      "notes": "Realtime 512px; ~290 gpu_ms on RX 7600 XT (issue #60). Benchmark reference only.",
+      "commercial": "Commercial use subject to revenue cap, registration and attribution",
+      "notes": "Existing quality baseline on CPU offload. Select explicitly with --models.",
       "variants": [
-        { "label": "512-2step", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0, "seed": 100 } },
-        { "label": "512-1step", "params": { "width": 512, "height": 512, "steps": 1, "guidance": 0, "seed": 100 } },
-        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "512-2step-alt-seed", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0, "seed": 200 } },
-        { "label": "512-2step-guidance1", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 1, "seed": 100 } }
-      ]
-    },
-    {
-      "id": "sdxl-turbo",
-      "license": "Stability AI Community License",
-      "commercial": "yes while annual revenue ≤ $1M; register at stability.ai/community-license",
-      "notes": "Realtime 512px SDXL; ~310 gpu_ms on RX 7600 XT (issue #60). Benchmark reference only.",
-      "variants": [
-        { "label": "512-1step", "params": { "width": 512, "height": 512, "steps": 1, "guidance": 0, "seed": 100 } },
-        { "label": "512-2step", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0, "seed": 100 } },
-        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "512-1step-alt-seed", "params": { "width": 512, "height": 512, "steps": 1, "guidance": 0, "seed": 200 } },
-        { "label": "512-2step-guidance0.5", "params": { "width": 512, "height": 512, "steps": 2, "guidance": 0.5, "seed": 100 } }
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 4.5,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 20,
+            "guidance": 4.5,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-40step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 40,
+            "guidance": 4.5,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-guidance6",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 6,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 20,
+            "guidance": 4.5,
+            "seed": 200
+          }
+        }
       ]
     }
   ],
@@ -129,11 +360,56 @@
       "commercial": "yes - unrestricted commercial use",
       "notes": "FLUX.2 klein 4B, 4-step distilled flow transformer, bf16-native; unified generation and editing family (editing path not wired yet). Reachable only via --models.",
       "variants": [
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "512-4step", "params": { "width": 512, "height": 512, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "768-4step", "params": { "width": 768, "height": 768, "steps": 4, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-4step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 200 } }
+        {
+          "label": "1024-4step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-4step",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-4step",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-4step-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 200
+          }
+        }
       ]
     },
     {
@@ -142,37 +418,292 @@
       "commercial": "yes - unrestricted commercial use",
       "notes": "Tongyi-MAI Z-Image Turbo, 6B S3-DiT at 8 NFEs, bf16-native, no CFG in the distilled variant. Reachable only via --models.",
       "variants": [
-        { "label": "1024-8step", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "512-8step", "params": { "width": 512, "height": 512, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "768-8step", "params": { "width": 768, "height": 768, "steps": 8, "guidance": 0, "seed": 100 } },
-        { "label": "1024-8step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 8, "guidance": 0, "seed": 200 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 0, "seed": 100 } }
+        {
+          "label": "1024-8step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-8step",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-8step",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-8step-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 8,
+            "guidance": 0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "1024-4step",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 4,
+            "guidance": 0,
+            "seed": 100
+          }
+        }
       ]
     },
     {
-      "id": "sana-sprint-06b",
+      "id": "moss-image-sft",
       "license": "Apache 2.0",
-      "commercial": "yes - unrestricted commercial use; Gemma-2-2B-IT text encoder adds Google Gemma Terms of Use and Prohibited Use Policy, no revenue cap",
-      "notes": "NVIDIA SANA-Sprint 0.6B, step-adaptive sCM at 1-4 steps, bf16-native, DC-AE 32x latent compression, Gemma-2-2B-IT encoder. guidance is the model's embedded guidance, not CFG, so it stays at the 4.5 default rather than 0. AutoPipeline cannot resolve it, so the manifest names the SanaSprint pipeline stem. MEASURED 2026-08-25 on the RX 7600 XT: 1469 ms median at 1024/2 t2i, peak 11.97 GB at the full rung. 1024 is the only resolution it has: ASPECT_RATIO_1024_BIN bins a 512 request back to 1024 and holds no entry below 704x1344. i2i at 1024 does not fit beside the resident weights on this card. Reachable only via --models.",
+      "commercial": "Commercial hosting allowed; license and notice duties apply",
+      "notes": "Unmeasured queued candidate. Full-residency floor is an estimate; 16 GB use needs CPU offload. Select explicitly with --models.",
       "variants": [
-        { "label": "1024-2step", "params": { "width": 1024, "height": 1024, "steps": 2, "guidance": 4.5, "seed": 100 } },
-        { "label": "1024-1step", "params": { "width": 1024, "height": 1024, "steps": 1, "guidance": 4.5, "seed": 100 } },
-        { "label": "1024-4step", "params": { "width": 1024, "height": 1024, "steps": 4, "guidance": 4.5, "seed": 100 } },
-        { "label": "1024-2step-alt-seed", "params": { "width": 1024, "height": 1024, "steps": 2, "guidance": 4.5, "seed": 200 } }
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-default",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "512-alt-seed",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        }
+      ]
+    },
+    {
+      "id": "kromoss",
+      "license": "Apache 2.0",
+      "commercial": "Commercial hosting allowed; license and notice duties apply",
+      "notes": "Unmeasured queued candidate. Full-residency floor is an estimate; 16 GB use needs CPU offload. Select explicitly with --models.",
+      "variants": [
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-default",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "512-alt-seed",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 50,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        }
+      ]
+    },
+    {
+      "id": "iris-3b",
+      "license": "Apache 2.0",
+      "commercial": "Commercial hosting allowed; license and notice duties apply",
+      "notes": "Unmeasured queued candidate. Full-residency floor is an estimate; 16 GB use needs CPU offload. Select explicitly with --models.",
+      "variants": [
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 100,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-default",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 100,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 100,
+            "guidance": 3.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 100,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "512-alt-seed",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 100,
+            "guidance": 3.0,
+            "seed": 200
+          }
+        }
+      ]
+    },
+    {
+      "id": "flux3-klein",
+      "license": "FLUX Kommunity v1.0",
+      "commercial": "Commercial outputs below $5M annualized affiliate revenue; filtering or review required",
+      "notes": "Unmeasured queued candidate. Full-residency floor is an estimate; 16 GB use needs CPU offload. Select explicitly with --models.",
+      "variants": [
+        {
+          "label": "1024-default",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 16,
+            "guidance": 0.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "512-default",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 16,
+            "guidance": 0.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "768-default",
+          "params": {
+            "width": 768,
+            "height": 768,
+            "steps": 16,
+            "guidance": 0.0,
+            "seed": 100
+          }
+        },
+        {
+          "label": "1024-alt-seed",
+          "params": {
+            "width": 1024,
+            "height": 1024,
+            "steps": 16,
+            "guidance": 0.0,
+            "seed": 200
+          }
+        },
+        {
+          "label": "512-alt-seed",
+          "params": {
+            "width": 512,
+            "height": 512,
+            "steps": 16,
+            "guidance": 0.0,
+            "seed": 200
+          }
+        }
       ]
     }
   ],
   "excluded": [
-    {
-      "id": "sd-turbo",
-      "license": "Stability AI Community License",
-      "reason": "In capped_commercial - usable under $1M annual revenue with registration; see BENCHMARK.md."
-    },
-    {
-      "id": "sdxl-turbo",
-      "license": "Stability AI Community License",
-      "reason": "In capped_commercial - same $1M cap and registration as sd-turbo."
-    },
     {
       "id": "flux-schnell",
       "reason": "Needs memory ladder (#15) or 16 GB+ VRAM; not yet in worker manifests."

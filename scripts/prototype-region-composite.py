@@ -208,7 +208,8 @@ def save_image(image: Image.Image, path: Path | None) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--models", default="sdxl-turbo,vega-rt")
+    parser.add_argument("--models", required=True,
+                        help="comma-separated realtime model ids to load")
     parser.add_argument("--frames", type=int, default=8)
     parser.add_argument("--out", default="")
     parser.add_argument("--save-dir", default="")

@@ -579,7 +579,7 @@ BENCHMARK_PUBLISH ?= $(BENCHMARK_DIR)/full-run
 
 benchmark-publish: ## minify results.json into frontend static assets
 	test -f "$(BENCHMARK_PUBLISH)/results.json"
-	python3 -c 'import json, pathlib; src=pathlib.Path("$(BENCHMARK_PUBLISH)/results.json"); dst=pathlib.Path("frontend/static/benchmark/results.json"); dst.parent.mkdir(parents=True, exist_ok=True); dst.write_text(json.dumps(json.loads(src.read_text()), separators=(",", ":")))'
+	python3 scripts/publish-benchmark.py "$(BENCHMARK_PUBLISH)/results.json" "frontend/static/benchmark/results.json"
 
 # Site deployment (Cloudflare Pages). Anyone deploying their own copy
 # overrides the variables; the waitlist worker lives outside this repo.

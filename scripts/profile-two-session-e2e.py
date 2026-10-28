@@ -4,10 +4,12 @@
 Not CI. Times ping-pong round trips on the realtime WebSocket: send a real
 canvas image, wait for the generated frame, both sessions in lockstep.
 gpu_ms from Engine.frame is occupancy under the GPU lock. This script times
-browser-to-browser wall clock against the 500 ms bar.
+browser-to-browser wall clock against the 500 ms bar. custom-realtime stands
+for any realtime model the operator installed: no bundled manifest declares
+realtime, so GPU runs require an explicit model list. --sim uses its own
+simulated model and needs no model list.
 
-  worker/.venv/bin/python scripts/profile-two-session-e2e.py
-  worker/.venv/bin/python scripts/profile-two-session-e2e.py --models vega-rt
+  worker/.venv/bin/python scripts/profile-two-session-e2e.py --models custom-realtime
   worker/.venv/bin/python scripts/profile-two-session-e2e.py --sim
 """
 
@@ -496,7 +498,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models-dir", default=str(ROOT / "worker" / "models"))
     parser.add_argument("--device", default="rocm", choices=("rocm", "cuda", "cpu"))
-    parser.add_argument("--models", default="sdxl-turbo,vega-rt")
+    parser.add_argument("--models", default=None,
+                        help="comma-separated realtime model ids to profile")
     parser.add_argument("--sessions", type=int, default=2)
     parser.add_argument("--samples", type=int, default=20)
     parser.add_argument("--slots", type=int, default=4)
@@ -507,6 +510,8 @@ def main() -> int:
     parser.add_argument("--out", default="")
     parser.add_argument("--sim", action="store_true")
     args = parser.parse_args()
+    if not args.sim and not args.models:
+        parser.error("--models is required unless --sim is set")
     if args.sessions < 1 or args.samples < 1:
         raise SystemExit("--sessions and --samples must be positive")
     payload = asyncio.run(run_models(args))

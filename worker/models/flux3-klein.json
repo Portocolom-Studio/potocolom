@@ -1,0 +1,63 @@
+{
+  "id": "flux3-klein",
+  "name": "FLUX 3 Image Klein",
+  "capabilities": [
+    "text_to_image"
+  ],
+  "tier": "premium",
+  "min_vram_gb": 32,
+  "model_offload_vram_gb": 12,
+  "prompt_token_limit": 512,
+  "source": "black-forest-labs/flux-3-image-klein",
+  "source_revision": "337337621b8526e120f2275d250242f4a6bedd75",
+  "dtype": "bfloat16",
+  "pipeline": "Flux3Distilled",
+  "license_id": "flux-kommunity-license",
+  "license_url": "https://huggingface.co/black-forest-labs/flux-3-image-klein/blob/main/LICENSE.md",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 16,
+        "maximum": 16,
+        "default": 16
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 0,
+        "default": 0.0
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  },
+  "commercial_max_revenue_usd": 5000000
+}

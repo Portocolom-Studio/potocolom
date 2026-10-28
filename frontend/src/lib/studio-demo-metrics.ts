@@ -19,7 +19,7 @@ function mulberry32(seed: number): () => number {
 }
 
 const DEMO_MODELS: Array<{ id: string; gpuMs: number }> = [
-	{ id: 'sdxl-turbo', gpuMs: 850 },
+	{ id: 'sdxl-fast', gpuMs: 850 },
 	{ id: 'sd15-lcm', gpuMs: 420 },
 	{ id: 'flux-schnell', gpuMs: 2400 }
 ];
