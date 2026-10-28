@@ -551,7 +551,7 @@ cleanup-failed: dev-db ## remove failed generation jobs from the database
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py --api http://localhost:$(API_PORT) "$(PROMPT)"
 
-# Full run: 24 prompts x 4 models x 5 variants = 480 images (~hours on GPU).
+# Full run: all prompts and selected model variants; allow hours on a display GPU.
 BENCHMARK_DIR ?= $(CURDIR)/data/benchmark
 BENCHMARK_STAMP := $(shell date -u +%Y%m%d-%H%M%S)
 BENCHMARK_OUT ?= $(BENCHMARK_DIR)/$(BENCHMARK_STAMP)

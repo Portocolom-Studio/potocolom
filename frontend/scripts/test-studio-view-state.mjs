@@ -1219,7 +1219,9 @@ test('Benchmarks ignores a held report reply after the confirmed account changes
 			window.dispatchEvent(new Event('focus'));
 		});
 		await ownerProbe.started;
+		const nextOwnerSessions = deferNextApi('/api/v1/benchmark/sessions');
 		ownerProbe.release({ status: 200, body: accountFixtures.B });
+		await nextOwnerSessions.started;
 		await page.waitForFunction(
 			() =>
 				document.body.innerText.includes('owner-b@example.test') &&
@@ -1248,6 +1250,8 @@ test('Benchmarks ignores a held report reply after the confirmed account changes
 			'session-two',
 			'the prior account report does not appear after its response is released'
 		);
+		nextOwnerSessions.release();
+		await waitForBenchmarkReport(page, 16, 9);
 	} finally {
 		releasePendingApiGates();
 		await browser?.close();
