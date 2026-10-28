@@ -20,6 +20,7 @@ dev = [
     "pytest-cov>=7,<8",
     "ruff>=0.6,<0.16",
     "mypy>=2,<3",
+    "huggingface-hub>=1.32,<2",
 ]
 # Install torch for your device first (CUDA wheels from PyPI; ROCm and CPU
 # wheels from the matching https://download.pytorch.org/whl/ index), then
