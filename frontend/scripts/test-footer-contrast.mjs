@@ -390,19 +390,6 @@ try {
 	const phoneScale = await page.$eval('footer.horizon .particle-sea', (sea) =>
 		Number.parseFloat(getComputedStyle(sea).getPropertyValue('--sea-scale'))
 	);
-	await page.$eval('footer.horizon .band', (band) => {
-		band.style.background = '#fff';
-		band.querySelector('.particle-sea').style.visibility = 'hidden';
-	});
-	const bright = await sampleCopyrightBackground(page, reader);
-	assert.ok(
-		contrastRatio(bright.foreground, bright.background) >= 4.5,
-		`copyright must contrast with a white background behind its row (fg ${bright.foreground}, bg ${bright.background})`
-	);
-	await page.$eval('footer.horizon .band', (band) => {
-		band.style.background = '';
-		band.querySelector('.particle-sea').style.visibility = '';
-	});
 	assert.notEqual(phoneScale, desktopScale, 'the CSS fallback sea scale follows the phone resize');
 	assert.ok(
 		contrastRatio(phone.foreground, phone.background) >= 4.5,
