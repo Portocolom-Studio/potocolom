@@ -542,8 +542,9 @@ def main() -> None:
         "models": [m["id"] for m in matrix_models],
         "variants_per_prompt": variants_per_prompt,
         "total_jobs": total_jobs,
-        "succeeded": sum(1 for row in rows if row.get("state") == "succeeded"),
-        "failed": sum(1 for row in rows if row.get("state") != "succeeded"),
+        "succeeded": sum(stat["succeeded"] for stat in model_stats),
+        "failed": sum(stat["failed"] for stat in model_stats),
+        "skipped": sum(stat["skipped"] for stat in model_stats),
         "model_stats": model_stats,
         "results": rows,
     }

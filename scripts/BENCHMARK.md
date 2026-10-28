@@ -31,7 +31,7 @@ from the active catalog. Their old measurements below remain historical evidence
 
 ```bash
 # Short smoke run: three prompts and one variant per model.
-make benchmark BENCHMARK_QUICK=1 BENCHMARK_INCLUDE_CAPPED=1
+make benchmark BENCHMARK_QUICK=1 BENCHMARK_IDS=1-3 BENCHMARK_INCLUDE_CAPPED=1
 
 # Full suite: all prompts and variants. Keep a new output directory per run.
 make benchmark BENCHMARK_CONTINUE=1 BENCHMARK_INCLUDE_CAPPED=1 \
@@ -42,6 +42,18 @@ Use full residency for the small cached models. Use `MEMORY_MODE=model_offload`
 for large candidates on the 16 GB display GPU. Do not let a run enter disk group
 offload. Reserve display memory and monitor actual free VRAM throughout the run.
 A manifest floor is an estimate, not a memory cap.
+
+`BENCHMARK_QUICK=1` selects the first variant of each model. The candidate
+models start with `1024-default`, which exceeded the display reserve for
+several models in this run. It does not select a smaller image size.
+
+The published capacity report used an external operator controller that watched
+device memory, cancelled batches at the display reserve, and marked remaining
+cases at that resolution as skipped. That controller is not bundled here.
+`make benchmark` runs the matrix without that guard and records successful or
+failed attempts; it cannot reproduce the report's capacity skips on its own.
+The native sessions API accepts only those two states. The capacity report is
+published as a static report and is not ingested into native session history.
 
 The `gpu_ms` field measures the engine call. It is not a GPU kernel timer.
 CPU encoding and component transfers can be inside that interval for the new
@@ -139,7 +151,7 @@ worker/.venv/bin/python scripts/profile-candidates.py \
 
 # API smoke test, one variant for each of three prompts.
 make benchmark BENCHMARK_MODELS=moss-image-sft,kromoss,iris-3b,flux3-klein \
-  BENCHMARK_QUICK=1 BENCHMARK_CONTINUE=1
+  BENCHMARK_QUICK=1 BENCHMARK_IDS=1-3 BENCHMARK_CONTINUE=1
 ```
 
 A model needs actual GPU output and a measured memory limit before promotion.
@@ -206,7 +218,7 @@ outside the suite. SD 3.5 Medium is included under `capped_commercial`.
 data/benchmark/<timestamp>/
   images/
     01-rain-soaked-neon-alley/
-      sdxl-base__1024-default.webp
+      sdxl-base__1024-default__1024x1024-s20.png
       ...
   results.jsonl     # durable rows, written after each completed or failed cell
   results.json      # final report, written after the run completes

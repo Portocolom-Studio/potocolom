@@ -31,8 +31,13 @@ class BenchmarkPublisherTests(unittest.TestCase):
         report = {
             "created_at": "2026-10-28T00:00:00Z",
             "succeeded": 1,
-            "failed": 0,
+            "failed": 1,
             "skipped": 1,
+            "results": [{
+                "state": "failed",
+                "phase": "load",
+                "error": "/home/test/private-cache: local load failed",
+            }],
             "unknown_internal": "drop this",
             "api": "http://local",
             "out_dir": "/tmp/run",
@@ -43,6 +48,8 @@ class BenchmarkPublisherTests(unittest.TestCase):
                     "model_id": "m1",
                     "variant": "v1",
                     "state": "succeeded",
+                    "phase": "generate",
+                    "error": "/home/test/.cache/private-model",
                     "gpu_ms": 1234,
                     "wall_s": 2.5,
                     "params": {"steps": 6, "seed": 100},
@@ -54,6 +61,8 @@ class BenchmarkPublisherTests(unittest.TestCase):
                 }, {
                     "model_id": "m1",
                     "state": "skipped",
+                    "phase": "display_reserve",
+                    "error": "/tmp/private-run",
                     "file": "/tmp/run/private.png",
                 }],
             }],
@@ -72,8 +81,9 @@ class BenchmarkPublisherTests(unittest.TestCase):
         self.assertNotIn("api", public)
         self.assertNotIn("out_dir", public)
         self.assertEqual(public["succeeded"], 1)
-        self.assertEqual(public["failed"], 0)
+        self.assertEqual(public["failed"], 1)
         self.assertEqual(public["skipped"], 1)
+        self.assertEqual(public["results"], [{"state": "failed", "phase": "load"}])
         self.assertEqual(public["prompts"][0]["id"], 2)
         successful, skipped = public["prompts"][0]["runs"]
         self.assertEqual(successful["gpu_ms"], 1234)
@@ -84,6 +94,10 @@ class BenchmarkPublisherTests(unittest.TestCase):
         self.assertNotIn("cell_key", successful)
         self.assertNotIn("api", successful)
         self.assertNotIn("out_dir", successful)
+        self.assertNotIn("error", successful)
+        self.assertNotIn("error", skipped)
+        self.assertEqual(successful["phase"], "generate")
+        self.assertEqual(skipped["phase"], "display_reserve")
         self.assertNotIn("file", skipped)
         self.assertEqual(public["model_revisions"], {"m1": "rev1"})
         self.assertEqual(public["publication"], report["publication"])

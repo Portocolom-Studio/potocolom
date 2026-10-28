@@ -14,6 +14,13 @@ before the guard stopped that size. Iris completed all 180 cases, including
 both 1024px variants. These outcomes apply to this shared display GPU and
 this configuration, not to every 16 GB card.
 
+An external operator controller produced the display-reserve cancellations
+and skipped rows. It is not bundled with the benchmark CLI. `make benchmark`
+runs the matrix without that guard and records successful or failed attempts;
+it cannot reproduce this capacity-skip set by itself. The native sessions API
+accepts only those two states, so this report is published as a static artifact.
+The public export omits free-form error messages and preserves state and phase.
+
 ## Hardware and software
 
 - AMD Radeon RX 7600 XT, gfx1102, 16 GB VRAM; also used for the desktop.

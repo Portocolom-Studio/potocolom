@@ -38,7 +38,7 @@ PUBLIC_FIELDS = frozenset({
     "samples",
     "publication",
 })
-OPERATIONAL_FIELDS = frozenset({"api", "out_dir", "job_id", "cell_key"})
+OPERATIONAL_FIELDS = frozenset({"api", "out_dir", "job_id", "cell_key", "error"})
 
 
 def sanitize_value(value: Any) -> Any:

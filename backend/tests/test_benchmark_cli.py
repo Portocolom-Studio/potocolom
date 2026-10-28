@@ -150,6 +150,7 @@ class BenchmarkLoadFailureTests(unittest.TestCase):
         self.assertNotIn("CANARY", raw)
         summary = json.loads(raw)
         self.assertEqual((summary["succeeded"], summary["failed"]), (1, 1))
+        self.assertEqual(summary["skipped"], 0)
         self.assertEqual(summary["results"][0]["error"], "HTTPStatusError: HTTP 403")
         journal = [json.loads(line) for line in
                    (self.out_dir / "results.jsonl").read_text().splitlines()]
