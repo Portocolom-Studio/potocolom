@@ -104,8 +104,10 @@ function contrastRatio(foreground, background) {
 }
 
 async function sampleCopyrightBackground(page, reader) {
-	await page.$eval('footer.horizon', (footer) => footer.scrollIntoView({ block: 'end' }));
-	const line = await page.$eval('footer.horizon .band .bottom > span', (span) => {
+	await page.$eval('footer.horizon .bottom', (notice) =>
+		notice.scrollIntoView({ block: 'center' })
+	);
+	const line = await page.$eval('footer.horizon .bottom > span', (span) => {
 		const box = span.getBoundingClientRect();
 		const foreground = getComputedStyle(span).color;
 		span.style.color = 'transparent';
@@ -121,7 +123,7 @@ async function sampleCopyrightBackground(page, reader) {
 		clip: { x: line.x, y: line.y, width: line.width, height: line.height },
 		encoding: 'base64'
 	});
-	await page.$eval('footer.horizon .band .bottom > span', (span) => {
+	await page.$eval('footer.horizon .bottom > span', (span) => {
 		span.style.color = '';
 	});
 	const background = await reader.evaluate(async (data) => {
@@ -230,8 +232,6 @@ try {
 		});
 		assert.equal(hit, true, `studio footer ${selector} must be clickable`);
 	}
-	await studio.click('footer.horizon .to-top');
-	await studio.waitForFunction(() => window.scrollY === 0);
 	await studio.close();
 
 	// The band is a particle sea drawn on a canvas over a CSS glow and fade.
@@ -281,8 +281,10 @@ try {
 		await livePage.evaluate(
 			() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
 		);
-		await livePage.waitForSelector('footer.horizon .band .bottom');
-		await livePage.$eval('footer.horizon', (footer) => footer.scrollIntoView({ block: 'end' }));
+		await livePage.waitForSelector('footer.horizon .bottom');
+		await livePage.$eval('footer.horizon .bottom', (notice) =>
+			notice.scrollIntoView({ block: 'center' })
+		);
 		await livePage.waitForSelector('footer.horizon .particle-sea canvas[data-live]');
 		await new Promise((done) => setTimeout(done, 600));
 		if (label === 'desktop') {
@@ -293,13 +295,13 @@ try {
 			console.log(`Footer particle engine: ${JSON.stringify(engineRun)}`);
 			liveEngineRun = engineRun;
 		}
-		const uncovered = await livePage.$eval('footer.horizon .band .bottom > span', (span) => {
+		const uncovered = await livePage.$eval('footer.horizon .bottom > span', (span) => {
 			const box = span.getBoundingClientRect();
 			const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
 			return target === span || span.contains(target);
 		});
 		assert.ok(uncovered, `${label} copyright must be visible before sampling`);
-		const line = await livePage.$eval('footer.horizon .band .bottom > span', (span) => {
+		const line = await livePage.$eval('footer.horizon .bottom > span', (span) => {
 			const box = span.getBoundingClientRect();
 			const foreground = getComputedStyle(span).color;
 			span.style.color = 'transparent';
@@ -316,7 +318,7 @@ try {
 			clip: { x: line.x, y: line.y, width: line.width, height: line.height },
 			encoding: 'base64'
 		});
-		await livePage.$eval('footer.horizon .band .bottom > span', (span) => {
+		await livePage.$eval('footer.horizon .bottom > span', (span) => {
 			span.style.color = '';
 		});
 		const background = await reader.evaluate(async (data) => {
@@ -361,7 +363,7 @@ try {
 		const header = document.querySelector('header.landing-content');
 		return header && !header.hasAttribute('inert') && !document.querySelector('.landing-loader');
 	});
-	await page.waitForSelector('footer.horizon .band .bottom');
+	await page.waitForSelector('footer.horizon .bottom');
 	const canvasBlocked = await page.$eval(
 		'footer.horizon .particle-sea',
 		(sea) => sea.querySelector('canvas') === null && !sea.hasAttribute('data-engine')
@@ -388,19 +390,6 @@ try {
 	const phoneScale = await page.$eval('footer.horizon .particle-sea', (sea) =>
 		Number.parseFloat(getComputedStyle(sea).getPropertyValue('--sea-scale'))
 	);
-	await page.$eval('footer.horizon .band', (band) => {
-		band.style.background = '#fff';
-		band.querySelector('.particle-sea').style.visibility = 'hidden';
-	});
-	const bright = await sampleCopyrightBackground(page, reader);
-	assert.ok(
-		contrastRatio(bright.foreground, bright.background) >= 4.5,
-		`copyright must contrast with a white background behind its row (fg ${bright.foreground}, bg ${bright.background})`
-	);
-	await page.$eval('footer.horizon .band', (band) => {
-		band.style.background = '';
-		band.querySelector('.particle-sea').style.visibility = '';
-	});
 	assert.notEqual(phoneScale, desktopScale, 'the CSS fallback sea scale follows the phone resize');
 	assert.ok(
 		contrastRatio(phone.foreground, phone.background) >= 4.5,
@@ -412,30 +401,17 @@ try {
 		`one WebGL2 engine attempt per footer load; a 2D fallback is a separate canvas and is allowed: ${JSON.stringify(liveEngineRun)}`
 	);
 
-	await page.waitForFunction(() => {
-		const link = document.querySelector('footer.horizon .trust a[href*="/privacy"]');
-		return link && !link.closest('[inert]') && !link.closest('[aria-hidden="true"]');
-	});
-	await page.focus('footer.horizon .trust a[href*="/privacy"]');
-	await page.keyboard.press('Tab');
-	const focus = await page.$eval('footer.horizon .to-top', (button) => {
-		const style = getComputedStyle(button);
-		return {
-			active: document.activeElement === button,
-			visible: button.matches(':focus-visible'),
-			color: style.color,
-			outlineColor: style.outlineColor,
-			outlineStyle: style.outlineStyle
-		};
-	});
 	assert.equal(
-		focus.active,
-		true,
-		'Tab from the final trust link must focus the back-to-top button'
+		await page.$('footer.horizon .to-top'),
+		null,
+		'the footer has no back-to-top button'
 	);
-	assert.equal(focus.visible, true, 'keyboard navigation must match :focus-visible');
-	assert.equal(focus.outlineStyle, 'solid', 'keyboard focus must show an outline');
-	assert.equal(focus.outlineColor, focus.color, 'focus outline must follow currentColor');
+	assert.ok(
+		await page.$eval('footer.horizon .bottom', (notice) =>
+			notice.nextElementSibling?.matches('.band')
+		),
+		'the copyright notice sits above the artwork'
+	);
 
 	const parity = await browser.newPage();
 	await parity.setViewport({ width: 390, height: 844 });

@@ -36,10 +36,15 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 			'class="trust ',
 			'class="band ',
 			'class="wordmark ',
-			'class="to-top '
+			'class="bottom '
 		]) {
 			assert.ok(footer.includes(landmark), `${name}: ${landmark}`);
 		}
+		assert.ok(
+			footer.indexOf('class="bottom ') < footer.indexOf('class="band '),
+			`${name}: notice above artwork`
+		);
+		assert.ok(!footer.includes('class="to-top '), `${name}: no back-to-top button`);
 	}
 });
 
