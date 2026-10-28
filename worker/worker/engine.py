@@ -590,6 +590,7 @@ class DiffusersEngine:
         return select_rung(
             manifest.min_vram_gb, self._available_vram_bytes(),
             self.memory_mode, on_cpu=not self.device.startswith("cuda"),
+            model_offload_vram_gb=manifest.model_offload_vram_gb,
         )
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
@@ -627,7 +628,9 @@ class DiffusersEngine:
             "full" if self.memory_mode == "auto" or "upscale" in manifest.capabilities
             else self.memory_mode
         )
-        target = 1 if shared else max(1, rung_vram_bytes(manifest.min_vram_gb, target_rung))
+        target = 1 if shared else max(1, rung_vram_bytes(
+            manifest.min_vram_gb, target_rung, manifest.model_offload_vram_gb,
+        ))
         if self._free_vram_bytes() < target:
             self._free_gpu_cache()
         if shared:
@@ -646,11 +649,15 @@ class DiffusersEngine:
         if self.memory_mode == "auto" and manifest.id not in self._rungs:
             # Prefer evicting cold residents over degrading the new model to
             # an offload rung: make room for full residency before picking.
-            wanted = rung_vram_bytes(manifest.min_vram_gb, "full")
+            wanted = rung_vram_bytes(
+                manifest.min_vram_gb, "full", manifest.model_offload_vram_gb,
+            )
             if self._free_vram_bytes() < wanted:
                 self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
         rung = self._pick_rung(manifest)
-        required = max(1, rung_vram_bytes(manifest.min_vram_gb, rung))
+        required = max(1, rung_vram_bytes(
+            manifest.min_vram_gb, rung, manifest.model_offload_vram_gb,
+        ))
         if self._free_vram_bytes() < required:
             self._evict_cold(except_model_id=manifest.id, required_bytes=required)
         available = self._free_vram_bytes()
@@ -708,7 +715,10 @@ class DiffusersEngine:
             "model_offload": "group_offload",
         }
         demoted = lower.get(rung)
-        if demoted is None:
+        if demoted is None or (
+            demoted == "group_offload"
+            and manifest.pipeline in {"MOSSImage", "Iris3B", "Flux3Distilled"}
+        ):
             return False
         self._evict_model(manifest.id)
         self._rungs[manifest.id] = demoted
@@ -726,6 +736,7 @@ class DiffusersEngine:
         return select_rung(
             manifest.min_vram_gb, self._free_vram_bytes(), self.memory_mode,
             on_cpu=not self.device.startswith("cuda"),
+            model_offload_vram_gb=manifest.model_offload_vram_gb,
         )
 
     def _apply_rung(self, pipeline: Any, manifest: Manifest, rung: MemoryRung) -> Any:
@@ -890,6 +901,20 @@ class DiffusersEngine:
                     f"manifest {manifest.id} has no t2i_adapter for realtime conditioning"
                 )
             return self._load_realtime(manifest)
+        if manifest.pipeline in {"MOSSImage", "Iris3B", "Flux3Distilled"}:
+            if mode != "t2i":
+                raise ValueError(f"{manifest.pipeline} only supports queued text-to-image")
+            rung = self._pick_rung(manifest)
+            if rung == "group_offload":
+                self._rungs.pop(manifest.id, None)
+                raise ValueError(
+                    f"{manifest.pipeline} does not support group_offload; select full or model_offload"
+                )
+            from worker.candidate_pipelines import load_candidate_pipeline
+
+            return load_candidate_pipeline(
+                manifest, rung=rung, device=self.device,
+            )
         cls = self._pipeline_class(manifest, mode)
         loaded = self._pipelines.get((manifest.id, "i2i" if mode == "t2i" else "t2i"))
         if loaded is not None:
@@ -1772,8 +1797,13 @@ class DiffusersEngine:
         # pipeline it was loaded for would pin VRAM for weights already gone, and
         # every drop path routes through this one.
         self._detach_preview_decoder(self._pipelines[key])
-        del self._pipelines[key]
-        self._forget_rung_if_unloaded(key[0])
+        close = getattr(self._pipelines[key], "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            del self._pipelines[key]
+            self._forget_rung_if_unloaded(key[0])
 
     def _evict_model(self, model_id: str) -> None:
         for key in [key for key in self._pipelines if key[0] == model_id]:
@@ -1977,6 +2007,11 @@ class DiffusersEngine:
         prompt_cache: PromptCache | None = None,
         stages: dict[str, int] | None = None,
     ) -> dict[str, Any]:
+        if manifest.pipeline in {"MOSSImage", "Iris3B", "Flux3Distilled"}:
+            candidate_kwargs: dict[str, Any] = {"prompt": prompt}
+            if negative_prompt is not None:
+                candidate_kwargs["negative_prompt"] = negative_prompt
+            return candidate_kwargs
         # A realtime session calls this for every frame with the same prompt, and
         # encoding is a full pass through each text encoder: measured at 322 ms
         # on CPU for a two chunk prompt, against a frame budget of 250 ms. Only

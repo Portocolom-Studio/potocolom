@@ -2221,3 +2221,42 @@ command deliberately uses the public marketing domain.
 Rejected alternatives: separate footer copies for each page; emoji flags
 whose rendering varies by platform; a second installer or a backend proxy;
 and a third-party URL shortener that adds another service to the install path.
+
+## New image models enter as queued evaluation candidates
+
+Operator choice, 2026-10-26. Remove `dreamshaper-lcm`, `sana-sprint-06b`,
+`sd-turbo`, and `vega-rt` from the bundled catalog and active script defaults.
+This supersedes their earlier inclusion decisions. Retained benchmark reports
+and synthetic test fixtures remain historical evidence. SDXL Turbo remains
+the studio realtime default.
+
+Add pinned MOSS-Image SFT, Kromoss, Iris-3B, and FLUX 3 Image Klein as queued
+text-to-image candidates. Keep `benchmark_only` until actual GPU output,
+peak memory, and cancellation checks support promotion. A catalog entry does
+not prove a model fits a 16 GB GPU. Do not infer realtime support from step count.
+MOSS, Kromoss, and Iris use Apache 2.0; FLUX 3 uses the conditional FLUX
+Kommunity terms described in `third-party-models.md`.
+
+The current SDXL memory estimate assumes the largest component is 55 percent
+of the full model. These candidates can keep their text encoder on CPU or swap
+components. Their manifests therefore give a separate worker-private
+`model_offload_vram_gb` estimate. Admission uses that floor after the display
+reserve. These custom loaders refuse disk group offload.
+
+Rejected alternatives: exposing unmeasured models in the studio; assuming a
+small weight file proves full-pipeline memory use; using the SDXL component
+ratio for new architectures; loading Iris training checkpoints with pickle;
+and adding a model name without a runnable loader.
+
+## Remove SDXL Turbo from the bundled catalog
+
+Operator choice, 2026-10-27. Remove `sdxl-turbo` from worker manifests,
+frontend model specifications, active benchmark matrices and script defaults.
+This supersedes its realtime promotion and the preceding entry's realtime
+default. Preserve saved images, historical measurements and synthetic protocol
+fixtures. The bundled catalog has no realtime-capable model; operators can
+supply their own manifest. Realtime tools require an explicit model. No queued
+model gains a realtime capability as a side effect of this removal.
+
+Rejected alternatives: retaining SDXL Turbo as a hidden benchmark entry, or
+marking another model as realtime without measurements.

@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 --index-url http
 
 COPY worker/pyproject.toml .
 COPY worker/worker ./worker
+COPY worker/vendor ./vendor
 # Default manifests seed the empty models volume on first boot.
 COPY worker/models /models
 

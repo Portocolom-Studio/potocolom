@@ -1,0 +1,66 @@
+{
+  "id": "kromoss",
+  "name": "Kromoss",
+  "capabilities": [
+    "text_to_image"
+  ],
+  "tier": "premium",
+  "min_vram_gb": 32,
+  "model_offload_vram_gb": 12,
+  "prompt_token_limit": 4096,
+  "source": "lodestones/Kromoss",
+  "source_revision": "a4fe97449297af2e3be7841e1c18e431f3b06031",
+  "dtype": "bfloat16",
+  "pipeline": "MOSSImage",
+  "license_id": "apache-2.0",
+  "license_url": "https://huggingface.co/lodestones/Kromoss/blob/main/README.md",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 100,
+        "default": 50
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10,
+        "default": 3.0
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "negative_prompt": {
+        "type": "string",
+        "default": ""
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  }
+}

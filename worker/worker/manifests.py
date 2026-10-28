@@ -30,6 +30,9 @@ class Manifest(BaseModel):
     # Matches the API's bound, so a bad value fails here where the operator
     # can see it rather than silently at registration.
     min_vram_gb: int = Field(default=0, ge=0, lt=2**31)
+    # Explicit largest-component estimate for architectures whose encoder is
+    # intentionally kept on CPU at the model-offload rung. Worker-private.
+    model_offload_vram_gb: int | None = Field(default=None, gt=0, lt=2**31)
     # Native text encoder window in tokens. The worker chunks declared CLIP
     # prompts past this window, while the studio still warns that later chunks
     # influence the image weakly. Left at 0 rather than 77 on purpose: a
@@ -74,7 +77,7 @@ class Manifest(BaseModel):
     def wire(self) -> dict:
         return self.model_dump(exclude={
             "source", "vae", "preview_decoder", "scheduler", "lora", "quantize",
-            "t2i_adapter", "dtype", "pipeline",
+            "t2i_adapter", "dtype", "pipeline", "model_offload_vram_gb",
         } | set(PINNED_REFERENCES.values()))
 
     def with_defaults(self, params: dict) -> dict:

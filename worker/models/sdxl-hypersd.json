@@ -12,8 +12,8 @@
   "scheduler": "euler-trailing",
   "lora": "ByteDance/Hyper-SD/Hyper-SDXL-8steps-lora.safetensors",
   "lora_revision": "bc08d970a87c74c71209491d64e3525845698863",
-  "license_id": "none-declared",
-  "license_url": "https://huggingface.co/ByteDance/Hyper-SD",
+  "license_id": "openrail++",
+  "license_url": "https://huggingface.co/ByteDance/Hyper-SD/blob/bc08d970a87c74c71209491d64e3525845698863/LICENSE.md",
   "benchmark_only": true,
   "parameters": {
     "type": "object",

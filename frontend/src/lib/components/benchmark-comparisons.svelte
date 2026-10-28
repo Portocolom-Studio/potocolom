@@ -66,9 +66,7 @@
 	}
 
 	/* Radar ------------------------------------------------------------------
-	   One axis per model, two rings: GPU denoise and end-to-end wall. Both are
-	   milliseconds on one shared log scale, so the gap between the polygons is
-	   the overhead around denoising and a smaller polygon is simply faster. */
+	   One axis per model, with engine and end-to-end wall times on one log scale. */
 	const radarW = 700;
 	const radarH = 560;
 	const rcx = radarW / 2;
@@ -147,7 +145,7 @@
 		radarHover = index;
 		const row = rows[index];
 		showReadout(event, row.model_id, [
-			`GPU ${row.gpu_display}`,
+			`${t('bench.engine')} ${row.gpu_display}`,
 			`${t('bench.wall')} ${row.wall_display}`,
 			`${t('bench.overhead')} ${formatSeconds(Math.max(0, row.wall_s - row.gpu_ms / 1000))}`
 		]);
@@ -242,250 +240,260 @@
 	}
 </script>
 
-<div class="stack" bind:this={stackEl}>
-	{#if readout}
-		<div class="readout" style:left="{readout.x}px" style:top="{readout.y}px" aria-hidden="true">
-			<p class="mono">{readout.title}</p>
-			{#each readout.lines as line (line)}
-				<p class="mono num">{line}</p>
-			{/each}
-		</div>
-	{/if}
-
-	<section class="card">
-		<header>
-			<h3>{t('bench.leaderboard')}</h3>
-			<p>{t('bench.leaderboard_note')}</p>
-		</header>
-		<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_leaderboard')}>
-			<table class="lead">
-				<thead>
-					<tr>
-						<th scope="col" class="rank">#</th>
-						<th scope="col">{t('bench.col_model')}</th>
-						<th scope="col" class="wide">{t('bench.col_gpu_avg')}</th>
-						<th scope="col">{t('bench.col_gpu_med')}</th>
-						<th scope="col">{t('bench.col_wall')}</th>
-						<th scope="col">{t('bench.col_load')}</th>
-						<th scope="col">{t('bench.col_ok')}</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each rows as row (row.model_id)}
-						{@const stats = statsFor(row.model_id)}
-						<tr>
-							<td class="num quiet">{row.rank}</td>
-							<td><span class="mono">{row.model_id}</span></td>
-							<td>
-								<div class="meter">
-									<div class="track">
-										<div class="fill" style:width="{row.gpu_ratio * 100}%"></div>
-									</div>
-									<span class="mono num value">{row.gpu_display}</span>
-								</div>
-							</td>
-							<td class="mono num">
-								{stats?.median_gpu_ms ? formatMs(stats.median_gpu_ms) : '-'}
-							</td>
-							<td class="mono num">{row.wall_display}</td>
-							<td class="mono num">{row.load_display}</td>
-							<td class="mono num">
-								{stats?.succeeded ?? 0}
-								{#if stats?.failed}
-									<span class="quiet">/ {stats.failed} {t('bench.failed')}</span>
-								{/if}
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	</section>
-
-	<section class="card">
-		<header>
-			<h3>{t('bench.chart_grouped')}</h3>
-			<p>{t('bench.chart_grouped_desc')}</p>
-			<div class="legend">
-				<span><i class="swatch gpu"></i> GPU</span>
-				<span><i class="swatch wall"></i> {t('bench.wall')}</span>
-				<span class="quiet">{t('bench.radar_scale')}</span>
-			</div>
-		</header>
-		<div class="pad">
-			<svg
-				viewBox="0 0 {radarW} {radarH}"
-				class="radar"
-				role="img"
-				aria-label={t('bench.chart_grouped')}
-				onpointermove={radarMove}
-				onpointerleave={radarLeave}
-			>
-				{#each radarRings as ring (ring)}
-					<path d={ringPath(logPosition(ring, radarLo, radarHi), rows.length)} class="grid" />
-				{/each}
-
-				{#each rows as row, i (row.model_id)}
-					{@const outer = radarPoint(i, rows.length, 1)}
-					{@const label = radarPoint(i, rows.length, labelR / radarR)}
-					<line
-						x1={rcx}
-						y1={rcy}
-						x2={outer.x}
-						y2={outer.y}
-						class="grid"
-						class:axis-live={radarHover === i}
-					/>
-					<text
-						x={label.x}
-						y={label.y}
-						class="tick"
-						class:label-live={radarHover === i}
-						text-anchor={labelAnchor(i, rows.length)}
-						dominant-baseline="middle"
-					>
-						{row.model_id}
-					</text>
-				{/each}
-
-				<path d={seriesPath(wallSeries)} class="area-wall" />
-				<path d={seriesPath(gpuSeries)} class="area-gpu" />
-
-				{#each rows as row, i (row.model_id)}
-					{@const wall = radarPoint(
-						i,
-						rows.length,
-						logPosition(row.wall_s * 1000, radarLo, radarHi)
-					)}
-					{@const gpu = radarPoint(i, rows.length, logPosition(row.gpu_ms, radarLo, radarHi))}
-					{@const live = radarHover === i}
-					{#if live}
-						<line x1={gpu.x} y1={gpu.y} x2={wall.x} y2={wall.y} class="gap-live" />
-					{/if}
-					<circle cx={wall.x} cy={wall.y} r={live ? 6 : 4} class="dot-wall">
-						<title>{row.model_id} wall: {row.wall_display}</title>
-					</circle>
-					<circle cx={gpu.x} cy={gpu.y} r={live ? 6 : 4} class="dot-gpu">
-						<title>{row.model_id} GPU: {row.gpu_display}</title>
-					</circle>
-				{/each}
-
-				<!-- Last, so the halo lands on top of whatever the first axis draws. -->
-				{#each radarRings as ring (ring)}
-					{@const scale = logPosition(ring, radarLo, radarHi)}
-					<text x={rcx + 7} y={rcy - radarR * scale} class="tick ring-label">{formatMs(ring)}</text>
-				{/each}
-			</svg>
-		</div>
-	</section>
-
-	<section class="card">
-		<header>
-			<h3>{t('bench.chart_spread')}</h3>
-			<p>{t('bench.chart_spread_desc')}</p>
-			<div class="legend">
-				{#each lineData.categories as category, i (category)}
-					<span>
-						<i class="swatch dot" style:background={categoryColor(i, lineData.categories.length)}
-						></i>
-						{category}
-					</span>
+{#if rows.length > 0}
+	<div class="stack" bind:this={stackEl}>
+		{#if readout}
+			<div class="readout" style:left="{readout.x}px" style:top="{readout.y}px" aria-hidden="true">
+				<p class="mono">{readout.title}</p>
+				{#each readout.lines as line (line)}
+					<p class="mono num">{line}</p>
 				{/each}
 			</div>
-		</header>
-		<div class="scroll">
-			<div class="pad">
-				<svg
-					viewBox="0 0 {dotW} {dotH}"
-					class="dots"
-					style:min-width="34rem"
-					role="img"
-					aria-label={t('bench.chart_spread')}
-				>
-					{#each dotTicks as tick (tick)}
-						{@const x = dotX(tick)}
-						<line x1={x} y1="0" x2={x} y2={dotH - dotAxisH} class="grid" />
-						<text {x} y={dotH - 10} class="tick" text-anchor="middle">{formatMs(tick)}</text>
-					{/each}
+		{/if}
 
-					{#each rows as row, i (row.model_id)}
-						{@const y = i * dotRowH + dotRowH / 2}
-						{@const range = rowRange(row.model_id)}
-						<text x="0" {y} class="tick" dominant-baseline="middle">{row.model_id}</text>
-						{#if range}
-							<line x1={dotX(range.min)} y1={y} x2={dotX(range.max)} y2={y} class="range-bar">
-								<title>
-									{row.model_id}: {formatMs(range.min)} to {formatMs(range.max)} across categories
-								</title>
-							</line>
-						{/if}
-						{#each lineData.categories as category, c (category)}
-							{@const ms = categoryMs(row.model_id, category)}
-							{#if ms > 0}
-								<circle
-									cx={dotX(ms)}
-									cy={dotY(i, c, lineData.categories.length)}
-									r="4.5"
-									class="dot"
-									class:dimmed={isDimmed(row.model_id, category)}
-									style:fill={categoryColor(c, lineData.categories.length)}
-									role="img"
-									aria-label="{row.model_id} {category}: {formatMs(ms)}"
-									onpointerenter={(event) => dotEnter(event, row.model_id, category, ms)}
-									onpointerleave={dotLeave}
-								>
-									<title>{row.model_id} {category}: {formatMs(ms)}</title>
-								</circle>
-							{/if}
-						{/each}
-					{/each}
-				</svg>
-			</div>
-		</div>
-		<details>
-			<summary>{t('bench.spread_numbers')}</summary>
-			<div class="legend heat-legend">
-				<span>{t('bench.heatmap_fast')}</span>
-				<div class="ramp">
-					{#each [0, 1, 2, 3, 4] as bucket (bucket)}
-						<div style:background={heatFill(heatLegendMs(bucket / 4))}></div>
-					{/each}
-				</div>
-				<span>{t('bench.heatmap_slow')}</span>
-				<span class="mono num range">{formatMs(spreadMin)} - {formatMs(spreadMax)}</span>
-			</div>
-			<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_spread')}>
-				<table class="grid-table">
+		<section class="card">
+			<header>
+				<h3>{t('bench.leaderboard')}</h3>
+				<p>{t('bench.leaderboard_note')}</p>
+				<p>{t('bench.summary_note')}</p>
+			</header>
+			<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_leaderboard')}>
+				<table class="lead">
 					<thead>
 						<tr>
-							<th scope="col" class="sticky">{t('bench.heatmap_category')}</th>
-							{#each rows as row (row.model_id)}
-								<th scope="col" class="mono">{row.model_id}</th>
-							{/each}
+							<th scope="col" class="rank">#</th>
+							<th scope="col">{t('bench.col_model')}</th>
+							<th scope="col" class="wide">{t('bench.col_gpu_avg')}</th>
+							<th scope="col">{t('bench.col_gpu_med')}</th>
+							<th scope="col">{t('bench.col_wall')}</th>
+							<th scope="col">{t('bench.col_load')}</th>
+							<th scope="col">{t('bench.col_ok')}</th>
 						</tr>
 					</thead>
 					<tbody>
-						{#each lineData.categories as category (category)}
+						{#each rows as row (row.model_id)}
+							{@const stats = statsFor(row.model_id)}
 							<tr>
-								<th scope="row" class="sticky">{category}</th>
-								{#each rows as row (row.model_id)}
-									{@const ms = categoryMs(row.model_id, category)}
-									<td
-										class="mono num cell"
-										class:dimmed={isDimmed(row.model_id, category)}
-										style:background={heatFill(ms)}
-									>
-										{formatMs(ms)}
-									</td>
-								{/each}
+								<td class="num quiet">{row.rank}</td>
+								<td><span class="mono">{row.model_id}</span></td>
+								<td>
+									<div class="meter">
+										<div class="track">
+											<div class="fill" style:width="{row.gpu_ratio * 100}%"></div>
+										</div>
+										<span class="mono num value">{row.gpu_display}</span>
+									</div>
+								</td>
+								<td class="mono num">
+									{stats?.median_gpu_ms ? formatMs(stats.median_gpu_ms) : '-'}
+								</td>
+								<td class="mono num">{row.wall_display}</td>
+								<td class="mono num">{row.load_display}</td>
+								<td class="mono num">
+									{stats?.succeeded ?? 0}
+									{#if stats?.failed}
+										<span class="quiet">/ {stats.failed} {t('bench.failed')}</span>
+									{/if}
+									{#if stats?.skipped}
+										<span class="quiet">/ {stats.skipped} {t('bench.skipped')}</span>
+									{/if}
+								</td>
 							</tr>
 						{/each}
 					</tbody>
 				</table>
 			</div>
-		</details>
-	</section>
-</div>
+		</section>
+
+		<section class="card">
+			<header>
+				<h3>{t('bench.chart_grouped')}</h3>
+				<p>{t('bench.chart_grouped_desc')}</p>
+				<div class="legend">
+					<span><i class="swatch gpu"></i> {t('bench.engine')}</span>
+					<span><i class="swatch wall"></i> {t('bench.wall')}</span>
+					<span class="quiet">{t('bench.radar_scale')}</span>
+				</div>
+			</header>
+			<div class="pad">
+				<svg
+					viewBox="0 0 {radarW} {radarH}"
+					class="radar"
+					role="img"
+					aria-label={t('bench.chart_grouped')}
+					onpointermove={radarMove}
+					onpointerleave={radarLeave}
+				>
+					{#each radarRings as ring (ring)}
+						<path d={ringPath(logPosition(ring, radarLo, radarHi), rows.length)} class="grid" />
+					{/each}
+
+					{#each rows as row, i (row.model_id)}
+						{@const outer = radarPoint(i, rows.length, 1)}
+						{@const label = radarPoint(i, rows.length, labelR / radarR)}
+						<line
+							x1={rcx}
+							y1={rcy}
+							x2={outer.x}
+							y2={outer.y}
+							class="grid"
+							class:axis-live={radarHover === i}
+						/>
+						<text
+							x={label.x}
+							y={label.y}
+							class="tick"
+							class:label-live={radarHover === i}
+							text-anchor={labelAnchor(i, rows.length)}
+							dominant-baseline="middle"
+						>
+							{row.model_id}
+						</text>
+					{/each}
+
+					<path d={seriesPath(wallSeries)} class="area-wall" />
+					<path d={seriesPath(gpuSeries)} class="area-gpu" />
+
+					{#each rows as row, i (row.model_id)}
+						{@const wall = radarPoint(
+							i,
+							rows.length,
+							logPosition(row.wall_s * 1000, radarLo, radarHi)
+						)}
+						{@const gpu = radarPoint(i, rows.length, logPosition(row.gpu_ms, radarLo, radarHi))}
+						{@const live = radarHover === i}
+						{#if live}
+							<line x1={gpu.x} y1={gpu.y} x2={wall.x} y2={wall.y} class="gap-live" />
+						{/if}
+						<circle cx={wall.x} cy={wall.y} r={live ? 6 : 4} class="dot-wall">
+							<title>{row.model_id} {t('bench.wall')}: {row.wall_display}</title>
+						</circle>
+						<circle cx={gpu.x} cy={gpu.y} r={live ? 6 : 4} class="dot-gpu">
+							<title>{row.model_id} {t('bench.engine')}: {row.gpu_display}</title>
+						</circle>
+					{/each}
+
+					<!-- Last, so the halo lands on top of whatever the first axis draws. -->
+					{#each radarRings as ring (ring)}
+						{@const scale = logPosition(ring, radarLo, radarHi)}
+						<text x={rcx + 7} y={rcy - radarR * scale} class="tick ring-label"
+							>{formatMs(ring)}</text
+						>
+					{/each}
+				</svg>
+			</div>
+		</section>
+
+		<section class="card">
+			<header>
+				<h3>{t('bench.chart_spread')}</h3>
+				<p>{t('bench.chart_spread_desc')}</p>
+				<div class="legend">
+					{#each lineData.categories as category, i (category)}
+						<span>
+							<i class="swatch dot" style:background={categoryColor(i, lineData.categories.length)}
+							></i>
+							{category}
+						</span>
+					{/each}
+				</div>
+			</header>
+			<div class="scroll">
+				<div class="pad">
+					<svg
+						viewBox="0 0 {dotW} {dotH}"
+						class="dots"
+						style:min-width="34rem"
+						role="img"
+						aria-label={t('bench.chart_spread')}
+					>
+						{#each dotTicks as tick (tick)}
+							{@const x = dotX(tick)}
+							<line x1={x} y1="0" x2={x} y2={dotH - dotAxisH} class="grid" />
+							<text {x} y={dotH - 10} class="tick" text-anchor="middle">{formatMs(tick)}</text>
+						{/each}
+
+						{#each rows as row, i (row.model_id)}
+							{@const y = i * dotRowH + dotRowH / 2}
+							{@const range = rowRange(row.model_id)}
+							<text x="0" {y} class="tick" dominant-baseline="middle">{row.model_id}</text>
+							{#if range}
+								<line x1={dotX(range.min)} y1={y} x2={dotX(range.max)} y2={y} class="range-bar">
+									<title>
+										{row.model_id}: {formatMs(range.min)} to {formatMs(range.max)} across categories
+									</title>
+								</line>
+							{/if}
+							{#each lineData.categories as category, c (category)}
+								{@const ms = categoryMs(row.model_id, category)}
+								{#if ms > 0}
+									<circle
+										cx={dotX(ms)}
+										cy={dotY(i, c, lineData.categories.length)}
+										r="4.5"
+										class="dot"
+										class:dimmed={isDimmed(row.model_id, category)}
+										style:fill={categoryColor(c, lineData.categories.length)}
+										role="img"
+										aria-label="{row.model_id} {category}: {formatMs(ms)}"
+										onpointerenter={(event) => dotEnter(event, row.model_id, category, ms)}
+										onpointerleave={dotLeave}
+									>
+										<title>{row.model_id} {category}: {formatMs(ms)}</title>
+									</circle>
+								{/if}
+							{/each}
+						{/each}
+					</svg>
+				</div>
+			</div>
+			<details>
+				<summary>{t('bench.spread_numbers')}</summary>
+				<div class="legend heat-legend">
+					<span>{t('bench.heatmap_fast')}</span>
+					<div class="ramp">
+						{#each [0, 1, 2, 3, 4] as bucket (bucket)}
+							<div style:background={heatFill(heatLegendMs(bucket / 4))}></div>
+						{/each}
+					</div>
+					<span>{t('bench.heatmap_slow')}</span>
+					<span class="mono num range">{formatMs(spreadMin)} - {formatMs(spreadMax)}</span>
+				</div>
+				<div class="scroll" tabindex="0" role="region" aria-label={t('bench.region_spread')}>
+					<table class="grid-table">
+						<thead>
+							<tr>
+								<th scope="col" class="sticky">{t('bench.heatmap_category')}</th>
+								{#each rows as row (row.model_id)}
+									<th scope="col" class="mono">{row.model_id}</th>
+								{/each}
+							</tr>
+						</thead>
+						<tbody>
+							{#each lineData.categories as category (category)}
+								<tr>
+									<th scope="row" class="sticky">{category}</th>
+									{#each rows as row (row.model_id)}
+										{@const ms = categoryMs(row.model_id, category)}
+										<td
+											class="mono num cell"
+											class:dimmed={isDimmed(row.model_id, category)}
+											style:background={heatFill(ms)}
+										>
+											{formatMs(ms)}
+										</td>
+									{/each}
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</details>
+		</section>
+	</div>
+{:else}
+	<p>{t('bench.no_timing')}</p>
+{/if}
 
 <style>
 	/* Hallmark - the benchmark charts on the latent tokens, so they belong to the page. */

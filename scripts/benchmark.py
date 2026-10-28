@@ -3,7 +3,7 @@
     backend/.venv/bin/python scripts/benchmark.py
 
 Requires the API and a worker (docs/local-development.md). Configuration:
-  benchmark-prompts.json  - 24 curated prompts
+  benchmark-prompts.json  - 36 curated prompts
   benchmark-matrix.json   - models, 5 parameter variants each
 
 See scripts/BENCHMARK.md for 16 GB VRAM model research and usage notes.
@@ -90,6 +90,14 @@ def load_matrix(model_filter: list[str] | None, quick: bool, include_capped: boo
     return {**matrix, "models": models}
 
 
+def failure_message(error: Exception) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        return f"HTTPStatusError: HTTP {error.response.status_code}"
+    if isinstance(error, httpx.HTTPError):
+        return type(error).__name__
+    return str(error)
+
+
 def default_out_dir() -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return ROOT / "data" / "benchmark" / stamp
@@ -163,6 +171,9 @@ def unload_all(client: httpx.Client, api: str) -> list[str]:
 
 
 def write_report_md(out_dir: Path, summary: dict) -> Path:
+    succeeded = sum(row["succeeded"] for row in summary["model_stats"])
+    failed = sum(row["failed"] for row in summary["model_stats"])
+    skipped = sum(row.get("skipped", 0) for row in summary["model_stats"])
     lines = [
         "# Benchmark report",
         "",
@@ -170,19 +181,20 @@ def write_report_md(out_dir: Path, summary: dict) -> Path:
         f"- **Prompts:** {summary['prompt_count']}",
         f"- **Models:** {', '.join(summary['models'])}",
         f"- **Variants per prompt:** {summary['variants_per_prompt']}",
-        f"- **Images:** {summary['succeeded']} succeeded, {summary['failed']} failed",
+        f"- **Images:** {succeeded} succeeded, {failed} failed, {skipped} skipped",
         "",
         "## Model summary",
         "",
-        "| Model | OK | Fail | load_ms | Avg gpu_ms | Median gpu_ms | Avg wall_s |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Model | OK | Fail | Skip | load_ms | Avg gpu_ms | Median gpu_ms | Avg wall_s |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in summary["model_stats"]:
         avg_gpu = f"{row['avg_gpu_ms']:.0f}" if row["avg_gpu_ms"] is not None else "-"
         med_gpu = f"{row['median_gpu_ms']:.0f}" if row["median_gpu_ms"] is not None else "-"
         load_ms = str(row["load_ms"]) if row.get("load_ms") is not None else "-"
         lines.append(
-            f"| {row['model_id']} | {row['succeeded']} | {row['failed']} | {load_ms} "
+            f"| {row['model_id']} | {row['succeeded']} | {row['failed']} "
+            f"| {row.get('skipped', 0)} | {load_ms} "
             f"| {avg_gpu} | {med_gpu} | {row['avg_wall_s']:.1f} |"
         )
     lines.extend(["", "## Per-prompt results", ""])
@@ -216,11 +228,12 @@ def write_report_html(out_dir: Path, summary: dict, prompts: list[dict],
 
     by_prompt_cell: dict[int, dict[str, dict]] = defaultdict(dict)
     for row in summary["results"]:
-        if row.get("state") != "succeeded":
-            continue
         by_prompt_cell[row["prompt_id"]][row["cell_key"]] = row
 
     model_stats = {row["model_id"]: row for row in summary["model_stats"]}
+    succeeded = sum(row["succeeded"] for row in summary["model_stats"])
+    failed = sum(row["failed"] for row in summary["model_stats"])
+    skipped = sum(row.get("skipped", 0) for row in summary["model_stats"])
 
     css = """
     body { font-family: system-ui, sans-serif; margin: 1.5rem; background: #111; color: #eee; }
@@ -242,14 +255,15 @@ def write_report_html(out_dir: Path, summary: dict, prompts: list[dict],
         f"<title>Benchmark {html.escape(summary['created_at'])}</title>",
         f"<style>{css}</style></head><body>",
         "<h1>Image generation benchmark</h1>",
-        f"<p class='note'>{summary['succeeded']} images, "
+        f"<p class='note'>{succeeded} images, "
+        f"{failed} failed, {skipped} skipped, "
         f"{summary['prompt_count']} prompts, "
         f"{len(matrix_models)} models, "
         f"{summary['variants_per_prompt']} variants each. "
         f"Target GPU: {summary.get('target_vram_gb', '?')} GB VRAM.</p>",
         "<h2>Model summary</h2>",
         "<table class='stats'><thead><tr>",
-        "<th>Model</th><th>OK</th><th>Fail</th><th>Avg gpu_ms</th>",
+        "<th>Model</th><th>OK</th><th>Fail</th><th>Skip</th><th>Avg gpu_ms</th>",
         "<th>Median gpu_ms</th><th>Avg wall_s</th></tr></thead><tbody>",
     ]
     for model in matrix_models:
@@ -261,8 +275,9 @@ def write_report_html(out_dir: Path, summary: dict, prompts: list[dict],
             f"<td>{html.escape(model['id'])}</td>"
             f"<td>{stats.get('succeeded', 0)}</td>"
             f"<td>{stats.get('failed', 0)}</td>"
-        f"<td>{'-' if avg_gpu is None else f'{avg_gpu:.0f}'}</td>"
-        f"<td>{'-' if med_gpu is None else f'{med_gpu:.0f}'}</td>"
+            f"<td>{stats.get('skipped', 0)}</td>"
+            f"<td>{'-' if avg_gpu is None else f'{avg_gpu:.0f}'}</td>"
+            f"<td>{'-' if med_gpu is None else f'{med_gpu:.0f}'}</td>"
             f"<td>{stats.get('avg_wall_s', 0):.1f}</td>"
             "</tr>"
         )
@@ -319,13 +334,15 @@ def compute_model_stats(rows: list[dict]) -> list[dict]:
     for model_id in sorted(buckets):
         bucket = buckets[model_id]
         ok = [r for r in bucket if r.get("state") == "succeeded"]
-        fail = [r for r in bucket if r.get("state") != "succeeded"]
+        fail = [r for r in bucket if r.get("state") == "failed"]
+        skip = [r for r in bucket if r.get("state") == "skipped"]
         gpu_values = [r["gpu_ms"] for r in ok if r.get("gpu_ms") is not None]
         wall_values = [r["wall_s"] for r in ok if r.get("wall_s") is not None]
         stats.append({
             "model_id": model_id,
             "succeeded": len(ok),
             "failed": len(fail),
+            "skipped": len(skip),
             "load_ms": ok[0].get("model_load_ms") if ok else None,
             "avg_gpu_ms": statistics.mean(gpu_values) if gpu_values else None,
             "median_gpu_ms": statistics.median(gpu_values) if gpu_values else None,
@@ -370,6 +387,8 @@ def main() -> None:
     variants_per_prompt = len(matrix_models[0]["variants"]) if matrix_models else 0
 
     out_dir = args.out_dir or default_out_dir()
+    if (out_dir / "results.jsonl").exists():
+        parser.error("output directory already has results.jsonl; use a new directory")
     images_dir = out_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -378,6 +397,12 @@ def main() -> None:
           f"{len(matrix_models)} models, {variants_per_prompt} variants) -> {out_dir}")
 
     rows: list[dict] = []
+
+    def record_result(row: dict) -> None:
+        rows.append(row)
+        with (out_dir / "results.jsonl").open("a") as journal:
+            journal.write(json.dumps(row) + "\n")
+
     failures = 0
     job_no = 0
 
@@ -398,8 +423,32 @@ def main() -> None:
                 print(f"\n=== model: {model['id']} ===")
                 try:
                     load_ms = load_model(client, args.api, model["id"])
-                except httpx.HTTPError as error:
-                    raise SystemExit(f"failed to load {model['id']}: {error}") from error
+                except (httpx.HTTPError, RuntimeError) as error:
+                    if not args.continue_on_error:
+                        raise SystemExit(f"failed to load {model['id']}: {error}") from error
+                    print(f"  failed to load: {failure_message(error)}", file=sys.stderr)
+                    for entry in prompts:
+                        for variant in model["variants"]:
+                            job_no += 1
+                            failures += 1
+                            label = variant["label"]
+                            cell = variant_key(model["id"], label)
+                            record_result({
+                                "prompt_id": entry["id"],
+                                "title": entry["title"],
+                                "category": entry["category"],
+                                "model_id": model["id"],
+                                "variant": label,
+                                "cell_key": cell,
+                                "params": dict(variant["params"]),
+                                "model_load_ms": None,
+                                "state": "failed",
+                                "phase": "load",
+                                "error": failure_message(error),
+                            })
+                            print(f"[{job_no}/{total_jobs}] {model['id']} / {label} - load failed")
+                    unload_all(client, args.api)
+                    continue
                 print(f"loaded in {load_ms} ms")
 
                 for entry in prompts:
@@ -415,7 +464,7 @@ def main() -> None:
                         w = params.get("width", "")
                         h = params.get("height", "")
                         steps = params.get("steps", "")
-                        filename = f"{cell}__{w}x{h}-s{steps}.webp"
+                        filename = f"{cell}__{w}x{h}-s{steps}.png"
                         rel_file = f"images/{prompt_dir.name}/{filename}"
                         out_path = prompt_dir / filename
 
@@ -441,13 +490,13 @@ def main() -> None:
                                 client=client,
                                 quiet=True,
                             )
-                        except RuntimeError as error:
+                        except (RuntimeError, httpx.HTTPError) as error:
                             failures += 1
-                            print(f"  failed: {error}", file=sys.stderr)
-                            rows.append({
+                            print(f"  failed: {failure_message(error)}", file=sys.stderr)
+                            record_result({
                                 **base_row,
                                 "state": "failed",
-                                "error": str(error),
+                                "error": failure_message(error),
                                 "wall_s": round(time.perf_counter() - started, 2),
                             })
                             if not args.continue_on_error:
@@ -457,7 +506,7 @@ def main() -> None:
                         wall_s = round(time.perf_counter() - started, 2)
                         print(f"  {result.width}x{result.height} "
                               f"gpu_ms={result.gpu_ms} wall={wall_s}s")
-                        rows.append({
+                        record_result({
                             **base_row,
                             "state": "succeeded",
                             "job_id": result.job_id,
@@ -493,8 +542,9 @@ def main() -> None:
         "models": [m["id"] for m in matrix_models],
         "variants_per_prompt": variants_per_prompt,
         "total_jobs": total_jobs,
-        "succeeded": sum(1 for row in rows if row.get("state") == "succeeded"),
-        "failed": sum(1 for row in rows if row.get("state") != "succeeded"),
+        "succeeded": sum(stat["succeeded"] for stat in model_stats),
+        "failed": sum(stat["failed"] for stat in model_stats),
+        "skipped": sum(stat["skipped"] for stat in model_stats),
         "model_stats": model_stats,
         "results": rows,
     }

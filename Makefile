@@ -551,7 +551,7 @@ cleanup-failed: dev-db ## remove failed generation jobs from the database
 generate: ## one image end to end: make generate PROMPT="..."
 	backend/.venv/bin/python scripts/generate.py --api http://localhost:$(API_PORT) "$(PROMPT)"
 
-# Full run: 24 prompts x 4 models x 5 variants = 480 images (~hours on GPU).
+# Full run: all prompts and selected model variants; allow hours on a display GPU.
 BENCHMARK_DIR ?= $(CURDIR)/data/benchmark
 BENCHMARK_STAMP := $(shell date -u +%Y%m%d-%H%M%S)
 BENCHMARK_OUT ?= $(BENCHMARK_DIR)/$(BENCHMARK_STAMP)
@@ -579,7 +579,7 @@ BENCHMARK_PUBLISH ?= $(BENCHMARK_DIR)/full-run
 
 benchmark-publish: ## minify results.json into frontend static assets
 	test -f "$(BENCHMARK_PUBLISH)/results.json"
-	python3 -c 'import json, pathlib; src=pathlib.Path("$(BENCHMARK_PUBLISH)/results.json"); dst=pathlib.Path("frontend/static/benchmark/results.json"); dst.parent.mkdir(parents=True, exist_ok=True); dst.write_text(json.dumps(json.loads(src.read_text()), separators=(",", ":")))'
+	python3 scripts/publish-benchmark.py "$(BENCHMARK_PUBLISH)/results.json" "frontend/static/benchmark/results.json"
 
 # Site deployment (Cloudflare Pages). Anyone deploying their own copy
 # overrides the variables; the waitlist worker lives outside this repo.

@@ -369,7 +369,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="vega-rt")
+    parser.add_argument("--model", required=True,
+                        help="realtime model id to load from the models dir")
     parser.add_argument("--steps", type=int)
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument("--frames", type=int, default=20)

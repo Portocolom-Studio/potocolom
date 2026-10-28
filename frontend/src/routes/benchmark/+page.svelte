@@ -71,6 +71,8 @@
 	const tocSections = $derived.by(() => {
 		const items: { id: string; label: string }[] = [];
 		if (hasData) {
+			if (report?.conditions) items.push({ id: 'bench-method', label: t('bench.methodology') });
+			if (report?.samples?.length) items.push({ id: 'bench-samples', label: t('bench.samples') });
 			items.push({ id: 'bench-charts', label: t('bench.toc_charts') });
 			if (report) {
 				for (const modelId of report.models) {
@@ -120,6 +122,10 @@
 						{report.succeeded}/{report.total_jobs}
 						{t('bench.images')}
 					</span>
+					<span class="chip">{report.failed} {t('bench.failed')}</span>
+					{#if report.skipped !== undefined}
+						<span class="chip">{report.skipped} {t('bench.skipped')}</span>
+					{/if}
 				</div>
 			{/if}
 		</section>
@@ -141,6 +147,62 @@
 						<p>{t('bench.empty_body')}</p>
 					</section>
 				{:else}
+					{#if report.conditions}
+						<section id="bench-method">
+							<h2>{t('bench.methodology')}</h2>
+							<p>{t('bench.method_timing')}</p>
+							<p>{t('bench.method_settings')}</p>
+							<p>
+								{t('bench.method_skips').replace(
+									'{reserve}',
+									new Intl.NumberFormat(getLocale()).format(
+										report.conditions.display_reserve_bytes / 2 ** 30
+									)
+								)}
+							</p>
+							<h3>{t('bench.method_hardware')}</h3>
+							<ul>
+								<li>{report.conditions.gpu}</li>
+								<li>
+									{report.conditions.torch_compile ? t('bench.compile_on') : t('bench.compile_off')}
+								</li>
+								<li>{t('bench.baseline_memory')}: {report.conditions.baselines_memory_mode}</li>
+								<li>{t('bench.other_memory')}: {report.conditions.others_memory_mode}</li>
+							</ul>
+							{#if report.publication}
+								<p class="method-links">
+									<a href={report.publication.methodology_url}>{t('bench.method_link')}</a>
+									<a href={report.publication.results_url}>{t('bench.results_link')}</a>
+								</p>
+							{/if}
+						</section>
+					{/if}
+
+					{#if report.samples?.length}
+						<section id="bench-samples">
+							<h2>{t('bench.samples')}</h2>
+							<p>{t('bench.samples_note')}</p>
+							<div class="sample-grid">
+								{#each report.samples as sample (sample.file)}
+									<figure>
+										<img
+											src={sample.file.startsWith('/') ? sample.file : `/${sample.file}`}
+											alt={t('bench.sample_alt').replace('{model}', sample.model_id)}
+											width={sample.width}
+											height={sample.height}
+											loading="lazy"
+										/>
+										<figcaption>
+											{t('bench.sample_caption')
+												.replace('{model}', sample.model_id)
+												.replace('{title}', sample.title)}
+										</figcaption>
+									</figure>
+								{/each}
+							</div>
+						</section>
+					{/if}
+
 					<section id="bench-charts">
 						<h2>{t('bench.charts')}</h2>
 						<p>{t('bench.charts_note')}</p>
@@ -160,7 +222,17 @@
 										<span class="model-id">{modelId}</span>
 										{#if stats}
 											<span class="model-stat">
-												{formatMs(stats.avg_gpu_ms)} gpu / {formatSeconds(stats.avg_wall_s)} wall
+												{#if stats.avg_gpu_ms !== null}
+													{formatMs(stats.avg_gpu_ms)}
+													{t('bench.engine')} /
+													{formatSeconds(stats.avg_wall_s)}
+													{t('bench.wall')}
+												{:else}
+													{t('bench.no_timing')}: {stats.succeeded}
+													{t('bench.col_ok')} / {stats.failed}
+													{t('bench.failed')} / {stats.skipped ?? 0}
+													{t('bench.skipped')}
+												{/if}
 											</span>
 										{/if}
 									</summary>
@@ -295,6 +367,34 @@
 		gap: 1.1rem;
 		max-width: 56rem;
 		padding: clamp(3rem, 9vw, 6rem) clamp(1rem, 5vw, 4rem) clamp(2rem, 6vw, 4rem);
+	}
+
+	.method-links {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+	}
+
+	.sample-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+		gap: 1rem;
+	}
+
+	.sample-grid figure {
+		margin: 0;
+	}
+
+	.sample-grid img {
+		display: block;
+		width: 100%;
+		height: auto;
+		border-radius: var(--radius, 0.5rem);
+	}
+
+	.sample-grid figcaption {
+		margin-top: 0.5rem;
+		font-size: 0.9rem;
 	}
 
 	h1 {

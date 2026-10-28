@@ -27,21 +27,35 @@ images; the release installer rejects that test profile.
 
 | Component | Minimum | Comfortable |
 |---|---|---|
-| GPU VRAM | 8 GB (`ssd-1b`, `vega-rt`) | 12-16 GB (SDXL-class at 1024 px, model switching without eviction) |
+| GPU VRAM | 8 GB (`ssd-1b`, `ssd-1b-lightning`) | 12-16 GB (SDXL-class at 1024 px, model switching without eviction) |
 | Disk | 20 GB free (weights are 2-7 GB per model, plus your images) | 50 GB+ |
 | RAM | 8 GB | 16 GB |
 
 Each model manifest declares its floor in `min_vram_gb`. The models a
-self-hoster can actually select span 8 GB (`ssd-1b`, `ssd-1b-lightning`,
-`vega-rt`) to 14 GB (`sd35-medium`), with the SDXL class at 10 GB and the
+self-hoster can actually select span 8 GB (`ssd-1b`, `ssd-1b-lightning`) to 14 GB (`sd35-medium`), with the SDXL class at 10 GB and the
 upscalers at 1-4 GB.
 
-Manifests marked `benchmark_only` (`dreamshaper-lcm`, `sd-turbo`,
-`sdxl-hypersd`, `flux2-klein-4b`, `sana-sprint-06b`, `z-image-turbo`) are
-excluded from `GET /api/v1/models` by `registry.public()` and never appear in
-the studio, so their floors are not capacity you can plan around.
-`dreamshaper-lcm` in particular declares 6 GB but is not selectable.
-`z-image-turbo` declares 20 GB.
+This source catalog has no bundled realtime model. Still-image generation
+remains available. Live drawing needs an operator-provided compatible manifest.
+Existing model volumes keep their files across image upgrades. To remove an
+old SDXL Turbo manifest from an existing install, remove `/models/sdxl-turbo.json`
+from that worker's model volume and restart the worker. Saved images and
+cached weights do not need removal.
+
+Manifests marked `benchmark_only` are excluded from `GET /api/v1/models`.
+They do not appear in the studio. Current candidates include `flux2-klein-4b`,
+`z-image-turbo`, `moss-image-sft`, `kromoss`, `iris-3b`, and `flux3-klein`.
+`sdxl-hypersd` remains a benchmark reference.
+
+The new candidates have no verified 16 GB GPU result. Their full-residency
+floors are conservative estimates. Their `model_offload_vram_gb` floor is a
+separate estimate for queued generation with CPU offload. They refuse disk
+group offload. MOSS keeps text encoding on CPU on every rung. Iris keeps it on CPU on the offload rung.
+Iris uses BF16 denoiser weights for this consumer-GPU path.
+FLUX 3 uses whole-component swapping. These paths need substantial system RAM
+and model downloads; the minimum host figures above describe the regular
+studio models. See [model license terms](third-party-models.md) before using
+FLUX 3. Its gated weights require accepted terms and `HF_TOKEN`.
 
 The floor is not a fixed hardware gate. The worker measures free VRAM and
 selects a memory rung (full residency -> model offload -> group offload,

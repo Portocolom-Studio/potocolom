@@ -27,7 +27,9 @@ def full_residency_bytes(min_vram_gb: int) -> int:
     return min_vram_gb * GB
 
 
-def model_offload_bytes(min_vram_gb: int) -> int:
+def model_offload_bytes(min_vram_gb: int, model_offload_vram_gb: int | None = None) -> int:
+    if model_offload_vram_gb is not None:
+        return model_offload_vram_gb * GB
     return max(int(min_vram_gb * GB * LARGEST_COMPONENT_FRACTION), GROUP_OFFLOAD_GB * GB)
 
 
@@ -41,6 +43,7 @@ def select_rung(
     memory_mode: MemoryMode,
     *,
     on_cpu: bool,
+    model_offload_vram_gb: int | None = None,
 ) -> MemoryRung:
     """Predict a rung; loading code must still check its VRAM estimate.
 
@@ -57,7 +60,7 @@ def select_rung(
         return "group_offload"
     if free_bytes >= full_residency_bytes(min_vram_gb):
         return "full"
-    if free_bytes >= model_offload_bytes(min_vram_gb):
+    if free_bytes >= model_offload_bytes(min_vram_gb, model_offload_vram_gb):
         return "model_offload"
     return "group_offload"
 
@@ -84,7 +87,10 @@ def measured_wire_manifests(
     return [
         measured_wire_manifest(
             manifest,
-            select_rung(manifest.min_vram_gb, free_bytes, memory_mode, on_cpu=on_cpu),
+            select_rung(
+                manifest.min_vram_gb, free_bytes, memory_mode, on_cpu=on_cpu,
+                model_offload_vram_gb=manifest.model_offload_vram_gb,
+            ),
         )
         for manifest in manifests
     ]
@@ -131,9 +137,11 @@ def slots_from_batch_curve(
     return count
 
 
-def rung_vram_bytes(min_vram_gb: int, rung: MemoryRung) -> int:
+def rung_vram_bytes(
+    min_vram_gb: int, rung: MemoryRung, model_offload_vram_gb: int | None = None,
+) -> int:
     if rung == "full":
         return full_residency_bytes(min_vram_gb)
     if rung == "model_offload":
-        return model_offload_bytes(min_vram_gb)
+        return model_offload_bytes(min_vram_gb, model_offload_vram_gb)
     return group_offload_bytes()

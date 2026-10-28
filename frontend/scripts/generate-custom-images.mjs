@@ -26,12 +26,12 @@ const KNOWN_MODELS = [
 	'sdxl-base',
 	'sdxl-fast',
 	'sdxl-hypersd',
-	'sdxl-turbo',
-	'sd-turbo',
 	'ssd-1b-lightning',
 	'ssd-1b',
-	'dreamshaper-lcm',
-	'vega-rt'
+	'moss-image-sft',
+	'kromoss',
+	'iris-3b',
+	'flux3-klein'
 ];
 
 /**

@@ -1,0 +1,66 @@
+{
+  "id": "iris-3b",
+  "name": "Iris-3B",
+  "capabilities": [
+    "text_to_image"
+  ],
+  "tier": "premium",
+  "min_vram_gb": 22,
+  "model_offload_vram_gb": 10,
+  "prompt_token_limit": 300,
+  "source": "speridlabs/iris-3b",
+  "source_revision": "adc05b909fb05d4276d26aae5a52b36406b2ef26",
+  "dtype": "bfloat16",
+  "pipeline": "Iris3B",
+  "license_id": "apache-2.0",
+  "license_url": "https://huggingface.co/speridlabs/iris-3b/blob/main/README.md",
+  "benchmark_only": true,
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "prompt": {
+        "type": "string"
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 100,
+        "default": 100
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 10,
+        "default": 3.0
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          512,
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "negative_prompt": {
+        "type": "string",
+        "default": ""
+      }
+    },
+    "required": [
+      "prompt"
+    ]
+  }
+}

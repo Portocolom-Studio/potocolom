@@ -7,8 +7,8 @@ export type BenchmarkResult = {
 	model_id: string;
 	variant: string;
 	params: Record<string, unknown>;
-	model_load_ms?: number;
-	state: 'succeeded' | 'failed';
+	model_load_ms?: number | null;
+	state: 'succeeded' | 'failed' | 'skipped';
 	gpu_ms?: number;
 	wall_s?: number;
 	width?: number;
@@ -21,6 +21,7 @@ export type ModelStats = {
 	model_id: string;
 	succeeded: number;
 	failed: number;
+	skipped?: number;
 	load_ms: number | null;
 	avg_gpu_ms: number | null;
 	median_gpu_ms: number | null;
@@ -36,6 +37,24 @@ export type BenchmarkReport = {
 	total_jobs: number;
 	succeeded: number;
 	failed: number;
+	skipped?: number;
+	conditions?: {
+		gpu: string;
+		display_reserve_bytes: number;
+		torch_compile: boolean;
+		baselines_memory_mode: string;
+		others_memory_mode: string;
+		timing_note: string;
+	};
+	publication?: { methodology_url: string; results_url: string };
+	samples?: Array<{
+		model_id: string;
+		prompt_id: number;
+		title: string;
+		file: string;
+		width: number;
+		height: number;
+	}>;
 	model_stats: ModelStats[];
 	results: BenchmarkResult[];
 };
@@ -164,16 +183,15 @@ export type LeaderboardRow = {
 };
 
 export function leaderboardRows(modelStats: ModelStats[]): LeaderboardRow[] {
-	const sorted = [...modelStats].sort(
-		(a, b) =>
-			(a.avg_gpu_ms ?? Number.POSITIVE_INFINITY) - (b.avg_gpu_ms ?? Number.POSITIVE_INFINITY)
-	);
-	const maxGpu = Math.max(...sorted.map((r) => r.avg_gpu_ms ?? 0), 1);
+	const sorted = modelStats
+		.filter((row): row is ModelStats & { avg_gpu_ms: number } => row.avg_gpu_ms !== null)
+		.sort((a, b) => a.avg_gpu_ms - b.avg_gpu_ms);
+	const maxGpu = Math.max(...sorted.map((r) => r.avg_gpu_ms), 1);
 	const maxWall = Math.max(...sorted.map((r) => r.avg_wall_s), 0.001);
 	const maxLoad = Math.max(...sorted.map((r) => r.load_ms ?? 0), 1);
 
 	return sorted.map((row, index) => {
-		const gpu_ms = row.avg_gpu_ms ?? 0;
+		const gpu_ms = row.avg_gpu_ms;
 		const load_ms = row.load_ms ?? 0;
 		return {
 			rank: index + 1,
@@ -203,15 +221,18 @@ export function categoryLineSeries(
 ): { categories: string[]; series: CategoryLineSeries[] } {
 	const rows = categoryAverages(results);
 	const categories = rows.map((r) => r.category).sort();
-	const series = modelIds.map((model_id, index) => ({
-		model_id,
-		color: chartColor(index),
-		points: categories.map((category) => {
-			const row = rows.find((r) => r.category === category);
-			const model = row?.models.find((m) => m.model_id === model_id);
-			return { category, avg_gpu_ms: model?.avg_gpu_ms ?? 0 };
-		})
-	}));
+	const timedModels = new Set(rows.flatMap((row) => row.models.map((model) => model.model_id)));
+	const series = modelIds
+		.filter((model_id) => timedModels.has(model_id))
+		.map((model_id, index) => ({
+			model_id,
+			color: chartColor(index),
+			points: categories.map((category) => {
+				const row = rows.find((r) => r.category === category);
+				const model = row?.models.find((m) => m.model_id === model_id);
+				return { category, avg_gpu_ms: model?.avg_gpu_ms ?? 0 };
+			})
+		}));
 	return { categories, series };
 }
 

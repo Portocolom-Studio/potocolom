@@ -27,13 +27,13 @@ const KNOWN_MODELS = [
 	'sdxl-base',
 	'sdxl-fast',
 	'sdxl-hypersd',
-	'sdxl-turbo',
-	'sd-turbo',
 	'ssd-1b-lightning',
 	'ssd-1b',
-	'dreamshaper-lcm',
-	'vega-rt',
-	'sd35-medium'
+	'sd35-medium',
+	'moss-image-sft',
+	'kromoss',
+	'iris-3b',
+	'flux3-klein'
 ];
 
 /** Human captions for the wall plate. Keyed by content-hash id so regenerating

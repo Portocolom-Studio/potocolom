@@ -6,45 +6,64 @@ Curated prompt suite + parameter matrix for comparing models on a consumer GPU
 
 Measured baselines and the optimization backlog live in [issue #60](https://github.com/portocolom-studio/potocolom/issues/60).
 
-## Models in the default matrix (unrestricted commercial)
+## Current suite (2026-10)
 
-No annual revenue cap. Safe to publish on `/benchmark` without qualification.
+The catalog has 36 prompts. Each model has five parameter variants.
+The default matrix runs five models (900 images). Add capped models and all
+candidates explicitly for the full 12-model suite (2,160 planned images).
+Candidates remain hidden from the studio until their GPU results are reviewed.
 
-| Model | License | VRAM | Resolution | Best for |
-| --- | --- | --- | --- | --- |
-| **sdxl-base** | Open RAIL++-M | ~8 GB tight | 768 / 1024 | Highest quality |
-| **sdxl-fast** | Open RAIL++-M + Lightning LoRA | ~10 GB | 1024 | Near-SDXL quality, ~4 s |
-| **ssd-1b** | Apache 2.0 | ~8 GB | 768 / 1024 | Speed/quality balance |
-| **ssd-1b-lightning** | Apache 2.0 base + Open RAIL++-M LoRA | ~8 GB | 1024 | Fast batch @ 1024 (~2.8 s, issue #85) |
-| **dreamshaper-lcm** | Open RAIL-M | ~4-6 GB | 512 / 768 | Illustration, stylized art |
-| **vega-rt** | Apache 2.0 | ~8 GB | 512 / 1024 | Realtime drawing (issue #84) |
+| Model | License | Commercial use |
+| --- | --- | --- |
+| `sdxl-base`, `sdxl-fast`, `sdxl-hypersd` | CreativeML Open RAIL++-M, including the Lightning/Hyper-SD LoRA | Yes, with the use restrictions |
+| `ssd-1b` | Apache 2.0 | Yes |
+| `ssd-1b-lightning` | Apache 2.0 base + Open RAIL++-M LoRA | Yes, with the LoRA use restrictions |
+| `sd35-medium` | Stability AI Community License | Yes below the $1M revenue cap, with its terms |
+| `flux2-klein-4b`, `z-image-turbo` | Apache 2.0 | Yes |
+| `moss-image-sft`, `kromoss`, `iris-3b` | Apache 2.0 | Yes |
+| `flux3-klein` | FLUX Kommunity v1 | Output use below $5M revenue, with filtering or review and legal AI notices; other commercial uses need separate rights |
 
-## License-safe turbo candidates (benchmark reference only)
+Exact weight pins, encoder licenses and obligations are in
+[third-party-models.md](../docs/third-party-models.md).
 
-Issue #75: evaluate Hyper-SD against the Stability turbo anchors. VegaRT was
-promoted to the product in issue #84; the remaining rows stay
-`benchmark_only: true` like sd-turbo and sdxl-turbo.
-
-| Model | License | VRAM | Resolution | Notes |
-| --- | --- | --- | --- | --- |
-| **sdxl-hypersd** | Open RAIL++-M base; LoRA also CreativeML Open RAIL++-M | ~10 GB | 1024 | 8-step distillation LoRA; euler-trailing; benchmark-only on measurement, not on licensing |
+`dreamshaper-lcm`, `sana-sprint-06b`, `sd-turbo`, `sdxl-turbo` and `vega-rt` are removed
+from the active catalog. Their old measurements below remain historical evidence.
 
 ```bash
-# Issue #75 comparison run (smoke: 3 prompts, include Stability anchors)
-make benchmark BENCHMARK_QUICK=1 BENCHMARK_INCLUDE_CAPPED=1 \
-  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
+# Short smoke run: three prompts and one variant per model.
+make benchmark BENCHMARK_QUICK=1 BENCHMARK_IDS=1-3 BENCHMARK_INCLUDE_CAPPED=1
 
-# Full candidate sweep
-make benchmark BENCHMARK_INCLUDE_CAPPED=1 \
-  BENCHMARK_MODELS=sdxl-hypersd,vega-rt,sdxl-fast,ssd-1b,sd-turbo,sdxl-turbo
-
-# The experimental combo runs alone: the harness aborts a run when a model
-# fails to load, and a failed load is a possible (and valid) outcome here.
-make benchmark BENCHMARK_MODELS=ssd-1b-lightning
+# Full suite: all prompts and variants. Keep a new output directory per run.
+make benchmark BENCHMARK_CONTINUE=1 BENCHMARK_INCLUDE_CAPPED=1 \
+  BENCHMARK_MODELS=sdxl-base,sdxl-fast,ssd-1b,sdxl-hypersd,ssd-1b-lightning,sd35-medium,flux2-klein-4b,z-image-turbo,moss-image-sft,kromoss,iris-3b,flux3-klein
 ```
 
-Measured numbers decide whether a follow-up PR promotes a winner to the product
-manifests (realtime capability, `min_vram_gb` from measurement).
+Use full residency for the small cached models. Use `MEMORY_MODE=model_offload`
+for large candidates on the 16 GB display GPU. Do not let a run enter disk group
+offload. Reserve display memory and monitor actual free VRAM throughout the run.
+A manifest floor is an estimate, not a memory cap.
+
+`BENCHMARK_QUICK=1` selects the first variant of each model. The candidate
+models start with `1024-default`, which exceeded the display reserve for
+several models in this run. It does not select a smaller image size.
+
+The published capacity report used an external operator controller that watched
+device memory, cancelled batches at the display reserve, and marked remaining
+cases at that resolution as skipped. That controller is not bundled here.
+`make benchmark` runs the matrix without that guard and records successful or
+failed attempts; it cannot reproduce the report's capacity skips on its own.
+The native sessions API accepts only those two states. The capacity report is
+published as a static report and is not ingested into native session history.
+
+The `gpu_ms` field measures the engine call. It is not a GPU kernel timer.
+CPU encoding and component transfers can be inside that interval for the new
+adapters. Use `wall_s` for the end-to-end comparison, and record the memory mode.
+
+Master image downloads use `.png`, matching the API's PNG output. Earlier
+runs saved PNG bytes under `.webp` names. Historical files keep their original
+paths; published example copies use the correct extension without re-encoding.
+
+## Historical measurements
 
 ### Issue #75 decision (RX 7600 XT, 2026-07-14)
 
@@ -111,118 +130,32 @@ Within the M3 realtime bar (2-4 fps). `model_timings.json` keeps the t2i
 baseline (381 ms @ 512/2) for job estimates; realtime frames are img2i and run
 slightly slower.
 
-## Capped commercial models (benchmark reference only)
+## Candidate profiling
 
-Models under a **$1M annual revenue cap** (Stability AI Community License).
-They live in `capped_commercial` in `benchmark-matrix.json`
-and in `worker/models/` with **`benchmark_only: true`** - the worker can run them
-for benchmarks, but **`GET /api/v1/models` hides them** so users cannot select
-them in the app.
+The matrix stores Stability models under `capped_commercial` and the other
+candidates under `candidates`. Explicit `--models` selects candidates.
+The new MOSS, Kromoss, Iris and FLUX 3 adapters support queued text-to-image only.
+Their full-residency estimates are 32, 32, 22 and 32 GiB. Their component-offload
+estimates are 12, 12, 10 and 12 GiB. GPU tests must confirm these estimates.
 
-| Model | License | VRAM | Notes |
-| --- | --- | --- | --- |
-| **sd-turbo** | Stability Community | ~8 GB | ~290 gpu_ms @ 512 (issue #60) |
-| **sdxl-turbo** | Stability Community | ~10 GB | ~310 gpu_ms @ 512 |
-
-Timings from these models **can appear on `/benchmark`** (reference hardware
-metrics). They are **not offered** in the studio UI.
+MOSS uses its Qwen encoder on CPU, then runs the generator and VAE in separate
+GPU stages. Iris stores its generator in BF16 and uses the pinned Qwen3-VL
+encoder. FLUX 3 uses the pinned modular Diffusers API without its optional
+prompt upsampler; give it a full scene description.
 
 ```bash
-# Capped models only (smoke)
-make benchmark BENCHMARK_MODELS=sd-turbo BENCHMARK_IDS=1-3
-
-# Full unrestricted + capped
-make benchmark BENCHMARK_INCLUDE_CAPPED=1
-```
-
-License obligations if you ever ship them to users: [docs/third-party-models.md](../docs/third-party-models.md).
-
-## Apache candidates under evaluation (2026-08)
-
-Research snapshot and full license analysis: local
-`.local/model-research-2026-08.md` (gitignored). All three candidates carry no
-revenue cap, no registration, and no attribution requirement, unlike every row
-above. `flux2-klein-4b` and `z-image-turbo` are Apache 2.0 end to end.
-`sana-sprint-06b` is Apache 2.0 for the weights and the code, but its
-Gemma-2-2B-IT text encoder is governed by the Google Gemma Terms of Use and
-Prohibited Use Policy: no revenue cap, but use restrictions in the RAIL mould.
-They ship as `benchmark_only: true` manifests and live in a `candidates` group
-in `benchmark-matrix.json`, reachable only through an explicit `--models`
-filter.
-
-| Model | Params | Steps | VRAM (manifest) | Notes |
-| --- | --- | --- | --- | --- |
-| **flux2-klein-4b** | 4B + Qwen3-4B encoder | 4 distilled | 13 GB BF16 | Unified FLUX.2 family; editing/i2i path deliberately not declared yet |
-| **z-image-turbo** | 6B S3-DiT | 8 NFEs | 20 GB BF16 (offload rung on a 16 GB card) | Photorealism focus; native img2img pipeline; no CFG |
-| **sana-sprint-06b** | 0.6B DiT + Gemma-2-2B-IT encoder | 1-4, step-adaptive | 10 GB BF16 | DC-AE 32x latent compression; linear attention; 1024 px checkpoints only |
-
-`sana-sprint-06b` additionally declares `"pipeline": "SanaSprint"`. The engine
-resolves a manifest's pipeline classes through `AutoPipelineFor*` by default,
-and diffusers 0.39 has no mapping entry for `SanaSprintPipeline`, so
-`AutoPipeline` raises for it while `ZImagePipeline` and `Flux2KleinPipeline`
-resolve fine. The stem names the class family, and the engine appends
-`Pipeline` and `Img2ImgPipeline`. `test_autopipeline_cannot_resolve_sana_sprint`
-guards the premise: when diffusers adds the mapping, that test fails and the
-override can be deleted.
-
-The other two are bf16-native flow transformers: their manifests declare
-`"dtype": "bfloat16"` so `_from_pretrained` loads them without the fp16 cast.
-The `dtype` manifest field is worker-side only and never crosses the wire.
-Their text encoders are Qwen3, not CLIP: the declared 512-token window matches
-the pipelines' `max_sequence_length` so the studio warns past it, and
-`_prompt_kwargs` lets diffusers encode whenever an encoder is outside the CLIP
-family instead of applying the CLIP chunker.
-
-Run these on a clear GPU, and never at the default `auto` memory mode on the
-reference card. On 2026-08-24 `profile-candidates.py --models flux2-klein-4b`
-at 1024 px ran for over four hours, produced no image, held 16.85 GB of a
-16 GB card that also drives the display, and wedged the amdgpu driver in an
-unkillable D state that only a reboot cleared. The rung is not decided once at
-load: `_demote_rung` slides `full -> model_offload -> group_offload` on OOM, so
-a model that picks `full` can still end up streaming every leaf module from
-disk mid-run. `profile-candidates.py` therefore defaults to
-`--memory-mode full`, which pins the rung so an oversized model raises instead
-of degrading, and it refuses outright if a run still lands on `group_offload`.
-One model failing no longer cancels the others in the same invocation.
-
-Declared `min_vram_gb` against roughly 16 GB free tells you what to expect:
-`sana-sprint-06b` (10) and `vega-rt` (8) select `full`, `z-image-turbo` (20)
-selects `model_offload`, and `flux2-klein-4b` (13) selects `full` but is the
-one that OOMed and degraded in practice.
-
-The profiler also checks free VRAM before each phase and skips that phase if
-under 2 GB remain. The engine's own guard cannot cover this: `_ensure_vram`
-sizes a model by `min_vram_gb`, which describes weights at rest with no term
-for resolution or activations, it only evicts and never refuses, and under a
-pinned `--memory-mode` it does not run at all. Phases are also banked as they
-complete, so a phase that still runs out of memory costs its own numbers
-rather than the whole model's.
-
-Two candidate-specific traps, both `sana-sprint-06b`:
-
-- `guidance` is the model's own embedded guidance, not CFG, so the manifest
-  defaults it to 4.5. The other distilled candidates default it to 0. Do not
-  "correct" it to 0; that is not the no-CFG case, it is a different conditioning
-  value.
-- 1024 is the only resolution it has. `use_resolution_binning` maps a request
-  onto `ASPECT_RATIO_1024_BIN`, a 512x512 request bins to 1024x1024, and the
-  whole table holds no entry below 704x1344. There is no 512 or 768 checkpoint
-  either, so the manifest offers 1024 alone. `_generate_i2i` now passes the
-  size to any pipeline whose signature accepts one, and omits it for SD and
-  SDXL img2img which take neither, but that cannot defeat the binning: forcing
-  512 would need `use_resolution_binning=False` and would run the model off
-  the distribution it was trained on.
-
-```bash
-# Latency + VRAM envelope per rung, no API needed (engine-direct):
+# Engine-direct latency and VRAM checks. Pinned offload avoids disk fallback.
 worker/.venv/bin/python scripts/profile-candidates.py \
-  --models flux2-klein-4b,z-image-turbo,sana-sprint-06b \
-  --save-dir /tmp/candidate-samples
+  --models moss-image-sft,kromoss,iris-3b,flux3-klein \
+  --memory-mode model_offload --save-dir /tmp/candidate-samples
 
-# Queued-job quality suite through the running stack:
-make benchmark BENCHMARK_MODELS=flux2-klein-4b,z-image-turbo,sana-sprint-06b \
-  BENCHMARK_QUICK=1
+# API smoke test, one variant for each of three prompts.
+make benchmark BENCHMARK_MODELS=moss-image-sft,kromoss,iris-3b,flux3-klein \
+  BENCHMARK_QUICK=1 BENCHMARK_IDS=1-3 BENCHMARK_CONTINUE=1
 ```
+
+A model needs actual GPU output and a measured memory limit before promotion.
+A text-to-image result does not prove image editing or realtime support.
 
 ### Measured: sana-sprint-06b does not beat vega-rt (2026-08-25)
 
@@ -261,29 +194,23 @@ or `image_to_image` capability ships.
 
 1. **Preflight** - `GET /api/v1/benchmark/gpu`. If any model is resident, abort
    (or pass `--force` to unload first).
-2. **Per model** - explicit load → all prompts × variants → explicit unload.
+2. **Per model** - explicit load, all prompts and variants, explicit unload.
 3. **Cleanup** - unload anything still on the GPU (even after errors).
 4. **Summarize** - `results.json`, `report.md`, `report.html` with `load_ms`,
    `gpu_ms`, and `wall_s` per image.
 5. **Persist** - after the artifacts are written, best-effort POST the complete
    report to `/api/v1/benchmark/sessions` on the same running install.
 
-Load and unload go through the API → fleet socket → worker `DiffusersEngine`,
+Load and unload go through the API, fleet socket and worker `DiffusersEngine`,
 so the benchmark controls VRAM instead of relying on lazy load / OOM eviction.
 
 First-time model pulls download from Hugging Face and can stall the log for
 several minutes with no new lines - watch the worker terminal or HF cache size.
 
-## Models excluded entirely
+## Models outside this suite
 
-| Model | Why excluded |
-| --- | --- |
-| **FLUX.1 Schnell** | Apache 2.0 (good license) but needs 12-16 GB+ or memory ladder (#15) |
-| **FLUX.1 Dev** | Non-commercial license |
-| **SD 3.5 Medium/Large** | Community License ($1M cap) or 12 GB+ VRAM |
-
-When the worker memory ladder lands, FLUX.1 Schnell becomes the top candidate to
-add - it is the planned quality ceiling on the license shortlist (see ROADMAP).
+FLUX.1 Schnell and FLUX.1 Dev are not active manifests. SD 3.5 Large is also
+outside the suite. SD 3.5 Medium is included under `capped_commercial`.
 
 ## Output layout
 
@@ -291,9 +218,10 @@ add - it is the planned quality ceiling on the license shortlist (see ROADMAP).
 data/benchmark/<timestamp>/
   images/
     01-rain-soaked-neon-alley/
-      sdxl-base__1024-default.webp
+      sdxl-base__1024-default__1024x1024-s20.png
       ...
-  results.json      # machine-readable run log
+  results.jsonl     # durable rows, written after each completed or failed cell
+  results.json      # final report, written after the run completes
   report.html       # visual comparison grid
   report.md         # summary tables for diffs and notes
 ```
@@ -307,7 +235,10 @@ make benchmark-publish
 
 ## Quick runs
 
-Full matrix: 24 prompts × 4 models × 5 variants = **480 images** (~hours on GPU).
+Full explicit matrix: 36 prompts x 12 models x 5 variants = **2,160 planned images**.
+A failed load records failed cells with no timing. `--continue-on-error` keeps
+running after load or generation errors. Cleanup stays strict: if GPU state is
+unknown, the run stops and `results.jsonl` preserves the completed work.
 
 ```bash
 # Smoke: 3 prompts, 1 variant each, all default-matrix models

@@ -273,7 +273,7 @@ flowchart TD
 - Model offload: whole components (text encoder, UNet, VAE) move to the GPU only for their stage of the pipeline. VRAM drops to the largest single component; a generation gets slower by roughly the transfer time per stage.
 - Group offload: layer groups stream through the GPU while the next group is prefetched on a parallel stream, the airLLM technique applied through `enable_group_offload`. VRAM drops to a few layers; when system RAM cannot hold the model either, groups spill to disk under the models directory. A generation takes several times longer, which a queued job tolerates and a drawing session does not.
 
-The rung is per model, not per worker: an 8 GB card can hold sd-turbo fully resident for drawing sessions while running a much larger generation model on group offload beside it. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
+The rung is per model, not per worker: a worker can keep a smaller model fully resident while a larger queued model uses CPU offload when both fit. Registration therefore advertises capabilities as measured, and the model registry's `available` flag reflects what each capability can actually be served with right now. The operator can pin a rung with the worker's `MEMORY_MODE` setting; `auto` is the default and the ladder above. This is primarily a self-hosted feature, which is where consumer GPUs live; the cloud fleet rents GPUs sized for full residency, and the scheduler's hot set logic is unchanged.
 
 An automatically selected rung is also corrected after an out-of-memory error.
 At load time the worker descends from full residency to model offload, then
@@ -590,30 +590,65 @@ Every model the worker can serve is described by a manifest. Example:
 
 ```json
 {
-  "id": "sdxl-turbo",
-  "name": "SDXL Turbo",
-  "capabilities": ["text_to_image", "image_to_image", "realtime"],
-  "studio_capabilities": ["realtime"],
+  "id": "sdxl-base",
+  "name": "SDXL (default)",
+  "capabilities": [
+    "text_to_image",
+    "image_to_image"
+  ],
+  "tier": "standard",
   "default": true,
-  "benchmark_only": false,
   "min_vram_gb": 10,
   "prompt_token_limit": 77,
-  "license_id": "stability-ai-community",
-  "license_url": "https://huggingface.co/stabilityai/sdxl-turbo/blob/main/LICENSE.md",
-  "commercial_max_revenue_usd": 1000000,
-  "license_registration_url": "https://stability.ai/community-license",
-  "requires_attribution": "Powered by Stability AI",
+  "license_id": "",
+  "license_url": "",
   "parameters": {
     "type": "object",
     "properties": {
-      "prompt": { "type": "string" },
-      "structure_strength": { "type": "number", "minimum": 0, "maximum": 1.5, "default": 1.0 },
-      "steps": { "type": "integer", "minimum": 1, "maximum": 4, "default": 1 },
-      "seed": { "type": "integer" },
-      "width": { "type": "integer", "enum": [512], "default": 512 },
-      "height": { "type": "integer", "enum": [512], "default": 512 }
+      "prompt": {
+        "type": "string"
+      },
+      "steps": {
+        "type": "integer",
+        "minimum": 10,
+        "maximum": 50,
+        "default": 15
+      },
+      "guidance": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 15,
+        "default": 6
+      },
+      "seed": {
+        "type": "integer"
+      },
+      "width": {
+        "type": "integer",
+        "enum": [
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "height": {
+        "type": "integer",
+        "enum": [
+          768,
+          1024
+        ],
+        "default": 1024
+      },
+      "strength": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 1,
+        "default": 0.75
+      }
     },
-    "required": ["prompt"]
+    "required": [
+      "prompt"
+    ]
   }
 }
 ```

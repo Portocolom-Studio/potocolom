@@ -135,8 +135,9 @@ matter how many steps ran. Text encoding is 50 ms, which is noise. For a
 1.87 s it is **36% of the total**, and on the fast tier it is the single
 largest optimisation target left. `AutoencoderTiny` (TAESD) decodes in
 roughly 10 ms instead of 667 ms at some fidelity cost, and the realtime
-path now uses it when the manifest sets `preview_decoder` (`sdxl-turbo`,
-`vega-rt`). Full VAE remains on queued generate. This measurement is the
+path used it when the manifest set `preview_decoder` (`sdxl-turbo`,
+`vega-rt`) at the time of this measurement. Both models have since been
+removed from the bundled catalog. Full VAE remains on queued generate. This measurement is the
 quantitative case that shipped that split.
 
 **Guidance above 1.0 doubles per-step cost.** Diffusers sets
