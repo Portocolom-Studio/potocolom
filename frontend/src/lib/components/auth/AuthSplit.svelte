@@ -15,7 +15,7 @@
 	}: {
 		/** Which side of the page the animated field sits on. */
 		fieldSide: 'start' | 'end';
-		kicker: string;
+		kicker?: string;
 		heading: string;
 		/** A second heading line, set in the muted tone. */
 		headingTail?: string;
@@ -37,7 +37,7 @@
 	<div class="field">
 		<ParticleSea variant="field" />
 		<div class="overlay">
-			<p class="kicker">{kicker}</p>
+			{#if kicker}<p class="kicker">{kicker}</p>{/if}
 			<h2 class="heading">
 				<span>{heading}</span>
 				{#if headingTail}<span class="tail">{headingTail}</span>{/if}
@@ -242,7 +242,7 @@
 	}
 
 	/* Below 56rem the field is a band above the form. The brand row moves to
-	   the top of the page and the overlay keeps only the kicker. */
+	   the top of the page and the overlay keeps only the optional kicker. */
 	@media (max-width: 55.99rem) {
 		.split,
 		.split.field-start {

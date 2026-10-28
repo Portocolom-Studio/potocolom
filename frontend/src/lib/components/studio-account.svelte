@@ -15,7 +15,8 @@
 	import { activateViewOwner } from '$lib/studio.svelte';
 	import { accountRoleLabelKey, type Role } from '$lib/account-display';
 	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
-	import { t, formatDateTime, getLocale, locales, setLocale } from '$lib/i18n.svelte';
+	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
+	import { t, formatDateTime } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -692,24 +693,7 @@
 {/snippet}
 
 {#snippet languageToggle()}
-	<div
-		class="bg-field border-line-strong flex gap-0.5 rounded-[7px] border p-0.5"
-		role="group"
-		aria-label={t('ui.language')}
-	>
-		{#each locales as locale (locale)}
-			<button
-				type="button"
-				class={'h-[26px] w-14 rounded-[5px] text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
-					(getLocale() === locale
-						? 'bg-hover text-foreground ring-line-strong ring-1 ring-inset'
-						: 'text-muted-foreground hover:text-foreground')}
-				aria-pressed={getLocale() === locale}
-				lang={locale}
-				onclick={() => setLocale(locale)}>{locale.toUpperCase()}</button
-			>
-		{/each}
-	</div>
+	<LanguageToggle />
 {/snippet}
 
 <div class="flex h-full min-h-0 flex-col md:flex-row">
