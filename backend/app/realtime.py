@@ -508,15 +508,13 @@ async def _run_v6_delivery(
         except asyncio.TimeoutError:
             logger.warning("protocol6 send for worker %s did not return before timeout",
                            worker.id)
-            if workers.get(worker.id) is worker:
-                del workers[worker.id]
+            forget_worker(worker)
             from app import jobs
 
             jobs.on_worker_lost(worker)
             await _join_delivery_send(send_task)
         except Exception:
-            if workers.get(worker.id) is worker:
-                del workers[worker.id]
+            forget_worker(worker)
             from app import jobs
 
             jobs.on_worker_lost(worker)
@@ -585,8 +583,7 @@ async def close_fenced_worker(worker_id: str, incarnation: uuid.UUID) -> None:
     if worker is None or worker.incarnation != incarnation:
         return
     worker.delivery_admission_open = False
-    if workers.get(worker_id) is worker:
-        del workers[worker_id]
+    forget_worker(worker)
     from app import jobs
 
     jobs.on_worker_lost(worker)
@@ -1168,6 +1165,11 @@ gpu_requests: dict[str, asyncio.Future] = {}
 closing_sessions: dict[tuple[uuid.UUID, int], tuple[uuid.UUID, str, Worker]] = {}
 
 
+def forget_worker(worker: Worker) -> None:
+    if workers.get(worker.id) is worker:
+        del workers[worker.id]
+
+
 def takes_work(worker: Worker) -> bool:
     """A worker registered through the durable protocol 6 path gets no work
     yet. Every other worker, including one ahead of this API that speaks the
@@ -1186,11 +1188,10 @@ def pick_any_worker() -> Worker | None:
     the window before that runs; picking it would crash the studio GPU
     endpoint on send instead of returning 503.
     """
-    for worker_id, worker in list(workers.items()):
+    for worker in list(workers.values()):
         state = getattr(worker.ws, "client_state", None)
         if state is not None and state != WebSocketState.CONNECTED:
-            if workers.get(worker_id) is worker:
-                del workers[worker_id]
+            forget_worker(worker)
             continue
         if not takes_work(worker):
             continue
@@ -1783,8 +1784,7 @@ async def close_durable_worker(worker: Worker) -> None:
 
 async def _finalize_worker(worker: Worker) -> None:
     worker.delivery_admission_open = False
-    if workers.get(worker.id) is worker:
-        del workers[worker.id]
+    forget_worker(worker)
     if worker.incarnation is not None:
         _sent_command_sequences.pop((worker.id, worker.incarnation), None)
 

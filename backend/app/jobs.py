@@ -1894,8 +1894,7 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                 worker.ws.send_json(dispatch_msg), realtime.CLOSE_TIMEOUT
             )
         except Exception:  # the socket is dead however the transport spells it
-            if realtime.workers.get(worker.id) is worker:
-                del realtime.workers[worker.id]  # what the reaper would conclude
+            realtime.forget_worker(worker)
             if inflight.pop(job.id, None) is None:
                 return True  # the disconnect handler beat us to it and requeued
             last_progress_at.pop(job.id, None)

@@ -24,6 +24,7 @@ from test_fleet_protocol6 import (
     root_keys,
     seed_queued_job,
 )
+from test_s1_handoff_retry import _Browser, _HeldSocket
 from test_totp_flow import accounts
 from test_v6_sessions import command_ack, open_live_session, session_ready_message
 
@@ -120,6 +121,92 @@ async def _wait_job_queued(job_id, seconds=8):
             return
         await asyncio.sleep(0.05)
     raise AssertionError("worker-owned job was not requeued")
+
+
+def test_late_protocol6_finalizer_preserves_same_id_replacement(monkeypatch):
+    async def scenario():
+        worker_id = f"s1-finalizer-replacement-{uuid.uuid4()}"
+        old = realtime.Worker(
+            worker_id, _HeldSocket(), [], 1,
+            protocol_version=6, incarnation=uuid.uuid4(), grant_nonce=uuid.uuid4(),
+        )
+        new = realtime.Worker(
+            worker_id, _HeldSocket(auto_release=True), [], 1,
+            protocol_version=6, incarnation=uuid.uuid4(), grant_nonce=uuid.uuid4(),
+        )
+        assert old.incarnation != new.incarnation
+        old_session = realtime.Session(uuid.uuid4(), "model", _Browser(), worker=old,
+                                       state="assigning", attempt_ok=True)
+        new_session = realtime.Session(uuid.uuid4(), "model", _Browser(), worker=new,
+                                       state="live", attempt_ok=True)
+        old_job, new_job, user_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        old_entry = jobs.InFlight(old, "old", "old-thumb", user_id, "old-token")
+        new_entry = jobs.InFlight(new, "new", "new-thumb", user_id, "new-token")
+        old_key = (old.id, old.incarnation)
+        new_key = (new.id, new.incarnation)
+        sequences = {old_key: (1, 1.0), new_key: (2, 2.0)}
+        closing = {
+            (old_session.id, 1): (user_id, "model", old),
+            (new_session.id, 1): (user_id, "model", new),
+        }
+        closed = []
+
+        async def close_worker(target_id, incarnation):
+            closed.append((target_id, incarnation))
+
+        monkeypatch.setattr(realtime, "workers", {worker_id: old})
+        monkeypatch.setattr(realtime, "sessions", {old_session.id: old_session})
+        monkeypatch.setattr(realtime, "closing_sessions", closing)
+        monkeypatch.setattr(realtime, "_sent_command_sequences", sequences)
+        monkeypatch.setattr(realtime, "_worker_delivery_owners", {})
+        monkeypatch.setattr(realtime, "_reassign_tasks", set())
+        monkeypatch.setattr(jobs, "inflight", {old_job: old_entry, new_job: new_entry})
+        monkeypatch.setattr(jobs, "lost_jobs", [])
+        monkeypatch.setattr(jobs, "live_progress", {})
+        monkeypatch.setattr(jobs, "last_progress_at", {})
+        monkeypatch.setattr(worker_authority, "close_worker", close_worker)
+        cleanup_waiting = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def delayed_cleanup():
+            cleanup_waiting.set()
+            await release_cleanup.wait()
+            await realtime._finalize_worker(old)
+
+        finalizer = asyncio.create_task(delayed_cleanup())
+        try:
+            await asyncio.wait_for(cleanup_waiting.wait(), 8)
+            assert not finalizer.done()
+            assert realtime.workers.pop(worker_id) is old
+            realtime.workers[worker_id] = new
+            realtime.sessions[new_session.id] = new_session
+            release_cleanup.set()
+            await asyncio.wait_for(finalizer, 8)
+
+            assert realtime.workers[worker_id] is new
+            assert old_session.ready.is_set()
+            assert old_session.attempt_ok is False
+            assert realtime.sessions[new_session.id] is new_session
+            assert new_session.worker is new
+            assert new_session.state == "live"
+            assert new_session.attempt_ok is True
+            assert old_job not in jobs.inflight
+            assert jobs.inflight[new_job] is new_entry
+            assert jobs.lost_jobs == [old_job]
+            assert old_key not in sequences
+            assert sequences[new_key] == (2, 2.0)
+            assert (old_session.id, 1) not in closing
+            assert closing[(new_session.id, 1)][2] is new
+            assert closed == [(worker_id, old.incarnation)]
+        finally:
+            release_cleanup.set()
+            await asyncio.wait_for(finalizer, 8)
+            tasks = list(realtime._reassign_tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.db
