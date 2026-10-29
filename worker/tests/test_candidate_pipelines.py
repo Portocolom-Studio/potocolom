@@ -3,9 +3,10 @@ from types import SimpleNamespace
 import pytest
 
 from worker.candidate_pipelines import Flux3Adapter, IrisAdapter
-from worker.engine import Cancelled, DiffusersEngine, VRAMCapacityError
+from worker.engine import Cancelled, VRAMCapacityError
 from worker.manifests import Manifest
 from worker.memory_ladder import GB, model_offload_bytes, rung_vram_bytes, select_rung
+from engine_test_support import make_engine
 
 
 def test_candidate_offload_floor_controls_selection_admission_and_stays_private():
@@ -36,7 +37,7 @@ def test_candidate_loader_refuses_group_offload_before_loading(monkeypatch):
         id="candidate", name="Candidate", capabilities=["text_to_image"],
         pipeline="Flux3Distilled", source="unused", source_revision="a" * 40,
     )
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._rungs = {manifest.id: "group_offload"}
     engine.device = "cuda:0"
     engine.vram_reserve_mb = 512
@@ -55,7 +56,7 @@ def test_candidate_offload_floor_is_used_for_engine_admission():
         id="candidate", name="Candidate", capabilities=["text_to_image"],
         min_vram_gb=32, model_offload_vram_gb=14,
     )
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 0
@@ -302,7 +303,7 @@ def test_moss_cpu_prompt_encoding_seed_step_count_and_cancellation_cleanup():
 def test_candidate_engine_rejects_image_editing_before_loading(monkeypatch):
     manifest = Manifest(id="candidate", name="Candidate", capabilities=["text_to_image"],
                         pipeline="Iris3B")
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._rungs = {manifest.id: "full"}
     engine.device = "cpu"
     monkeypatch.setattr("worker.candidate_pipelines.load_candidate_pipeline",
@@ -322,7 +323,7 @@ def test_candidate_loader_rejects_an_unknown_pipeline():
 def test_candidate_does_not_demote_into_unsupported_group_offload():
     manifest = Manifest(id="candidate", name="Candidate", capabilities=["text_to_image"],
                         pipeline="MOSSImage")
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.memory_mode = "auto"
     engine._rungs = {manifest.id: "model_offload"}
     evicted = []
@@ -336,7 +337,7 @@ def test_candidate_eviction_forgets_pipeline_and_rung_when_close_fails():
     def close():
         raise RuntimeError("device fault")
 
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     key = ("candidate", "t2i")
     engine._pipelines = {key: SimpleNamespace(close=close)}
     engine._rungs = {"candidate": "model_offload"}
@@ -371,7 +372,7 @@ def test_iris_null_prompt_cache_uses_memory_and_never_calls_disk_cache():
 
 
 def test_candidate_prompt_kwargs_do_not_use_clip_tokenizers():
-    engine = object.__new__(DiffusersEngine)
+    engine = make_engine()
     manifest = Manifest(id="candidate", name="Candidate", capabilities=["text_to_image"],
                         pipeline="Iris3B", prompt_token_limit=300)
     assert engine._prompt_kwargs(object(), manifest, "scene", "negative") == {

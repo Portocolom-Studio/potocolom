@@ -514,6 +514,12 @@ class SimulatedEngine:
 class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
+    @staticmethod
+    def _import_torch() -> Any:
+        import torch
+
+        return torch
+
     def __init__(self, device: str, *, memory_mode: MemoryMode = "auto",
                  vram_reserve_mb: int = 1536,
                  models_dir: str = "", torch_compile: bool = False,
@@ -523,7 +529,7 @@ class DiffusersEngine:
             # this flag; the fallback is math attention, several times slower.
             # Read at first SDPA dispatch, so it must precede any inference.
             os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
-        import torch
+        torch = self._import_torch()
 
         self.torch = torch
         # ROCm builds of torch expose the cuda API; keep its selected logical
@@ -550,15 +556,6 @@ class DiffusersEngine:
         self._gpu = asyncio.Lock()
         self._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
         self._batch_collector = FrameBatchCollector(self)
-
-    def _batch_collector_or_create(self) -> FrameBatchCollector:
-        collector = getattr(self, "_batch_collector", None)
-        if collector is None:
-            # Tests build engines with __new__ and skip __init__; a zero window
-            # keeps their frame calls from waiting on the production collector.
-            collector = FrameBatchCollector(self, window_ms=0.0)
-            self._batch_collector = collector
-        return collector
 
     def _free_vram_bytes(self) -> int:
         if not self.device.startswith("cuda"):
@@ -1016,7 +1013,7 @@ class DiffusersEngine:
                 self._calibration_cap,
                 bar_ms=REALTIME_BAR_MS,
             )
-            if model_id in getattr(self, "_realtime_batch_ms", {})
+            if model_id in self._realtime_batch_ms
             else slots_from_frame_ms(
                 float(p95), self._calibration_cap, bar_ms=REALTIME_BAR_MS,
             )
@@ -1026,7 +1023,6 @@ class DiffusersEngine:
 
     def _defer_calibration(self, model_id: str) -> None:
         self._calibration_failed = True
-        self._calibration_retry_models = getattr(self, "_calibration_retry_models", set())
         self._calibration_retry_models.add(model_id)
 
     async def calibrate_realtime(self, manifest: Manifest, configured: int) -> int:
@@ -1039,7 +1035,7 @@ class DiffusersEngine:
         except Exception:
             logger.exception("realtime calibration failed for %s", manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             # The slots stay at what was measured, 0 when nothing was, so the
             # next hello advertises no capacity it never timed; the flag is
@@ -1048,16 +1044,16 @@ class DiffusersEngine:
             self._defer_calibration(manifest.id)
             return 0
         if manifest.id in self._realtime_p95_ms:
-            getattr(self, "_calibration_retry_models", set()).discard(manifest.id)
+            self._calibration_retry_models.discard(manifest.id)
         slots = self._recompute_calibrated_slots()
         if slots <= 0:
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             return slots
         try:
             await self._calibrate_batch_curve(manifest, configured)
         except Exception:
             logger.exception("realtime batch calibration failed for %s", manifest.id)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             self._defer_calibration(manifest.id)
         return self._calibrated_slots or 0
@@ -1082,7 +1078,7 @@ class DiffusersEngine:
         return self._realtime_p95_ms.get(model_id)
 
     def realtime_batch_ms(self, model_id: str) -> list[int] | None:
-        curve = getattr(self, "_realtime_batch_ms", {}).get(model_id)
+        curve = self._realtime_batch_ms.get(model_id)
         return list(curve) if curve else None
 
     def p95_model_ids(self) -> list[str]:
@@ -1108,19 +1104,19 @@ class DiffusersEngine:
             # CPU diffusion cannot hold the bar; skip the frames, advertise
             # nothing for this model. Sibling measurements stay.
             self._realtime_p95_ms.pop(manifest.id, None)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
         if configured <= 0 or "realtime" not in manifest.capabilities:
             self._realtime_p95_ms.pop(manifest.id, None)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             return 0
         if (self._rungs.get(manifest.id) or self._predicted_rung(manifest)) != "full":
             if self.memory_mode == "auto":
                 self._defer_calibration(manifest.id)
             self._realtime_p95_ms.pop(manifest.id, None)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             logger.info(
                 "realtime calibration skipped for %s (not full-resident)", manifest.id,
@@ -1153,7 +1149,7 @@ class DiffusersEngine:
             # The prediction let it in, but loading chose an offload rung:
             # its timing is not a realtime frame time.
             self._realtime_p95_ms.pop(manifest.id, None)
-            getattr(self, "_realtime_batch_ms", {}).pop(manifest.id, None)
+            self._realtime_batch_ms.pop(manifest.id, None)
             self._recompute_calibrated_slots()
             logger.info("realtime calibration discarded for %s (loaded %s)",
                         manifest.id, self._rungs.get(manifest.id))
@@ -1239,20 +1235,8 @@ class DiffusersEngine:
         base = self._pipelines.get((manifest.id, "t2i"))
         if base is None:
             base = self._load(manifest, "t2i")
-            # Registered directly rather than through _pipeline, which would
-            # re-enter the loader's own eviction and demotion logic from
-            # inside a load; the rung for this model has already been chosen
-            # by the caller. Registering makes the base visible to the cache
-            # rather than invisible to it, so a later text-to-image job reuses
-            # it instead of loading a second complete copy.
-            #
-            # Two entries for one model share their UNet, text encoders and
-            # VAE, and eviction handles that because it works per model:
-            # _evict_cold collects model ids and _evict_model drops every key
-            # for the one it picks, so the shared weights are released
-            # together and no path removes a single entry. Measured with a
-            # two-entry model beside another: both entries went, the cached
-            # rung was forgotten, the other model stayed.
+            # Register directly to avoid re-entering eviction during loading.
+            # Entries for one model share weights and are evicted together.
             self._pipelines[(manifest.id, "t2i")] = base
         # T2IAdapter computes its conditioning features once before the
         # denoising loop, so the conditioned path's cost is roughly constant
@@ -1858,23 +1842,11 @@ class DiffusersEngine:
         return int((time.monotonic() - start) * 1000)
 
     async def ensure_realtime_resident(self, manifest: Manifest) -> bool:
-        """Make the model fully resident if realtime needs it, and say whether
-        it is.
+        """Make a realtime model fully resident when auto mode permits it.
 
-        A realtime frame runs against a 500 ms bar, so a model on an offload
-        rung cannot serve one: frame refuses it, and a session would log that
-        refusal on every frame it never renders. The rung answer is cached
-        per model, and only the load path ever decides it again, because the
-        eviction that frees the VRAM lives there and frame never reaches it
-        once the cached answer says offload (issue #270). The way to turn a
-        stale offload into full is to evict everyone and choose again against
-        the freed VRAM, which is exactly what load_model already does under
-        the GPU lock, so that is the path reused here rather than a second
-        eviction implementation. A pinned memory mode is an operator choice
-        and is left alone: pins are never demoted, and nothing here second-
-        guesses a pin that placed the model off-GPU; such a session gets the
-        per-frame fallback instead of an eviction the operator did not ask
-        for.
+        Reuse load_model's locked eviction to reselect a cached offload rung
+        (issue #270).
+        Leave pinned memory modes unchanged.
         """
         if self._pick_rung(manifest) == "full":
             return True
@@ -1901,7 +1873,7 @@ class DiffusersEngine:
             await self._run_to_completion(self._evict_all)
 
     async def close(self) -> None:
-        await self._batch_collector_or_create().close()
+        await self._batch_collector.close()
 
     def _pipeline_class(self, manifest: Manifest, mode: str) -> Any:
         import diffusers
@@ -2474,7 +2446,7 @@ class DiffusersEngine:
             canvas = await self._run_to_completion(prepare_canvas)
         strength = min(max(float(frame_params.get("strength", 0.7)), 0.05), 1.0)
         session_key = self._session_frame_key(prompt_cache)
-        return await self._batch_collector_or_create().submit(
+        return await self._batch_collector.submit(
             session_key, manifest, frame_params, canvas, strength,
             prompt_cache=prompt_cache, resolution=REALTIME_SIZE,
             profile=profile,
