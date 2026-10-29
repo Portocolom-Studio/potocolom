@@ -2260,3 +2260,16 @@ model gains a realtime capability as a side effect of this removal.
 
 Rejected alternatives: retaining SDXL Turbo as a hidden benchmark entry, or
 marking another model as realtime without measurements.
+
+## CodeRabbit does not add automatic summaries to PR bodies
+
+CodeRabbit can add characters that the PR body check rejects after the author
+has written the body. Disable its automatic summary in `.coderabbit.yaml` and
+keep the body check. CodeRabbit can still write a summary when the author adds
+its explicit summary placeholder. Authors remain responsible for the public
+body. The config inherits parent settings and does not disable reviews. Check
+the effective config on a PR because organization overrides can take priority.
+
+Rejected alternative: exclude CodeRabbit's generated block from the check. The
+block remains public, and its markers can also appear in author-written text.
+The existing Macroscope block exception remains a separate policy gap.

@@ -34,6 +34,7 @@ expect pass pr-body-bot-block "# Description\n\nPlain words.\n\n$bot_block" --pr
 expect fail pr-body-bot-block-without-flag "# Description\n\nPlain words.\n\n$bot_block"
 expect fail pr-body-emoji-outside-block "# Description \xf0\x9f\x9a\x80\n\n$bot_block" --pr-body
 expect fail pr-body-unclosed-block "# Description\n\n$bot_start\n\xf0\x9f\x93\x8a\n" --pr-body
+expect fail pr-body-coderabbit-curly-quote '<!-- This is an auto-generated comment: release notes by coderabbit.ai -->\n\n<!-- coderabbit-ai-generated:v1 -->\n\n## Summary by CodeRabbit\n\n* Removed the footer\xe2\x80\x99s back-to-top button.\n\n<!-- end of auto-generated comment: release notes by coderabbit.ai -->\n' --pr-body
 
 expect pass clean 'Fix the ruleset mirror\n\nExplain the change in plain words.\n\nSigned-off-by: Leon Fuller <l.elliottfuller@gmail.com>\n'
 expect pass accented-name 'Add the importer\n\nSigned-off-by: Jos\xc3\xa9 Garc\xc3\xada <jose@example.com>\n'
