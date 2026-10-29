@@ -28,6 +28,7 @@
 	import { toggleStarWithUndo } from '$lib/studio-toasts';
 	import { revealOnLoad } from '$lib/image-reveal';
 	import { MediaQuery } from 'svelte/reactivity';
+	import { beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { closeOnHistoryStep, forgetOverlay, popOverlay, pushOverlay } from '$lib/overlay-history';
 	import { attachSwipeDismiss } from '$lib/swipe-dismiss';
@@ -372,6 +373,12 @@
 	let gridSnapshotSeededCriteria = '';
 	let pendingLineageSelection = restoredImagesPreferences.lineageSelection;
 	let gridAnchorSaveTimer: ReturnType<typeof setTimeout> | undefined;
+	let gridNavigationAnchor: {
+		ownerEpoch: number;
+		criteriaKey: string;
+		rows: Generation[];
+		anchor: GridResumeAnchor;
+	} | null = null;
 
 	function persistImagesPreferences(): void {
 		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
@@ -435,6 +442,25 @@
 
 	function setImagesMode(mode: ImagesMode): void {
 		if (imagesMode === mode) return;
+		if (imagesMode === 'grid' && mode === 'lineage') {
+			const anchor =
+				gridAnchorSaveTimer !== undefined &&
+				viewOwnerEpoch() === componentOwnerEpoch &&
+				gridScrollerEl?.isConnected
+					? capturePersistedGridAnchor()
+					: null;
+			gridNavigationAnchor =
+				anchor !== null && gridServerRowsQueryKey !== null
+					? {
+							ownerEpoch: componentOwnerEpoch,
+							criteriaKey: gridServerRowsQueryKey,
+							rows: gridServerRows,
+							anchor
+						}
+					: null;
+		} else if (mode === 'grid') {
+			gridNavigationAnchor = null;
+		}
 		// The inspector belongs to the mode it opened in: close it, and its
 		// history entry, rather than leave a selection to reopen unmarked later.
 		const outgoing = imagesMode === 'grid' ? gridSelectedId : studio.lineageSelectedAssetId;
@@ -461,6 +487,26 @@
 			recenterAfterFilter = false;
 		}
 	}
+
+	beforeNavigate(() => {
+		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+		const candidate = gridNavigationAnchor;
+		const anchor =
+			imagesMode === 'grid'
+				? gridAnchorSaveTimer !== undefined && gridScrollerEl?.isConnected
+					? capturePersistedGridAnchor()
+					: null
+				: candidate !== null &&
+					  candidate.ownerEpoch === componentOwnerEpoch &&
+					  (imageFilterKey === null || candidate.criteriaKey === gridCriteriaKey) &&
+					  candidate.criteriaKey === gridServerRowsQueryKey &&
+					  candidate.rows === gridServerRows
+					? candidate.anchor
+					: null;
+		if (anchor === null) return;
+		pendingGridResumeAnchor = anchor;
+		persistImagesPreferences();
+	});
 
 	function generationAction(generation: Generation): LineageEntry['action'] {
 		if (generation.source_asset_id === null) return 'generate';
@@ -596,18 +642,20 @@
 		gridScrollerEl.scrollTop += tile.getBoundingClientRect().top - anchor.top;
 	}
 
+	function gridCriteriaFor(filterKey: string | null): string {
+		return JSON.stringify({
+			filters: filterKey,
+			query: searchQuery,
+			starred: starredOnly,
+			action: gridFilter
+		});
+	}
+
 	const imageFilterKey = $derived(
 		withImageFilters(new URLSearchParams(), imageFilters, imageFilterReferenceDate)?.toString() ??
 			null
 	);
-	const gridCriteriaKey = $derived(
-		JSON.stringify({
-			filters: imageFilterKey,
-			query: searchQuery,
-			starred: starredOnly,
-			action: gridFilter
-		})
-	);
+	const gridCriteriaKey = $derived(gridCriteriaFor(imageFilterKey));
 	const gridServerPageLoaded = $derived(gridServerRowsQueryKey !== null);
 
 	function seedGridSnapshot(criteriaKey: string): void {
@@ -931,8 +979,11 @@
 	function setImageFilters(next: ImageFilters): void {
 		if (imageFiltersEqual(imageFilters, next)) return;
 		const referenceDate = new Date();
-		const canApply = withImageFilters(new URLSearchParams(), next, referenceDate) !== null;
+		const nextFilter = withImageFilters(new URLSearchParams(), next, referenceDate);
+		const canApply = nextFilter !== null;
 		if (canApply) {
+			if (gridNavigationAnchor?.criteriaKey !== gridCriteriaFor(nextFilter.toString()))
+				gridNavigationAnchor = null;
 			gridScrollAnchor = captureGridScrollAnchor(next);
 			pendingGridResumeAnchor = null;
 			gridMiddleWindow = false;
@@ -1295,6 +1346,7 @@
 	function setStarredOnly(value: boolean): void {
 		studio.imagesStarredOnly = value;
 		if (starredOnly === value) return;
+		gridNavigationAnchor = null;
 		gridScrollAnchor = captureGridScrollAnchor(imageFilters, gridFilter, value);
 		rootsFilterModeEpoch += 1;
 		starredOnly = value;
@@ -1307,6 +1359,7 @@
 
 	function setGridFilter(value: GridFilter): void {
 		if (gridFilter === value) return;
+		gridNavigationAnchor = null;
 		gridScrollAnchor = captureGridScrollAnchor(imageFilters, value);
 		gridFilter = value;
 		pendingGridResumeAnchor = null;
@@ -1324,6 +1377,7 @@
 		searchDebounce = setTimeout(() => {
 			const next = value.trim();
 			if (searchQuery === next) return;
+			gridNavigationAnchor = null;
 			searchQuery = next;
 			if (imageFilterKey === null) return;
 			pendingGridResumeAnchor = null;
