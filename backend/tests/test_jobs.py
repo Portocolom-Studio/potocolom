@@ -2987,6 +2987,74 @@ def test_dispatch_depth_blocks_third_until_slot_frees(monkeypatch):
 
 
 @pytest.mark.db
+def test_protocol5_dispatch_timeout_then_late_finalizer_preserves_replacement(monkeypatch):
+    from test_fleet_protocol6 import seed_queued_job
+
+    async def parked():
+        return None
+
+    monkeypatch.setattr(jobs, "dispatch_step", parked)
+    monkeypatch.setattr(realtime, "CLOSE_TIMEOUT", 0.05)
+    worker_id = f"w-timeout-replacement-{uuid.uuid4()}"
+    finalized = threading.Event()
+    original_lost = jobs.on_worker_lost
+
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        old_fleet = client.websocket_connect("/api/v1/fleet")
+        old_socket = old_fleet.__enter__()
+        old_closed = False
+        try:
+            fleet_hello(old_socket, worker_id, version=5)
+            old = client.portal.call(lambda: realtime.workers[worker_id])
+            assert old.protocol_version == 5
+            assert old.incarnation is None
+            job_id = client.portal.call(seed_queued_job, "sd-test")
+            send_started = asyncio.Event()
+            hold_send = asyncio.Event()
+
+            async def never_sends(message):
+                send_started.set()
+                await hold_send.wait()
+
+            def observed_lost(worker):
+                original_lost(worker)
+                if worker is old:
+                    finalized.set()
+
+            monkeypatch.setattr(old.ws, "send_json", never_sends)
+            monkeypatch.setattr(jobs, "on_worker_lost", observed_lost)
+            dispatched = client.portal.call(asyncio.wait_for, jobs.dispatch(job_id), 8)
+            assert send_started.is_set()
+            assert dispatched is False
+            assert worker_id not in realtime.workers
+            assert old.jobs_in_flight == 0
+            assert job_id not in jobs.inflight
+
+            with client.websocket_connect("/api/v1/fleet") as new_socket:
+                fleet_hello(new_socket, worker_id, version=5)
+                new = client.portal.call(lambda: realtime.workers[worker_id])
+                assert new is not old
+                assert new.protocol_version == 5
+                assert new.incarnation is None
+                old_fleet.__exit__(None, None, None)
+                old_closed = True
+                assert finalized.wait(8), "old worker finalizer did not finish"
+                assert realtime.workers[worker_id] is new
+                assert old.jobs_in_flight == 0
+                assert job_id not in jobs.inflight
+                assert job_id not in jobs.lost_jobs
+
+                async def job_state():
+                    async with db.session_factory() as session:
+                        return (await session.get(Job, job_id)).state
+
+                assert client.portal.call(job_state) == "queued"
+        finally:
+            if not old_closed:
+                old_fleet.__exit__(None, None, None)
+
+
+@pytest.mark.db
 def test_dispatch_send_timeout_drops_worker_and_keeps_job_queued(monkeypatch):
     """A worker that stops reading must not hold the dispatch task (issue #497).
 
