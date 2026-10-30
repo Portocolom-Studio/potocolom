@@ -8,6 +8,7 @@ import pytest
 from worker.engine import DiffusersEngine
 from worker.gpu_device import select_device
 from worker.manifests import Manifest
+from engine_test_support import make_engine
 
 
 class _FakeCuda:
@@ -179,7 +180,7 @@ class _PlacementTorch:
 
 
 def _engine_on_second_device():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:2"
     engine.torch = _PlacementTorch()
     engine.vram_reserve_mb = 0

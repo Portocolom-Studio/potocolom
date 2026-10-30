@@ -1,7 +1,10 @@
 import asyncio
 import io
+import os
 import struct
+import subprocess
 import sys
+import textwrap
 import time
 import zlib
 import weakref
@@ -33,6 +36,7 @@ from worker.engine import (
 from worker.frame_batch import FrameRequest, compat_key
 from worker.manifests import Manifest, SIMULATED_MANIFEST
 from worker.memory_ladder import slots_from_frame_ms
+from engine_test_support import make_engine
 from worker.region_composite import selection_alpha
 
 
@@ -166,7 +170,7 @@ class _FakeTextEncoder:
 
 
 def _fake_prompt_engine():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     return engine
@@ -236,7 +240,7 @@ class _JobPipeline:
 
 
 def _job_engine(pipeline: _JobPipeline) -> DiffusersEngine:
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine._pipelines = {}
@@ -332,11 +336,9 @@ def _assert_negative_reachable(
 
 
 def _frame_engine(pipeline: _RenderPipeline) -> DiffusersEngine:
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -1418,7 +1420,7 @@ def test_eviction_releases_every_entry_a_model_shares_weights_across():
     for the one it picks. Pinned here because the sharing is deliberate and a
     future per-key eviction would free nothing while reporting that it had.
     """
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     shared = object()
 
     class Pipe:
@@ -1447,7 +1449,7 @@ def test_load_realtime_registers_the_base_under_the_t2i_key():
     must reuse it: without the registration below, the cache has no entry and
     the job loads a second complete pipeline while the first is still held.
     """
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine.dtype = object()
@@ -1605,7 +1607,7 @@ def test_simulated_upscale_requires_input():
 
 
 def test_diffusers_measured_manifests_use_free_vram():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {}
@@ -1625,7 +1627,7 @@ def test_diffusers_measured_manifests_use_free_vram():
 
 
 def test_vram_reserve_evicts_cold_model_before_picking_rung():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
@@ -1650,7 +1652,7 @@ def test_vram_reserve_evicts_cold_model_before_picking_rung():
 
 
 def _admission_engine(free_bytes, *, memory_mode="auto"):
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = memory_mode
     engine.vram_reserve_mb = 0
@@ -1970,7 +1972,6 @@ def test_warmup_retries_after_capacity_refusal():
     engine = _admission_engine(free)
     engine.models_dir = ""
     engine.torch_compile = False
-    engine._gpu = asyncio.Lock()
     engine._calibration_cap = 1
     engine._calibrated_slots = None
     engine._calibration_failed = False
@@ -2001,7 +2002,7 @@ def test_warmup_retries_after_capacity_refusal():
 
 
 def _resident_vram_engine(rungs, *, free_gib=9.18, held_gib=None):
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
@@ -2082,7 +2083,6 @@ def test_calibration_counts_evictable_residents():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._frame = MagicMock(side_effect=_loads_full(engine))
     vega = Manifest(
         id="vega-rt", name="VegaRT",
@@ -2135,7 +2135,7 @@ def test_evict_all_releases_last_pipeline_before_flushing_allocator_cache():
     resident_ref = weakref.ref(resident)
     free_gib = [9.18]
     reserved_gib = [6.6]
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 1536
@@ -2179,7 +2179,6 @@ def test_calibration_rejects_actual_offload_before_rendering():
     engine._realtime_p95_ms = {"vega-rt": 200, "sibling": 250}
     engine._realtime_batch_ms = {"vega-rt": [200], "sibling": [250]}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._frame = MagicMock()
     free_gib = [9.18]
     held_gib = [6.6]
@@ -2236,7 +2235,6 @@ def test_warmup_recovers_after_residency_changes_between_prediction_and_load(has
     engine._realtime_p95_ms = {"sibling": 200} if has_sibling else {}
     engine._realtime_batch_ms = {"sibling": [200]} if has_sibling else {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._calibrate_batch_curve = AsyncMock()
     free_gib = [12]
     engine.torch.cuda.mem_get_info = lambda *args, **kwargs: (int(free_gib[0] * 1024**3), 16 * 1024**3)
@@ -2319,7 +2317,6 @@ def _calibration_engine(rungs):
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     return engine
 
 
@@ -2394,7 +2391,7 @@ def test_measured_manifests_keep_loaded_model_pinned_rung_with_reclaimable_vram(
 
 
 def test_zero_vram_reserve_keeps_full_residency_choice():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine.vram_reserve_mb = 0
@@ -2413,7 +2410,7 @@ def test_zero_vram_reserve_keeps_full_residency_choice():
 
 
 def test_free_vram_bytes_clamps_at_zero_after_reserve():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.vram_reserve_mb = 1536
     engine.torch = SimpleNamespace(
@@ -2424,7 +2421,7 @@ def test_free_vram_bytes_clamps_at_zero_after_reserve():
 
 
 def test_measured_manifests_respect_pinned_rungs():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {"xl": "model_offload"}
@@ -2445,7 +2442,7 @@ def test_measured_manifests_respect_pinned_rungs():
 
 
 def test_diffusers_effective_realtime_slots_zero_without_realtime():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {}
@@ -2465,7 +2462,7 @@ def test_diffusers_effective_realtime_slots_zero_without_realtime():
 
 
 def test_diffusers_effective_realtime_slots_uses_calibration():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda:0"
     engine.memory_mode = "auto"
     engine._rungs = {"rt": "full"}
@@ -2488,7 +2485,7 @@ def test_optimize_resident_skips_offload_and_survives_compile_failure():
     torch_stub = MagicMock()
     torch_stub.compile.side_effect = RuntimeError("inductor blew up")
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cuda"
     engine.torch_compile = True
@@ -2513,7 +2510,7 @@ def test_optimize_resident_reverts_after_warmup_failure():
     compiled = MagicMock(name="compiled")
     torch_stub.compile.return_value = compiled
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cuda"
     engine.torch_compile = True
@@ -2537,7 +2534,7 @@ def test_optimize_resident_reverts_after_warmup_failure():
 
 def test_optimize_resident_warms_attention_backend_without_compile():
     torch_stub = MagicMock()
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cuda"
     engine.torch_compile = False
@@ -2559,7 +2556,7 @@ def test_optimize_resident_warms_attention_backend_without_compile():
 
 def test_optimize_resident_skipped_when_compile_disabled():
     torch_stub = MagicMock()
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cuda"
     engine.torch_compile = False
@@ -2581,7 +2578,7 @@ def test_load_quantizes_named_component_before_device_move():
     pipeline.text_encoder_3 = component
     events: list[str] = []
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cpu"
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
@@ -2626,7 +2623,7 @@ def test_load_quantizes_named_component_before_device_move():
 
 
 def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = MagicMock()
     engine.device = "cuda"
     engine.models_dir = str(tmp_path)
@@ -2663,7 +2660,7 @@ def test_group_offload_uses_disk_only_for_unquantized_models(tmp_path):
 
 
 def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     inference_state = {"active": False, "entries": 0}
 
     class InferenceContext:
@@ -2684,8 +2681,6 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
     engine.dtype = dtype
     engine._pipelines = {}
     engine.vram_reserve_mb = 0
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -2787,7 +2782,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
 
 
 def _preview_decoder_frame_setup(*, t2i_adapter: str | None = None):
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     inference_state = {"active": False, "entries": 0}
 
     class InferenceContext:
@@ -2894,8 +2889,6 @@ def test_adapter_frame_uses_preview_decoder():
 def test_last_frame_carries_the_latent_from_the_single_request_route():
     setup = _preview_decoder_frame_setup(t2i_adapter="org/vega-sketch")
     engine = setup.engine
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     manifest = setup.manifest
     cache = PromptCache()
@@ -2985,7 +2978,7 @@ def test_i2i_frame_uses_preview_decoder():
 
 
 def test_preview_decoder_load_failure_falls_back_once_per_pipeline():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(
         OutOfMemoryError=_fake_oom(),
     )
@@ -3037,7 +3030,7 @@ def test_preview_decoder_failure_falls_back_and_retries_after_cooldown():
         OSError("registry unreachable"),
         RuntimeError("HIP error: out of memory"),
     ):
-        engine = DiffusersEngine.__new__(DiffusersEngine)
+        engine = make_engine()
         engine.torch = SimpleNamespace(OutOfMemoryError=type(failure))
         engine.device = "cpu"
         engine.dtype = object()
@@ -3072,7 +3065,7 @@ def test_preview_decoder_failure_falls_back_and_retries_after_cooldown():
 def test_preview_decoder_loads_once_across_frames():
     """Constraint: load once, not per frame. A mutant that drops the cache passes
     a single-frame test, so this one runs two."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
     engine.device = "cpu"
     engine.dtype = object()
@@ -3105,7 +3098,7 @@ def test_preview_decoder_does_not_outlive_its_pipeline():
     itself, so this one loads it through the real path first."""
     import worker.engine as engine_module
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
     engine.device = "cpu"
     engine.dtype = object()
@@ -3174,13 +3167,11 @@ def test_cached_taesdxl_decodes_fixed_latents_on_cpu():
 
 
 def test_frame_keeps_pillow_work_outside_gpu_lock():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     torch_stub = SimpleNamespace(
         OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -3253,10 +3244,8 @@ def test_frame_refuses_if_the_rung_drops_while_waiting_for_the_gpu():
     the model while we wait; `_frame` must not then load an offload
     pipeline (issue #270).
     """
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(OutOfMemoryError=_fake_oom())
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
     engine._frame = MagicMock()
@@ -3289,10 +3278,8 @@ def test_realtime_frame_load_oom_refuses_without_demoting():
     session refuses instead (issue #270).
     """
     oom_type = _fake_oom()
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(OutOfMemoryError=oom_type)
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine.memory_mode = "auto"
     engine._rungs = {"vega-rt": "full"}
     engine._pipelines = {}
@@ -3326,12 +3313,10 @@ def test_realtime_frame_load_oom_refuses_without_demoting():
 
 
 def test_frame_bounds_codec_concurrency():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = SimpleNamespace(
         OutOfMemoryError=_fake_oom(),
     )
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -3406,13 +3391,11 @@ def test_frame_bounds_codec_concurrency():
 
 
 def test_frame_oom_retries_once_without_decoding_twice():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     torch_stub = SimpleNamespace(
         OutOfMemoryError=_fake_oom(),
     )
     engine.torch = torch_stub
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
@@ -3463,7 +3446,7 @@ def _loads_full(engine):
     return frame
 
 def test_calibrate_realtime_sets_slots_from_p95():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -3474,7 +3457,6 @@ def test_calibrate_realtime_sets_slots_from_p95():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
@@ -3515,14 +3497,14 @@ def test_calibrate_realtime_sets_slots_from_p95():
 
 
 def test_realtime_p95_ms_none_before_any_calibration():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
     assert engine.realtime_p95_ms("vega-rt") is None
 
 
 def test_observed_frames_below_threshold_keep_the_calibration_value():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {"vega-rt": 408}
     engine._observed_frame_ms = {}
     for _ in range(OBSERVED_FRAME_SAMPLES - 1):
@@ -3531,7 +3513,7 @@ def test_observed_frames_below_threshold_keep_the_calibration_value():
 
 
 def test_observed_frames_supersede_calibration_with_nearest_rank_p95():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {"vega-rt": 408}
     engine._observed_frame_ms = {}
     for _ in range(OBSERVED_FRAME_SAMPLES - 1):
@@ -3543,7 +3525,7 @@ def test_observed_frames_supersede_calibration_with_nearest_rank_p95():
 
 
 def test_observed_frame_window_drops_the_oldest():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
     engine._observed_frame_ms = {}
@@ -3557,7 +3539,7 @@ def test_observed_frame_window_drops_the_oldest():
 
 
 def test_observed_frames_report_a_value_without_calibration():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
     engine._observed_frame_ms = {}
@@ -3573,7 +3555,7 @@ def test_p95_model_ids_covers_observed_and_calibrated_and_never_none():
     # matters: enough observations supersede calibration, a calibration entry
     # advertises until observations catch up, and nothing whose realtime_p95
     # is None is ever named.
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
     for _ in range(OBSERVED_FRAME_SAMPLES):
@@ -3599,7 +3581,7 @@ def test_simulated_engine_ignores_frame_observations():
 
 
 def test_calibrate_realtime_p95_tolerates_one_outlier():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -3610,7 +3592,6 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
@@ -3641,7 +3622,7 @@ def test_calibrate_realtime_p95_tolerates_one_outlier():
 
 
 def test_calibrate_realtime_failure_advertises_zero_slots():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -3652,7 +3633,6 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
@@ -3677,7 +3657,7 @@ def test_calibrate_realtime_failure_advertises_zero_slots():
 
 
 def test_calibrate_realtime_skips_cpu_without_frames():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cpu"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -3688,7 +3668,6 @@ def test_calibrate_realtime_skips_cpu_without_frames():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._frame = MagicMock(return_value=b"webp")
@@ -3710,7 +3689,7 @@ def test_calibrate_realtime_skips_cpu_without_frames():
 
 
 def test_evict_cold_removes_oldest_first():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._pipelines = {("a", "t2i"): object(), ("b", "t2i"): object()}
     engine.vram_reserve_mb = 0
     engine._rungs = {"a": "full", "b": "full"}
@@ -3729,7 +3708,7 @@ def test_evicting_the_last_pipeline_forgets_the_cached_rung():
     """A cached rung must not outlive its conditions: with the model evicted,
     the next load decides against the VRAM that exists then, not the VRAM
     that existed when the rung was chosen (issue #270)."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._pipelines = {("m", "t2i"): object()}
     engine.vram_reserve_mb = 0
     engine._rungs = {"m": "full"}
@@ -3746,7 +3725,7 @@ def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
     """The realtime and t2i entries share every weight, so removing one of
     them leaves the model resident and the rung it was loaded at is still
     the truth; only the removal of the last entry may forget it."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._pipelines = {("m", "t2i"): object(), ("m", "realtime"): object()}
     engine.vram_reserve_mb = 0
     engine._rungs = {"m": "full"}
@@ -3762,7 +3741,7 @@ def test_a_cached_rung_survives_while_another_pipeline_entry_is_resident():
 def test_ensure_realtime_resident_returns_true_without_evicting_when_full():
     """The common path must stay cheap: a full-resident model is answered
     from the cached rung and the load path, which is what evicts, runs."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._rungs = {"vega-rt": "full"}
     resident = object()
     engine._pipelines = {("vega-rt", "t2i"): resident}
@@ -3788,7 +3767,7 @@ def test_ensure_realtime_resident_reloads_full_when_the_rung_was_cached_offload(
     leave a stale "model_offload" cached answer behind (issue #270). Resident
     means deciding against the VRAM that exists once that job is evicted,
     which is the load path, not re-reading the stale cache."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = type("OutOfMemoryError", (Exception,), {})
     engine.torch = torch_stub
@@ -3802,7 +3781,6 @@ def test_ensure_realtime_resident_reloads_full_when_the_rung_was_cached_offload(
     engine._rungs = {"vega-rt": "model_offload", "other": "full"}
     engine._last_used = {}
     engine._free_gpu_cache = MagicMock()
-    engine._gpu = asyncio.Lock()
     engine._from_pretrained = MagicMock(return_value=MagicMock())
 
     def free_vram():
@@ -3836,7 +3814,7 @@ def test_ensure_realtime_resident_leaves_a_pinned_mode_alone():
     """A pinned memory mode is an operator choice; the load path, which
     evicts everyone, is not entered for it. The session gets the per-frame
     fallback instead and nothing resident is dropped."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.memory_mode = "model_offload"
     engine._rungs = {"vega-rt": "model_offload"}
     resident = object()
@@ -3867,7 +3845,7 @@ def test_evict_detaches_preview_decoders():
     attr = engine_module._PREVIEW_DECODER_ATTR
     first = SimpleNamespace(**{attr: object()})
     second = SimpleNamespace(**{attr: object()})
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._pipelines = {("a", "i2i"): first, ("b", "i2i"): second}
     engine.vram_reserve_mb = 0
     engine._rungs = {"a": "full", "b": "full"}
@@ -3889,7 +3867,7 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = _fake_oom()
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cuda"
     engine.memory_mode = "auto"
@@ -3899,7 +3877,6 @@ def _load_oom_engine(failing_rungs: set[str]) -> tuple[DiffusersEngine, list[str
     engine._rungs = {}
     engine._last_used = {}
     engine._free_gpu_cache = MagicMock()
-    engine._gpu = asyncio.Lock()
     engine._free_vram_bytes = MagicMock(return_value=64 * 1024**3)
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
@@ -3982,7 +3959,7 @@ def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     torch_stub = MagicMock()
     torch_stub.OutOfMemoryError = _fake_oom()
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch_stub
     engine.device = "cpu"
     engine.dtype = object()
@@ -3994,7 +3971,6 @@ def _poison_engine(model_id: str = "m") -> DiffusersEngine:
     engine._last_used = {model_id: 1.0}
     engine._poison_evicted_at = {}
     engine._poison_evict_count = {}
-    engine._gpu = asyncio.Lock()
     engine._free_gpu_cache = MagicMock()
     engine._ok = GeneratedImage(b"webp", 64, 64, 1, 0)
     return engine
@@ -4227,7 +4203,7 @@ def test_gpu_lock_survives_a_second_cancellation():
 
 
 def test_calibrated_slots_are_the_min_across_models():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._calibration_cap = 8
     engine._realtime_p95_ms = {"fast": 100, "slow": 400}
     engine._calibrated_slots = None
@@ -4238,7 +4214,7 @@ def test_calibrated_slots_are_the_min_across_models():
 
 
 def test_calibrated_slots_use_the_slowest_batch_curve():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._calibration_cap = 8
     engine._realtime_p95_ms = {"fast": 139, "slow": 139}
     engine._realtime_batch_ms = {
@@ -4251,7 +4227,7 @@ def test_calibrated_slots_use_the_slowest_batch_curve():
 
 
 def test_calibrate_batch_curve_stops_at_the_bar():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._calibration_cap = 4
     engine._realtime_p95_ms = {"vega-rt": 139}
     engine._realtime_batch_ms = {}
@@ -4266,13 +4242,12 @@ def test_calibrate_batch_curve_stops_at_the_bar():
 
 
 def test_a_failed_batch_calibration_is_retried_on_reconnect():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine._calibration_cap = 4
     engine._calibrated_slots = None
     engine._calibration_failed = False
     engine._realtime_p95_ms = {}
     engine._realtime_batch_ms = {}
-    engine._gpu = asyncio.Lock()
     manifest = _realtime_manifest()
 
     async def single_frame_measured(calibrate, target, configured):
@@ -4290,7 +4265,7 @@ def test_a_failed_batch_calibration_is_retried_on_reconnect():
 
 
 def test_measure_batch_p95_uses_one_prompt_cache_per_session():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.frame = AsyncMock()
     manifest = _realtime_manifest()
 
@@ -4305,7 +4280,7 @@ def test_measure_batch_p95_uses_one_prompt_cache_per_session():
 
 
 def test_calibrate_failure_does_not_zero_a_sibling():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -4317,7 +4292,6 @@ def test_calibrate_failure_does_not_zero_a_sibling():
     engine._calibrated_slots = 2
     engine._realtime_p95_ms = {"ok": 200}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
@@ -4355,7 +4329,7 @@ def test_frame_gpu_ms_includes_work_before_the_pipeline_call():
 
 
 def test_calibrate_elapsed_includes_the_frame_call():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cuda"
     engine.memory_mode = "full"
     engine.models_dir = ""
@@ -4367,7 +4341,6 @@ def test_calibrate_elapsed_includes_the_frame_call():
     engine._calibrated_slots = None
     engine._realtime_p95_ms = {}
     engine._observed_frame_ms = {}
-    engine._gpu = asyncio.Lock()
     engine._select_rung = MagicMock(return_value="full")
     engine._predicted_rung = MagicMock(return_value="full")
     engine._ensure_vram = lambda target: engine._rungs.setdefault(target.id, "full")
@@ -4409,7 +4382,7 @@ def test_a_simulated_upscale_stops_when_it_is_asked_to():
 def test_pipeline_dtype_defaults_to_engine_dtype():
     torch = pytest.importorskip("torch")
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.float16
     manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
@@ -4419,7 +4392,7 @@ def test_pipeline_dtype_defaults_to_engine_dtype():
 def test_pipeline_dtype_prefers_the_manifest_declaration():
     torch = pytest.importorskip("torch")
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.float16
     manifest = Manifest(
@@ -4434,7 +4407,7 @@ def test_pipeline_class_defaults_to_autopipeline():
     AutoPipelineForImage2Image = diffusers.AutoPipelineForImage2Image
     AutoPipelineForText2Image = diffusers.AutoPipelineForText2Image
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
     assert engine._pipeline_class(manifest, "t2i") is AutoPipelineForText2Image
     assert engine._pipeline_class(manifest, "i2i") is AutoPipelineForImage2Image
@@ -4445,7 +4418,7 @@ def test_pipeline_class_honours_the_manifest_stem():
     SanaSprintImg2ImgPipeline = diffusers.SanaSprintImg2ImgPipeline
     SanaSprintPipeline = diffusers.SanaSprintPipeline
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     manifest = Manifest(
         id="sprint", name="Sprint", capabilities=["text_to_image", "image_to_image"],
         pipeline="SanaSprint",
@@ -4456,7 +4429,7 @@ def test_pipeline_class_honours_the_manifest_stem():
 
 def test_pipeline_class_is_loud_when_diffusers_lacks_the_class():
     pytest.importorskip("diffusers")
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     manifest = Manifest(
         id="ghost", name="Ghost", capabilities=["text_to_image"], pipeline="NoSuch",
     )
@@ -4484,7 +4457,7 @@ def test_from_pretrained_loads_in_declared_dtype_without_fp16_variant():
             calls.append((source, kwargs))
             return object()
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.float16
     manifest = Manifest(
@@ -4524,7 +4497,7 @@ def test_pipeline_load_pins_the_source_on_both_fp16_attempts():
                 raise OSError("this repository ships no fp16 variant")
             return object()
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.float16
     manifest = Manifest(
@@ -4551,7 +4524,7 @@ def test_vae_load_pins_the_vae_and_leaves_the_source_pin_alone():
         def from_pretrained(cls, source, **kwargs):
             return kwargs
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.bfloat16
     manifest = Manifest(
@@ -4572,7 +4545,7 @@ def test_vae_load_pins_the_vae_and_leaves_the_source_pin_alone():
 
 
 def test_lora_fuse_pins_the_lora_repository():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine._pipelines = {}
@@ -4602,7 +4575,7 @@ def test_lora_fuse_pins_the_lora_repository():
 
 
 def test_realtime_adapter_load_pins_the_adapter():
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine.dtype = object()
@@ -4640,7 +4613,7 @@ def test_preview_decoder_load_pins_the_decoder():
     """_preview_decoder swallows every load failure, so this asserts the
     decoder came back as well as how it was asked for: a stub that rejected
     the call would otherwise leave the assertion unreached."""
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.device = "cpu"
     engine.dtype = object()
     decoder = MagicMock()
@@ -4681,7 +4654,7 @@ def test_a_missing_source_is_never_substituted_by_the_model_id():
             asked.append(source)
             return object()
 
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = torch
     engine.dtype = torch.bfloat16
     manifest = Manifest(id="gpt2", name="No source", capabilities=["text_to_image"])
@@ -4721,8 +4694,87 @@ def test_closing_an_engine_that_never_ran_a_frame_does_not_raise():
     asyncio.run(SimulatedEngine(0.0).close())
 
 
-def test_closing_a_diffusers_engine_built_without_init_does_not_raise():
-    asyncio.run(DiffusersEngine.__new__(DiffusersEngine).close())
+def test_closing_a_diffusers_engine_before_its_first_frame_does_not_raise():
+    asyncio.run(make_engine().close())
+
+
+def test_diffusers_constructor_frame_and_close_work_without_installed_torch(tmp_path):
+    fake_torch = tmp_path / "torch.py"
+    fake_torch.write_text(
+        "float32 = 'float32'\n"
+        "float16 = 'float16'\n"
+        "class OutOfMemoryError(RuntimeError):\n"
+        "    pass\n",
+        encoding="ascii",
+    )
+    worker_package = Path(__file__).resolve().parents[1]
+    existing_path = os.environ.get("PYTHONPATH", "")
+    pythonpath = os.pathsep.join(
+        part for part in (str(tmp_path), str(worker_package), existing_path) if part
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = pythonpath
+    child = textwrap.dedent(
+        """
+        import asyncio
+        import io
+
+        from PIL import Image
+
+        from worker.engine import DiffusersEngine
+        from worker.frame_batch import BATCH_WINDOW_MS, FrameBatchCollector
+        from worker.manifests import Manifest
+
+
+        async def main():
+            engine = DiffusersEngine("cpu")
+            assert isinstance(engine._batch_collector, FrameBatchCollector)
+            assert engine._batch_collector._window_s == BATCH_WINDOW_MS / 1000.0
+            engine._pick_rung = lambda _manifest: "full"
+            engine._frame_batch = lambda requests: [
+                (Image.new("RGB", (512, 512), (20, 40, 60)), 13)
+                for _request in requests
+            ]
+            manifest = Manifest(
+                id="cpu-frame",
+                name="CPU frame test",
+                capabilities=["realtime"],
+            )
+            source = io.BytesIO()
+            Image.new("RGB", (32, 32), (0, 0, 0)).save(source, format="PNG")
+            result = await engine.frame(
+                manifest, {"prompt": "frame"}, source.getvalue(),
+            )
+            assert result.gpu_ms == 13
+            with Image.open(io.BytesIO(result.data)) as output:
+                assert output.format == "WEBP"
+                assert output.size == (512, 512)
+                pixel = output.convert("RGB").getpixel((0, 0))
+                assert all(
+                    abs(actual - expected) <= 3
+                    for actual, expected in zip(pixel, (20, 40, 60), strict=True)
+                )
+            await engine.close()
+            assert not (asyncio.all_tasks() - {asyncio.current_task()})
+
+
+        asyncio.run(main())
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", child],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        env=environment,
+    )
+    assert result.returncode == 0, (
+        f"child process failed with status {result.returncode}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    helper = make_engine()
+    assert isinstance(helper, DiffusersEngine)
+    assert helper._batch_collector._window_s == 0.0
 
 
 def test_a_frame_whose_encode_fails_does_not_update_last_frame():

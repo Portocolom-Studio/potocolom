@@ -6,13 +6,12 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from worker.engine import (
-    CODEC_CONCURRENCY_LIMIT,
-    DiffusersEngine,
     GeneratedFrame,
     PromptCache,
     SimulatedEngine,
 )
 from worker.manifests import Manifest, SIMULATED_MANIFEST
+from engine_test_support import make_engine
 
 
 PROFILE_KEYS = {
@@ -186,12 +185,10 @@ def _manifest():
 
 
 def _engine(pipeline):
-    engine = DiffusersEngine.__new__(DiffusersEngine)
+    engine = make_engine()
     engine.torch = _FakeTorch()
     engine.device = "cpu"
     engine.dtype = object()
-    engine._gpu = asyncio.Lock()
-    engine._codec = asyncio.Semaphore(CODEC_CONCURRENCY_LIMIT)
     engine._pick_rung = MagicMock(return_value="full")
     engine._evict_except = MagicMock()
     engine._evict_poisoned = MagicMock()
