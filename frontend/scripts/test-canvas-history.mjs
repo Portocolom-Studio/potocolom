@@ -3551,6 +3551,228 @@ async function openImagesGrid(apiAnswers, setup, setupArgs = []) {
 	}
 }
 
+function installGridResponseGate(options = {}) {
+	localStorage.setItem('potocolom-images-mode', 'grid');
+	for (const [key, value] of Object.entries(options.preferences ?? {})) {
+		localStorage.setItem(key, JSON.stringify(value));
+	}
+	const nativeNow = Date.now.bind(Date);
+	window.__gridClockOffset = 0;
+	Date.now = () => nativeNow() + window.__gridClockOffset;
+	Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+	window.__gridGate = {
+		holdNext: options.holdFirst ?? false,
+		held: [],
+		pending: [],
+		queries: [],
+		roots: 0
+	};
+	window.__trackedGridWrites = 0;
+	const setItem = Storage.prototype.setItem;
+	Storage.prototype.setItem = function (key, value) {
+		if (key === options.trackedKey) window.__trackedGridWrites += 1;
+		return setItem.call(this, key, value);
+	};
+	const originalFetch = window.fetch.bind(window);
+	window.fetch = async (input, init) => {
+		const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+		const gridPage =
+			url.pathname === '/api/v1/generations' &&
+			url.searchParams.get('state') === 'succeeded' &&
+			url.searchParams.has('limit') &&
+			!url.searchParams.has('fields') &&
+			!url.searchParams.has('roots_only');
+		if (url.pathname === '/api/v1/generations' && url.searchParams.has('roots_only')) {
+			window.__gridGate.roots += 1;
+		}
+		let hold = false;
+		if (gridPage) {
+			window.__gridGate.queries.push(url.searchParams.toString());
+			hold = window.__gridGate.holdNext;
+			window.__gridGate.holdNext = false;
+		}
+		const response = await originalFetch(input, init);
+		if (hold) {
+			const payload = await response.clone().json();
+			let release;
+			const held = new Promise((resolve) => (release = resolve));
+			const pending = { query: url.searchParams.toString(), release, delivered: false };
+			window.__gridGate.held.push(pending);
+			response.json = () => {
+				window.__gridGate.pending.push(pending);
+				return held.then(() => {
+					pending.delivered = true;
+					return payload;
+				});
+			};
+		}
+		return response;
+	};
+	window.__installGridAnchorTimerGate = (scroller) => {
+		const nativeSetTimeout = window.setTimeout;
+		const nativeClearTimeout = window.clearTimeout;
+		const gate = {
+			pending: new Map(),
+			scheduled: 0,
+			unmounted: false,
+			anchorId: null,
+			inScroll: false
+		};
+		let nextId = -1;
+		window.__gridAnchorTimerGate = gate;
+		window.setTimeout = function (callback, delay, ...args) {
+			if (delay !== 250 || !gate.inScroll)
+				return nativeSetTimeout.call(this, callback, delay, ...args);
+			const id = nextId--;
+			gate.pending.set(id, { callback, args });
+			gate.scheduled += 1;
+			gate.anchorId = id;
+			return id;
+		};
+		window.clearTimeout = function (id) {
+			if (!gate.pending.has(id)) return nativeClearTimeout.call(this, id);
+			if (id === gate.anchorId) gate.anchorId = null;
+			gate.pending.delete(id);
+		};
+		const observer = new MutationObserver(() => {
+			if (!scroller.isConnected) {
+				gate.unmounted = true;
+				observer.disconnect();
+			}
+		});
+		const beginScroll = () => (gate.inScroll = true);
+		const endScroll = () => (gate.inScroll = false);
+		scroller.addEventListener('scroll', beginScroll, true);
+		scroller.addEventListener('scroll', endScroll);
+		window.__restoreGridAnchorTimers = () => {
+			window.setTimeout = nativeSetTimeout;
+			window.clearTimeout = nativeClearTimeout;
+			gate.pending.clear();
+			scroller.removeEventListener('scroll', beginScroll, true);
+			scroller.removeEventListener('scroll', endScroll);
+			observer.disconnect();
+		};
+		observer.observe(document.body, { childList: true, subtree: true });
+		return gate;
+	};
+}
+
+async function releaseGridResponse(page, index) {
+	await page.evaluate((position) => {
+		window.__gridGate.pending[position].release();
+	}, index);
+	await page.waitForFunction(
+		(position) => window.__gridGate.pending[position].delivered,
+		{
+			timeout: WAIT_MS
+		},
+		index
+	);
+	await page.evaluate(
+		() =>
+			new Promise((resolve) => {
+				const channel = new MessageChannel();
+				channel.port1.onmessage = () => {
+					channel.port1.close();
+					channel.port2.close();
+					resolve();
+				};
+				channel.port2.postMessage(null);
+			})
+	);
+}
+
+async function releaseAllGridResponses(page) {
+	await page
+		.evaluate(() => {
+			for (const pending of window.__gridGate?.held ?? []) pending.release();
+		})
+		.catch(() => {});
+}
+
+async function closeGridAnchorHarness(harness) {
+	await harness.page.evaluate(() => window.__restoreGridAnchorTimers?.()).catch(() => {});
+	await releaseAllGridResponses(harness.page);
+	await harness.close();
+}
+
+async function chooseIncompleteImageDate(page) {
+	await chooseImageOption(page, 'Filter by creation date', 'Custom dates');
+	await page.$eval('#image-filter-from', (input) => {
+		input.value = '2035-01-01';
+		input.dispatchEvent(new Event('change', { bubbles: true }));
+	});
+	await page.waitForFunction(() => document.body.textContent.includes('Choose both dates'), {
+		timeout: WAIT_MS
+	});
+}
+
+function anchorGridFixtures() {
+	const fixtures = imageGridFixtures(100);
+	fixtures.answers['/api/v1/generations?limit=200'] = { body: fixtures.rows };
+	return fixtures;
+}
+
+async function waitForAnchorGrid(page) {
+	await page.waitForFunction(
+		() =>
+			document.querySelectorAll('.grid-tile').length === 100 &&
+			document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+		{ timeout: WAIT_MS }
+	);
+}
+
+async function scrollGridWithPendingAnchor(page) {
+	return page.evaluate(async () => {
+		document.startViewTransition = undefined;
+		const scroller = document.querySelector('.grid-scroller');
+		const gate = window.__installGridAnchorTimerGate(scroller);
+		scroller.style.overflowAnchor = 'none';
+		scroller.scrollTop = 1000;
+		const area = scroller.getBoundingClientRect();
+		const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+			const rect = item.getBoundingClientRect();
+			return rect.bottom > area.top && rect.top < area.bottom;
+		});
+		if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+		const selected = {
+			id: tile.dataset.generationId,
+			offset: tile.getBoundingClientRect().top - area.top
+		};
+		const before = gate.scheduled;
+		scroller.dispatchEvent(new Event('scroll'));
+		if (gate.scheduled === before) throw new Error('Grid scroll did not schedule an anchor timer');
+		await new Promise(requestAnimationFrame);
+		await new Promise(requestAnimationFrame);
+		if (!gate.pending.has(gate.anchorId))
+			throw new Error('Current Grid anchor timer is not pending');
+		return selected;
+	});
+}
+
+async function enterLineageWithPendingGridAnchor(page) {
+	const anchor = await scrollGridWithPendingAnchor(page);
+	await page.evaluate(() => {
+		const lineage = [...document.querySelectorAll('button')].find(
+			(button) => button.textContent?.trim() === 'Lineage'
+		);
+		if (!lineage) throw new Error('Lineage button not found');
+		lineage.click();
+	});
+	await page.waitForSelector('.lineage-viewport', { timeout: WAIT_MS });
+	await page.waitForFunction(() => window.__gridAnchorTimerGate.unmounted, { timeout: WAIT_MS });
+	const timerState = await page.evaluate(() => {
+		const gate = window.__gridAnchorTimerGate;
+		return {
+			anchorId: gate.anchorId,
+			pending: [...gate.pending.keys()],
+			scheduled: gate.scheduled
+		};
+	});
+	assert.ok(timerState.pending.includes(timerState.anchorId), JSON.stringify(timerState));
+	return anchor;
+}
+
 async function openGenerateThenImages(apiAnswers, setup) {
 	const harness = await launchStudio(
 		'en',
@@ -3569,6 +3791,1112 @@ async function openGenerateThenImages(apiAnswers, setup) {
 		throw error;
 	}
 }
+
+test('Grid ignores an old account page after the confirmed account changes', async () => {
+	const ownerA = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440051' };
+	const ownerB = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440052' };
+	const oldRow = lineageGeneration(
+		lineageJobId(5100),
+		lineageAssetId(5100),
+		'Old owner',
+		new Date().toISOString()
+	);
+	const newRow = lineageGeneration(
+		lineageJobId(5101),
+		lineageAssetId(5101),
+		'New owner',
+		new Date().toISOString()
+	);
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: null,
+			gridSelectionId: null,
+			lineageSelection: null
+		}
+	};
+	let accountReads = 0;
+	const answers = {
+		'/api/v1/account': {
+			body: () => {
+				accountReads += 1;
+				const owner = accountReads === 1 ? ownerA : ownerB;
+				return { id: owner.id, email: 'owner@example.com', role: 'user' };
+			}
+		},
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('fields')) return { ids: [] };
+				if (url.searchParams.has('roots_only')) return [];
+				return url.searchParams.get('state') === 'succeeded'
+					? [accountReads === 1 ? oldRow : newRow]
+					: [];
+			}
+		}
+	};
+	const keyA = viewPrefsStorageKey(ownerA, 'images');
+	const keyB = viewPrefsStorageKey(ownerB, 'images');
+	const harness = await openImagesGrid(answers, installGridResponseGate, [
+		{
+			holdFirst: true,
+			trackedKey: keyB,
+			preferences: { [keyA]: preferences, [keyB]: preferences }
+		}
+	]);
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => window.__gridGate.pending.length === 1, { timeout: WAIT_MS });
+		await page.evaluate(() => {
+			window.__gridClockOffset += 31000;
+			window.dispatchEvent(new Event('focus'));
+		});
+		await page.waitForSelector(`[data-generation-id="${newRow.id}"]`, { timeout: WAIT_MS });
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false'
+		);
+		await page.evaluate(async () => {
+			await new Promise(requestAnimationFrame);
+			await new Promise(requestAnimationFrame);
+		});
+		const before = await readViewPrefs(page, ownerB, 'images');
+		const writes = await page.evaluate(() => window.__trackedGridWrites);
+		assert.equal(accountReads, 2);
+		await releaseGridResponse(page, 0);
+		await page.waitForFunction(
+			(id) =>
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false' &&
+				Boolean(document.querySelector(`[data-generation-id="${CSS.escape(id)}"]`)),
+			{ timeout: WAIT_MS },
+			newRow.id
+		);
+		assert.equal(await page.$(`[data-generation-id="${oldRow.id}"]`), null);
+		assert.notEqual(await page.$(`[data-generation-id="${newRow.id}"]`), null);
+		assert.deepEqual(await readViewPrefs(page, ownerB, 'images'), before);
+		assert.equal(await page.evaluate(() => window.__trackedGridWrites), writes);
+	} finally {
+		await releaseAllGridResponses(harness.page);
+		await harness.close();
+	}
+});
+
+test('Grid retains warm rows across a Lineage round trip with a page in flight', async () => {
+	const fixtures = imageGridFixtures(4);
+	const stale = lineageGeneration(
+		lineageJobId(5200),
+		lineageAssetId(5200),
+		'Stale page',
+		new Date().toISOString()
+	);
+	let filteredRequests = 0;
+	fixtures.answers['/api/v1/generations?limit=50'] = {
+		body: (url) => {
+			if (!url.searchParams.has('created_from')) return fixtures.rows;
+			filteredRequests += 1;
+			return filteredRequests === 1 ? [stale] : fixtures.rows;
+		}
+	};
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await page.waitForFunction(
+			() =>
+				document.querySelectorAll('.grid-tile').length === 4 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		await page.evaluate(() => (window.__gridGate.holdNext = true));
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.waitForFunction(() => window.__gridGate.pending.length === 1, { timeout: WAIT_MS });
+		const warm = await page.$$eval('.grid-tile', (tiles) =>
+			tiles.map((tile) => tile.dataset.generationId)
+		);
+		assert.equal(warm.length, 4);
+		await clickButton(page, 'Lineage');
+		await page.waitForSelector('.lineage-viewport', { timeout: WAIT_MS });
+		await page.evaluate(() => (window.__gridGate.holdNext = true));
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__gridGate.pending.length === 2, { timeout: WAIT_MS });
+		assert.deepEqual(
+			await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.dataset.generationId)),
+			warm
+		);
+		const heldQueries = await page.evaluate(() =>
+			window.__gridGate.pending.map((item) => item.query)
+		);
+		assert.equal(heldQueries[0], heldQueries[1]);
+		assert.equal(filteredRequests, 2);
+		await releaseGridResponse(page, 0);
+		await page.waitForFunction(
+			() =>
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'true' &&
+				document.querySelectorAll('.grid-tile').length === 4,
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.$(`[data-generation-id="${stale.id}"]`), null);
+		assert.deepEqual(
+			await page.$$eval('.grid-tile', (tiles) => tiles.map((tile) => tile.dataset.generationId)),
+			warm
+		);
+		await releaseGridResponse(page, 1);
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false'
+		);
+	} finally {
+		await releaseAllGridResponses(harness.page);
+		await harness.close();
+	}
+});
+
+test('Unstar in Lineage removes the warm Starred Grid row before refresh', async () => {
+	const fixtures = imageGridFixtures(2);
+	const [removed, retained] = fixtures.rows;
+	fixtures.answers['/api/v1/generations?limit=50&starred=true'] = {
+		body: () => fixtures.rows.filter((row) => row.starred_at !== null)
+	};
+	fixtures.answers['/api/v1/generations?roots_only=true&limit=50'] = {
+		body: () => fixtures.rows.filter((row) => row.starred_at !== null)
+	};
+	for (const root of fixtures.rows) {
+		fixtures.answers[`/api/v1/generations/${root.id}/subtree`] = {
+			body: lineageSubtree([lineageSubtreeNode(root, root.assets[0].id, null)])
+		};
+	}
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await page.waitForSelector(`[data-generation-id="${removed.id}"]`, { timeout: WAIT_MS });
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(
+			() =>
+				window.__gridGate.queries.some(
+					(query) => new URLSearchParams(query).get('starred') === 'true'
+				) &&
+				document.querySelectorAll('.grid-tile').length === 2 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false'
+		);
+		await clickButton(page, 'Lineage');
+		await page.waitForSelector(`[data-lineage-node="${removed.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		const rootsBefore = await page.evaluate(() => window.__gridGate.roots);
+		await page.$eval(`[data-lineage-node="${removed.assets[0].id}"]`, (node) => node.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(
+			(before) => window.__gridGate.roots > before,
+			{ timeout: WAIT_MS },
+			rootsBefore
+		);
+		await page.evaluate(() => (window.__gridGate.holdNext = true));
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__gridGate.pending.length === 1, { timeout: WAIT_MS });
+		assert.equal(await page.$(`[data-generation-id="${removed.id}"]`), null);
+		assert.notEqual(await page.$(`[data-generation-id="${retained.id}"]`), null);
+		assert.equal(
+			new URLSearchParams(await page.evaluate(() => window.__gridGate.pending[0].query)).get(
+				'starred'
+			),
+			'true'
+		);
+		await releaseGridResponse(page, 0);
+		await page.waitForFunction(
+			() => document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false'
+		);
+		assert.equal(await page.$(`[data-generation-id="${removed.id}"]`), null);
+	} finally {
+		await releaseAllGridResponses(harness.page);
+		await harness.close();
+	}
+});
+
+test('Grid drag scrolls without selecting after a model filter change', async () => {
+	const fixtures = imageGridFixtures(120);
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await page.waitForFunction(
+			() =>
+				document.querySelectorAll('.grid-tile').length === 120 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		await chooseImageModel(page, 'History smoke model');
+		await page.waitForFunction(
+			() =>
+				window.__gridGate.queries.some(
+					(query) => new URLSearchParams(query).get('model_id') === 'history-smoke'
+				) && document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const tile = await visibleGridTile(page);
+		assert.ok(tile);
+		await page.mouse.move(tile.x, tile.y);
+		await page.mouse.down();
+		await page.mouse.move(tile.x, tile.y - 220, { steps: 8 });
+		await page.mouse.up();
+		await page.waitForFunction(() => document.querySelector('.grid-scroller')?.scrollTop > 150, {
+			timeout: WAIT_MS
+		});
+		assert.equal(await page.$('.selection-inspector'), null);
+	} finally {
+		await releaseAllGridResponses(harness.page);
+		await harness.close();
+	}
+});
+
+test('Grid restores the position captured when leaving immediately after scrolling', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const before = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.ok(!before?.value.gridAnchor);
+		const { anchor, timers } = await page.evaluate(() => {
+			document.startViewTransition = undefined;
+			const scroller = document.querySelector('.grid-scroller');
+			const gate = window.__installGridAnchorTimerGate(scroller);
+			scroller.style.overflowAnchor = 'none';
+			scroller.scrollTop = 1000;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+			const selected = {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top
+			};
+			const scheduledBeforeScroll = gate.scheduled;
+			scroller.dispatchEvent(new Event('scroll'));
+			if (gate.scheduled === scheduledBeforeScroll)
+				throw new Error('Grid scroll did not schedule an anchor timer');
+			const timers = {
+				scheduled: gate.scheduled,
+				pendingAtNavigation: gate.pending.has(gate.anchorId)
+			};
+			const metrics = [...document.querySelectorAll('button')].find(
+				(button) =>
+					button.textContent?.trim() === 'Metrics' ||
+					button.getAttribute('aria-label') === 'Metrics'
+			);
+			if (!metrics) throw new Error('Metrics button not found');
+			metrics.click();
+			return { anchor: selected, timers };
+		});
+		await page.waitForFunction(() => window.__gridAnchorTimerGate.unmounted, { timeout: WAIT_MS });
+		assert.ok(timers.scheduled > 0, 'Grid scrolling scheduled an anchor timer');
+		assert.equal(
+			timers.pendingAtNavigation,
+			true,
+			'the anchor timer was pending when navigation began'
+		);
+		await page.evaluate(() => window.__restoreGridAnchorTimers());
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.ok(saved?.value.gridAnchor, 'leaving before the timer saves the visible Grid anchor');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await clickStudioView(page, 'images', '.grid-scroller');
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid saves the position when Metrics opens in the same task as an unreported scroll', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const { anchor, scrollEventsAtClick } = await page.evaluate(() => {
+			document.startViewTransition = undefined;
+			const scroller = document.querySelector('.grid-scroller');
+			scroller.style.overflowAnchor = 'none';
+			let scrollEvents = 0;
+			scroller.addEventListener('scroll', () => scrollEvents++);
+			scroller.scrollTop = 1000;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+			const anchor = {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top
+			};
+			const metrics = [...document.querySelectorAll('button')].find(
+				(button) =>
+					button.textContent?.trim() === 'Metrics' ||
+					button.getAttribute('aria-label') === 'Metrics'
+			);
+			if (!metrics) throw new Error('Metrics button not found');
+			const scrollEventsAtClick = scrollEvents;
+			metrics.click();
+			return { anchor, scrollEventsAtClick };
+		});
+		assert.equal(scrollEventsAtClick, 0, 'no scroll event had fired when Metrics was clicked');
+		await page.waitForFunction(
+			() =>
+				new URL(location.href).searchParams.get('view') === 'metrics' &&
+				!document.querySelector('.grid-scroller'),
+			{ timeout: WAIT_MS }
+		);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await clickStudioView(page, 'images', '.grid-scroller');
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid saves the position when Lineage opens in the same task as an unreported scroll', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const { anchor, scrollEventsAtClick } = await page.evaluate(() => {
+			document.startViewTransition = undefined;
+			const scroller = document.querySelector('.grid-scroller');
+			scroller.style.overflowAnchor = 'none';
+			let scrollEvents = 0;
+			scroller.addEventListener('scroll', () => scrollEvents++);
+			scroller.scrollTop = 1000;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+			const anchor = {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top
+			};
+			const lineage = [...document.querySelectorAll('button')].find(
+				(button) => button.textContent?.trim() === 'Lineage'
+			);
+			if (!lineage) throw new Error('Lineage button not found');
+			const scrollEventsAtClick = scrollEvents;
+			lineage.click();
+			return { anchor, scrollEventsAtClick };
+		});
+		assert.equal(scrollEventsAtClick, 0, 'no scroll event had fired when Lineage was clicked');
+		await page.waitForSelector('.lineage-viewport', { timeout: WAIT_MS });
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await clickStudioView(page, 'images', '.lineage-viewport');
+		await clickButton(page, 'Grid');
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid restores its pending Lineage anchor when returning straight to Grid', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		await page.evaluate(() => {
+			window.__gridGate.holdNext = true;
+		});
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__gridGate.pending.length > 0, {
+			timeout: WAIT_MS
+		});
+		await page.waitForSelector('.grid-scroller', { timeout: WAIT_MS });
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await page.evaluate(() => {
+			const gate = window.__gridAnchorTimerGate;
+			const timer = gate.pending.get(gate.anchorId);
+			if (!timer) throw new Error('Old Grid anchor timer is not pending');
+			timer.callback(...timer.args);
+		});
+		const afterOldTimer = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(afterOldTimer.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(afterOldTimer.value.gridAnchor.offset - anchor.offset) < 2);
+		await releaseGridResponse(page, 0);
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid retains its pending scroll through Lineage and navigation', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		const localState = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(localState.value.mode, 'lineage');
+		assert.equal(localState.value.gridAnchor, null);
+		const timerState = await page.evaluate(() => ({
+			scheduled: window.__gridAnchorTimerGate.scheduled,
+			pending: window.__gridAnchorTimerGate.pending.has(window.__gridAnchorTimerGate.anchorId)
+		}));
+		assert.ok(timerState.scheduled > 0, 'Grid scrolling scheduled an anchor timer');
+		assert.equal(timerState.pending, true, 'the anchor timer remains pending after Grid unmount');
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.mode, 'lineage');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await page.evaluate(() => window.__restoreGridAnchorTimers());
+		await clickStudioView(page, 'images', '.lineage-viewport');
+		await clickButton(page, 'Grid');
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid retains a Lineage scroll candidate after its save timer fires', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		await page.evaluate(() => {
+			const gate = window.__gridAnchorTimerGate;
+			const timer = gate.pending.get(gate.anchorId);
+			if (!timer) throw new Error('Grid anchor timer is not pending');
+			gate.pending.delete(gate.anchorId);
+			timer.callback(...timer.args);
+		});
+		const localState = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(localState.value.mode, 'lineage');
+		assert.equal(localState.value.gridAnchor, null);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.mode, 'lineage');
+		assert.ok(saved.value.gridAnchor);
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid saves its Lineage scroll candidate across an incomplete date draft', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		await page.waitForFunction(
+			() =>
+				window.__gridGate.queries.some((query) => new URLSearchParams(query).has('created_from')) &&
+				document.querySelectorAll('.grid-tile').length === 100 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const applied = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(applied.value.filters.range, 'last7');
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		await chooseIncompleteImageDate(page);
+		const draft = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(draft.value.filters.range, 'last7');
+		assert.equal(
+			await page.evaluate(() => {
+				const gate = window.__gridAnchorTimerGate;
+				return gate.pending.has(gate.anchorId);
+			}),
+			true,
+			'the Grid anchor timer remains pending before navigation'
+		);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.filters.range, 'last7');
+		assert.ok(saved.value.gridAnchor, 'the newly captured Grid anchor is saved');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid restores its scroll after reverting an incomplete Lineage date draft', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const originalQuery = await page.evaluate(() => window.__gridGate.queries.at(-1));
+		const originalParams = new URLSearchParams(originalQuery);
+		assert.equal(originalParams.has('created_from'), false);
+		assert.equal(originalParams.has('created_before'), false);
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		await chooseIncompleteImageDate(page);
+		assert.equal(await page.$eval('#image-filter-through', (input) => input.value), '');
+		await chooseImageOption(page, 'Filter by creation date', 'All time');
+		await page.waitForFunction(() => !document.querySelector('#image-filter-from'), {
+			timeout: WAIT_MS
+		});
+		const reverted = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(reverted.value.filters.range, 'all');
+		assert.equal(
+			await page.evaluate(() => {
+				const gate = window.__gridAnchorTimerGate;
+				return gate.pending.has(gate.anchorId);
+			}),
+			true,
+			'the Grid anchor timer remains pending before navigation'
+		);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.filters.range, 'all');
+		assert.ok(saved.value.gridAnchor, 'the captured Grid anchor is saved');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await page.evaluate(() => window.__restoreGridAnchorTimers());
+		await clickStudioView(page, 'images', '.lineage-viewport');
+		const queryCount = await page.evaluate(() => window.__gridGate.queries.length);
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(
+			(count) => window.__gridGate.queries.length > count,
+			{ timeout: WAIT_MS },
+			queryCount
+		);
+		await waitForAnchorGrid(page);
+		const restoredQuery = await page.evaluate(() => window.__gridGate.queries.at(-1));
+		const canonical = (query) => {
+			const params = new URLSearchParams(query);
+			params.delete('limit');
+			params.delete('cursor');
+			params.sort();
+			return params.toString();
+		};
+		assert.equal(canonical(restoredQuery), canonical(originalQuery));
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid drops its Lineage scroll candidate when Starred changes during an incomplete date draft', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		await enterLineageWithPendingGridAnchor(page);
+		await chooseIncompleteImageDate(page);
+		await clickButton(page, 'Starred');
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.filters.range, 'all');
+		assert.equal(saved.value.starredOnly, true);
+		assert.equal(saved.value.gridAnchor, null);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid does not write an old scroll candidate under a newly confirmed account', async () => {
+	const ownerA = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440061' };
+	const ownerB = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440062' };
+	const makeRows = (offset, prompt) =>
+		Array.from({ length: 100 }, (_, index) =>
+			lineageGeneration(
+				lineageJobId(offset + index),
+				lineageAssetId(offset + index),
+				`${prompt} ${index}`,
+				new Date().toISOString()
+			)
+		);
+	const rowsA = makeRows(6100, 'Account A');
+	const rowsB = makeRows(6200, 'Account B');
+	let accountReads = 0;
+	const answers = {
+		'/api/v1/account': {
+			body: () => {
+				accountReads += 1;
+				const owner = accountReads === 1 ? ownerA : ownerB;
+				return {
+					id: owner.id,
+					email: accountReads === 1 ? 'owner-a@example.com' : 'owner-b@example.com',
+					role: 'user'
+				};
+			}
+		},
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': {
+			body: () => (accountReads === 1 ? rowsA : rowsB)
+		},
+		'/api/v1/generations?limit=200': {
+			body: () => (accountReads === 1 ? rowsA : rowsB)
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const preferences = (search = '') => ({
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search,
+			starredOnly: false,
+			gridAnchor: null,
+			gridSelectionId: null,
+			lineageSelection: null
+		}
+	});
+	const harness = await openImagesGrid(answers, installGridResponseGate, [
+		{
+			preferences: {
+				[viewPrefsStorageKey(ownerA, 'images')]: preferences(),
+				[viewPrefsStorageKey(ownerB, 'images')]: preferences('account-b-state')
+			}
+		}
+	]);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const candidate = await enterLineageWithPendingGridAnchor(page);
+		await page.evaluate(() => {
+			window.__gridClockOffset += 31000;
+			window.dispatchEvent(new Event('focus'));
+		});
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some((button) =>
+					button.textContent?.includes('owner-b@example.com')
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(accountReads, 2);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, ownerB, 'images');
+		assert.equal(saved.value.search, 'account-b-state');
+		assert.notEqual(saved.value.gridAnchor?.id, candidate.id);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid does not write an old scroll candidate after a confirmed role change', async () => {
+	const owner = { kind: 'account', id: '550e8400-e29b-41d4-a716-446655440063' };
+	const makeRows = (offset, prompt) =>
+		Array.from({ length: 100 }, (_, index) =>
+			lineageGeneration(
+				lineageJobId(offset + index),
+				lineageAssetId(offset + index),
+				`${prompt} ${index}`,
+				new Date().toISOString()
+			)
+		);
+	const adminRows = makeRows(6300, 'Admin role');
+	const userRows = makeRows(6400, 'User role');
+	let accountReads = 0;
+	let announceRoleChange;
+	const roleChanged = new Promise((resolve) => (announceRoleChange = resolve));
+	const answers = {
+		'/api/v1/account': {
+			body: () => {
+				accountReads += 1;
+				if (accountReads === 2) announceRoleChange();
+				return {
+					id: owner.id,
+					email: 'owner@example.com',
+					role: accountReads === 1 ? 'admin' : 'user'
+				};
+			}
+		},
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?limit=50': {
+			body: () => (accountReads === 1 ? adminRows : userRows)
+		},
+		'/api/v1/generations?limit=200': {
+			body: () => (accountReads === 1 ? adminRows : userRows)
+		},
+		'/api/v1/generations?roots_only=true&limit=50': { body: [] }
+	};
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'all', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: null,
+			gridSelectionId: null,
+			lineageSelection: null
+		}
+	};
+	const harness = await openImagesGrid(answers, installGridResponseGate, [
+		{ preferences: { [viewPrefsStorageKey(owner, 'images')]: preferences } }
+	]);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const candidate = await enterLineageWithPendingGridAnchor(page);
+		await page.evaluate(() => {
+			window.__gridClockOffset += 31000;
+			window.dispatchEvent(new Event('focus'));
+		});
+		await waitFixture(roleChanged, 'the account role was not rechecked');
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) =>
+						button.textContent?.includes('owner@example.com') &&
+						button.textContent?.includes('User')
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(accountReads, 2);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, owner, 'images');
+		assert.notEqual(saved.value.gridAnchor?.id, candidate.id);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid does not save a scroll candidate after an applied filter changes in Lineage', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		await enterLineageWithPendingGridAnchor(page);
+		await chooseImageOption(page, 'Filter by creation date', 'Last 7 days');
+		const applied = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(applied.value.filters.range, 'last7');
+		await chooseIncompleteImageDate(page);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.filters.range, 'last7');
+		assert.equal(saved.value.gridAnchor, null);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid does not save a scroll candidate after search changes in Lineage', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		await enterLineageWithPendingGridAnchor(page);
+		await page.focus('[aria-label="Search prompts"]');
+		await page.keyboard.type('lineage search');
+		await page.waitForFunction(
+			() =>
+				JSON.parse(localStorage.getItem('potocolom-view-v1:local:images') ?? 'null')?.value
+					?.search === 'lineage search',
+			{ timeout: WAIT_MS }
+		);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.search, 'lineage search');
+		assert.equal(saved.value.gridAnchor, null);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid does not save a scroll candidate after an unstar replaces its committed rows', async () => {
+	const fixtures = anchorGridFixtures();
+	const removed = fixtures.rows[0];
+	fixtures.answers['/api/v1/generations?roots_only=true&limit=50'] = {
+		body: () => fixtures.rows.filter((row) => row.starred_at !== null)
+	};
+	for (const row of fixtures.rows) {
+		fixtures.answers[`/api/v1/generations/${row.id}/subtree`] = {
+			body: lineageSubtree([lineageSubtreeNode(row, row.assets[0].id, null)])
+		};
+	}
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		await clickButton(page, 'Starred');
+		await page.waitForFunction(
+			() =>
+				window.__gridGate.queries.some(
+					(query) => new URLSearchParams(query).get('starred') === 'true'
+				) &&
+				document.querySelectorAll('.grid-tile').length === 100 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		await enterLineageWithPendingGridAnchor(page);
+		await page.waitForSelector(`[data-lineage-node="${removed.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		const rootsBefore = await page.evaluate(() => window.__gridGate.roots);
+		await page.$eval(`[data-lineage-node="${removed.assets[0].id}"]`, (node) => node.click());
+		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		await clickButton(page, 'Unstar');
+		await page.waitForFunction(
+			({ before, id }) =>
+				window.__gridGate.roots > before &&
+				!document.querySelector(`[data-lineage-node="${CSS.escape(id)}"]`),
+			{ timeout: WAIT_MS },
+			{ before: rootsBefore, id: removed.assets[0].id }
+		);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.starredOnly, true);
+		assert.equal(saved.value.gridAnchor, null);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid keeps its saved hint when an incomplete date draft cannot capture a scroll', async () => {
+	const fixtures = anchorGridFixtures();
+	const savedAnchor = {
+		id: fixtures.rows[0].id,
+		beforeCursor: null,
+		offset: 32
+	};
+	const preferences = {
+		version: 1,
+		section: 'images',
+		value: {
+			mode: 'grid',
+			filters: { models: [], sizes: [], range: 'last7', from: '', through: '' },
+			action: 'all',
+			search: '',
+			starredOnly: false,
+			gridAnchor: savedAnchor,
+			gridSelectionId: null,
+			lineageSelection: null
+		}
+	};
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate, [
+		{ preferences: { 'potocolom-view-v1:local:images': preferences } }
+	]);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const selected = await scrollGridWithPendingAnchor(page);
+		await chooseIncompleteImageDate(page);
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.filters.range, 'last7');
+		assert.deepEqual(saved.value.gridAnchor, savedAnchor);
+		assert.notEqual(selected.id, savedAnchor.id);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid search keeps a matching visible anchor in place', async () => {
+	const rows = Array.from({ length: 50 }, (_, index) =>
+		lineageGeneration(
+			lineageJobId(5300 + index),
+			lineageAssetId(5300 + index),
+			index < 8 ? `Other ${index}` : `Match ${index}`,
+			new Date(Date.now() - index * 1000).toISOString()
+		)
+	);
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?': {
+			body: (url) => {
+				if (url.searchParams.has('roots_only')) return [];
+				if (url.searchParams.has('fields')) return { ids: rows.slice(8).map((row) => row.id) };
+				if (url.searchParams.get('state') !== 'succeeded') return [];
+				return url.searchParams.get('q') ? rows.slice(8) : rows;
+			}
+		}
+	};
+	const harness = await openImagesGrid(answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await page.setViewport({ width: 1000, height: 700 });
+		await page.waitForFunction(
+			() =>
+				document.querySelectorAll('.grid-tile').length === 50 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		const anchor = await page.evaluate((target) => {
+			const scroller = document.querySelector('.grid-scroller');
+			scroller.style.overflowAnchor = 'none';
+			const targetTile = scroller.querySelector(`[data-generation-id="${CSS.escape(target)}"]`);
+			scroller.scrollTop +=
+				targetTile.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			return {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top,
+				scrollTop: scroller.scrollTop
+			};
+		}, rows[25].id);
+		assert.ok(anchor.scrollTop > 0, 'the Grid is scrolled before search');
+		assert.ok(rows.slice(8).some((row) => row.id === anchor.id));
+		await page.focus('[aria-label="Search prompts"]');
+		await page.keyboard.type('Match');
+		await page.waitForFunction(
+			() =>
+				window.__gridGate.queries.some(
+					(query) => new URLSearchParams(query).get('q') === 'Match'
+				) &&
+				document.querySelectorAll('.grid-tile').length === 42 &&
+				document.querySelector('.grid-scroller')?.getAttribute('aria-busy') === 'false',
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(await page.$$eval('.grid-tile', (tiles) => tiles.length), 42);
+		const range = await page.evaluate(({ id, offset }) => {
+			const scroller = document.querySelector('.grid-scroller');
+			const tile = scroller.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+			return {
+				required:
+					scroller.scrollTop +
+					tile.getBoundingClientRect().top -
+					scroller.getBoundingClientRect().top -
+					offset,
+				maximum: scroller.scrollHeight - scroller.clientHeight
+			};
+		}, anchor);
+		assert.ok(
+			range.required >= -1 && range.required <= range.maximum + 1,
+			`the filtered Grid cannot place the anchor at its original offset: ${JSON.stringify(range)}`
+		);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+		const offset = await page.$eval(
+			`[data-generation-id="${anchor.id}"]`,
+			(tile) =>
+				tile.getBoundingClientRect().top -
+				document.querySelector('.grid-scroller').getBoundingClientRect().top
+		);
+		assert.ok(
+			Math.abs(offset - anchor.offset) < 2,
+			`anchor moved from ${anchor.offset} to ${offset}`
+		);
+	} finally {
+		await releaseAllGridResponses(harness.page);
+		await harness.close();
+	}
+});
 
 test('Grid keeps shared older history behind server pages and preserves order on More', async () => {
 	const rows = Array.from({ length: 120 }, (_, index) =>
