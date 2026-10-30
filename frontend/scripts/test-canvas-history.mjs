@@ -4123,6 +4123,177 @@ test('Grid restores the position captured when leaving immediately after scrolli
 	}
 });
 
+test('Grid saves the position when Metrics opens in the same task as an unreported scroll', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const { anchor, scrollEventsAtClick } = await page.evaluate(() => {
+			document.startViewTransition = undefined;
+			const scroller = document.querySelector('.grid-scroller');
+			scroller.style.overflowAnchor = 'none';
+			let scrollEvents = 0;
+			scroller.addEventListener('scroll', () => scrollEvents++);
+			scroller.scrollTop = 1000;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+			const anchor = {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top
+			};
+			const metrics = [...document.querySelectorAll('button')].find(
+				(button) =>
+					button.textContent?.trim() === 'Metrics' ||
+					button.getAttribute('aria-label') === 'Metrics'
+			);
+			if (!metrics) throw new Error('Metrics button not found');
+			const scrollEventsAtClick = scrollEvents;
+			metrics.click();
+			return { anchor, scrollEventsAtClick };
+		});
+		assert.equal(scrollEventsAtClick, 0, 'no scroll event had fired when Metrics was clicked');
+		await page.waitForFunction(
+			() =>
+				new URL(location.href).searchParams.get('view') === 'metrics' &&
+				!document.querySelector('.grid-scroller'),
+			{ timeout: WAIT_MS }
+		);
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await clickStudioView(page, 'images', '.grid-scroller');
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid saves the position when Lineage opens in the same task as an unreported scroll', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const { anchor, scrollEventsAtClick } = await page.evaluate(() => {
+			document.startViewTransition = undefined;
+			const scroller = document.querySelector('.grid-scroller');
+			scroller.style.overflowAnchor = 'none';
+			let scrollEvents = 0;
+			scroller.addEventListener('scroll', () => scrollEvents++);
+			scroller.scrollTop = 1000;
+			const area = scroller.getBoundingClientRect();
+			const tile = [...scroller.querySelectorAll('.grid-tile')].find((item) => {
+				const rect = item.getBoundingClientRect();
+				return rect.bottom > area.top && rect.top < area.bottom;
+			});
+			if (!tile || scroller.scrollTop === 0) throw new Error('Grid did not scroll');
+			const anchor = {
+				id: tile.dataset.generationId,
+				offset: tile.getBoundingClientRect().top - area.top
+			};
+			const lineage = [...document.querySelectorAll('button')].find(
+				(button) => button.textContent?.trim() === 'Lineage'
+			);
+			if (!lineage) throw new Error('Lineage button not found');
+			const scrollEventsAtClick = scrollEvents;
+			lineage.click();
+			return { anchor, scrollEventsAtClick };
+		});
+		assert.equal(scrollEventsAtClick, 0, 'no scroll event had fired when Lineage was clicked');
+		await page.waitForSelector('.lineage-viewport', { timeout: WAIT_MS });
+		await clickStudioView(page, 'metrics');
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await clickStudioView(page, 'images', '.lineage-viewport');
+		await clickButton(page, 'Grid');
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
+test('Grid restores its pending Lineage anchor when returning straight to Grid', async () => {
+	const fixtures = anchorGridFixtures();
+	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);
+	try {
+		const { page } = harness;
+		await waitForAnchorGrid(page);
+		const anchor = await enterLineageWithPendingGridAnchor(page);
+		await page.evaluate(() => {
+			window.__gridGate.holdNext = true;
+		});
+		await clickButton(page, 'Grid');
+		await page.waitForFunction(() => window.__gridGate.pending.length > 0, {
+			timeout: WAIT_MS
+		});
+		await page.waitForSelector('.grid-scroller', { timeout: WAIT_MS });
+		const saved = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(saved.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(saved.value.gridAnchor.offset - anchor.offset) < 2);
+		await page.evaluate(() => {
+			const gate = window.__gridAnchorTimerGate;
+			const timer = gate.pending.get(gate.anchorId);
+			if (!timer) throw new Error('Old Grid anchor timer is not pending');
+			timer.callback(...timer.args);
+		});
+		const afterOldTimer = await readViewPrefs(page, { kind: 'local' }, 'images');
+		assert.equal(afterOldTimer.value.gridAnchor.id, anchor.id);
+		assert.ok(Math.abs(afterOldTimer.value.gridAnchor.offset - anchor.offset) < 2);
+		await releaseGridResponse(page, 0);
+		await waitForAnchorGrid(page);
+		await page.waitForFunction(
+			({ id, offset }) => {
+				const scroller = document.querySelector('.grid-scroller');
+				const tile = scroller?.querySelector(`[data-generation-id="${CSS.escape(id)}"]`);
+				return (
+					tile &&
+					Math.abs(
+						tile.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset
+					) < 2
+				);
+			},
+			{ timeout: WAIT_MS },
+			anchor
+		);
+	} finally {
+		await closeGridAnchorHarness(harness);
+	}
+});
+
 test('Grid retains its pending scroll through Lineage and navigation', async () => {
 	const fixtures = anchorGridFixtures();
 	const harness = await openImagesGrid(fixtures.answers, installGridResponseGate);

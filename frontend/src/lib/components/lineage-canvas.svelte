@@ -373,6 +373,9 @@
 	let gridSnapshotSeededCriteria = '';
 	let pendingLineageSelection = restoredImagesPreferences.lineageSelection;
 	let gridAnchorSaveTimer: ReturnType<typeof setTimeout> | undefined;
+	let gridAnchorSaveTimerScroller: HTMLElement | null = null;
+	let gridScrollElement: HTMLElement | null = null;
+	let gridLastObservedScrollTop: number | null = null;
 	let gridNavigationAnchor: {
 		ownerEpoch: number;
 		criteriaKey: string;
@@ -429,26 +432,63 @@
 	}
 
 	function saveGridAnchorSoon(): void {
+		const scroller = gridScrollerEl;
+		if (!scroller) return;
+		if (gridScrollElement === scroller) gridLastObservedScrollTop = scroller.scrollTop;
 		if (gridAnchorSaveTimer !== undefined) clearTimeout(gridAnchorSaveTimer);
-		gridAnchorSaveTimer = setTimeout(() => {
-			gridAnchorSaveTimer = undefined;
-			if (viewOwnerEpoch() !== componentOwnerEpoch) return;
+		gridAnchorSaveTimerScroller = scroller;
+		const timer = setTimeout(() => {
+			if (gridAnchorSaveTimer === timer) {
+				gridAnchorSaveTimer = undefined;
+				gridAnchorSaveTimerScroller = null;
+			}
+			if (
+				viewOwnerEpoch() !== componentOwnerEpoch ||
+				imagesMode !== 'grid' ||
+				!scroller.isConnected ||
+				gridScrollerEl !== scroller
+			)
+				return;
 			const anchor = capturePersistedGridAnchor();
 			if (anchor === null) return;
 			pendingGridResumeAnchor = anchor;
 			persistImagesPreferences();
 		}, 250);
+		gridAnchorSaveTimer = timer;
+	}
+
+	function hasGridAnchorCandidate(
+		candidate: typeof gridNavigationAnchor
+	): candidate is NonNullable<typeof gridNavigationAnchor> {
+		return (
+			candidate !== null &&
+			viewOwnerEpoch() === componentOwnerEpoch &&
+			candidate.ownerEpoch === componentOwnerEpoch &&
+			(imageFilterKey === null || candidate.criteriaKey === gridCriteriaKey) &&
+			candidate.criteriaKey === gridServerRowsQueryKey &&
+			candidate.rows === gridServerRows
+		);
+	}
+
+	function captureGridAnchorBeforeExit(): GridResumeAnchor | null {
+		const scroller = gridScrollerEl;
+		if (
+			viewOwnerEpoch() !== componentOwnerEpoch ||
+			!scroller?.isConnected ||
+			gridScrollElement !== scroller
+		)
+			return null;
+		const scrollChanged =
+			gridLastObservedScrollTop !== null && scroller.scrollTop !== gridLastObservedScrollTop;
+		const timerPendingForScroller =
+			gridAnchorSaveTimer !== undefined && gridAnchorSaveTimerScroller === scroller;
+		return timerPendingForScroller || scrollChanged ? capturePersistedGridAnchor() : null;
 	}
 
 	function setImagesMode(mode: ImagesMode): void {
 		if (imagesMode === mode) return;
 		if (imagesMode === 'grid' && mode === 'lineage') {
-			const anchor =
-				gridAnchorSaveTimer !== undefined &&
-				viewOwnerEpoch() === componentOwnerEpoch &&
-				gridScrollerEl?.isConnected
-					? capturePersistedGridAnchor()
-					: null;
+			const anchor = captureGridAnchorBeforeExit();
 			gridNavigationAnchor =
 				anchor !== null && gridServerRowsQueryKey !== null
 					? {
@@ -459,6 +499,8 @@
 						}
 					: null;
 		} else if (mode === 'grid') {
+			if (hasGridAnchorCandidate(gridNavigationAnchor))
+				pendingGridResumeAnchor = gridNavigationAnchor.anchor;
 			gridNavigationAnchor = null;
 		}
 		// The inspector belongs to the mode it opened in: close it, and its
@@ -493,14 +535,8 @@
 		const candidate = gridNavigationAnchor;
 		const anchor =
 			imagesMode === 'grid'
-				? gridAnchorSaveTimer !== undefined && gridScrollerEl?.isConnected
-					? capturePersistedGridAnchor()
-					: null
-				: candidate !== null &&
-					  candidate.ownerEpoch === componentOwnerEpoch &&
-					  (imageFilterKey === null || candidate.criteriaKey === gridCriteriaKey) &&
-					  candidate.criteriaKey === gridServerRowsQueryKey &&
-					  candidate.rows === gridServerRows
+				? captureGridAnchorBeforeExit()
+				: hasGridAnchorCandidate(candidate)
 					? candidate.anchor
 					: null;
 		if (anchor === null) return;
@@ -546,6 +582,8 @@
 	function attachGridDragScroll(scroller: HTMLElement): () => void {
 		gridCriteriaKey;
 		imagesMode;
+		gridScrollElement = scroller;
+		gridLastObservedScrollTop = scroller.scrollTop;
 		const stopDragScroll = dragScroll(scroller, () => {
 			gridScrollAnchor = null;
 		});
@@ -563,6 +601,10 @@
 			scroller.removeEventListener('touchstart', onTouchStart);
 			scroller.removeEventListener('wheel', noteGridScrollIntent);
 			scroller.removeEventListener('keydown', onGridKeydown);
+			if (gridScrollElement === scroller) {
+				gridScrollElement = null;
+				gridLastObservedScrollTop = null;
+			}
 		};
 	}
 
@@ -2466,7 +2508,7 @@
 
 	onDestroy(() => {
 		if (gridAnchorSaveTimer !== undefined) clearTimeout(gridAnchorSaveTimer);
-		const anchor = capturePersistedGridAnchor();
+		const anchor = captureGridAnchorBeforeExit();
 		if (anchor !== null) pendingGridResumeAnchor = anchor;
 		persistImagesPreferences();
 		if (viewportReady) saveViewportForOwner(lineageViewport());
