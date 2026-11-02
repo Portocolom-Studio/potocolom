@@ -132,7 +132,15 @@ export async function loadBenchmarkSessions(
 	}
 	const report = await loadPublishedReport(signal);
 	if (signal?.aborted) return [];
-	if (report && !sessions.some((session) => session.createdAt === report.created_at)) {
+	const publishedTime = report ? Date.parse(report.created_at) : NaN;
+	if (
+		report &&
+		!sessions.some(
+			(session) =>
+				session.createdAt === report.created_at ||
+				(Number.isFinite(publishedTime) && Date.parse(session.createdAt) === publishedTime)
+		)
+	) {
 		sessions.push({
 			id: `${PUBLISHED_REPORT_PREFIX}${report.created_at}`,
 			label: sessionLabel(report.created_at),
