@@ -223,15 +223,9 @@ try {
 		(shell) => shell.getBoundingClientRect().height
 	);
 	assert.equal(studioHeight, 900, 'studio shell fills the initial viewport');
-	await studio.$eval('footer.horizon', (footer) => footer.scrollIntoView({ block: 'start' }));
-	for (const selector of ['.mark', '.cta-solid']) {
-		const hit = await studio.$eval(`footer.horizon ${selector}`, (link) => {
-			const box = link.getBoundingClientRect();
-			const target = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-			return target === link || link.contains(target);
-		});
-		assert.equal(hit, true, `studio footer ${selector} must be clickable`);
-	}
+	assert.equal(await studio.$$('footer.horizon').then((items) => items.length), 0);
+	const documentHeight = await studio.evaluate(() => document.documentElement.scrollHeight);
+	assert.equal(documentHeight, 900, 'studio does not scroll the page');
 	await studio.close();
 
 	// The band is a particle sea drawn on a canvas over a CSS glow and fade.

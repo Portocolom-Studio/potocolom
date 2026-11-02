@@ -86,65 +86,71 @@ function sessionLabel(createdAt: string): string {
 	});
 }
 
+const PUBLISHED_REPORT_PREFIX = 'published:';
+
+async function loadPublishedReport(signal?: AbortSignal): Promise<BenchmarkReport | null> {
+	try {
+		const response = await fetch('/benchmark/results.json', { signal });
+		if (!response.ok) return null;
+		const report = (await response.json()) as BenchmarkReport;
+		if (
+			typeof report?.created_at !== 'string' ||
+			!Array.isArray(report?.results) ||
+			report.results.length === 0
+		)
+			return null;
+		return report;
+	} catch {
+		return null;
+	}
+}
+
 export async function loadBenchmarkSessions(
 	allowApi = true,
 	signal?: AbortSignal,
 	options: { fallbackToStaticOnApiFailure?: boolean } = {}
 ): Promise<BenchmarkSession[]> {
 	if (signal?.aborted) return [];
+	let sessions: BenchmarkSession[] = [];
 	if (!landing && allowApi) {
 		try {
 			const response = await fetch('/api/v1/benchmark/sessions', { signal });
-			if (response.ok) {
+			if (!response.ok) {
+				if (options.fallbackToStaticOnApiFailure === false) return [];
+			} else {
 				const summaries = (await response.json()) as { id: string; created_at: string }[];
-				// An install that has never ingested a run still ships the committed
-				// report, so an empty list falls through rather than showing nothing.
-				if (summaries.length > 0) {
-					return summaries.map((summary) => ({
-						id: summary.id,
-						label: sessionLabel(summary.created_at),
-						createdAt: summary.created_at,
-						report: null
-					}));
-				}
+				sessions = summaries.map((summary) => ({
+					id: summary.id,
+					label: sessionLabel(summary.created_at),
+					createdAt: summary.created_at,
+					report: null
+				}));
 			}
-			if (!response.ok && options.fallbackToStaticOnApiFailure === false) return [];
 		} catch {
-			if (signal?.aborted) return [];
-			if (options.fallbackToStaticOnApiFailure === false) return [];
-			// An install without a reachable API still has the committed report.
+			if (signal?.aborted || options.fallbackToStaticOnApiFailure === false) return [];
 		}
 	}
+	const report = await loadPublishedReport(signal);
 	if (signal?.aborted) return [];
-	const response = await fetch('/benchmark/results.json', { signal });
-	if (!response.ok) return [];
-	let report: BenchmarkReport;
-	try {
-		report = (await response.json()) as BenchmarkReport;
-	} catch {
-		return [];
-	}
-	if (
-		typeof report?.created_at !== 'string' ||
-		!Array.isArray(report?.results) ||
-		report.results.length === 0
-	) {
-		return [];
-	}
-	return [
-		{
-			id: report.created_at,
+	if (report && !sessions.some((session) => session.createdAt === report.created_at)) {
+		sessions.push({
+			id: `${PUBLISHED_REPORT_PREFIX}${report.created_at}`,
 			label: sessionLabel(report.created_at),
 			createdAt: report.created_at,
 			report
-		}
-	];
+		});
+	}
+	return sessions.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
 
 export async function loadBenchmarkSessionReport(
 	id: string,
 	signal?: AbortSignal
 ): Promise<BenchmarkReport | null> {
+	if (id.startsWith(PUBLISHED_REPORT_PREFIX)) {
+		const report = await loadPublishedReport(signal);
+		return report && `${PUBLISHED_REPORT_PREFIX}${report.created_at}` === id ? report : null;
+	}
 	// Same guard as the listing above: this module ships in the marketing bundle
 	// too, where there is no API to answer.
 	if (landing) return null;

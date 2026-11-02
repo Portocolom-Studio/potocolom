@@ -18,6 +18,6 @@
 
 {@render children()}
 
-{#if page.route.id !== '/' || page.error}
+{#if (page.route.id !== '/' && page.route.id !== '/app') || page.error}
 	<SiteFooter />
 {/if}
