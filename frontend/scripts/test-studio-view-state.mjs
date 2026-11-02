@@ -25,28 +25,28 @@ const modelIds = Array.from({ length: 9 }, (_, index) => `benchmark-model-${inde
 const sessions = [
 	{
 		id: 'session-one',
-		created_at: '2026-10-27T10:00:00.000Z',
+		created_at: '2026-11-10T10:00:00.000Z',
 		targetVramGb: 16,
 		modelIds,
 		variant: 'a'
 	},
 	{
 		id: 'session-two',
-		created_at: '2026-10-27T11:00:00.000Z',
+		created_at: '2026-11-09T11:00:00.000Z',
 		targetVramGb: 24,
 		modelIds,
 		variant: 'b'
 	},
 	{
 		id: 'session-three',
-		created_at: '2026-10-27T12:00:00.000Z',
+		created_at: '2026-11-08T12:00:00.000Z',
 		targetVramGb: 32,
 		modelIds: ['alternate-model-1', 'alternate-model-2', 'alternate-model-3', 'alternate-model-4'],
 		variant: 'c'
 	},
 	{
 		id: 'session-four',
-		created_at: '2026-10-27T13:00:00.000Z',
+		created_at: '2026-11-07T13:00:00.000Z',
 		targetVramGb: 40,
 		modelIds: ['retry-model-1', 'retry-model-2', 'retry-model-3'],
 		variant: 'c'

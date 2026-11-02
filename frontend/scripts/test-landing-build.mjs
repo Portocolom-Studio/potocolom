@@ -23,7 +23,6 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 		'shared',
 		'legal',
 		'privacy',
-		'app',
 		'hero-preview',
 		'collage-preview'
 	]) {
@@ -46,6 +45,10 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 		);
 		assert.ok(!footer.includes('class="to-top '), `${name}: no back-to-top button`);
 	}
+});
+
+test('the studio has no page footer', async () => {
+	assert.doesNotMatch(await built('app'), /<footer class="horizon\b/);
 });
 
 test('headers lead to sign in or the waitlist, and login has no kicker', async () => {

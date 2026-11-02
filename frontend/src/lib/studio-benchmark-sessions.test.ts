@@ -89,3 +89,82 @@ test('a failed warm list refresh does not fall through to a different static rep
 		globalThis.fetch = originalFetch;
 	}
 });
+
+test('the published benchmark remains available alongside saved sessions', async () => {
+	const originalFetch = globalThis.fetch;
+	const report = { created_at: '2026-10-28T06:43:16Z', results: [{ model_id: 'sdxl-base' }] };
+	try {
+		globalThis.fetch = (async (input) =>
+			new Response(
+				JSON.stringify(
+					String(input).endsWith('/sessions')
+						? [{ id: 'saved', created_at: '2026-10-02T00:00:00Z' }]
+						: report
+				)
+			)) as typeof fetch;
+		const sessions = await loadBenchmarkSessions();
+		assert.equal(sessions.length, 2);
+		assert.equal(sessions[0].report?.created_at, report.created_at);
+		assert.equal(sessions[1].id, 'saved');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('newer saved sessions precede the published benchmark', async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (input) =>
+			new Response(
+				JSON.stringify(
+					String(input).endsWith('/sessions')
+						? [{ id: 'newer', created_at: '2026-10-29T00:00:00Z' }]
+						: { created_at: '2026-10-28T06:43:16Z', results: [{ model_id: 'sdxl-base' }] }
+				)
+			)) as typeof fetch;
+		const sessions = await loadBenchmarkSessions();
+		assert.equal(sessions[0].id, 'newer');
+		assert.equal(sessions[1].report?.created_at, '2026-10-28T06:43:16Z');
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('the same report with equivalent timestamp formats appears once', async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (input) =>
+			new Response(
+				JSON.stringify(
+					String(input).endsWith('/sessions')
+						? [{ id: 'saved', created_at: '2026-10-28T06:43:16+00:00' }]
+						: { created_at: '2026-10-28T06:43:16Z', results: [{ model_id: 'sdxl-base' }] }
+				)
+			)) as typeof fetch;
+		const sessions = await loadBenchmarkSessions();
+		assert.deepEqual(
+			sessions.map((entry) => entry.id),
+			['saved']
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('different invalid timestamps do not hide the published report', async () => {
+	const originalFetch = globalThis.fetch;
+	try {
+		globalThis.fetch = (async (input) =>
+			new Response(
+				JSON.stringify(
+					String(input).endsWith('/sessions')
+						? [{ id: 'saved', created_at: 'invalid-saved-date' }]
+						: { created_at: 'invalid-published-date', results: [{ model_id: 'sdxl-base' }] }
+				)
+			)) as typeof fetch;
+		const sessions = await loadBenchmarkSessions();
+		assert.equal(sessions.length, 2);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
