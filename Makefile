@@ -28,7 +28,7 @@
 	auth-clear-factor \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
-	site-build site-preview site-deploy worker-deploy
+	site-build site-preview site-deploy worker-deploy worktree
 
 # Interpreter used only to create backend/.venv and worker/.venv. A system
 # python3 of 3.10 creates a venv that sends pip backtracking against
@@ -230,15 +230,20 @@ deps-down:
 # One target per component, and the per-component CI workflows run these exact
 # targets, so local verify and CI cannot drift. Installing dependencies is the
 # caller's job: make setup locally, a fresh venv and npm ci in CI.
+# PYTHONPATH puts this checkout first: the venvs' editable installs point at the
+# main checkout, so a bare make verify in a linked worktree would test main's code.
 verify-backend:
-	cd backend && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest --cov=app --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/backend/coverage.xml --junitxml=../.local/reports/backend/tests.xml
+	cd backend && export PYTHONPATH=$(CURDIR)/backend$(if $(PYTHONPATH),:$(PYTHONPATH)) && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest --cov=app --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/backend/coverage.xml --junitxml=../.local/reports/backend/tests.xml
 
 verify-worker:
-	cd worker && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest --cov=worker --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/worker/coverage.xml --junitxml=../.local/reports/worker/tests.xml
+	cd worker && export PYTHONPATH=$(CURDIR)/worker$(if $(PYTHONPATH),:$(PYTHONPATH)) && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest --cov=worker --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/worker/coverage.xml --junitxml=../.local/reports/worker/tests.xml
 
+# CPU inference tests. Uses the inference venv CI builds when it exists, and
+# otherwise the worker venv, which needs the inference extras (make setup-cuda or
+# make setup-rocm) or the tests fail at import.
 verify-worker-inference:
 	cd worker && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-		$(WORKER_INFERENCE_PYTHON) -m pytest tests_inference
+		$(if $(wildcard $(WORKER_INFERENCE_PYTHON)),$(WORKER_INFERENCE_PYTHON),.venv/bin/python) -m pytest tests_inference
 
 verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test \
@@ -595,3 +600,14 @@ site-deploy: site-build ## build and deploy the site to Cloudflare Pages
 worker-deploy: ## deploy the waitlist worker (operator only, config in .local)
 	@test -d .local/waitlist-worker || { echo "no .local/waitlist-worker on this machine"; exit 1; }
 	cd .local/waitlist-worker && npx wrangler deploy
+
+# A linked worktree on a new branch from origin/main. The venvs and node_modules
+# are absolute symlinks into the main checkout, so the worktree runs without a
+# second install.
+worktree: ## new branch NAME in .local/worktrees/NAME from origin/main, venvs and node_modules linked
+	@test -n "$(NAME)" || { echo 'usage: make worktree NAME=x' >&2; exit 1; }
+	git worktree add -b "$(NAME)" ".local/worktrees/$(NAME)" origin/main
+	@main="$$(dirname "$$(git rev-parse --path-format=absolute --git-common-dir)")"; \
+	for d in backend/.venv worker/.venv frontend/node_modules; do \
+		ln -s "$$main/$$d" ".local/worktrees/$(NAME)/$$d"; \
+	done

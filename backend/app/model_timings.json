@@ -24,24 +24,6 @@
     "height": 512,
     "steps": 4
   },
-  "sd-turbo": {
-    "gpu_ms": 289,
-    "width": 512,
-    "height": 512,
-    "steps": 2
-  },
-  "sdxl-turbo": {
-    "gpu_ms": 285,
-    "width": 512,
-    "height": 512,
-    "steps": 1
-  },
-  "vega-rt": {
-    "gpu_ms": 263,
-    "width": 512,
-    "height": 512,
-    "steps": 2
-  },
   "ssd-1b-lightning": {
     "gpu_ms": 2777,
     "width": 1024,

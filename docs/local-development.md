@@ -53,6 +53,8 @@ make verify          # optional; the same lint/test/build CI runs
 
 `make init` first checks Python 3.11+, Node 24+, Docker with Compose v2, and the GPU driver, and stops on a blocking problem.
 
+`make verify` also runs the CPU inference tests in `worker/tests_inference`. They use `worker/.venv-inference` when that exists (CI builds it) and `worker/.venv` otherwise, so the worker venv needs the inference extras: `make setup-cuda` or `make setup-rocm`.
+
 `make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
 
 `make deps` uses the Compose project `potocolom-dev` so it does not share PostgreSQL with the self-hosted stack in `compose.yml` (different password). If leftover `compose-postgres-1` is still holding :5432, `make deps` stops that self-hosted stack first.
@@ -118,6 +120,8 @@ npm run lint && npm run check                    # format check and type check
 `npm test` from `frontend/` loads `.svelte.ts` modules through
 `scripts/node-test-loader.mjs`, so the unit tests import the real store modules.
 
+From the repository root, `make web` runs the same studio dev server on the configured port (5173 in the main checkout). `make web-landing` runs it in landing mode: `/` is the marketing page and `/app` shows the studio preview instead of the studio.
+
 Those ports are what this checkout gets. A linked git worktree derives its own
 from its path, so two checkouts can run the dev loop at once without either
 knowing about the other: `scripts/checkout-ports.sh` prints what yours will use,
@@ -127,6 +131,8 @@ suffix. The derivation applies to the Make targets only: running `uvicorn`,
 gets the canonical ports and the bare `potocolom` database unless you export
 `API_PORT`, `WEB_PORT` and `DATABASE_URL` yourself. Set `API_PORT` or `WEB_PORT`
 to override. Only the main worktree gets the canonical `8000` and `5173` above.
+
+`make worktree NAME=x` creates `.local/worktrees/x` on a new branch from `origin/main`. It links `backend/.venv`, `worker/.venv` and `frontend/node_modules` from the main checkout, so the new worktree needs no second install. `make verify-backend` and `make verify-worker` in it test that worktree's code, not the main checkout's.
 
 The test suite goes further and takes a database per **run**, not per checkout,
 named for the checkout path plus the process. Two runs at once is ordinary here:
@@ -151,6 +157,25 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
                                                  # is running; Ctrl+C to stop
 .venv/bin/ruff check . && .venv/bin/pytest
 ```
+
+### Capture the landing page
+
+Start `make web-landing` and use the URL it prints (port 5173 in the main checkout). A plain headless `--screenshot` captures the page before the landing entrance finishes, so this recipe waits for the loader to leave the DOM first. It uses `puppeteer-core`, which `frontend/node_modules` already has:
+
+```bash
+cd frontend && node --input-type=module <<'EOF'
+import puppeteer from 'puppeteer-core';
+const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', args: ['--no-sandbox'], defaultViewport: { width: 1440, height: 900 } });
+const page = await browser.newPage();
+await page.goto('http://localhost:5173/', { waitUntil: 'load' });
+await page.waitForFunction(() => !document.querySelector('.landing-loader')); // the entrance has revealed
+await new Promise((r) => setTimeout(r, 1500)); // let the fade finish
+await page.screenshot({ path: '../landing.png' });
+await browser.close();
+EOF
+```
+
+The entrance reveals once the assets load, or at `LANDING_ENTRANCE_TIMEOUT_MS` (8000 ms, `frontend/src/lib/landing-entrance.ts`) at the latest. The default 30 second wait in `waitForFunction` covers that deadline.
 
 ### Stress testing the sockets
 
@@ -187,6 +212,8 @@ databases.
 [connection-handling.md](connection-handling.md): the neighbour's p95 and the
 API's resident set are the thresholds, and `oldest_frame_s` is reported without
 one, because it measures the kernel socket buffers rather than the API.
+
+Model weights download into the Hugging Face hub cache, `$HF_HOME/hub` (or `HF_HUB_CACHE`), which defaults to `~/.cache/huggingface/hub`. Set `HF_HOME` to move it. The worker targets clear `HF_HUB_OFFLINE`, so a first use downloads; the CPU inference tests run offline.
 
 ## Trying accounts mode locally
 
