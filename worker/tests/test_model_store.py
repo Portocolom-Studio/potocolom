@@ -2147,7 +2147,7 @@ def test_operation_refreshes_shared_catalog_probes(monkeypatch):
         store.attach(send, lambda _model: False)
         store.handle({'type': 'remove_model', 'model_id': manifest.id})
         await store._queue.join()
-        await asyncio.gather(*(task for task in store._tasks if task is not store._drainer))
+        await store._probe_task
         await store.shutdown()
 
     asyncio.run(scenario())
@@ -2457,7 +2457,7 @@ def test_attach_retries_legacy_adoption(monkeypatch, tmp_path):
         monkeypatch.setattr(model_store, 'plan_items', registry_plan)
         store.attach(send, lambda _: False)
         await store._probe_task
-        await asyncio.gather(*list(store._tasks))
+        await asyncio.sleep(0.1)
         assert 'pipe-test' in store.installed
         assert any(m['type'] == 'models_changed' and m['models'] for m in sent)
         await store.shutdown()
@@ -2543,3 +2543,170 @@ def test_probe_invalidation_only_covers_shared_repositories():
     _PROBES.update({m.id: (7, False) for m in (first, shared, unrelated)})
     store._invalidate_probes(first.id)
     assert set(_PROBES) == {unrelated.id}
+
+
+def test_uuid_partial_with_active_hub_lock_is_preserved(tmp_path):
+    from filelock import FileLock
+
+    manifest = pipeline_manifest(vae='')
+    folder = repo_folder(manifest.source)
+    blob = folder / 'blobs' / ('a' * 64)
+    partial = blob.with_name(blob.name + '.1234abcd.incomplete')
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b'active')
+    lock = model_store.hub_cache_root() / '.locks' / folder.name / (blob.name + '.lock')
+    lock.parent.mkdir(parents=True)
+    model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
+    with FileLock(str(lock)):
+        _delete_model_files(manifest, str(tmp_path), [])
+        assert partial.read_bytes() == b'active'
+
+
+def test_adoption_publishes_despite_unrelated_queued_operation(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    first = pipeline_manifest('first')
+    other = pipeline_manifest('other')
+    def adopt(manifest, *_args):
+        if manifest.id == first.id:
+            entered.set()
+            release.wait(3)
+            model_store._write_marker(first.id, {'state': 'installed'})
+            return True
+        return False
+    monkeypatch.setattr(model_store, 'adopt_legacy', adopt)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    monkeypatch.setattr(model_store, '_delete_model_files', lambda *_: None)
+    async def scenario():
+        sent = []
+        async def send(message): sent.append(message)
+        store = ModelStore([first, other], FakeEngine(), "")
+        store.attach(send, lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            store.handle({'type': 'remove_model', 'model_id': other.id})
+            store.handle({'type': 'remove_model', 'model_id': other.id})
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(store._queue.join(), 2)
+            assert first.id in store.installed
+            assert any(m['type'] == 'models_changed' and m['models'] for m in sent)
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_adoption_retries_after_failed_attempt_and_successful_probe(monkeypatch):
+    attempts = []
+    monkeypatch.setattr(model_store, 'ADOPTION_RETRY_SECONDS', 0.02)
+    def adopt(*_args):
+        attempts.append(1)
+        return len(attempts) > 1
+    monkeypatch.setattr(model_store, 'adopt_legacy', adopt)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    async def scenario():
+        store = new_store(pipeline_manifest())
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            for _ in range(100):
+                if store.installed:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(attempts) >= 2
+            assert 'pipe-test' in store.installed
+        finally:
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_refresh_is_coalesced_and_stops_on_disconnect(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def probe(*_args):
+        calls.append(1)
+        entered.set()
+        release.wait(3)
+        return (1, False)
+    monkeypatch.setattr(model_store, 'probe_model', probe)
+    monkeypatch.setattr(model_store, 'adopt_legacy', lambda *_: False)
+    monkeypatch.setattr(model_store, '_delete_model_files', lambda *_: None)
+    async def scenario():
+        old, new = [], []
+        async def send_old(message): old.append(message)
+        async def send_new(message): new.append(message)
+        store = new_store(pipeline_manifest())
+        store.attach(send_old, lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            for _ in range(8):
+                store.handle({'type': 'remove_model', 'model_id': 'pipe-test'})
+            await asyncio.wait_for(store._queue.join(), 2)
+            assert len(calls) == 1
+            await store.close()
+            store.attach(send_new, lambda _: False)
+            release.set()
+            await store._probe_task
+            await asyncio.sleep(0.05)
+            assert len(calls) == 2
+            assert not old
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_adoption_does_not_publish_while_same_model_removal_waits(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    def adopt(*_args):
+        entered.set()
+        release.wait(3)
+        return True
+    monkeypatch.setattr(model_store, 'adopt_legacy', adopt)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    monkeypatch.setattr(model_store, '_delete_model_files', lambda *_: None)
+    async def scenario():
+        sent = []
+        async def send(message): sent.append(message)
+        store = new_store(pipeline_manifest())
+        store.attach(send, lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            store.handle({'type': 'remove_model', 'model_id': 'pipe-test'})
+            await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(store._queue.join(), 2)
+            assert 'pipe-test' not in store.installed
+            assert not any(m['type'] == 'models_changed' and m['models'] for m in sent)
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_refresh_repeats_after_invalidation_during_probe(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def probe(*_args):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(3)
+            return (99, False)
+        return (7, False)
+    monkeypatch.setattr(model_store, 'probe_model', probe)
+    monkeypatch.setattr(model_store, 'adopt_legacy', lambda *_: False)
+    async def scenario():
+        store = new_store(pipeline_manifest())
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            store._invalidate_probes('pipe-test')
+            store._schedule_refresh()
+            release.set()
+            await asyncio.wait_for(store._probe_task, 2)
+            assert len(calls) == 2
+            assert _PROBES['pipe-test'] == (7, False)
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())

@@ -51,6 +51,7 @@ CAPABILITY = "model_store"
 DISK_MARGIN_BYTES = 5 * 2**30
 # At most one store_status per second while something changes.
 STATUS_INTERVAL_SECONDS = 1.0
+ADOPTION_RETRY_SECONDS = 5.0
 UPSCALE_CHUNK_BYTES = 1 << 20
 GIB = 2**30
 WEIGHT_SUFFIXES = (".safetensors", ".bin")
@@ -712,9 +713,26 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
                 and not _blob_referenced(blob.parent.parent, blob)):
             blob.unlink(missing_ok=True)
             partial.unlink(missing_ok=True)
-            for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
-                if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
-                    candidate.unlink(missing_ok=True)
+            # Match the Hub's per-repository, per-etag lock. If flock is unavailable,
+            # ownership cannot be established safely, so leave these files alone.
+            try:
+                from filelock import FileLock, Timeout
+            except ImportError:
+                continue
+
+            lock_path = hub_cache_root() / ".locks" / blob.parent.parent.name / (blob.name + ".lock")
+            try:
+                lock_path.parent.mkdir(parents=True, exist_ok=True)
+                lock = FileLock(str(lock_path), timeout=0, mode=0o664)
+                lock.acquire()
+            except (Timeout, NotImplementedError, OSError):
+                continue
+            try:
+                for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
+                    if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
+                        candidate.unlink(missing_ok=True)
+            finally:
+                lock.release()
     _remove_marker(manifest.id)
 
 
@@ -867,8 +885,8 @@ class ModelStore:
         self._status_task: asyncio.Task | None = None
         self._probe_task: asyncio.Task | None = None
         self._probe_generation = 0
+        self._adoption_task: asyncio.Task | None = None
         self._gpu: tuple[str, int | None] = ("unknown", None)
-        self._adoption_retry: dict[str, float] = {}
         self._adoption_lock = asyncio.Lock()
 
     async def scan(self) -> None:
@@ -920,8 +938,8 @@ class ModelStore:
         self._busy = busy
         self._dirty = True
         self._status_task = asyncio.create_task(self._status_loop())
-        self._spawn(self._retry_adoption(force=True))
-        self._probe_task = asyncio.create_task(self._probe_unknown())
+        self._schedule_adoption()
+        self._schedule_refresh()
 
     async def send_inventory(self) -> None:
         """store_inventory: the hardware and the bundled catalog, once per connection."""
@@ -934,11 +952,14 @@ class ModelStore:
         """Detach from the connection that is ending. Operations keep running, and the
         next attach reports them, so a dropped connection throws away no bytes."""
         self._send = None
-        for task in (self._status_task, self._probe_task):
-            if task is not None:
-                task.cancel()
+        tasks = [task for task in (self._status_task, self._probe_task, self._adoption_task)
+                 if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._status_task = None
         self._probe_task = None
+        self._adoption_task = None
 
     async def shutdown(self) -> None:
         """Process exit: skip what is queued, stop the running download, and wait for the
@@ -1012,16 +1033,16 @@ class ModelStore:
                         op.error = "cancelled"
                     continue
                 self._current = op
-                if op.kind == "install":
-                    await self._run_install(op)
-                else:
-                    async with self._adoption_lock:
+                async with self._adoption_lock:
+                    if op.kind == "install":
+                        await self._run_install(op)
+                    else:
                         await self._run_remove(op)
             finally:
                 self._current = None
                 if op.kind in ("install", "remove"):
                     self._invalidate_probes(op.model_id)
-                    self._spawn(self._refresh_probes())
+                    self._schedule_refresh()
                 self._queue.task_done()
                 self._mark()
 
@@ -1141,36 +1162,60 @@ class ModelStore:
                     ref.repo for ref in repo_refs(manifest, self._device)):
                 _PROBES.pop(manifest.id, None)
 
-    async def _retry_adoption(self, *, force: bool = False) -> None:
-        for manifest in self.bundled.values():
-            if manifest.id in self.installed or _read_marker(manifest.id) is not None:
-                continue
-            now = time.monotonic()
-            if not force and now < self._adoption_retry.get(manifest.id, 0):
-                continue
-            self._adoption_retry[manifest.id] = now + 5.0
-            try:
-                async with self._adoption_lock:
-                    if (self._current is not None or self._queued
-                            or manifest.id in self.installed):
-                        continue
-                    adopted = await asyncio.to_thread(adopt_legacy, manifest, self._models_dir, self._device)
-                    if adopted and not self._queued:
-                        self.installed[manifest.id] = manifest
-                    else:
-                        adopted = False
-            except OSError:
-                logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
-                continue
-            if adopted:
-                await self._announce()
+    def _removal_pending(self, model_id: str) -> bool:
+        return any(op is not None and op.model_id == model_id and op.kind == "remove"
+                   for op in [self._current, *self._queued])
+
+    def _schedule_adoption(self) -> None:
+        if self._send is not None and (self._adoption_task is None or self._adoption_task.done()):
+            self._adoption_task = asyncio.create_task(self._retry_adoption())
+
+    async def _retry_adoption(self) -> None:
+        delay = ADOPTION_RETRY_SECONDS
+        while self._send is not None:
+            pending = False
+            for manifest in self.bundled.values():
+                if manifest.id in self.installed or _read_marker(manifest.id) is not None:
+                    continue
+                pending = True
+                try:
+                    async with self._adoption_lock:
+                        if (manifest.id in self.installed or _read_marker(manifest.id) is not None
+                                or self._removal_pending(manifest.id)):
+                            continue
+                        work = asyncio.create_task(asyncio.to_thread(
+                            adopt_legacy, manifest, self._models_dir, self._device))
+                        try:
+                            adopted = await asyncio.shield(work)
+                        except asyncio.CancelledError:
+                            adopted = await work
+                            if adopted and not self._removal_pending(manifest.id):
+                                self.installed[manifest.id] = manifest
+                            raise
+                        if adopted and not self._removal_pending(manifest.id):
+                            self.installed[manifest.id] = manifest
+                            await self._announce()
+                except OSError:
+                    logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
+            if not pending:
+                return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+
+    def _schedule_refresh(self) -> None:
+        if self._send is not None and (self._probe_task is None or self._probe_task.done()):
+            self._probe_task = asyncio.create_task(self._refresh_probes())
 
     async def _refresh_probes(self) -> None:
-        await self._probe_unknown()
-        await self._announce()
+        while self._send is not None:
+            generation = self._probe_generation
+            await self._probe_unknown()
+            if generation == self._probe_generation:
+                await self._announce()
+                return
 
     async def _probe_unknown(self) -> None:
-        """Fill in download sizes the process has not learned yet, then say so once."""
+        """Fill in download sizes the process has not learned yet."""
         learned = False
         generation = self._probe_generation
         for manifest in list(self.bundled.values()):
@@ -1179,8 +1224,7 @@ class ModelStore:
             result = await asyncio.to_thread(probe_model, manifest, self._models_dir, self._device)
             if generation != self._probe_generation:
                 return
-            if result is None:
-                self._spawn(self._retry_adoption())
+            self._schedule_adoption()
             if result is not None:
                 _PROBES[manifest.id] = result
                 learned = True
