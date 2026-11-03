@@ -34,10 +34,11 @@ For anything beyond a trusted LAN, put an HTTPS reverse proxy in front of the AP
 
 ## Public deployments
 
-Any public deployment must do both of these before it is exposed:
+Any public deployment must do all of these before it is exposed:
 
 1. Terminate TLS in front of the API, with a reverse proxy, a load balancer, or similar.
 2. Redirect HTTP to HTTPS.
+3. Restrict direct access to port 8080, so clients reach the API only through the proxy. The Compose file publishes `8080:8080` on every interface, and the API serves plain HTTP on that port. A client that reaches port 8080 skips the proxy, including for sign-in. If the proxy runs on the same host, publish the port on loopback by changing the line to `"127.0.0.1:8080:8080"` in `deploy/compose/compose.yml`. Otherwise, restrict port 8080 with Docker-aware network rules. Host firewall rules may not filter Docker-published ports, depending on the firewall and Docker configuration.
 
 Then set the public address to the `https://` origin that browsers use. The install reads this value from `POTOCOLOM_PUBLIC_URL` at install time, or from `PUBLIC_URL` in `deploy/compose/.env`. It must match the origin that the browser sends exactly: lowercase scheme and host, the port only when it is not the default, and no path. See [Reaching the studio from other machines](/docs/self-hosting/reaching-the-studio) for how to apply the change.
 
