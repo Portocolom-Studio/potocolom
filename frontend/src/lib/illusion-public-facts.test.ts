@@ -100,7 +100,7 @@ test('the public illusions route is wired', () => {
 	const sitemap = readFileSync(join(here, '../routes/sitemap.xml/+server.ts'), 'utf8');
 	const shell = readFileSync(join(here, 'components/landing/LatentShell.svelte'), 'utf8');
 	const orbit = readFileSync(join(here, 'components/landing/SketchOrbit.svelte'), 'utf8');
-	const page = readFileSync(join(here, '../routes/illusions/+page.svelte'), 'utf8');
+	const page = readFileSync(join(here, '../routes/(public-site)/illusions/+page.svelte'), 'utf8');
 	assert.match(sitemap, /\/illusions/);
 	assert.match(shell, /current === 'illusions'/);
 	assert.match(orbit, /resolve\('\/illusions'\)/);
