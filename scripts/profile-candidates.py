@@ -117,7 +117,10 @@ async def profile_model(device: str, models_dir: str, manifest,
     import torch
 
     from worker.engine import DiffusersEngine
+    from worker.model_store import ensure_installed
 
+    # Loads read the local cache only, so install the model's files first.
+    ensure_installed(manifest, models_dir, device=device)
     engine = DiffusersEngine(device, memory_mode=memory_mode, models_dir=models_dir)
     case: dict = {"model": manifest.id}
     if torch.cuda.is_available():

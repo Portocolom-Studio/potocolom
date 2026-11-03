@@ -830,6 +830,12 @@ class Worker:
     delivery_close_task: asyncio.Task | None = field(default=None, repr=False)
     delivery_registered: bool = False
     delivery_admission_open: bool = True
+    # Model store, from hello and its reports. Set only by a worker that lists
+    # the model_store capability (app/worker_models.py).
+    hardware: dict | None = None
+    catalog: list[dict] | None = None
+    disk_free_bytes: int | None = None
+    store_downloads: dict[str, dict] = field(default_factory=dict)
 
     @property
     def models(self) -> list[str]:
@@ -1991,6 +1997,10 @@ async def fleet(ws: WebSocket) -> None:
     workers[worker.id] = worker
     logger.info("worker %s registered models=%s slots=%d",
                 worker.id, worker.models, worker.realtime_slots)
+    # Only a worker that offered model_store is told this API speaks it, so the
+    # worker sends store messages to an API that reads them and to no other.
+    from app import worker_models  # late import; worker_models reads this module's state
+    signal = {"model_store": True} if worker_models.CAPABILITY in worker.capabilities else {}
     if version == 6:
         await ws.send_json({
             "type": "registered",
@@ -2005,6 +2015,7 @@ async def fleet(ws: WebSocket) -> None:
             "lease_expires_at": worker.lease_expires_at,
             "ready": False,
             "remaining_ms": 0,
+            **signal,
         })
         try:
             await worker_authority.activate_initial_worker(
@@ -2016,9 +2027,9 @@ async def fleet(ws: WebSocket) -> None:
         # A protocol 6 hello that had to fall back: say which protocol this
         # connection will actually speak, so the worker does not wait for
         # registration fields that are not coming.
-        await ws.send_json({"type": "registered", "protocol_version": 5})
+        await ws.send_json({"type": "registered", "protocol_version": 5, **signal})
     else:
-        await ws.send_json({"type": "registered"})
+        await ws.send_json({"type": "registered", **signal})
     # A new worker means a queued session may finally have room.
     admit_queued()
     from app import gpu_samples, registry  # late import; registry reads this module's state
@@ -2245,6 +2256,10 @@ async def fleet(ws: WebSocket) -> None:
                     elif control["type"] in ("gpu_status", "model_loaded",
                                              "model_unloaded", "gpu_error"):
                         resolve_gpu_request(control)
+                    elif control["type"] in ("store_status", "models_changed", "store_inventory"):
+                        from app import worker_models  # late import, as above
+                        if worker_models.CAPABILITY in worker.capabilities:
+                            await worker_models.apply(worker, control)
                     elif control["type"] == "heartbeat":
                         gpu = control.get("gpu")
                         if worker.device is None and isinstance(gpu, dict):

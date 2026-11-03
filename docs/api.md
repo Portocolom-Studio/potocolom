@@ -481,6 +481,23 @@ DELETE /api/v1/admin/banner           204; admin only; clears the banner
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
 - There is no global gallery and no cross-user search of generations or assets. An administrator answering a complaint names the account; the user list's `q` only narrows which accounts show up, by email.
 
+## Worker models
+
+Admin only. These routes install, cancel and remove the model weights on a connected worker (docs/connection-handling.md, "Model store"). The worker answers asynchronously. Each accepted action returns `202 {"op_id": "<20-digit time_ns>-<8 random hex digits>"}`. IDs sort in issue order. A record with a later ID for the same model also answers every earlier operation on that model, which the worker runs in FIFO order.
+
+```text
+GET    /api/v1/admin/models                                       one entry per connected worker
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/install   202 queued; 409 needs_token
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/cancel    202
+DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refused in the download list, see below
+```
+
+- Each entry of `GET /api/v1/admin/models` has `worker_id`, `manageable`, `hardware`, `disk_free_bytes`, `suggested` (one model id or null for each of `realtime`, `text_to_image` and `upscale`) and `models`. A worker that predates model management has `manageable: false`, a `reason`, and no models; no command is sent to it (`409` on the routes above).
+- Each model carries its catalog fields, `installed`, `download_bytes`, `needs_token`, `fits` (its `min_vram_gb` is at most the worker's VRAM), `suggested`, and `download`: the last `store_status` entry for it (`kind`, `state`, `bytes_done`, `bytes_total`, `error`, `op_id`), or null. The `kind` is `install`, `remove` or `cancel` and identifies the reported operation.
+- Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
+- A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.
+- Every route is audited by the administrator role check, as the other admin routes are.
+
 ## Account states
 
 An account is `active`, `suspended`, `disabled`, `deletion_pending`, or `purging`. `cancelled` is a job state and never an account state.

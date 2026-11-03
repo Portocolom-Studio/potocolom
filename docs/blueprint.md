@@ -336,12 +336,14 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, optional realtime_batch_ms map of model id to batch p95 curve, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, optional realtime_batch_ms map of model id to batch p95 curve, gpu info; models lists installed models only ([connection-handling.md](connection-handling.md#model-store)) |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
 | api to worker | `dispatch_job` | job id, model, params, dispatch_token, upload targets; `load_model` first if not loaded |
 | worker to api | `job_progress`, `job_done`, `job_failed` | each echoes dispatch_token; done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
+| api to worker | `install_model`, `cancel_install`, `remove_model` | only to a worker the API signalled with `model_store` in its registration reply; each carries `model_id` and `op_id`; the worker answers with `store_status` and `models_changed` |
+| worker to api | `store_inventory`, `store_status`, `models_changed` | `store_inventory` once after a signalled registration: hardware, disk and the bundled catalog; `store_status` gives download state, operation kind (`install`, `remove` or `cancel`), the operation ID (or null), and free disk; `models_changed` gives the live model set after an install or removal |
 | worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, 4 byte big endian input revision, then WebP payload ([connection-handling.md](connection-handling.md) has the 17 byte form an older peer speaks) |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |

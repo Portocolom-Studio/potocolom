@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT / "worker"))
 
 from worker.engine import DiffusersEngine  # noqa: E402
 from worker.manifests import load_manifests  # noqa: E402
+from worker.model_store import ensure_installed  # noqa: E402
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -43,6 +44,8 @@ def run_case(
     repeats: int,
     prompt: str,
 ) -> dict:
+    # Loads read the local cache only, so install the model's files first.
+    ensure_installed(manifest, models_dir, device=device)
     engine = DiffusersEngine(
         device,
         memory_mode="full",

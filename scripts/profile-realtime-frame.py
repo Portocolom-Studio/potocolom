@@ -87,7 +87,10 @@ async def profile_model(
 ) -> dict:
     os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
     from worker.engine import DiffusersEngine, PromptCache
+    from worker.model_store import ensure_installed
 
+    # Loads read the local cache only, so install the model's files first.
+    ensure_installed(manifest, models_dir, device=device)
     engine = DiffusersEngine(device, memory_mode="full", models_dir=models_dir)
     await engine.load_model(manifest)
     await engine.ensure_realtime_resident(manifest)

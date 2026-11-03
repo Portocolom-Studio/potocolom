@@ -34,6 +34,7 @@ what ships rather than a second description of it.
 from __future__ import annotations
 
 import os
+import sys
 
 # Before torch is imported anywhere, because SDPA reads this at its first
 # dispatch and never again. RDNA 3 gates its fused attention kernels behind it,
@@ -53,7 +54,9 @@ import statistics
 import time
 from typing import Any
 
-MODELS_DIR = pathlib.Path(__file__).resolve().parents[1] / "worker" / "models"
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+MODELS_DIR = ROOT / "worker" / "models"
+sys.path.insert(0, str(ROOT / "worker"))
 BAR_MS = 500.0  # the realtime bar, docs/decisions.md
 SIZE = 512  # overridden by --size
 
@@ -92,6 +95,11 @@ def build(manifest: dict, dtype: Any, device: str) -> Any:
     )
     import torch
 
+    from worker.manifests import Manifest
+    from worker.model_store import ensure_installed
+
+    # Loads below read the local cache only, so install the model's files first.
+    ensure_installed(Manifest.model_validate(manifest), "", device=device)
     kwargs: dict[str, Any] = {"torch_dtype": dtype}
     if manifest.get("vae"):
         kwargs["vae"] = AutoencoderKL.from_pretrained(manifest["vae"], torch_dtype=dtype)

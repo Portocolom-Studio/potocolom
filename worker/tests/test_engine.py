@@ -2755,7 +2755,7 @@ def test_preview_decoder_is_realtime_only_and_takes_unscaled_latents():
         frame, stored, stored_i2i = asyncio.run(scenario())
 
     autoencoder_tiny.from_pretrained.assert_called_once_with(
-        "madebyollin/taesdxl", torch_dtype=dtype, revision=None,
+        "madebyollin/taesdxl", torch_dtype=dtype, revision=None, local_files_only=True,
     )
     decoder.to.assert_called_once_with("cpu")
     # Identity proves the tiny decoder receives the pipeline latents directly,
@@ -4379,11 +4379,12 @@ def test_a_simulated_upscale_stops_when_it_is_asked_to():
     finished = asyncio.run(engine.generate(manifest, {"factor": 2}, lambda _: None,
                                            input_image=source, cancelled=lambda: False))
     assert (finished.width, finished.height) == (16, 16)
-def test_pipeline_dtype_defaults_to_engine_dtype():
+def test_pipeline_dtype_defaults_to_device_dtype():
     torch = pytest.importorskip("torch")
 
     engine = make_engine()
     engine.torch = torch
+    engine.device = "cuda:0"
     engine.dtype = torch.float16
     manifest = Manifest(id="plain", name="Plain", capabilities=["text_to_image"])
     assert engine._pipeline_dtype(manifest) is torch.float16
@@ -4499,6 +4500,7 @@ def test_pipeline_load_pins_the_source_on_both_fp16_attempts():
 
     engine = make_engine()
     engine.torch = torch
+    engine.device = "cuda:0"
     engine.dtype = torch.float16
     manifest = Manifest(
         id="sdxl-base", name="SDXL", capabilities=["text_to_image"],
@@ -4539,7 +4541,7 @@ def test_vae_load_pins_the_vae_and_leaves_the_source_pin_alone():
 
     autoencoder_kl.from_pretrained.assert_called_once_with(
         "madebyollin/sdxl-vae-fp16-fix", torch_dtype=torch.bfloat16,
-        revision=VAE_PIN,
+        revision=VAE_PIN, local_files_only=True,
     )
     assert kwargs["revision"] == SOURCE_PIN
 
@@ -4569,7 +4571,7 @@ def test_lora_fuse_pins_the_lora_repository():
     pipeline.load_lora_weights.assert_called_once_with(
         "ByteDance/SDXL-Lightning",
         weight_name="sdxl_lightning_8step_lora.safetensors",
-        revision=LORA_PIN,
+        revision=LORA_PIN, local_files_only=True,
     )
     pipeline.fuse_lora.assert_called_once_with()
 
@@ -4605,7 +4607,7 @@ def test_realtime_adapter_load_pins_the_adapter():
 
     diffusers.T2IAdapter.from_pretrained.assert_called_once_with(
         "TencentARC/t2i-adapter-sketch-sdxl-1.0", torch_dtype=engine.dtype,
-        revision=ADAPTER_PIN,
+        revision=ADAPTER_PIN, local_files_only=True,
     )
 
 
@@ -4636,6 +4638,7 @@ def test_preview_decoder_load_pins_the_decoder():
     assert loaded is decoder
     autoencoder_tiny.from_pretrained.assert_called_once_with(
         "madebyollin/taesdxl", torch_dtype=engine.dtype, revision=DECODER_PIN,
+        local_files_only=True,
     )
 
 
@@ -4807,3 +4810,38 @@ def test_a_frame_whose_encode_fails_does_not_update_last_frame():
         asyncio.run(scenario())
 
     assert cache.last_frame is stored[0]
+
+
+@pytest.mark.parametrize("vae", ["", "nonexistent-org/nonexistent-vae"])
+def test_a_load_of_a_model_that_is_not_installed_never_reaches_the_hub(tmp_path, monkeypatch, vae):
+    """The model store installs weights and a load only reads the local cache, so a
+    missing file fails the load fast and no socket is opened for it."""
+    import socket
+    import urllib.request
+
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    from worker.engine import DiffusersEngine
+
+    attempts: list[object] = []
+
+    def refuse(*args, **_kwargs):
+        attempts.append(args)
+        raise AssertionError("the hub was called during a load")
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+    manifest = Manifest(
+        id="not-installed", name="Not installed", capabilities=["text_to_image"],
+        source="nonexistent-org/nonexistent-pipeline", source_revision="a" * 40,
+        vae=vae, vae_revision="b" * 40,
+    )
+    engine = DiffusersEngine("cpu", models_dir=str(tmp_path))
+
+    with pytest.raises(Exception) as failure:
+        asyncio.run(engine.load_model(manifest))
+
+    assert attempts == []
+    assert "hub was called" not in str(failure.value)
+
