@@ -2712,7 +2712,8 @@ def test_refresh_repeats_after_invalidation_during_probe(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_locked_blob_and_partials_survive_both_removal_paths(tmp_path):
+@pytest.mark.parametrize('in_marker', [True, False])
+def test_locked_blob_and_partials_survive_both_removal_paths(tmp_path, in_marker):
     from filelock import FileLock
 
     manifest = pipeline_manifest(vae='')
@@ -2723,12 +2724,28 @@ def test_locked_blob_and_partials_survive_both_removal_paths(tmp_path):
     uuid_partial = Path(str(blob) + '.1234abcd.incomplete')
     partial.write_bytes(b'partial')
     uuid_partial.write_bytes(b'partial')
-    model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
+    if in_marker:
+        model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
     lock = model_store.hub_cache_root() / '.locks' / blob.parent.parent.name / (blob.name + '.lock')
     lock.parent.mkdir(parents=True)
     with FileLock(str(lock)):
         _delete_model_files(manifest, str(tmp_path), [])
         assert blob.exists() and partial.exists() and uuid_partial.exists()
+        assert model_store._read_marker(manifest.id)['blobs'] == [str(blob)]
+    other = pipeline_manifest('other')
+    model_store._write_marker(other.id, {'state': 'installed', 'blobs': [str(blob)]})
+    _delete_model_files(manifest, str(tmp_path), [other])
+    assert blob.exists() and partial.exists() and uuid_partial.exists()
+    _delete_model_files(manifest, str(tmp_path), [])
+    assert not blob.exists() and not partial.exists() and not uuid_partial.exists()
+
+
+def test_install_clears_removed_blob_inventory_before_planning(tmp_path):
+    manifest = pipeline_manifest(vae='')
+    model_store._write_marker(manifest.id, {'state': 'removed', 'blobs': ['old']})
+    with pytest.raises(ModelStoreError):
+        model_store.install_blocking(manifest, str(tmp_path))
+    assert model_store._read_marker(manifest.id) == {'state': 'installing'}
 
 
 def test_refresh_repeats_after_invalidation_during_final_announcement(monkeypatch):

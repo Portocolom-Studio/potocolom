@@ -662,22 +662,22 @@ def _linked_blobs(root: Path) -> set[Path]:
     return blobs
 
 
-def _delete_unreferenced_blob(blob: Path, folder: Path, *, partials: bool) -> None:
-    """Delete only while owning the same nonblocking lock as Hub writers."""
+def _delete_unreferenced_blob(blob: Path, folder: Path, *, partials: bool) -> bool:
+    """Delete under the Hub lock; return True if the lock was unavailable."""
     try:
         from filelock import FileLock, Timeout
     except ImportError:
-        return
+        return True
     lock_path = hub_cache_root() / ".locks" / folder.name / (blob.name + ".lock")
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock = FileLock(str(lock_path), timeout=0, mode=0o664)
         lock.acquire()
     except (Timeout, NotImplementedError, OSError):
-        return
+        return True
     try:
         if _blob_referenced(folder, blob):
-            return
+            return False
         blob.unlink(missing_ok=True)
         if partials:
             partial = Path(str(blob) + ".incomplete")
@@ -686,6 +686,7 @@ def _delete_unreferenced_blob(blob: Path, folder: Path, *, partials: bool) -> No
             for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
                 if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
                     candidate.unlink(missing_ok=True)
+        return False
     finally:
         lock.release()
 
@@ -705,6 +706,7 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
         _write_marker(manifest.id, {"state": "removed"})
         return
     marker = _read_marker(manifest.id) or {}
+    retained: set[str] = set()
     protected = set()
     legacy_folders: set[Path] = set()
     for other in others:
@@ -730,15 +732,22 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
             if (str(blob) not in protected and folder not in legacy_folders
                     and contained(blob, hub_cache_root()) and blob.is_file()
                     and blob.parent == folder / "blobs"):
-                _delete_unreferenced_blob(blob, folder, partials=False)
+                if _delete_unreferenced_blob(blob, folder, partials=False):
+                    retained.add(str(blob))
     for blob_name in marker.get("blobs", []):
-        if not isinstance(blob_name, str) or blob_name in protected:
+        if not isinstance(blob_name, str):
             continue
         blob = Path(blob_name)
-        if (blob.parent.name == "blobs" and blob.parent.parent not in legacy_folders
-                and contained(blob, hub_cache_root())):
-            _delete_unreferenced_blob(blob, blob.parent.parent, partials=True)
-    _write_marker(manifest.id, {"state": "removed"})
+        if blob.parent.name == "blobs" and contained(blob, hub_cache_root()):
+            if blob_name in protected or blob.parent.parent in legacy_folders:
+                if marker.get("state") == "removed":
+                    retained.add(blob_name)
+                continue
+            if _delete_unreferenced_blob(blob, blob.parent.parent, partials=True):
+                retained.add(str(blob))
+            else:
+                retained.discard(str(blob))
+    _write_marker(manifest.id, {"state": "removed", "blobs": sorted(retained)})
 
 
 def _check_volumes(fetch_items: list[Item]) -> None:
