@@ -202,7 +202,7 @@ def test_real_diffusers_worker_dispatches_and_streams_on_cpu(tmp_path, monkeypat
         hook = engine._pipelines[(manifest.id, "t2i")].safety_checker.register_forward_hook(
             lambda *_: safety_calls.append(True)
         )
-        sessions = SessionManager(socket, engine, manifests)
+        sessions = SessionManager(socket, engine, {manifest.id: manifest for manifest in manifests})
         try:
             await run_job(socket, engine, manifest, control)
             session_id = uuid.uuid4()
