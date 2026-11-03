@@ -662,6 +662,34 @@ def _linked_blobs(root: Path) -> set[Path]:
     return blobs
 
 
+def _delete_unreferenced_blob(blob: Path, folder: Path, *, partials: bool) -> None:
+    """Delete only while owning the same nonblocking lock as Hub writers."""
+    try:
+        from filelock import FileLock, Timeout
+    except ImportError:
+        return
+    lock_path = hub_cache_root() / ".locks" / folder.name / (blob.name + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(lock_path), timeout=0, mode=0o664)
+        lock.acquire()
+    except (Timeout, NotImplementedError, OSError):
+        return
+    try:
+        if _blob_referenced(folder, blob):
+            return
+        blob.unlink(missing_ok=True)
+        if partials:
+            partial = Path(str(blob) + ".incomplete")
+            if contained(partial, hub_cache_root()) and not partial.is_symlink():
+                partial.unlink(missing_ok=True)
+            for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
+                if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
+                    candidate.unlink(missing_ok=True)
+    finally:
+        lock.release()
+
+
 def _delete_model_files(manifest: Manifest, models_dir: str,
                         others: list[Manifest]) -> None:
     """Delete this model's files, keeping any repository revision another installed model
@@ -674,7 +702,7 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
             if not contained(path, cache):
                 raise ModelStoreError("remove_failed")
             path.unlink(missing_ok=True)
-        _remove_marker(manifest.id)
+        _write_marker(manifest.id, {"state": "removed"})
         return
     marker = _read_marker(manifest.id) or {}
     protected = set()
@@ -701,39 +729,16 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
         for blob in blobs:
             if (str(blob) not in protected and folder not in legacy_folders
                     and contained(blob, hub_cache_root()) and blob.is_file()
-                    and not _blob_referenced(folder, blob)):
-                blob.unlink(missing_ok=True)
+                    and blob.parent == folder / "blobs"):
+                _delete_unreferenced_blob(blob, folder, partials=False)
     for blob_name in marker.get("blobs", []):
         if not isinstance(blob_name, str) or blob_name in protected:
             continue
         blob = Path(blob_name)
-        partial = Path(blob_name + ".incomplete")
         if (blob.parent.name == "blobs" and blob.parent.parent not in legacy_folders
-                and contained(blob, hub_cache_root()) and contained(partial, hub_cache_root())
-                and not _blob_referenced(blob.parent.parent, blob)):
-            blob.unlink(missing_ok=True)
-            partial.unlink(missing_ok=True)
-            # Match the Hub's per-repository, per-etag lock. If flock is unavailable,
-            # ownership cannot be established safely, so leave these files alone.
-            try:
-                from filelock import FileLock, Timeout
-            except ImportError:
-                continue
-
-            lock_path = hub_cache_root() / ".locks" / blob.parent.parent.name / (blob.name + ".lock")
-            try:
-                lock_path.parent.mkdir(parents=True, exist_ok=True)
-                lock = FileLock(str(lock_path), timeout=0, mode=0o664)
-                lock.acquire()
-            except (Timeout, NotImplementedError, OSError):
-                continue
-            try:
-                for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
-                    if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
-                        candidate.unlink(missing_ok=True)
-            finally:
-                lock.release()
-    _remove_marker(manifest.id)
+                and contained(blob, hub_cache_root())):
+            _delete_unreferenced_blob(blob, blob.parent.parent, partials=True)
+    _write_marker(manifest.id, {"state": "removed"})
 
 
 def _check_volumes(fetch_items: list[Item]) -> None:
@@ -771,6 +776,8 @@ def install_blocking(manifest: Manifest, models_dir: str, *,
     stop = cancel or threading.Event()
     report = progress or (lambda _done, _total: None)
     try:
+        if (_read_marker(manifest.id) or {}).get("state") == "removed":
+            _write_marker(manifest.id, {"state": "installing"})
         items, gated = plan_items(manifest, models_dir, device)
         if gated and not os.environ.get("HF_TOKEN"):
             raise ModelStoreError("needs_token")
@@ -888,6 +895,7 @@ class ModelStore:
         self._adoption_task: asyncio.Task | None = None
         self._gpu: tuple[str, int | None] = ("unknown", None)
         self._adoption_lock = asyncio.Lock()
+        self._adoption_wakeup = asyncio.Event()
 
     async def scan(self) -> None:
         """Set the installed set from the markers. A cache with no marker is adopted here
@@ -934,6 +942,7 @@ class ModelStore:
     def attach(self, send: Callable[[dict], Any], busy: Callable[[str], bool]) -> None:
         """Start reporting on this connection. Operations already running keep going.
         Called only once the API has signalled that it speaks model_store."""
+        self._adoption_wakeup.clear()
         self._send = send
         self._busy = busy
         self._dirty = True
@@ -952,14 +961,14 @@ class ModelStore:
         """Detach from the connection that is ending. Operations keep running, and the
         next attach reports them, so a dropped connection throws away no bytes."""
         self._send = None
-        tasks = [task for task in (self._status_task, self._probe_task, self._adoption_task)
+        self._adoption_wakeup.set()
+        tasks = [task for task in (self._status_task, self._probe_task)
                  if task is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._status_task = None
         self._probe_task = None
-        self._adoption_task = None
 
     async def shutdown(self) -> None:
         """Process exit: skip what is queued, stop the running download, and wait for the
@@ -1168,7 +1177,7 @@ class ModelStore:
 
     def _schedule_adoption(self) -> None:
         if self._send is not None and (self._adoption_task is None or self._adoption_task.done()):
-            self._adoption_task = asyncio.create_task(self._retry_adoption())
+            self._adoption_task = self._spawn(self._retry_adoption())
 
     async def _retry_adoption(self) -> None:
         delay = ADOPTION_RETRY_SECONDS
@@ -1183,15 +1192,8 @@ class ModelStore:
                         if (manifest.id in self.installed or _read_marker(manifest.id) is not None
                                 or self._removal_pending(manifest.id)):
                             continue
-                        work = asyncio.create_task(asyncio.to_thread(
-                            adopt_legacy, manifest, self._models_dir, self._device))
-                        try:
-                            adopted = await asyncio.shield(work)
-                        except asyncio.CancelledError:
-                            adopted = await work
-                            if adopted and not self._removal_pending(manifest.id):
-                                self.installed[manifest.id] = manifest
-                            raise
+                        adopted = await asyncio.to_thread(
+                            adopt_legacy, manifest, self._models_dir, self._device)
                         if adopted and not self._removal_pending(manifest.id):
                             self.installed[manifest.id] = manifest
                             await self._announce()
@@ -1199,7 +1201,10 @@ class ModelStore:
                     logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
             if not pending:
                 return
-            await asyncio.sleep(delay)
+            try:
+                await asyncio.wait_for(self._adoption_wakeup.wait(), delay)
+            except TimeoutError:
+                pass
             delay = min(delay * 2, 60.0)
 
     def _schedule_refresh(self) -> None:
@@ -1212,7 +1217,8 @@ class ModelStore:
             await self._probe_unknown()
             if generation == self._probe_generation:
                 await self._announce()
-                return
+                if generation == self._probe_generation:
+                    return
 
     async def _probe_unknown(self) -> None:
         """Fill in download sizes the process has not learned yet."""

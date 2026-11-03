@@ -2710,3 +2710,107 @@ def test_refresh_repeats_after_invalidation_during_probe(monkeypatch):
             release.set()
             await store.shutdown()
     asyncio.run(scenario())
+
+
+def test_locked_blob_and_partials_survive_both_removal_paths(tmp_path):
+    from filelock import FileLock
+
+    manifest = pipeline_manifest(vae='')
+    put_snapshot_file(manifest.source, REV, 'weight')
+    link = snapshot_dir(manifest.source, REV) / 'weight'
+    blob = link.resolve()
+    partial = Path(str(blob) + '.incomplete')
+    uuid_partial = Path(str(blob) + '.1234abcd.incomplete')
+    partial.write_bytes(b'partial')
+    uuid_partial.write_bytes(b'partial')
+    model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
+    lock = model_store.hub_cache_root() / '.locks' / blob.parent.parent.name / (blob.name + '.lock')
+    lock.parent.mkdir(parents=True)
+    with FileLock(str(lock)):
+        _delete_model_files(manifest, str(tmp_path), [])
+        assert blob.exists() and partial.exists() and uuid_partial.exists()
+
+
+def test_refresh_repeats_after_invalidation_during_final_announcement(monkeypatch):
+    calls = []
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: calls.append(1) or (7, False))
+    monkeypatch.setattr(model_store, 'adopt_legacy', lambda *_: False)
+    async def scenario():
+        store = new_store(pipeline_manifest())
+        announcements = 0
+        async def announce():
+            nonlocal announcements
+            announcements += 1
+            if announcements == 2:
+                store._invalidate_probes('pipe-test')
+                store._schedule_refresh()
+        store._announce = announce
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            await asyncio.wait_for(store._probe_task, 2)
+            assert len(calls) == 2
+            assert _PROBES['pipe-test'] == (7, False)
+        finally:
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_removed_shipped_shared_model_is_not_readopted(monkeypatch, tmp_path):
+    from worker.manifests import load_manifests
+
+    manifests = {m.id: m for m in load_manifests(str(Path(__file__).parents[1] / 'models'))}
+    base, fast = manifests['sdxl-base'], manifests['sdxl-fast']
+    for manifest in (base, fast):
+        for ref in model_store.repo_refs(manifest):
+            name = ref.filename or 'weight'
+            if not (snapshot_dir(ref.repo, ref.revision) / name).exists():
+                put_snapshot_file(ref.repo, ref.revision, name)
+    assert model_store.adopt_legacy(base, str(tmp_path))
+    assert model_store.adopt_legacy(fast, str(tmp_path))
+    _delete_model_files(base, str(tmp_path), [fast])
+    assert model_store.is_installed(fast, str(tmp_path))
+    assert not model_store.adopt_legacy(base, str(tmp_path))
+    async def reconnect():
+        store = ModelStore([base, fast], FakeEngine(), str(tmp_path))
+        await store.scan()
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            await asyncio.wait_for(store._probe_task, 2)
+            if store._adoption_task:
+                await asyncio.wait_for(store._adoption_task, 2)
+            assert base.id not in store.installed
+            assert fast.id in store.installed
+        finally:
+            await store.shutdown()
+    asyncio.run(reconnect())
+    monkeypatch.setattr(model_store, '_check_volumes', lambda _: None)
+    model_store.install_blocking(base, str(tmp_path))
+    assert model_store.is_installed(base, str(tmp_path))
+
+
+def test_close_detaches_from_blocked_adoption(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    def adopt(*_args):
+        entered.set()
+        release.wait(5)
+        return True
+    monkeypatch.setattr(model_store, 'adopt_legacy', adopt)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    async def scenario():
+        store = new_store(pipeline_manifest())
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            await asyncio.wait_for(store.close(), 0.5)
+            release.set()
+            await asyncio.wait_for(store._adoption_task, 2)
+            assert 'pipe-test' in store.installed
+            messages = []
+            async def send(message): messages.append(message)
+            store.attach(send, lambda _: False)
+            await store._announce()
+            assert any(message.get('models') for message in messages)
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
