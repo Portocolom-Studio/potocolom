@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { pageIndex } from '$lib/page-index.js';
 	import { resolve } from '$app/paths';
 	import IllusionFlip from '$lib/components/IllusionFlip.svelte';
 	import LatentShell from '$lib/components/landing/LatentShell.svelte';
@@ -186,7 +187,7 @@
 		</section>
 
 		<div class="panel document">
-			<aside aria-label={t('ill.toc')}>
+			<aside use:pageIndex aria-label={t('ill.toc')}>
 				<p class="rail-label">{t('ill.toc')}</p>
 				<ol>
 					{#each sections as section (section.id)}
@@ -354,8 +355,10 @@
 	aside {
 		display: none;
 		position: sticky;
-		inset-block-start: 1.5rem;
+		inset-block-start: calc(7rem + env(safe-area-inset-top));
 		align-self: start;
+		max-block-size: calc(100vh - 8rem - env(safe-area-inset-top));
+		overflow-y: auto;
 	}
 
 	.rail-label {
@@ -382,7 +385,9 @@
 		transition: color 140ms var(--k-ease);
 	}
 
-	aside a:hover {
+	aside a:hover,
+	aside a:focus-visible,
+	aside a:global([aria-current='location']) {
 		border-inline-start-color: var(--k-accent);
 		color: var(--k-ink);
 	}
