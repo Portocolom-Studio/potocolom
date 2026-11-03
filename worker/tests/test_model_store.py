@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -2725,6 +2726,8 @@ def test_locked_blob_and_partials_survive_both_removal_paths(tmp_path, in_marker
     partial.write_bytes(b'partial')
     uuid_partial.write_bytes(b'partial')
     if in_marker:
+        # An interrupted download: the marker lists the blob, no snapshot links it.
+        shutil.rmtree(snapshot_dir(manifest.source, REV))
         model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
     lock = model_store.hub_cache_root() / '.locks' / blob.parent.parent.name / (blob.name + '.lock')
     lock.parent.mkdir(parents=True)
