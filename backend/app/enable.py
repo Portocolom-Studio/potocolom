@@ -263,7 +263,7 @@ async def require_setup_mode() -> None:
 def _missing_root_keys() -> JSONResponse:
     return JSONResponse(status_code=503, content={
         "detail": "root_keys_missing",
-        "message": "Run the install script or make setup-link to write ROOT_KEYS.",
+        "message": "Run scripts/ensure-env.sh or the installer to write ROOT_KEYS, then recreate the API container so it reads them.",
     })
 
 

@@ -379,7 +379,8 @@ def test_missing_root_keys_rolls_back_setup_or_enable(decision, monkeypatch, mod
         assert response.status_code == 503
         assert response.json()["detail"] == "root_keys_missing"
         assert "install" in response.json()["message"]
-        assert "make setup-link" in response.json()["message"]
+        assert "scripts/ensure-env.sh" in response.json()["message"]
+        assert "recreate the API container" in response.json()["message"]
         assert client.portal.call(_row) == mode
         assert client.portal.call(_identities) == []
         assert auth_mode.current() == mode

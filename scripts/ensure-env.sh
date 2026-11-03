@@ -183,12 +183,53 @@ else
 	fi
 fi
 
-# Retire the exact old template default so the database choice can change.
-if grep -qx 'AUTH_MODE=none' "$ENV_FILE"; then
-    env_tmp="$(mktemp "$(dirname "$ENV_FILE")/.env.XXXXXX")"
-    chmod 600 "$env_tmp"
-    awk '$0 == "AUTH_MODE=none" { print "# The database now holds the auth mode. To pin it deliberately, set AUTH_MODE=\042none\042 or AUTH_MODE=accounts."; next } { print }' "$ENV_FILE" >"$env_tmp"
+# Retire only the old template default, when no other assignment can be exposed.
+env_tmp="$(mktemp "$(dirname "$ENV_FILE")/.env.XXXXXX")"
+chmod 600 "$env_tmp"
+if awk '
+    BEGIN {
+        block = "# Accounts. AUTH_MODE=none is the default and resolves every request to one\n" \
+            "# implicit local administrator, which is what a single-operator install wants.\n" \
+            "# `make auth-enable` switches this to accounts, writes ROOT_KEYS below, and\n" \
+            "# prints a one-use link that claims the administrator account. Enabling\n" \
+            "# accounts is one way: the install refuses to start in none mode afterwards."
+    }
+    {
+        lines[NR] = $0
+        if (quote == "") {
+            if ($0 ~ /^[[:space:]]*(export[[:space:]]+)?AUTH_MODE[[:space:]]*[:=]/) {
+                count++
+                if ($0 == "AUTH_MODE=none") candidate = NR
+            }
+            value = $0
+            if (value !~ /^[[:space:]]*(export[[:space:]]+)?[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*[:=][[:space:]]*[\047\042]/) next
+            sub(/^[[:space:]]*(export[[:space:]]+)?[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*[:=][[:space:]]*/, "", value)
+            quote = substr(value, 1, 1)
+            value = substr(value, 2)
+        } else value = $0
+        for (i = 1; i <= length(value); i++) {
+            c = substr(value, i, 1)
+            if (c == "\\") { i++; continue }
+            if (c == quote) { quote = ""; break }
+        }
+    }
+    END {
+        previous = ""
+        if (candidate > 5) {
+            for (i = candidate - 5; i < candidate; i++)
+                previous = previous (i == candidate - 5 ? "" : "\n") lines[i]
+        }
+        if (!(count == 1 && candidate && previous == block)) exit 1
+        for (i = 1; i <= NR; i++) {
+            if (i == candidate)
+                print "# The database now holds the auth mode. Set AUTH_MODE to pin it deliberately."
+            else print lines[i]
+        }
+    }
+' "$ENV_FILE" >"$env_tmp"; then
     mv -f -- "$env_tmp" "$ENV_FILE"
+else
+    rm -f -- "$env_tmp"
 fi
 
 # ROOT_KEYS seals account secrets and queued worker commands. It is written

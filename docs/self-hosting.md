@@ -383,7 +383,7 @@ name takes over the implicit local user, as the setup claim does. The next reque
 session, and every browser canvas that was open without one is closed. The studio's
 settings page will use this route. The route refuses while `AUTH_MODE=none` is set in
 `deploy/compose/.env`, because the next start would refuse the accounts it records: remove
-that line, restart the API, and then turn accounts on. A request already running as the
+all deliberate `AUTH_MODE=none` assignments (including duplicates), restart the API, and then turn accounts on. A request already running as the
 administrator when the switch happens finishes under that authority, which is no more than
 the administrator already had.
 

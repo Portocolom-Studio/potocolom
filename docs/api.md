@@ -440,8 +440,8 @@ POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
                                  link is not spent. Minting refuses such a link, so this answers
                                  only a link minted before the install changed
                              422 a body that does not parse; the password is never echoed
-                             503 root_keys_missing when ROOT_KEYS is empty; run the install script
-                                 or make setup-link; the link is not spent
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the link is not spent
                              500 the root key ring is unusable; the link is not spent
                              503 the database is unavailable
 POST /api/v1/auth/enable     {"email": "ana@example.com", "password": "..."}
@@ -464,8 +464,8 @@ POST /api/v1/auth/enable     {"email": "ana@example.com", "password": "..."}
                                  or an account already holds an identity
                              400 an invalid email, or a password that fails the policy; the install
                                  stays none
-                             503 root_keys_missing when ROOT_KEYS is empty; run the install script
-                                 or make setup-link; the install stays none
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the install stays none
                              500 the root key ring is unusable; the install stays none
 POST /api/v1/auth/register   {"token": "...", "password": "..."}
                              204 + the session cookies; the invitation carries the address
