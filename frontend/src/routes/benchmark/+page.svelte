@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { pageIndex } from '$lib/page-index.js';
 	import LatentShell from '$lib/components/landing/LatentShell.svelte';
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
@@ -131,7 +132,7 @@
 		</section>
 
 		<div class="panel document">
-			<aside aria-label={t('bench.toc')}>
+			<aside use:pageIndex aria-label={t('bench.toc')}>
 				<p class="rail-label">{t('bench.toc')}</p>
 				<ol>
 					{#each tocSections as section (section.id)}
@@ -445,8 +446,10 @@
 	aside {
 		display: none;
 		position: sticky;
-		inset-block-start: 1.5rem;
+		inset-block-start: calc(7rem + env(safe-area-inset-top));
 		align-self: start;
+		max-block-size: calc(100vh - 8rem - env(safe-area-inset-top));
+		overflow-y: auto;
 	}
 
 	.rail-label {
@@ -475,7 +478,9 @@
 		transition: color 140ms var(--k-ease);
 	}
 
-	aside a:hover {
+	aside a:hover,
+	aside a:focus-visible,
+	aside a:global([aria-current='location']) {
 		border-inline-start-color: var(--k-accent);
 		color: var(--k-ink);
 	}
