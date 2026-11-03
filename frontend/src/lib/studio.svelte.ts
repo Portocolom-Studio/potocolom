@@ -211,6 +211,8 @@ export const studio = $state({
 	// skeleton for the first.
 	modelsLoaded: false,
 	historyLoaded: false,
+	// The guided tour is open. Help sets it to play the tour again.
+	tourRequest: null as 'automatic' | 'explicit' | null,
 	modelId: '',
 	imageToImageModelId: '',
 	upscaleModelId: '',

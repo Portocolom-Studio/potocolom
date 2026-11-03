@@ -683,6 +683,7 @@
 							>
 								<Select.Trigger
 									id="gen-model"
+									data-tour="model"
 									class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
 								>
 									{@render modelCard(
@@ -763,6 +764,7 @@
 							</div>
 							<textarea
 								id="gen-prompt"
+								data-tour="prompt"
 								name="prompt"
 								autocomplete="off"
 								class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
@@ -967,6 +969,7 @@
 							type="submit"
 							variant="brand"
 							class="h-9 w-full tabular-nums"
+							data-tour="generate"
 							disabled={!canGenerate}
 						>
 							<SparklesIcon />
@@ -1078,7 +1081,12 @@
 	</aside>
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
-	<section class="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={t('app.gen.result')}>
+	<section
+		class="flex min-h-0 min-w-0 flex-1 flex-col"
+		aria-label={t('app.gen.result')}
+		data-tour="canvas"
+		tabindex="-1"
+	>
 		<div
 			class="border-border flex min-h-[50px] flex-wrap items-center gap-2 border-b px-4 py-2 lg:flex-nowrap"
 		>

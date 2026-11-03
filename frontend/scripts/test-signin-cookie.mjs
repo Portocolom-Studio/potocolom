@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
+import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const backend = resolve(fileURLToPath(new URL('../../backend', import.meta.url)));
@@ -271,7 +272,7 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 			args: ['--no-sandbox', '--disable-gpu']
 		});
 		try {
-			const page = await browser.newPage();
+			const page = await newStudioPage(browser);
 			page.setDefaultTimeout(WAIT_MS);
 			await page.evaluateOnNewDocument(() => {
 				window.__signinDocumentMarker = crypto.randomUUID();

@@ -6,7 +6,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { account, type Account } from '$lib/account.svelte';
-	import { openViewFor } from '$lib/account-display';
+	import { openViewFor, sectionNeeds } from '$lib/account-display';
 	import { probeAccount, type AccountProbeResult } from '$lib/account-probe';
 	import { accountCheckForcesLogin, loginSearchFor } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
@@ -20,6 +20,7 @@
 	import StatusBanner from '$lib/components/status-banner.svelte';
 	import StudioAccount from '$lib/components/studio-account.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
+	import StudioTour from '$lib/components/studio-tour.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Toaster } from '$lib/components/ui/sonner';
@@ -365,6 +366,11 @@
 				</div>
 			</Sidebar.Inset>
 		</Sidebar.Provider>
+		<!-- Mounted only once the account check has passed, so the first-visit tour
+			     starts on a studio that is there to be seen. -->
+		{#if !landing && sectionNeeds('generate', account.current?.role ?? null) === null}
+			<StudioTour />
+		{/if}
 		<!-- Undo offers and quick failures. Offsets clear the home indicator and
 		     rounded corners on phones with a notch. -->
 		<Toaster
