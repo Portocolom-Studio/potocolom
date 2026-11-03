@@ -29,6 +29,7 @@
 				<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 				<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 				<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
+				<a href={resolve('/docs/guide/introduction')}>{t('nav.docs')}</a>
 			</div>
 			<div>
 				<h2>{t('footer.col_source')}</h2>

@@ -213,6 +213,7 @@
 			<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
+			<a href={resolve('/docs/guide/introduction')}>{t('nav.docs')}</a>
 		</nav>
 		<a class="pill pill-ghost" href={PUBLIC_WAITLIST_URL ? waitlistHref : resolve('/login')}>
 			{PUBLIC_WAITLIST_URL ? t('wl.cta') : t('auth.login.title')}
