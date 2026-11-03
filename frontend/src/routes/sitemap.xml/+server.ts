@@ -1,10 +1,19 @@
 import { PUBLIC_SITE_MODE } from '$env/static/public';
 import type { RequestHandler } from './$types';
+import { docHref } from '$lib/docs/model';
+import { docsIndex } from '$lib/docs/source';
 
 export const prerender = true;
 
 const siteUrl = 'https://potocolom.leonfuller.com';
-const marketingPaths = ['/', '/app', '/benchmark', '/whitepaper', '/illusions'];
+const marketingPaths = [
+	'/',
+	'/app',
+	'/benchmark',
+	'/whitepaper',
+	'/illusions',
+	...docsIndex.pages.map((page) => docHref(page))
+];
 
 export const GET: RequestHandler = () => {
 	const urls =

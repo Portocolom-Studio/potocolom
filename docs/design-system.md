@@ -6,14 +6,15 @@ studio, landing and auth pages share, and where each lives in the code. When
 a change alters a token, a component contract or a rule below, update this
 file in the same PR.
 
-## Two surfaces
+## Surfaces
 
-The frontend has two visual surfaces. Keep them apart.
+The frontend has three visual surfaces. Keep them apart.
 
 | Surface | Routes | Tokens | Scope |
 |---|---|---|---|
 | Studio | `/app` | `frontend/src/app.css`, block `:root:has([data-studio-shell])` | Applies only while the studio shell is mounted, so menus, dialogs and toasts rendered outside the page pick it up too |
 | Landing and auth | `/`, `/login`, `/join`, legal pages | `frontend/src/landing-tokens.css` (`.landing-surface`, `--k-*` variables) and component styles | Lato type, its own dark and light modes |
+| Docs | `/docs` and `/docs/[tab]/[page]` | The same landing tokens (`.landing-surface`), plus `--docs-accent` (= `--k-focus`), `--docs-warn` and `--docs-planned` | Reading layout: sidebar with logo, search and icons; tab bar; article; "On this page". The accent colours the eyebrow, the active tab and the active sidebar item. Brand blue (`bg-brand`) is never used. Markdown output is styled under `.prose`. `landing-tokens.css` sets `white-space: nowrap` on every link, so docs links set `white-space: normal` or card text does not wrap |
 
 The base `:root` block in `app.css` holds the older navy shadcn values. Do not
 build new studio UI on them; the studio block overrides them.
