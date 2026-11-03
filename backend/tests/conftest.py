@@ -110,6 +110,10 @@ os.environ.setdefault("DATABASE_URL",
 _DATABASE_URL = os.environ["DATABASE_URL"]
 os.environ.setdefault("TELEMETRY", "false")
 os.environ.setdefault("FLEET_TOKEN_KEY", "test-fleet-token")
+# Unset, a fresh test database is unclaimed and every API route answers 503
+# setup_required. The suite tests the none and accounts modes, so it pins none;
+# the tests that need an unclaimed install unset it themselves.
+os.environ.setdefault("AUTH_MODE", "none")
 _storage_root = tempfile.mkdtemp(prefix="potocolom-test-")
 os.environ.setdefault("STORAGE_LOCAL_PATH", _storage_root)
 atexit.register(shutil.rmtree, _storage_root, ignore_errors=True)
@@ -276,7 +280,7 @@ def _no_inherited_jobs(request):
     after still starts clean.
     """
     yield
-    from app import db, jobs, realtime
+    from app import auth_mode, db, jobs, realtime
     from app.settings import get_settings
 
     # monkeypatch puts the environment back, and the settings cache still holds
@@ -285,6 +289,8 @@ def _no_inherited_jobs(request):
     # requeues their jobs under them. Undoing the variable is not undoing the
     # setting until this is cleared.
     get_settings.cache_clear()
+    # The mode a startup loaded belongs to that test's database and environment.
+    auth_mode.clear()
     # A dispatch_step that already popped an id can still deliver after the
     # rows are gone unless its epoch is invalidated and the step has finished.
     # Pause new admission in the same lock as the bump, otherwise a new step

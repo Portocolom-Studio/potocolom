@@ -33,7 +33,7 @@ flowchart LR
 
 | Setting | Local dev | Self-hosted | Scaled self-hosted | cloud-sim | Cloud |
 |---|---|---|---|---|---|
-| AUTH_MODE | none | none or accounts | accounts | accounts | accounts |
+| AUTH_MODE | none (Makefile sets it) | decided by the setup link: none or accounts | accounts | accounts | accounts |
 | OAUTH_PROVIDERS | | | | | google,github |
 | BILLING_ENABLED | false | false | false | false (QuotaService designed) | true |
 | SAFETY_CHECKS | false | false | false | false | true |
@@ -49,7 +49,7 @@ flowchart LR
 
 The scaled self-hosted column deserves a note: it is not a separately designed product. **Designed:** setting `REDIS_URL` would switch dispatch and the frame relay to Redis implementations, and additional worker containers would dial the same fleet endpoint. A lab or studio with three GPU machines would get multi-worker scheduling with the exact scheduler the cloud runs (issue #20), for the cost of one Redis container.
 
-`AUTH_MODE` is `none` or `accounts`; the retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented, for REST and for the realtime socket: in `accounts` the socket authenticates from the session cookie on the upgrade, and revoking the session closes it.
+`AUTH_MODE` is unset, `none` or `accounts`. Unset is the default: the database records the choice, and a new install is unclaimed until someone spends the setup link and picks `none` or `accounts`. Setting `none` or `accounts` is an override that must agree with the recorded choice. The retired `local` and `oauth` names are gone, and Google and GitHub are options within `accounts` rather than modes of their own. Both modes are implemented, for REST and for the realtime socket: in `accounts` the socket authenticates from the session cookie on the upgrade, and revoking the session closes it.
 
 > Shipped status (2026-07-30): **not yet implemented.** Setting `REDIS_URL` currently changes neither job dispatch nor realtime relay, and the backend has no Redis dependency. This remains the migration target under "Redis-optional Queues and FrameBus contracts" and issue #20, "Multi-Worker Scheduling".
 
@@ -120,7 +120,7 @@ Every path below is possible because the schema, storage keys and API are identi
 
 ### Enabling accounts on an install that ran without them
 
-`AUTH_MODE=none` runs everything as one implicit local user who owns every row. `make auth-enable` is the switch: it writes the root key ring, records the change in PostgreSQL, and prints a one-use link valid for an hour. The first claimant adopts that implicit user, keeping its UUID, so the existing library comes with them rather than being copied or stranded.
+`none` runs everything as one implicit local user who owns every row. There are two switches, and both keep the implicit user's UUID so the existing library comes with the new account rather than being copied or stranded. `POST /api/v1/auth/enable` is the runtime switch: the administrator of a `none` install names an email and a password, and accounts are on with no restart. `make auth-enable` is the offline switch: it writes the root key ring if it is missing, records the change in PostgreSQL, and prints a one-use link valid for an hour. The claimant adopts the implicit user, which is how an install that was never claimed becomes one with accounts.
 
 The switch is one way. An install that has enabled accounts refuses to start in `none` mode again, because falling back would return a multi-user install to answering every request as an administrator. Undoing it needs an offline destructive reset. Google and GitHub are additive within `accounts`: password identities stay valid and providers appear beside them.
 

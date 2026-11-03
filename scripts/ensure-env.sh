@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create deploy/compose/.env from the example when missing, and fill empty
-# POSTGRES_PASSWORD / FLEET_SECRET. Never overwrites a non-empty Compose value.
-# ENV_FILE / ENV_EXAMPLE override paths (verify-guards).
+# POSTGRES_PASSWORD / FLEET_SECRET / ROOT_KEYS. Never overwrites a non-empty
+# Compose value. ENV_FILE / ENV_EXAMPLE override paths (verify-guards).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -77,6 +77,31 @@ replace_secrets() {
 }
 
 new_secret() { openssl rand -hex 32; }
+
+# Same shape and same rule as scripts/auth-enable.sh: one version, base64 of
+# 32 random bytes, newest first. The value is written, never printed.
+set_root_keys() {
+	local value="$1" tmp dir
+	dir="$(dirname "$ENV_FILE")"
+	tmp="$(mktemp "$dir/.env.XXXXXX")"
+	chmod 600 "$tmp"
+	awk -v value="$value" '
+		function is_key(line) {
+			return line ~ "^[[:space:]]*(export[[:space:]]+)?ROOT_KEYS[[:space:]]*[:=]"
+		}
+		{
+			line = $0
+			sub(/\r$/, "", line)
+			if (is_key(line)) {
+				if (!seen++) print "ROOT_KEYS=" value
+				next
+			}
+			print
+		}
+		END { if (!seen) print "ROOT_KEYS=" value }
+	' "$ENV_FILE" >"$tmp"
+	mv -f -- "$tmp" "$ENV_FILE"
+}
 
 database_state() {
 	if ! command -v docker >/dev/null 2>&1; then
@@ -156,3 +181,13 @@ else
 		echo "A worker on another machine needs a copy of FLEET_SECRET."
 	fi
 fi
+
+# ROOT_KEYS seals account secrets and queued worker commands. It is written
+# once, so a first install can enable accounts or serve a worker durably
+# without an edit, and a value that is already there is never replaced.
+root_keys="$(compose_value ROOT_KEYS)"
+if [[ -z "$root_keys" ]]; then
+	set_root_keys "1:$(openssl rand -base64 32)"
+	echo "wrote ROOT_KEYS to $ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
