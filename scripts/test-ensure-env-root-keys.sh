@@ -81,63 +81,6 @@ else
 	fail_case root-keys-value-is-not-printed "the installer output contains the ring"
 fi
 
-# A template default is retired only with its original comment and no overrides.
-legacy_block() {
-    cat <<'EOF'
-# Accounts. AUTH_MODE=none is the default and resolves every request to one
-# implicit local administrator, which is what a single-operator install wants.
-# `make auth-enable` switches this to accounts, writes ROOT_KEYS below, and
-# prints a one-use link that claims the administrator account. Enabling
-# accounts is one way: the install refuses to start in none mode afterwards.
-AUTH_MODE=none
-EOF
-}
-base="$tmp/base.env"
-cp "$ENV_FILE" "$base"
-sed -i "/^AUTH_MODE=/d" "$base"
-cp "$base" "$ENV_FILE"
-legacy_block >>"$ENV_FILE"
-if run_ensure && ! grep -qx 'AUTH_MODE=none' "$ENV_FILE" && grep -q 'database.*mode' "$ENV_FILE"; then
-    cp "$ENV_FILE" "$tmp/once"
-    if run_ensure && cmp -s "$tmp/once" "$ENV_FILE"; then
-        printf 'ok legacy-auth-mode-is-retired-idempotently\n'
-    else
-        fail_case legacy-auth-mode-idempotent
-    fi
-else
-    fail_case legacy-auth-mode-is-retired
-fi
-
-cp "$base" "$ENV_FILE"
-printf '%s\n' 'AUTH_MODE=accounts' >>"$ENV_FILE"
-legacy_block >>"$ENV_FILE"
-cp "$ENV_FILE" "$tmp/before"
-if run_ensure && cmp -s "$tmp/before" "$ENV_FILE"; then
-    printf 'ok duplicate-override-is-preserved\n'
-else
-    fail_case duplicate-override-is-preserved
-fi
-
-cp "$base" "$ENV_FILE"
-printf '%s\n' 'AUTH_MODE=none' >>"$ENV_FILE"
-cp "$ENV_FILE" "$tmp/before"
-if run_ensure && cmp -s "$tmp/before" "$ENV_FILE"; then
-    printf 'ok ambiguous-pin-is-preserved\n'
-else
-    fail_case ambiguous-pin-is-preserved
-fi
-
-cp "$base" "$ENV_FILE"
-printf "%s\n" "CUSTOM='first" >>"$ENV_FILE"
-legacy_block >>"$ENV_FILE"
-printf "%s\n" "last'" >>"$ENV_FILE"
-cp "$ENV_FILE" "$tmp/before"
-if run_ensure && cmp -s "$tmp/before" "$ENV_FILE"; then
-    printf 'ok multiline-content-is-preserved\n'
-else
-    fail_case multiline-content-is-preserved
-fi
-
 # The operator guidance must describe the recovery and socket transition.
 if grep -q 'then recreate the API container to read them' "$repo/docs/api.md" && \
     [[ "$(grep -c 'then recreate the API container to read them' "$repo/docs/api.md")" == 2 ]]; then

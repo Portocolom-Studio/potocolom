@@ -491,7 +491,9 @@ def test_a_switch_refuses_an_explicit_none_override_and_names_the_variable(decis
                                headers={"origin": ORIGIN})
         assert response.status_code == 409
         detail = response.json()["detail"]
-        assert "AUTH_MODE" in detail and "deploy/compose/.env" in detail
+        assert "AUTH_MODE=none" in detail
+        assert "Remove every top-level AUTH_MODE line from deploy/compose/.env" in detail
+        assert "restart the API, then turn accounts on" in detail
         assert client.portal.call(_row) == "none"
         assert auth_mode.current() == "none"
 

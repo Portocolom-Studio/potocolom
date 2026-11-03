@@ -42,7 +42,7 @@ INVALID_LINK = "invalid or expired setup link"
 MAX_EMAIL_LENGTH = 320
 OVERRIDE_REFUSAL = (
     "AUTH_MODE=none is set in the environment, so the next start would refuse accounts. "
-    "Remove AUTH_MODE from deploy/compose/.env and restart the API, then turn accounts on."
+    "Remove every top-level AUTH_MODE line from deploy/compose/.env and restart the API, then turn accounts on."
 )
 
 router = APIRouter()

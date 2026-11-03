@@ -288,9 +288,8 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
   when it creates the volume; otherwise preflight warns and prints the
   `ALTER ROLE` command to change it. It prints `FLEET_SECRET` once. Copy
   that value to a worker on another machine. Non-empty keys in an existing
-  `.env` are left alone, except the old template line `AUTH_MODE=none`, which is
-  commented out so the database holds the mode. To pin none deliberately, use
-  `AUTH_MODE="none"`.
+  `.env` are left alone, including `AUTH_MODE`. Installs from a release before
+  the setup link may still carry `AUTH_MODE=none` from the old template.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with
@@ -383,7 +382,8 @@ name takes over the implicit local user, as the setup claim does. The next reque
 session, and every browser canvas that was open without one is closed. The studio's
 settings page will use this route. The route refuses while `AUTH_MODE=none` is set in
 `deploy/compose/.env`, because the next start would refuse the accounts it records: remove
-all deliberate `AUTH_MODE=none` assignments (including duplicates), restart the API, and then turn accounts on. A request already running as the
+every top-level `AUTH_MODE` line from `deploy/compose/.env`, restart the API, and then turn
+accounts on. This includes duplicate assignments with any value. A request already running as the
 administrator when the switch happens finishes under that authority, which is no more than
 the administrator already had.
 
