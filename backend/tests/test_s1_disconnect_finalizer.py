@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import json
 import time
 import uuid
@@ -394,7 +395,13 @@ def test_cancelled_disconnect_still_closes_durably(accounts, monkeypatch):
                 pass
             try:
                 if closing is not None:
-                    closing.result(timeout=8)
+                    # This test cancels the endpoint task the portal runs this
+                    # close on. anyio 4.16 reports that cancellation on the
+                    # future instead of absorbing it; either way the close ended.
+                    try:
+                        closing.result(timeout=8)
+                    except concurrent.futures.CancelledError:
+                        pass
                 else:
                     fleet.__exit__(None, None, None)
             finally:
