@@ -2273,3 +2273,20 @@ the effective config on a PR because organization overrides can take priority.
 Rejected alternative: exclude CodeRabbit's generated block from the check. The
 block remains public, and its markers can also appear in author-written text.
 The existing Macroscope block exception remains a separate policy gap.
+
+## Public docs are Markdown pages inside the SvelteKit app
+
+Decided 2026-11-03. The public documentation lives as Markdown under
+`frontend/src/lib/docs/pages/<tab>/` and is served at `/docs` by the same
+SvelteKit app as the landing site and the studio. A build-time renderer
+(`marked`, installed at 18.1.1; `package.json` holds a caret range) produces the HTML during prerendering, so the
+parser never ships to the browser. The output contains no inline scripts, so
+the hash-mode CSP is unchanged. Each page's frontmatter is checked at build
+time, and an invalid page fails the build. The docs use the landing tokens,
+are English only, and appear in both site modes.
+
+Rejected alternatives: a separate docs generator such as Starlight or a hosted
+service, which adds a second toolchain and a second place to keep in sync;
+rendering the repository `docs/` folder directly, because several of its files
+are internal working notes; and mdsvex, which needs a Svelte preprocessor step
+in the build, while this route does not.
