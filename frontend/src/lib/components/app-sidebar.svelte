@@ -5,10 +5,12 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import { resolve } from '$app/paths';
 	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { shortcutLabel } from '$lib/platform.svelte';
+	import { openAccount } from '$lib/studio.svelte';
 	import { closeOnHistoryStep, popOverlay, pushOverlay } from '$lib/overlay-history';
 	import { Kbd } from '$lib/components/ui/kbd';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
@@ -139,6 +141,18 @@
 	<Sidebar.Footer class="gap-0 p-0">
 		<StudioWorkerStatus />
 		<Sidebar.Menu class="gap-0 px-2 pt-1 pb-1.5">
+			{#if account.localModeConfirmed}
+				<Sidebar.MenuItem>
+					<Sidebar.MenuButton
+						class={footerItemClass}
+						tooltipContent={t('app.shell.settings')}
+						onclick={() => navigateFromSidebar(() => openAccount())}
+					>
+						<SettingsIcon />
+						<span>{t('app.shell.settings')}</span>
+					</Sidebar.MenuButton>
+				</Sidebar.MenuItem>
+			{/if}
 			<Sidebar.MenuItem>
 				<Sidebar.MenuButton class={footerItemClass} tooltipContent={t('app.shell.documentation')}>
 					{#snippet child({ props })}

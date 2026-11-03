@@ -141,6 +141,10 @@ test('openViewFor refuses the account view when there is no account to show', ()
 	assert.equal(openViewFor('account', 'usage', null), 'generate');
 });
 
+test('openViewFor keeps the account view open in no-accounts mode, for its turn-on card', () => {
+	assert.equal(openViewFor('account', 'usage', null, true), 'account');
+});
+
 test('openViewFor keeps every view but admin when there is no role', () => {
 	for (const view of [
 		'generate',

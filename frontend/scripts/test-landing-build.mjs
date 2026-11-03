@@ -45,6 +45,7 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 		'illusions',
 		'login',
 		'join',
+		'setup',
 		'reset',
 		'recover',
 		'shared',
@@ -72,6 +73,14 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 		);
 		assert.ok(!footer.includes('class="to-top '), `${name}: no back-to-top button`);
 	}
+});
+
+test('setup prerenders as an unavailable card with no form', async () => {
+	const html = await built('setup');
+	assert.match(html, /<h1[^>]*>[^<]*Set up[^<]*<\/h1>/);
+	assert.ok(html.includes('Sign-in is available on a self-hosted or cloud studio install'));
+	assert.doesNotMatch(html, /<form\b/);
+	assert.doesNotMatch(html, /id="setup-email"/);
 });
 
 test('the studio has no page footer', async () => {

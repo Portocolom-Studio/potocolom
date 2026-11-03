@@ -8,7 +8,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
-- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
+- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
@@ -427,6 +427,10 @@ POST /api/v1/auth/setup      {"token": "...", "mode": "accounts", "email": "ana@
                              204 + the session cookies; the link is one use and lasts one hour
                              mode "accounts" (the default) claims the administrator account and
                              records accounts; email and password are then required
+POST /api/v1/auth/setup/status {"token": "..."}
+                             200 {"claimed": true | false} for a live setup link, without spending it
+                             403 with the setup route's identical refusal for an unknown, spent or
+                                 expired link; 503 if the database is unavailable
 POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
                              204, no cookies: the install is recorded as running without accounts
                              Answers on this route, for either choice:
