@@ -437,7 +437,7 @@ def test_operation_id_follows_worker_records_after_clock_reset(monkeypatch):
     worker = SimpleNamespace(id='worker', protocol_version=5,
                              store_downloads={'model': {'op_id': previous}},
                              ws=SimpleNamespace(send_json=send_json))
-    monkeypatch.setattr(worker_models, '_last_op_time', 0)
+    monkeypatch.setattr(worker_models, '_last_op_time', {})
     monkeypatch.setattr(worker_models.time, 'time_ns', lambda: 100)
     assert asyncio.run(worker_models._send(worker, 'install_model', 'model')) > previous
 
@@ -453,7 +453,7 @@ def test_reconnect_inventory_orders_first_command_before_status(monkeypatch):
         worker = realtime.Worker(id="reconnect", ws=socket, manifests=[], realtime_slots=1,
                                  protocol_version=5, capabilities=["model_store"])
         old = "00000000000000005000-aaaaaaaa"
-        monkeypatch.setattr(worker_models, "_last_op_time", 0)
+        monkeypatch.setattr(worker_models, "_last_op_time", {})
         monkeypatch.setattr(worker_models.time, "time_ns", lambda: 100)
         await worker_models.apply(worker, {**inventory_for([manifest_row()]), "op_id": old})
         assert worker_models.manageable(worker)
@@ -464,3 +464,39 @@ def test_reconnect_inventory_orders_first_command_before_status(monkeypatch):
         assert new > old
         assert socket.message["op_id"] == new
     asyncio.run(scenario())
+
+
+def test_future_worker_clock_is_ignored_and_isolated(monkeypatch, caplog):
+    import asyncio
+    from types import SimpleNamespace
+    async def send_json(_message):
+        pass
+    monkeypatch.setattr(worker_models, '_last_op_time', {})
+    monkeypatch.setattr(worker_models.time, 'time_ns', lambda: 100)
+    def worker(name, stamp):
+        return SimpleNamespace(id=name, protocol_version=5,
+                               store_downloads={'m': {'op_id': f'{stamp:020d}-aaaaaaaa'}},
+                               ws=SimpleNamespace(send_json=send_json))
+    bad = worker('bad', 10**20 - 1)
+    good = worker('good', 0)
+    async def scenario():
+        first = await worker_models._send(bad, 'install_model', 'm')
+        second = await worker_models._send(good, 'install_model', 'm')
+        assert first[:20] == second[:20] == '00000000000000000100'
+        assert len(first.split('-')[0]) == 20
+    asyncio.run(scenario())
+    assert 'ignoring future' in caplog.text
+
+
+def test_inventory_future_watermark_is_ignored_per_worker(monkeypatch, caplog):
+    import asyncio
+    monkeypatch.setattr(worker_models, '_last_op_time', {})
+    monkeypatch.setattr(worker_models.time, 'time_ns', lambda: 100)
+    async def scenario():
+        a = realtime.Worker(id='a', ws=None, manifests=[], realtime_slots=1, protocol_version=5)
+        b = realtime.Worker(id='b', ws=None, manifests=[], realtime_slots=1, protocol_version=5)
+        await worker_models.apply(a, {**inventory_for([manifest_row()]), 'op_id': '99999999999999999999-deadbeef'})
+        await worker_models.apply(b, {**inventory_for([manifest_row()]), 'op_id': '00000000000000005000-deadbeef'})
+        assert worker_models._last_op_time == {'b': 5000}
+    asyncio.run(scenario())
+    assert 'ignoring future' in caplog.text

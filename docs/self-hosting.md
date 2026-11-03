@@ -596,3 +596,5 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 
 Database migrations run automatically at API startup (docs/decisions.md,
 migrations on startup). Volumes are untouched by rebuilds.
+
+Legacy model caches require Hugging Face Hub metadata once before the worker can adopt them as installed. A permanently offline worker cannot adopt an unmarked cache; connect it to the Hub for adoption first. Upgrade the API before its workers.

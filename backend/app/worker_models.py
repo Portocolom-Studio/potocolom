@@ -135,13 +135,12 @@ def manageable(worker: Worker) -> bool:
 async def apply(worker: Worker, control: dict) -> None:
     """Read one store report from a worker that advertised the capability."""
     if control["type"] == "store_inventory":
-        global _last_op_time
         op_id = control.get("op_id")
         if op_id is not None and not isinstance(op_id, str):
             raise ValueError("op_id must be a string or null")
         if (isinstance(op_id, str) and len(op_id) >= 21 and op_id[:20].isascii()
                 and op_id[:20].isdigit() and op_id[20] == "-"):
-            _last_op_time = max(_last_op_time, int(op_id[:20]))
+            _observe_time(worker.id, int(op_id[:20]))
         worker.hardware = parse_hardware(control.get("hardware"))
         worker.catalog = parse_catalog(control.get("catalog"))
         return
@@ -218,17 +217,28 @@ def _managed(worker_id: str, model_id: str) -> tuple[Worker, dict]:
     raise HTTPException(status_code=404, detail="model is not in the worker's catalog")
 
 
-_last_op_time = 0
+_last_op_time: dict[str, int] = {}
+
+
+def _observe_time(worker_id: str, reported: int) -> None:
+    now = time.time_ns()
+    if reported > now + 60_000_000_000:
+        logger.warning("ignoring future model operation time from worker %s", worker_id)
+        return
+    _last_op_time[worker_id] = max(_last_op_time.get(worker_id, 0), reported)
 
 
 async def _send(worker: Worker, kind: str, model_id: str) -> str:
-    global _last_op_time
-    reported = (row.get("op_id") for row in worker.store_downloads.values())
-    times = [int(value[:20]) for value in reported
-             if isinstance(value, str) and len(value) >= 21
-             and value[:20].isascii() and value[:20].isdigit() and value[20] == "-"]
-    _last_op_time = max(time.time_ns(), _last_op_time + 1, max(times, default=0) + 1)
-    op_id = f"{_last_op_time:020d}-{secrets.token_hex(4)}"
+    for row in worker.store_downloads.values():
+        value = row.get("op_id")
+        if (isinstance(value, str) and len(value) >= 21 and value[:20].isascii()
+                and value[:20].isdigit() and value[20] == "-"):
+            _observe_time(worker.id, int(value[:20]))
+    stamp = max(time.time_ns(), _last_op_time.get(worker.id, 0) + 1)
+    if stamp > 10**20 - 1:
+        raise HTTPException(status_code=503, detail="operation clock exhausted")
+    _last_op_time[worker.id] = stamp
+    op_id = f"{stamp:020d}-{secrets.token_hex(4)}"
     command: dict = {"type": kind, "model_id": model_id, "op_id": op_id}
     if worker.protocol_version == 6:
         # A protocol 6 worker validates every control against its closed shape,

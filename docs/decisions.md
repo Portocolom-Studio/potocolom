@@ -2290,3 +2290,7 @@ service, which adds a second toolchain and a second place to keep in sync;
 rendering the repository `docs/` folder directly, because several of its files
 are internal working notes; and mdsvex, which needs a Svelte preprocessor step
 in the build, while this route does not.
+
+## Model store rollout and legacy caches
+
+Upgrade the API before workers. Legacy caches are adopted only after Hub metadata verifies the exact download plan; a permanently offline cache cannot be adopted. A loose directory walk was rejected because a partial cache could be marked installed. A legacy hello for unsignalled APIs was rejected because hello precedes the API signal.

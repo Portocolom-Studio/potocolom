@@ -2147,6 +2147,7 @@ def test_operation_refreshes_shared_catalog_probes(monkeypatch):
         store.attach(send, lambda _model: False)
         store.handle({'type': 'remove_model', 'model_id': manifest.id})
         await store._queue.join()
+        await asyncio.gather(*(task for task in store._tasks if task is not store._drainer))
         await store.shutdown()
 
     asyncio.run(scenario())
@@ -2290,8 +2291,9 @@ def test_resume_counts_unique_remaining_blob_bytes(monkeypatch):
                              repo=item.repo, folder=folder, blob_key=item.blob_key)
     monkeypatch.setattr(model_store, 'free_bytes',
                         lambda _p: (100 * 2**30, model_store.DISK_MARGIN_BYTES + 2 * 2**30))
-    assert model_store.remaining_bytes([item, other]) == 2**30
-    model_store._check_volumes([item, other])
+    assert model_store.remaining_bytes([item, other]) == 10 * 2**30
+    with pytest.raises(ModelStoreError, match='disk'):
+        model_store._check_volumes([item, other])
 
 
 def test_cancel_then_remove_deletes_partial(tmp_path, monkeypatch):
@@ -2424,3 +2426,120 @@ def test_inventory_reports_highest_retained_operation(tmp_path):
         assert messages[0]["op_id"] == "00000000000000005000-aaaa"
         await store.close()
     asyncio.run(scenario())
+
+
+def test_read_only_cache_does_not_abort_scan(monkeypatch, tmp_path, caplog):
+    complete_pipeline()
+    complete_companions()
+    hub = model_store.hub_cache_root()
+    hub.chmod(0o555)
+    monkeypatch.setattr(model_store, '_write_marker', lambda *_: (_ for _ in ()).throw(PermissionError()))
+    store = ModelStore([pipeline_manifest()], FakeEngine(), str(tmp_path))
+    try:
+        asyncio.run(store.scan())
+    finally:
+        hub.chmod(0o755)
+    assert not store.installed
+    assert caplog.text.count('cannot adopt model') == 1
+
+
+def test_attach_retries_legacy_adoption(monkeypatch, tmp_path):
+    complete_pipeline()
+    complete_companions()
+    monkeypatch.setattr(model_store, 'plan_items', _offline)
+    sent = []
+    async def send(message):
+        sent.append(message)
+    async def scenario():
+        store = ModelStore([pipeline_manifest()], FakeEngine(), str(tmp_path))
+        await store.scan()
+        assert not store.installed
+        monkeypatch.setattr(model_store, 'plan_items', registry_plan)
+        store.attach(send, lambda _: False)
+        await store._probe_task
+        await asyncio.gather(*list(store._tasks))
+        assert 'pipe-test' in store.installed
+        assert any(m['type'] == 'models_changed' and m['models'] for m in sent)
+        await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_removal_preserves_outside_link_and_marker_blob(tmp_path):
+    manifest = pipeline_manifest(vae='')
+    outside = tmp_path / 'outside' / 'blobs' / 'file'
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b'keep')
+    link = snapshot_dir(manifest.source, REV) / 'x'
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    marker_file = outside.with_name('marker')
+    marker_file.write_bytes(b'keep')
+    model_store._write_marker(manifest.id, {'blobs': [str(marker_file)]})
+    _delete_model_files(manifest, str(tmp_path), [])
+    assert outside.read_bytes() == b'keep'
+    assert marker_file.read_bytes() == b'keep'
+
+
+def test_oversized_upscale_response_stops_reading(monkeypatch, tmp_path):
+    class Response:
+        calls = 0
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, _size):
+            self.calls += 1
+            return b'xxxx' if self.calls == 1 else b''
+    response = Response()
+    monkeypatch.setattr(model_store.urllib.request, 'urlopen', lambda *a, **k: response)
+    item = Item(path=tmp_path / 'file', size=3, url='https://example.com', root=tmp_path)
+    with pytest.raises(ModelStoreError):
+        model_store._fetch_url(item, lambda _: None)
+    assert response.calls == 1
+    assert not item.path.exists()
+
+
+def test_uuid_partial_is_removed_and_not_resumed(tmp_path):
+    manifest = pipeline_manifest(vae='')
+    folder = repo_folder(manifest.source)
+    blob = folder / 'blobs' / ('a' * 64)
+    partial = blob.with_name(blob.name + '.1234abcd.incomplete')
+    partial.parent.mkdir(parents=True)
+    partial.write_bytes(b'partial')
+    item = Item(path=folder / 'snapshots' / REV / 'x', size=100, folder=folder, blob_key=blob.name)
+    assert model_store.remaining_bytes([item]) == 100
+    model_store._write_marker(manifest.id, {'blobs': [str(blob)]})
+    _delete_model_files(manifest, str(tmp_path), [])
+    assert not partial.exists()
+
+
+def test_queue_does_not_wait_for_catalog_refresh(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    started = []
+    def probe(*_args):
+        entered.set()
+        release.wait(5)
+        return (1, False)
+    monkeypatch.setattr(model_store, 'probe_model', probe)
+    monkeypatch.setattr(model_store, '_delete_model_files', lambda *_: started.append(True))
+    async def scenario():
+        store = new_store(pipeline_manifest())
+        store.attach(lambda _: _noop(), lambda _: False)
+        store.handle({'type': 'remove_model', 'model_id': 'pipe-test'})
+        store.handle({'type': 'remove_model', 'model_id': 'pipe-test'})
+        try:
+            await asyncio.wait_for(store._queue.join(), 2)
+            assert len(started) == 2
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_probe_invalidation_only_covers_shared_repositories():
+    first = pipeline_manifest('first')
+    shared = pipeline_manifest('shared')
+    unrelated = upscale_manifest('https://example.com/model', [2])
+    store = ModelStore([first, shared, unrelated], FakeEngine(), '')
+    _PROBES.update({m.id: (7, False) for m in (first, shared, unrelated)})
+    store._invalidate_probes(first.id)
+    assert set(_PROBES) == {unrelated.id}

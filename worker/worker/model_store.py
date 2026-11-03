@@ -7,8 +7,8 @@ A model is installed when its marker says so: the marker is written only after
 every planned file is on disk at its planned size, and it records the files and
 the fingerprint of the pins they came from. A download in progress leaves an
 "installing" marker, so a partial download is never installed. A cache filled
-before markers existed is adopted once, on scan, when the exact hub plan matches
-the local files; without the hub metadata nothing is adopted.
+before markers existed is adopted when the exact hub plan matches the local
+files; without the hub metadata nothing is adopted.
 
 The worker process runs one queue of operations, in the order they were asked
 for, and one task drains it. Only one operation (an install or a removal) runs
@@ -294,12 +294,6 @@ def _blob_ready(item: Item) -> bool:
 def _transfer_size(item: Item) -> int:
     if _size_ok(item.path, item.size) or _blob_ready(item):
         return 0
-    if item.folder is not None and item.blob_key:
-        partial = item.folder / "blobs" / (item.blob_key + ".incomplete")
-        if contained(partial, hub_cache_root()) and partial.is_file() and not partial.is_symlink():
-            size = partial.stat().st_size
-            if size <= item.size:
-                return item.size - size
     return item.size
 
 
@@ -356,16 +350,19 @@ def adopt_legacy(manifest: Manifest, models_dir: str, device: str = "cuda") -> b
         return False
     try:
         items, _gated = plan_items(manifest, models_dir, device)
-    except (ModelStoreError, OSError, ValueError):
+        if not all(_size_ok(item.path, item.size) for item in items):
+            return False
+        _write_marker(manifest.id, {
+            "state": "installed",
+            "fingerprint": _fingerprint(manifest, device),
+            "variant": weight_config(manifest.dtype, device)[1],
+            "files": [{"path": str(item.path), "size": item.size} for item in items],
+        })
+    except OSError:
+        logger.warning("cannot adopt model %s: cache is inaccessible", manifest.id)
         return False
-    if not all(_size_ok(item.path, item.size) for item in items):
+    except (ModelStoreError, ValueError):
         return False
-    _write_marker(manifest.id, {
-        "state": "installed",
-        "fingerprint": _fingerprint(manifest, device),
-        "variant": weight_config(manifest.dtype, device)[1],
-        "files": [{"path": str(item.path), "size": item.size} for item in items],
-    })
     return True
 
 
@@ -618,8 +615,10 @@ def _fetch_url(item: Item, on_bytes: Callable[[int], None]) -> None:
             ) as out:
                 tmp = Path(out.name)
                 while chunk := response.read(UPSCALE_CHUNK_BYTES):
-                    out.write(chunk)
                     written += len(chunk)
+                    if written > item.size:
+                        raise ModelStoreError("download_failed")
+                    out.write(chunk)
                     on_bytes(written)
         if written != item.size:
             raise ModelStoreError("download_failed")
@@ -713,6 +712,9 @@ def _delete_model_files(manifest: Manifest, models_dir: str,
                 and not _blob_referenced(blob.parent.parent, blob)):
             blob.unlink(missing_ok=True)
             partial.unlink(missing_ok=True)
+            for candidate in blob.parent.glob(blob.name + ".????????.incomplete"):
+                if contained(candidate, hub_cache_root()) and not candidate.is_symlink():
+                    candidate.unlink(missing_ok=True)
     _remove_marker(manifest.id)
 
 
@@ -866,10 +868,12 @@ class ModelStore:
         self._probe_task: asyncio.Task | None = None
         self._probe_generation = 0
         self._gpu: tuple[str, int | None] = ("unknown", None)
+        self._adoption_retry: dict[str, float] = {}
+        self._adoption_lock = asyncio.Lock()
 
     async def scan(self) -> None:
         """Set the installed set from the markers. A cache with no marker is adopted here
-        when the exact hub plan is complete on disk, once."""
+        when the exact hub plan is complete on disk."""
         found = await asyncio.to_thread(self._scan_disk)
         self.installed.clear()
         self.installed.update(found)
@@ -877,9 +881,12 @@ class ModelStore:
     def _scan_disk(self) -> dict[str, Manifest]:
         found: dict[str, Manifest] = {}
         for manifest in self.bundled.values():
-            if (is_installed(manifest, self._models_dir, self._device)
-                    or adopt_legacy(manifest, self._models_dir, self._device)):
-                found[manifest.id] = manifest
+            try:
+                if (is_installed(manifest, self._models_dir, self._device)
+                        or adopt_legacy(manifest, self._models_dir, self._device)):
+                    found[manifest.id] = manifest
+            except OSError:
+                logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
         return found
 
     def catalog(self) -> list[dict]:
@@ -913,6 +920,7 @@ class ModelStore:
         self._busy = busy
         self._dirty = True
         self._status_task = asyncio.create_task(self._status_loop())
+        self._spawn(self._retry_adoption(force=True))
         self._probe_task = asyncio.create_task(self._probe_unknown())
 
     async def send_inventory(self) -> None:
@@ -1007,13 +1015,13 @@ class ModelStore:
                 if op.kind == "install":
                     await self._run_install(op)
                 else:
-                    await self._run_remove(op)
+                    async with self._adoption_lock:
+                        await self._run_remove(op)
             finally:
                 self._current = None
-                # ponytail: companion repositories can be shared by any bundled model.
-                self._invalidate_probes()
-                await self._probe_unknown()
-                await self._announce()
+                if op.kind in ("install", "remove"):
+                    self._invalidate_probes(op.model_id)
+                    self._spawn(self._refresh_probes())
                 self._queue.task_done()
                 self._mark()
 
@@ -1075,8 +1083,6 @@ class ModelStore:
             result = Operation(model_id, op_id=op_id, kind="cancel", targets=targets)
             self._ops[model_id] = result
             self._enqueue(result)
-        self._invalidate_probes()
-        self._spawn(self._refresh_probes())
         self._mark()
 
     def _remove(self, model_id: str, op_id: str | None) -> None:
@@ -1126,9 +1132,38 @@ class ModelStore:
             op.state = "failed"
             op.error = "remove_failed"
 
-    def _invalidate_probes(self) -> None:
+    def _invalidate_probes(self, model_id: str) -> None:
         self._probe_generation += 1
-        _PROBES.clear()
+        changed = self.bundled[model_id]
+        repos = {ref.repo for ref in repo_refs(changed, self._device)}
+        for manifest in self.bundled.values():
+            if manifest.id == model_id or repos.intersection(
+                    ref.repo for ref in repo_refs(manifest, self._device)):
+                _PROBES.pop(manifest.id, None)
+
+    async def _retry_adoption(self, *, force: bool = False) -> None:
+        for manifest in self.bundled.values():
+            if manifest.id in self.installed or _read_marker(manifest.id) is not None:
+                continue
+            now = time.monotonic()
+            if not force and now < self._adoption_retry.get(manifest.id, 0):
+                continue
+            self._adoption_retry[manifest.id] = now + 5.0
+            try:
+                async with self._adoption_lock:
+                    if (self._current is not None or self._queued
+                            or manifest.id in self.installed):
+                        continue
+                    adopted = await asyncio.to_thread(adopt_legacy, manifest, self._models_dir, self._device)
+                    if adopted and not self._queued:
+                        self.installed[manifest.id] = manifest
+                    else:
+                        adopted = False
+            except OSError:
+                logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
+                continue
+            if adopted:
+                await self._announce()
 
     async def _refresh_probes(self) -> None:
         await self._probe_unknown()
@@ -1144,6 +1179,8 @@ class ModelStore:
             result = await asyncio.to_thread(probe_model, manifest, self._models_dir, self._device)
             if generation != self._probe_generation:
                 return
+            if result is None:
+                self._spawn(self._retry_adoption())
             if result is not None:
                 _PROBES[manifest.id] = result
                 learned = True
