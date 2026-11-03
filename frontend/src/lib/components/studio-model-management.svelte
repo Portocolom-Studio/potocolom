@@ -1,0 +1,502 @@
+<script lang="ts">
+	import { onMount, tick } from 'svelte';
+	import { apiFetch } from '$lib/api';
+	import { recheckAdminAccess } from '$lib/studio-admin-logic';
+	import { t } from '$lib/i18n.svelte';
+	import {
+		formatSize,
+		selectionSpace,
+		shouldPoll,
+		pollInterval,
+		initialSelection
+	} from '$lib/model-management';
+	import { Button } from '$lib/components/ui/button';
+
+	type Download = {
+		kind: 'install' | 'remove' | 'cancel';
+		state: string;
+		bytes_done: number;
+		bytes_total: number;
+		error: string | null;
+		op_id: string | null;
+	};
+	type Model = {
+		id: string;
+		name: string;
+		capabilities: string[];
+		tier: string;
+		license_id: string;
+		min_vram_gb: number;
+		installed: boolean;
+		download_bytes: number | null;
+		needs_token: boolean;
+		fits: boolean;
+		suggested: boolean;
+		download: Download | null;
+	};
+	type Worker = {
+		worker_id: string;
+		manageable: boolean;
+		hardware: {
+			gpu_name: string;
+			vram_total_bytes: number | null;
+			disk_total_bytes: number;
+			disk_free_bytes: number;
+		} | null;
+		disk_free_bytes: number | null;
+		models: Model[];
+	};
+	let workers = $state<Worker[]>([]);
+	let selected = $state<Record<string, string[]>>({});
+	let initialized = new Set<string>();
+	let loading = $state(true);
+	let error = $state(false);
+	let busy = $state(false);
+	let alive = false;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	type Pending = {
+		action: 'install' | 'cancel' | 'remove';
+		opId: string;
+	};
+	let pending = $state<Record<string, Pending>>({});
+	let actionErrors = $state<Record<string, string>>({});
+	let announcement = $state('');
+	let refreshVersion = 0;
+	let root: HTMLDivElement;
+	const key = (worker: string, model: string) => `${worker}\u0000${model}`;
+	const actionKey = (worker: string, model: string, action: string) =>
+		`${key(worker, model)}\u0000${action}`;
+	const answers = (download: Download | null, operation: Pending) =>
+		download?.op_id != null && download.op_id >= operation.opId;
+	const active = (model: Model) => shouldPoll([model.download?.state ?? '']);
+	function reserved(worker: Worker) {
+		return worker.models.reduce((sum, model) => {
+			if (
+				!(active(model) && model.download?.kind === 'install') &&
+				pending[key(worker.worker_id, model.id)]?.action !== 'install'
+			)
+				return sum;
+			return (
+				sum +
+				Math.max(
+					0,
+					active(model) &&
+						model.download?.kind === 'install' &&
+						(!pending[key(worker.worker_id, model.id)] ||
+							answers(model.download, pending[key(worker.worker_id, model.id)]))
+						? (model.download?.bytes_total || model.download_bytes || 0) -
+								(model.download?.bytes_done ?? 0)
+						: (model.download_bytes ?? 0)
+				)
+			);
+		}, 0);
+	}
+	function schedule() {
+		clearTimeout(timer);
+		const interval = pollInterval(
+			alive,
+			Object.keys(pending).length > 0 || workers.some((w) => w.models.some(active))
+		);
+		if (interval !== null) timer = setTimeout(() => void refresh(), interval);
+	}
+	async function refresh() {
+		if (!alive) return;
+		clearTimeout(timer);
+		const version = ++refreshVersion;
+		try {
+			const response = await apiFetch('/api/v1/admin/models');
+			if (response.status === 403) void recheckAdminAccess();
+			if (!response.ok) throw new Error('models');
+			const data: Worker[] = await response.json();
+			if (!alive || version !== refreshVersion) return;
+			const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+			const row = focused?.closest<HTMLElement>('[data-model]');
+			const workerId = row?.closest<HTMLElement>('[data-worker]')?.dataset.worker;
+			const modelId = row?.dataset.model;
+			const focusedHere = !!row && root.contains(row);
+			const oldWorkers = workers;
+			workers = data;
+			const present = new Set<string>();
+			for (const worker of data) {
+				if (worker.manageable && worker.models.length > 0 && !initialized.has(worker.worker_id)) {
+					initialized.add(worker.worker_id);
+					selected[worker.worker_id] = initialSelection(worker.models);
+				}
+				if (worker.manageable)
+					selected[worker.worker_id] = (selected[worker.worker_id] ?? []).filter((id) =>
+						worker.models.some((m) => m.id === id && !m.installed && !active(m))
+					);
+				for (const model of worker.models) {
+					const id = key(worker.worker_id, model.id);
+					present.add(id);
+					const operation = pending[id];
+					const old = oldWorkers
+						.find((w) => w.worker_id === worker.worker_id)
+						?.models.find((m) => m.id === model.id);
+					if (
+						operation &&
+						answers(model.download, operation) &&
+						((model.download?.op_id != null && model.download.op_id > operation.opId) ||
+							!active(model))
+					) {
+						if (
+							operation.action === 'remove' &&
+							model.download?.op_id === operation.opId &&
+							model.download.kind === 'remove'
+						) {
+							if (model.download?.error === 'not_running') {
+								announcement = t('app.model_management.announce_not_running').replace(
+									'{model}',
+									model.name
+								);
+							} else if (model.download?.state === 'failed') {
+								actionErrors[actionKey(worker.worker_id, model.id, 'remove')] =
+									model.download.error ?? t('app.model_management.removal_failed');
+								announcement = t('app.model_management.announce_removal_failed').replace(
+									'{model}',
+									model.name
+								);
+							} else {
+								announcement = t('app.model_management.announce_removed').replace(
+									'{model}',
+									model.name
+								);
+							}
+						}
+						delete pending[id];
+					}
+					if (
+						old &&
+						operation?.action !== 'remove' &&
+						old.download?.state !== model.download?.state
+					) {
+						const state = model.download?.state;
+						if (state === 'queued' || state === 'downloading')
+							announcement = t('app.model_management.announce_started').replace(
+								'{model}',
+								model.name
+							);
+						else if (state === 'done')
+							announcement = t('app.model_management.announce_finished').replace(
+								'{model}',
+								model.name
+							);
+						else if (state === 'cancelled')
+							announcement = t('app.model_management.announce_cancelled').replace(
+								'{model}',
+								model.name
+							);
+						else if (state === 'failed' && model.download?.error === 'not_running')
+							announcement = t('app.model_management.announce_not_running').replace(
+								'{model}',
+								model.name
+							);
+						else if (state === 'failed')
+							announcement = t(
+								model.download?.error === 'cancelled'
+									? 'app.model_management.announce_cancelled'
+									: 'app.model_management.announce_failed'
+							).replace('{model}', model.name);
+					}
+				}
+			}
+			for (const id of Object.keys(pending)) if (!present.has(id)) delete pending[id];
+			for (const id of Object.keys(selected))
+				if (!data.some((w) => w.worker_id === id)) {
+					delete selected[id];
+				}
+			error = false;
+			await tick();
+			if (!alive || version !== refreshVersion) return;
+			if (focused && focusedHere && !focused.isConnected) {
+				const target = [...root.querySelectorAll<HTMLElement>('[data-worker]')]
+					.find((el) => el.dataset.worker === workerId)
+					?.querySelector<HTMLElement>(
+						`[data-model="${CSS.escape(modelId ?? '')}"] [data-heading]`
+					);
+				(target ?? root)?.focus();
+			}
+		} catch {
+			if (alive && version === refreshVersion) error = true;
+		} finally {
+			if (alive && version === refreshVersion) {
+				loading = false;
+				schedule();
+			}
+		}
+	}
+
+	function toggle(worker: string, id: string) {
+		const ids = selected[worker] ?? [];
+		selected[worker] = ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+	}
+	async function command(worker: Worker, model: Model, action: 'install' | 'cancel' | 'remove') {
+		const path = `/api/v1/admin/workers/${encodeURIComponent(worker.worker_id)}/models/${encodeURIComponent(model.id)}`;
+		delete actionErrors[actionKey(worker.worker_id, model.id, action)];
+		const response = await apiFetch(path + (action === 'remove' ? '' : `/${action}`), {
+			method: action === 'remove' ? 'DELETE' : 'POST'
+		});
+		if (response.status === 403) void recheckAdminAccess();
+		if (!response.ok) {
+			const body = await response.json().catch(() => null);
+			throw new Error(`${response.status}${body?.detail ? `: ${body.detail}` : ''}`);
+		}
+		const body: { op_id: string } = await response.json();
+		pending[key(worker.worker_id, model.id)] = {
+			action,
+			opId: body.op_id
+		};
+		if (action === 'install')
+			announcement = t('app.model_management.announce_started').replace('{model}', model.name);
+	}
+	async function install(worker: Worker) {
+		const models = worker.models.filter(
+			(m) =>
+				(selected[worker.worker_id] ?? []).includes(m.id) &&
+				!m.installed &&
+				!m.needs_token &&
+				!m.download?.state?.match(/^(queued|downloading)$/) &&
+				!pending[key(worker.worker_id, m.id)]
+		);
+		const free = worker.disk_free_bytes ?? worker.hardware?.disk_free_bytes;
+		if (
+			free == null ||
+			!selectionSpace(
+				free,
+				models.map((m) => m.download_bytes),
+				reserved(worker)
+			).allowed
+		)
+			return;
+		busy = true;
+		try {
+			for (const model of models) {
+				await command(worker, model, 'install');
+				selected[worker.worker_id] = (selected[worker.worker_id] ?? []).filter(
+					(id) => id !== model.id
+				);
+			}
+		} catch (cause) {
+			const model = models.find((m) => (selected[worker.worker_id] ?? []).includes(m.id));
+			if (model)
+				actionErrors[actionKey(worker.worker_id, model.id, 'install')] =
+					cause instanceof Error ? cause.message : String(cause);
+		} finally {
+			busy = false;
+			clearTimeout(timer);
+			await refresh();
+		}
+	}
+	async function change(worker: Worker, model: Model, action: 'cancel' | 'remove') {
+		// An authoritative reclaimable size field can be shown here when available.
+		if (
+			action === 'remove' &&
+			!confirm(t('app.model_management.remove_confirm').replace('{model}', model.name))
+		)
+			return;
+		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		busy = true;
+		try {
+			await command(worker, model, action);
+		} catch (cause) {
+			actionErrors[actionKey(worker.worker_id, model.id, action)] =
+				cause instanceof Error ? cause.message : String(cause);
+		} finally {
+			busy = false;
+			clearTimeout(timer);
+			await refresh();
+			if (focused && !focused.isConnected) {
+				root
+					.querySelector<HTMLElement>(
+						`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
+					)
+					?.focus();
+			}
+		}
+	}
+	onMount(() => {
+		alive = true;
+		void refresh();
+		return () => {
+			alive = false;
+			clearTimeout(timer);
+		};
+	});
+</script>
+
+{#if loading}<p role="status">{t('app.model_management.loading')}</p>{/if}
+{#if error}<p role="alert">{t('app.model_management.error')}</p>
+	<Button variant="outline" onclick={() => refresh()}>{t('app.model_management.retry')}</Button
+	>{/if}
+{#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
+<p class="sr-only" aria-live="polite">{announcement}</p>
+<div bind:this={root} class="space-y-8" data-model-list tabindex="-1">
+	{#each workers as worker (worker.worker_id)}
+		<section class="space-y-4" aria-label={worker.worker_id} data-worker={worker.worker_id}>
+			<h2 class="text-lg font-semibold">{worker.worker_id}</h2>
+			{#if !worker.manageable}<p>{t('app.model_management.update')}</p>
+			{:else}
+				{#if worker.hardware}
+					{@const free = worker.disk_free_bytes ?? worker.hardware.disk_free_bytes}
+					<p>
+						{t('app.model_management.hardware')
+							.replace('{gpu}', worker.hardware.gpu_name)
+							.replace(
+								'{vram}',
+								worker.hardware.vram_total_bytes == null
+									? t('app.model_management.unknown')
+									: formatSize(worker.hardware.vram_total_bytes)
+							)}
+					</p>
+					<label
+						>{t('app.model_management.disk')}: {formatSize(free)} / {formatSize(
+							worker.hardware.disk_total_bytes
+						)}<progress
+							class="block w-full"
+							value={free}
+							max={worker.hardware.disk_total_bytes || 1}
+						></progress></label
+					>
+				{/if}
+				<div class="space-y-3">
+					{#each worker.models as model (model.id)}
+						{@const operation = pending[key(worker.worker_id, model.id)]}
+						{@const active =
+							model.download?.state === 'queued' || model.download?.state === 'downloading'}
+						<div class="rounded-md border p-4" class:opacity-60={!model.fits} data-model={model.id}>
+							<div class="flex flex-wrap items-center gap-2">
+								{#if !model.installed && !active && !pending[key(worker.worker_id, model.id)]}<input
+										type="checkbox"
+										aria-label={model.name}
+										checked={(selected[worker.worker_id] ?? []).includes(model.id)}
+										disabled={model.needs_token || busy}
+										onchange={() => toggle(worker.worker_id, model.id)}
+									/>{/if}
+								<strong data-heading tabindex="-1">{model.name}</strong>
+								{#if model.suggested}<span>{t('app.model_management.suggested')}</span>{/if}
+							</div>
+							<p class="text-muted-foreground text-sm">
+								{model.capabilities.join(', ')} - {model.tier} - {model.license_id ||
+									t('app.model_management.unknown')} - {model.download_bytes == null
+									? t('app.model_management.unknown')
+									: formatSize(model.download_bytes)}
+							</p>
+							{#if !model.fits}<p>
+									{t('app.model_management.needs_vram').replace(
+										'{vram}',
+										String(model.min_vram_gb)
+									)}
+								</p>{/if}
+							{#if model.needs_token}<p>
+									{t('app.model_management.token')}
+									<a
+										class="underline"
+										href="https://huggingface.co/docs/hub/security-tokens"
+										target="_blank"
+										rel="noreferrer">{t('app.model_management.docs')}</a
+									>
+								</p>{/if}
+							{#if (operation && (operation.action === 'remove' || !active || !answers(model.download, operation))) || (active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}
+								<p role="status">{t('app.model_management.waiting')}</p>
+								{#if operation?.action === 'install' && !(active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}<Button
+										variant="outline"
+										disabled={busy}
+										onclick={() => change(worker, model, 'cancel')}
+										>{t('app.model_management.cancel')}</Button
+									>{/if}
+							{/if}
+							{#if active && model.download?.kind === 'install' && (!operation || (operation.action !== 'remove' && answers(model.download, operation)))}<label
+									>{formatSize(model.download.bytes_done)} / {formatSize(
+										model.download.bytes_total
+									)}<progress
+										class="block w-full"
+										aria-label={t('app.model_management.progress_label').replace(
+											'{model}',
+											model.name
+										)}
+										value={model.download.bytes_done}
+										max={model.download.bytes_total || 1}
+									></progress></label
+								><Button
+									variant="outline"
+									disabled={busy}
+									onclick={() => change(worker, model, 'cancel')}
+									>{t('app.model_management.cancel')}</Button
+								>{/if}
+							{#if (!operation || answers(model.download, operation)) && model.download?.state === 'failed' && model.download.error === 'not_running'}<p
+									role="status"
+								>
+									{t('app.model_management.not_running')}
+								</p>
+							{:else if (!operation || answers(model.download, operation)) && model.download?.state === 'failed' && model.download.error === 'cancelled'}<p
+									role="status"
+								>
+									{t('app.model_management.cancelled')}
+								</p>
+							{:else if (!operation || answers(model.download, operation)) && model.download?.state === 'failed'}<p
+									role="alert"
+								>
+									{t('app.model_management.failed')}: {model.download.error}
+								</p>{/if}
+							{#each ['install', 'cancel', 'remove'] as action}
+								{@const message = actionErrors[actionKey(worker.worker_id, model.id, action)]}
+								{#if message}<p role="alert">
+										{t(
+											action === 'install'
+												? 'app.model_management.action_install'
+												: action === 'cancel'
+													? 'app.model_management.cancel'
+													: 'app.model_management.remove'
+										)}: {message}
+										<button
+											onclick={() =>
+												delete actionErrors[actionKey(worker.worker_id, model.id, action)]}
+											>{t('app.model_management.dismiss')}</button
+										>
+									</p>{/if}
+							{/each}
+							{#if model.installed || (model.download?.kind === 'remove' && model.download.state === 'failed' && model.download.error === 'remove_failed')}<Button
+									variant="outline"
+									disabled={busy || !!pending[key(worker.worker_id, model.id)]}
+									onclick={() => change(worker, model, 'remove')}
+									>{t('app.model_management.remove')}</Button
+								>{/if}
+						</div>
+					{/each}
+				</div>
+				{@const picks = worker.models.filter(
+					(m) =>
+						(selected[worker.worker_id] ?? []).includes(m.id) &&
+						!m.installed &&
+						!m.needs_token &&
+						m.download?.state !== 'queued' &&
+						m.download?.state !== 'downloading' &&
+						!pending[key(worker.worker_id, m.id)]
+				)}
+				{@const free = worker.disk_free_bytes ?? worker.hardware?.disk_free_bytes}
+				{@const space =
+					free == null
+						? null
+						: selectionSpace(
+								free,
+								picks.map((m) => m.download_bytes),
+								reserved(worker)
+							)}
+				<p>
+					{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
+						? t('app.model_management.unknown')
+						: formatSize(space?.total ?? 0)}. {t('app.model_management.free_after')}: {space ==
+						null || picks.some((m) => m.download_bytes == null)
+						? t('app.model_management.unknown')
+						: formatSize(space.freeAfter)}
+				</p>
+				{#if picks.length && !space?.allowed}<p role="status">
+						{t('app.model_management.margin')}
+					</p>{/if}
+				<Button disabled={busy || !space?.allowed} onclick={() => install(worker)}
+					>{t('app.model_management.install')}</Button
+				>
+			{/if}
+		</section>
+	{/each}
+</div>
