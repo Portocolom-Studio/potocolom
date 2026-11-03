@@ -81,6 +81,18 @@ else
 	fail_case root-keys-value-is-not-printed "the installer output contains the ring"
 fi
 
+# The exact old template line is retired, while deliberate overrides survive.
+printf '%s\n' 'AUTH_MODE=none' 'AUTH_MODE=accounts' '#AUTH_MODE=none' 'AUTH_MODE="none"' >>"$ENV_FILE"
+if run_ensure && ! grep -qx 'AUTH_MODE=none' "$ENV_FILE" \
+    && grep -qx 'AUTH_MODE=accounts' "$ENV_FILE" \
+    && grep -qx '#AUTH_MODE=none' "$ENV_FILE" \
+    && grep -qx 'AUTH_MODE="none"' "$ENV_FILE" \
+    && grep -q 'database.*mode' "$ENV_FILE"; then
+    printf 'ok legacy-auth-mode-is-retired\n'
+else
+    fail_case legacy-auth-mode-is-retired
+fi
+
 if ((failures > 0)); then
 	printf '%d failure(s)\n' "$failures" >&2
 	exit 1

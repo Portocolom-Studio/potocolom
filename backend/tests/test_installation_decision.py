@@ -204,7 +204,7 @@ def test_an_unclaimed_install_answers_setup_required_outside_the_setup_surface(d
         # The setup route is reached: a wrong link gets the link answer, not the gate's.
         assert _choose(client, "not-a-real-link", mode="none").status_code == 403
 
-        # Workers connect so the setup page can show their hardware.
+        # Workers can connect while setup is pending.
         with client.websocket_connect("/api/v1/fleet", headers=FLEET_HEADERS) as worker:
             worker.send_json(hello())
             expect(worker, "registered")
@@ -360,6 +360,34 @@ def test_a_stale_unclaimed_view_cannot_switch_an_accounts_install_to_none(decisi
     # The refused choice left the link unspent, so the administrator can still claim.
     adopted = decision(enable.claim(token, EMAIL, PASSWORD))
     assert adopted is not None
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", ["unclaimed", "none"])
+def test_missing_root_keys_rolls_back_setup_or_enable(decision, monkeypatch, mode):
+    decision(_set_row(mode))
+    with TestClient(app, base_url=ORIGIN, raise_server_exceptions=False) as client:
+        token = client.portal.call(enable.mint_setup_token) if mode == "unclaimed" else None
+        monkeypatch.setenv("ROOT_KEYS", "")
+        get_settings.cache_clear()
+        keyring.get_key_ring.cache_clear()
+        body = {"email": EMAIL, "password": PASSWORD}
+        if token:
+            response = _choose(client, token, mode="accounts", **body)
+        else:
+            response = client.post("/api/v1/auth/enable", json=body, headers={"origin": ORIGIN})
+        assert response.status_code == 503
+        assert response.json()["detail"] == "root_keys_missing"
+        assert "install" in response.json()["message"]
+        assert "make setup-link" in response.json()["message"]
+        assert client.portal.call(_row) == mode
+        assert client.portal.call(_identities) == []
+        assert auth_mode.current() == mode
+        if token:
+            monkeypatch.setenv("ROOT_KEYS", ROOT_KEYS)
+            get_settings.cache_clear()
+            keyring.get_key_ring.cache_clear()
+            assert _choose(client, token, mode="accounts", **body).status_code == 204
 
 
 # ---------------------------------------------------------------- runtime enable

@@ -288,7 +288,9 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
   when it creates the volume; otherwise preflight warns and prints the
   `ALTER ROLE` command to change it. It prints `FLEET_SECRET` once. Copy
   that value to a worker on another machine. Non-empty keys in an existing
-  `.env` are left alone.
+  `.env` are left alone, except the old template line `AUTH_MODE=none`, which is
+  commented out so the database holds the mode. To pin none deliberately, use
+  `AUTH_MODE="none"`.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with
@@ -348,12 +350,17 @@ hour and works once. Whoever opens it in a browser chooses how the install works
 Until somebody chooses, every API route answers `503` with `{"detail": "setup_required"}`.
 The exceptions are the health and readiness probes, `GET /api/v1/config`, the setup route
 and the fleet socket, which lets a worker report its hardware before anyone signs in.
+The setup page does not show that hardware; `/api/v1/admin/models` answers `503`
+until setup is complete.
 
 The choice is recorded in PostgreSQL. `AUTH_MODE` in `deploy/compose/.env` is an optional
 override, and it should stay empty: the API then follows the recorded choice. Setting
 `AUTH_MODE=none` or `AUTH_MODE=accounts` decides an install that has not chosen yet, and it
 must agree with an install that has. Otherwise the API refuses to start and names the
 variable. Scripted installs and CI use the override and never see the setup page.
+The mode is held per API process, so an install without a pinned `AUTH_MODE` must
+run a single API process, as self-hosted Compose does. A scaled deployment must pin
+`AUTH_MODE` to the recorded choice.
 
 An install that already exists is decided at upgrade: it keeps accounts if it had them,
 and it is `none` if it holds any user or work, so an upgrade never shows the setup page.

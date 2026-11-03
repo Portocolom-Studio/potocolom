@@ -19,13 +19,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from anyio import to_thread
 from sqlalchemy import delete, func, select, text, update
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import audit, auth_mode, db, sessions
 from app.accounts import issue_session
 from app.auth import check_origin, require_none_mode, require_role
+from app.keyring import KeyRingError
 from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -259,6 +260,13 @@ async def require_setup_mode() -> None:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
+def _missing_root_keys() -> JSONResponse:
+    return JSONResponse(status_code=503, content={
+        "detail": "root_keys_missing",
+        "message": "Run the install script or make setup-link to write ROOT_KEYS.",
+    })
+
+
 class SetupRequest(BaseModel):
     token: StorableStr
     # none records the choice and returns no session: there is nobody to sign in.
@@ -275,7 +283,12 @@ async def setup(request: SetupRequest) -> Response:
         auth_mode.load(auth_mode.NONE)
         await audit.record("POST /api/v1/auth/setup")
         return Response(status_code=204)
-    adopted = await claim(request.token, request.email, request.password)
+    try:
+        adopted = await claim(request.token, request.email, request.password)
+    except KeyRingError:
+        if get_settings().root_keys:
+            raise
+        return _missing_root_keys()
     auth_mode.load(auth_mode.ACCOUNTS)
     await audit.record("POST /api/v1/auth/setup", target_user_id=adopted)
     if db.session_factory is None:
@@ -315,7 +328,12 @@ async def enable_accounts(
         # The override is read again at the next start, where it would refuse the
         # accounts this switch records. Refusing here leaves nothing to undo.
         raise HTTPException(status_code=409, detail=OVERRIDE_REFUSAL)
-    adopted = await turn_accounts_on(request.email, request.password)
+    try:
+        adopted = await turn_accounts_on(request.email, request.password)
+    except KeyRingError:
+        if get_settings().root_keys:
+            raise
+        return _missing_root_keys()
     auth_mode.load(auth_mode.ACCOUNTS)
     # Imported here: the realtime module imports this one's neighbours, and
     # only the route needs it.

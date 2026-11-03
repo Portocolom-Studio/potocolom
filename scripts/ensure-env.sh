@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Create deploy/compose/.env from the example when missing, and fill empty
 # POSTGRES_PASSWORD / FLEET_SECRET / ROOT_KEYS. Never overwrites a non-empty
-# Compose value. ENV_FILE / ENV_EXAMPLE override paths (verify-guards).
+# Compose value, except the legacy AUTH_MODE=none template line.
+# ENV_FILE / ENV_EXAMPLE override paths (verify-guards).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -180,6 +181,14 @@ else
 		echo "FLEET_SECRET=$fleet"
 		echo "A worker on another machine needs a copy of FLEET_SECRET."
 	fi
+fi
+
+# Retire the exact old template default so the database choice can change.
+if grep -qx 'AUTH_MODE=none' "$ENV_FILE"; then
+    env_tmp="$(mktemp "$(dirname "$ENV_FILE")/.env.XXXXXX")"
+    chmod 600 "$env_tmp"
+    awk '$0 == "AUTH_MODE=none" { print "# The database now holds the auth mode. To pin it deliberately, set AUTH_MODE=\042none\042 or AUTH_MODE=accounts."; next } { print }' "$ENV_FILE" >"$env_tmp"
+    mv -f -- "$env_tmp" "$ENV_FILE"
 fi
 
 # ROOT_KEYS seals account secrets and queued worker commands. It is written
