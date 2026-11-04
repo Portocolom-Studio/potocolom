@@ -1327,6 +1327,8 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		await local.waitForSelector('#turn-on-email');
 		assert.equal(new URL(local.url()).searchParams.get('view'), 'account');
 		await local.goto(`http://127.0.0.1:${server.address().port}/app`);
+		// The sidebar renders after the account probe, so wait before clicking.
+		await local.waitForSelector('[data-testid="admin-nav-entry"]', { visible: true });
 		await local.click('[data-testid="admin-nav-entry"]');
 		await local.waitForSelector('[data-model="suggested"]');
 		await local.evaluate(() =>
