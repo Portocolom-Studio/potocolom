@@ -5,6 +5,7 @@
 	// keeps the bitmap DOM and drawing controls.
 	import type { Component } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
+	import BoxIcon from '@lucide/svelte/icons/box';
 	import BrushIcon from '@lucide/svelte/icons/brush';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
@@ -981,14 +982,14 @@
 
 {#snippet viewToggle()}
 	<div
-		class="bg-field border-line-strong my-auto ms-3 hidden gap-0.5 rounded-[7px] border p-0.5 lg:flex"
+		class="bg-field border-line-strong my-auto ms-3 hidden gap-0.5 rounded-lg border p-0.5 lg:flex"
 		role="group"
 		aria-label={t('app.realtime_canvas.view_mode')}
 	>
 		{#each VIEW_MODES as { mode, icon: Icon, label } (mode)}
 			<button
 				type="button"
-				class={'flex h-[26px] items-center gap-1.5 rounded-[5px] px-2.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+				class={'flex h-[26px] items-center gap-1.5 rounded-[6px] px-2.5 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
 					(viewMode === mode
 						? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
 						: 'text-muted-foreground hover:text-foreground')}
@@ -1003,7 +1004,7 @@
 {/snippet}
 
 {#snippet sessionActions()}
-	<div class="flex items-center gap-3.5 text-[12.5px]">
+	<div class="flex items-center gap-3.5 text-sm">
 		<span role="status" class="flex items-center gap-2 font-medium">
 			<span class={'size-[7px] shrink-0 rounded-full ' + statusTone} aria-hidden="true"></span>
 			{statusLabel}
@@ -1181,12 +1182,12 @@
 						{t('app.realtime_canvas.edit_prompt_apply')}
 					</Button>
 				</div>
-				<p class="text-dim text-[11.5px]">{t('app.realtime_canvas.edit_prompt_hint')}</p>
+				<p class="text-dim text-xs">{t('app.realtime_canvas.edit_prompt_hint')}</p>
 			{/if}
 			{#if selection}
-				<p class="text-dim text-[11.5px]">{t('app.realtime_canvas.selection_hint')}</p>
+				<p class="text-dim text-xs">{t('app.realtime_canvas.selection_hint')}</p>
 			{:else}
-				<p class="text-dim text-[11.5px]">{t('app.realtime_canvas.selecting_hint')}</p>
+				<p class="text-dim text-xs">{t('app.realtime_canvas.selecting_hint')}</p>
 			{/if}
 			<div class="flex flex-wrap gap-2">
 				{#if selecting}
@@ -1225,14 +1226,17 @@
 			class="bg-field border-line-strong focus-within:ring-ring/60 relative flex items-center gap-2.5 rounded-md border px-2.5 py-2 focus-within:ring-2"
 		>
 			<span
-				class="bg-raised ring-line-strong grid size-7 shrink-0 place-items-center rounded-md text-xs font-semibold ring-1 ring-inset"
-				aria-hidden="true">{selectedModel?.name.charAt(0) ?? '-'}</span
+				class="bg-raised ring-line-strong text-dim grid size-7 shrink-0 place-items-center rounded-md text-xs font-semibold ring-1 ring-inset"
+				aria-hidden="true"
+				>{#if selectedModel}{selectedModel.name.charAt(0)}{:else}<BoxIcon
+						class="size-3.5"
+					/>{/if}</span
 			>
 			<div class="min-w-0 flex-1">
 				<p class="truncate font-medium">
 					{selectedModel?.name ?? t('app.realtime_canvas.no_model')}
 				</p>
-				<p class="text-dim text-[11px] tabular-nums">
+				<p class="text-dim text-xs tabular-nums">
 					{CANVAS_SIZE} × {CANVAS_SIZE}{selectedModel?.realtime_p95_ms != null
 						? ` · p95 ${Math.round(selectedModel.realtime_p95_ms)} ${t('app.realtime_canvas.latency_ms')}`
 						: ''}
@@ -1268,8 +1272,8 @@
 			<div class="panes">
 				<section class="pane pane-sketch" aria-label={t('app.realtime_canvas.input_title')}>
 					<div class="pane-head">
-						<h2 class="text-[12.5px] font-semibold">{t('app.realtime_canvas.sketch_title')}</h2>
-						<span class="text-dim text-[11.5px] tabular-nums">{CANVAS_SIZE} × {CANVAS_SIZE}</span>
+						<h2 class="text-sm font-semibold">{t('app.realtime_canvas.sketch_title')}</h2>
+						<span class="text-dim text-xs tabular-nums">{CANVAS_SIZE} × {CANVAS_SIZE}</span>
 						<span class="flex-1"></span>
 						{#snippet undoButton(props: Record<string, unknown>)}
 							<button
@@ -1343,8 +1347,8 @@
 
 				<section class="pane pane-output" aria-label={t('app.realtime_canvas.output_title')}>
 					<div class="pane-head">
-						<h2 class="text-[12.5px] font-semibold">{t('app.realtime_canvas.output_title')}</h2>
-						<span class="text-dim text-[11.5px] tabular-nums" title={frameCounterTitle}
+						<h2 class="text-sm font-semibold">{t('app.realtime_canvas.output_title')}</h2>
+						<span class="text-dim text-xs tabular-nums" title={frameCounterTitle}
 							>{t('app.realtime_canvas.output_frame').replace(
 								'{count}',
 								renderedFrames.toLocaleString()
@@ -1405,13 +1409,13 @@
 						{/if}
 						{#if renderedFrames === 0}
 							<p
-								class="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-[13px]"
+								class="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-sm"
 							>
 								{t('app.realtime_canvas.output_empty')}
 							</p>
 						{/if}
 					</div>
-					<div class="pane-foot text-dim flex items-center gap-2 text-[11.5px]">
+					<div class="pane-foot text-dim flex items-center gap-2 text-xs">
 						<ZapIcon class="size-[13px] shrink-0" aria-hidden="true" />
 						<span class="truncate"
 							>{busy
@@ -1458,7 +1462,7 @@
 						autocomplete="off"
 						bind:value={prompt}
 						placeholder={t('app.realtime_canvas.prompt_placeholder')}
-						class="placeholder:text-dim h-[34px] min-w-0 flex-1 bg-transparent px-2.5 text-[13.5px] outline-none"
+						class="placeholder:text-dim h-[34px] min-w-0 flex-1 bg-transparent px-2.5 text-sm outline-none"
 						onkeydown={onPromptKeydown}
 					/>
 					{#if selectedModel}
@@ -1577,7 +1581,7 @@
 						onchange={openDrawing}
 					/>
 				</div>
-				<p id="realtime-open-hint" class="text-dim max-w-80 text-end text-[11px]">
+				<p id="realtime-open-hint" class="text-dim text-balance max-w-80 text-end text-xs">
 					{t('app.realtime_canvas.open_hint')}
 				</p>
 			</div>
@@ -1605,9 +1609,6 @@
 				{#if selectedModel?.requires_attribution}
 					<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
 				{/if}
-				{#if modelId === '' && studio.modelsLoaded}
-					<p class="text-muted-foreground mt-2 text-[13px]">{t('app.realtime_canvas.no_model')}</p>
-				{/if}
 			</div>
 			<div class="section">
 				<div class="section-title">
@@ -1622,17 +1623,17 @@
 					bind:value={prompt}
 					placeholder={t('app.realtime_canvas.prompt_placeholder')}
 					aria-describedby="realtime-prompt-hint"
-					class="bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 min-h-[76px] w-full resize-none rounded-md border px-2.5 py-2 text-[13px] leading-normal outline-none focus-visible:ring-2"
+					class="bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 min-h-[76px] w-full resize-none rounded-md border px-2.5 py-2 text-sm leading-normal outline-none focus-visible:ring-2"
 					onkeydown={onPromptKeydown}></textarea>
 				<div class="mt-2 flex items-center gap-2">
-					<span class="text-dim text-[11px] tabular-nums">{tokenLabel}</span>
+					<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
 					<span class="flex-1"></span>
 					<Button variant="outline" size="sm" disabled={!promptDirty} onclick={applyPrompt}>
 						{t('app.realtime_canvas.update')}
 						<kbd class="kbd">{shortcutLabel(['mod', 'enter'])}</kbd>
 					</Button>
 				</div>
-				<p id="realtime-prompt-hint" class="text-dim mt-1.5 text-[11px]">
+				<p id="realtime-prompt-hint" class="text-dim mt-1.5 text-xs">
 					{busy ? t('app.realtime_canvas.prompt_locked') : t('app.realtime_canvas.prompt_required')}
 				</p>
 			</div>
@@ -1673,22 +1674,22 @@
 				</div>
 				<dl class="grid grid-cols-3 gap-2" title={frameCounterTitle}>
 					<div>
-						<dt class="text-dim text-[11px]">{t('app.realtime_canvas.stat_sent')}</dt>
+						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_sent')}</dt>
 						<dd class="mt-0.5 text-sm tabular-nums">{sentFrames.toLocaleString()}</dd>
 					</div>
 					<div>
-						<dt class="text-dim text-[11px]">{t('app.realtime_canvas.stat_rendered')}</dt>
+						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_rendered')}</dt>
 						<dd class="mt-0.5 text-sm tabular-nums">{renderedFrames.toLocaleString()}</dd>
 					</div>
 					<div>
-						<dt class="text-dim text-[11px]">{t('app.realtime_canvas.stat_skipped')}</dt>
+						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_skipped')}</dt>
 						<dd class="mt-0.5 text-sm tabular-nums">{stageCounters.replaced.toLocaleString()}</dd>
 					</div>
 				</dl>
 			</div>
 			<div role="status" class="px-4 pb-4">
 				{#if notice}
-					<p class="text-destructive text-[13px]" aria-live="polite">
+					<p class="text-destructive text-sm" aria-live="polite">
 						{t(notice)}
 						{#if notice === 'app.realtime_canvas.session_revoked'}
 							{' '}
@@ -1705,7 +1706,7 @@
 	{:else}
 		<div role="status" class="session-notice">
 			{#if notice}
-				<p class="text-destructive text-[13px]" aria-live="polite">
+				<p class="text-destructive text-sm" aria-live="polite">
 					{t(notice)}
 					{#if notice === 'app.realtime_canvas.session_revoked'}
 						{' '}
@@ -1917,7 +1918,7 @@
 	}
 	.section {
 		border-bottom: 1px solid var(--border);
-		padding: 14px 16px;
+		padding: 16px 18px;
 	}
 	.section.section-last {
 		border-bottom: 0;
@@ -1941,7 +1942,7 @@
 		padding: 0 9px;
 		color: var(--muted-foreground);
 		font-family: var(--font-mono);
-		font-size: 11.5px;
+		font-size: 12px;
 		white-space: nowrap;
 	}
 	.kbd-on-brand {
@@ -1949,13 +1950,13 @@
 		border-radius: 4px;
 		padding: 0 4px;
 		color: #dfe6ff;
-		font: 500 11px var(--font-sans);
-		line-height: 15px;
+		font: 500 12px var(--font-sans);
+		line-height: 16px;
 	}
 	.glass {
 		border: 1px solid var(--line-strong);
 		border-radius: 10px;
-		background: rgb(15 15 15 / 92%);
+		background: color-mix(in oklch, var(--panel) 92%, transparent);
 		box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
 	}
 
@@ -2001,7 +2002,7 @@
 
 		/* Focus: one large output with the sketch laid over it. */
 		.rt[data-mode='focus'] .stage {
-			background: radial-gradient(ellipse at 50% 45%, #121212 0%, #0a0a0a 70%);
+			background: var(--background);
 		}
 		.rt[data-mode='focus'] .stage-body {
 			--focus-size: min(calc(100vw - 420px), calc(100svh - 290px));
@@ -2018,7 +2019,7 @@
 		}
 		.rt[data-mode='focus'] .rail {
 			margin: 0;
-			background: rgb(15 15 15 / 92%);
+			background: color-mix(in oklch, var(--panel) 92%, transparent);
 			border-color: var(--line-strong);
 			box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
 		}
@@ -2063,7 +2064,7 @@
 			transform: translateY(-50%);
 			border: 1px solid var(--line-strong);
 			border-radius: 10px;
-			background: rgb(15 15 15 / 92%);
+			background: color-mix(in oklch, var(--panel) 92%, transparent);
 			box-shadow: 0 12px 40px rgb(0 0 0 / 45%);
 		}
 		.rt[data-mode='focus'] .swatches {

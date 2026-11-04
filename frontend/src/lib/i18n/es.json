@@ -507,6 +507,8 @@
 	"app.gen.count": "Cantidad",
 	"app.gen.working_suffix": "en cola o renderizando; los resultados aparecen al terminar",
 	"app.gen.no_models": "No hay modelos registrados. Arranca un worker y recarga: anuncia sus modelos a la API al conectarse.",
+	"app.gen.setup_title": "Configura tu worker",
+	"app.gen.setup_guide": "Lee la guía de configuración",
 	"app.gen.result": "Imagen generada",
 	"app.gen.result_hint": "Tu imagen aparece aquí",
 	"app.gen.open_full": "Abrir a tamaño completo",

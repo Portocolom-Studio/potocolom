@@ -63,7 +63,7 @@
 		{onValueChange}
 		class="w-full"
 	/>
-	<div class="text-dim flex justify-between text-[10.5px] tabular-nums">
+	<div class="text-dim flex justify-between text-xs tabular-nums">
 		<span>{minLabel}</span>
 		<span>{maxLabel}</span>
 	</div>

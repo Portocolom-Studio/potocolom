@@ -47,7 +47,9 @@
 	const swimHeight = $derived(
 		modelLanes.length > 0 ? swimPlotTop + modelLanes.length * rowH + swimMargin.bottom + 8 : 0
 	);
-	const xTicks = $derived(timeTicks(timeline.windowStartMs, timeline.windowEndMs, 6));
+	// Four evenly spaced ticks; the viewBox is never narrower than swimWidth, so
+	// the 12px labels keep their size and the scroll region takes the overflow.
+	const xTicks = $derived(timeTicks(timeline.windowStartMs, timeline.windowEndMs, 4));
 	const rangeCaption = $derived(
 		formatRangeCaption(timeline.windowStartMs, timeline.windowEndMs, range)
 	);
@@ -112,7 +114,7 @@
 			<Card.Content class="overflow-x-auto p-4">
 				<svg
 					viewBox="0 0 {swimWidth} {swimHeight}"
-					class="h-auto w-full min-w-[36rem]"
+					class="h-auto w-full min-w-[45rem]"
 					role="img"
 					aria-label={t('app.metrics.model_activity')}
 				>
@@ -129,9 +131,9 @@
 						<text
 							x={swimMargin.left}
 							y={y + rowH / 2 + 1}
-							class="fill-muted-foreground font-sans text-[10px]"
+							class="fill-muted-foreground font-sans text-xs"
 						>
-							{lane.label.length > 14 ? `${lane.label.slice(0, 13)}…` : lane.label}
+							{lane.label.length > 14 ? `${lane.label.slice(0, 11)}...` : lane.label}
 						</text>
 						<circle
 							cx={swimMargin.left + labelW - 14}
@@ -162,25 +164,25 @@
 						<text
 							x={xScale(tick, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)}
 							y={swimHeight - 6}
-							text-anchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'}
-							class="fill-muted-foreground font-sans text-[10px] tabular-nums"
+							text-anchor="middle"
+							class="fill-muted-foreground font-sans text-xs tabular-nums"
 						>
 							{formatTimeTick(tick, range)}
 						</text>
 					{/each}
 				</svg>
 
-				<p class="text-muted-foreground mt-2 px-1 text-[10px] tabular-nums">{rangeCaption}</p>
-
-				<div class="mt-3 flex flex-wrap gap-3">
-					{#each modelLanes as lane (lane.id)}
-						<span class="text-muted-foreground flex items-center gap-1.5 text-xs">
-							<span class="inline-block size-2.5 rounded-sm" style={`background: ${lane.color}`}
-							></span>
-							<span>{lane.label}</span>
-						</span>
-					{/each}
-				</div>
+				{#if modelLanes.length > 1}
+					<div class="mt-3 flex flex-wrap gap-3">
+						{#each modelLanes as lane (lane.id)}
+							<span class="text-muted-foreground flex items-center gap-1.5 text-xs">
+								<span class="inline-block size-2.5 rounded-sm" style={`background: ${lane.color}`}
+								></span>
+								<span>{lane.label}</span>
+							</span>
+						{/each}
+					</div>
+				{/if}
 			</Card.Content>
 		</Card.Root>
 	{:else if showModelActivity}

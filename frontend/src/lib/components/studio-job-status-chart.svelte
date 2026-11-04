@@ -16,68 +16,70 @@
 	);
 </script>
 
-<Card.Root class="h-full overflow-hidden p-0 [--card-spacing:0]">
+<Card.Root class="h-auto overflow-hidden p-0 [--card-spacing:0]">
 	<Card.Header class="border-border border-b px-5 py-4">
 		<Card.Title class="text-base">{t('app.metrics.job_status')}</Card.Title>
 		<Card.Description class="text-sm">{t('app.metrics.job_status_desc')}</Card.Description>
 	</Card.Header>
-	<Card.Content
-		class="flex flex-col items-center gap-4 p-5 sm:flex-row sm:items-center sm:justify-between"
-	>
-		<div class="relative shrink-0">
-			{#if breakdown.total === 0}
-				<div
-					class="border-border bg-muted/20 flex size-[148px] items-center justify-center rounded-full border"
-				>
-					<span class="text-muted-foreground text-xs">0</span>
-				</div>
-			{:else}
-				<Chart.Container config={chartConfig} class="size-[148px]">
-					<PieChart
-						data={visibleSlices}
-						key={(d: JobStatusSlice) => d.id}
-						value={(d: JobStatusSlice) => d.count}
-						label={(d: JobStatusSlice) => d.label}
-						c={(d: JobStatusSlice) => d.color}
-						cRange={visibleSlices.map((slice) => slice.color)}
-						innerRadius={-18}
-						padAngle={0.03}
-						props={{ pie: { motion: 'tween' } }}
-						legend={false}
+	<Card.Content class="@container p-5">
+		<div class="flex flex-col items-center gap-4 @sm:flex-row @sm:items-center @sm:justify-between">
+			<div class="relative shrink-0">
+				{#if breakdown.total === 0}
+					<div
+						class="border-border bg-muted/20 flex size-[132px] items-center justify-center rounded-full border"
 					>
-						{#snippet tooltip()}
-							<Chart.Tooltip hideLabel />
-						{/snippet}
-					</PieChart>
-				</Chart.Container>
-				<div class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-					<span class="text-xl font-semibold tabular-nums">{breakdown.total}</span>
-					<span class="text-muted-foreground text-[10px] tracking-wide uppercase">
-						{t('app.metrics.job_total')}
-					</span>
-				</div>
-			{/if}
+						<span class="text-muted-foreground text-xs">0</span>
+					</div>
+				{:else}
+					<Chart.Container config={chartConfig} class="size-[132px]">
+						<PieChart
+							data={visibleSlices}
+							key={(d: JobStatusSlice) => d.id}
+							value={(d: JobStatusSlice) => d.count}
+							label={(d: JobStatusSlice) => d.label}
+							c={(d: JobStatusSlice) => d.color}
+							cRange={visibleSlices.map((slice) => slice.color)}
+							innerRadius={-18}
+							padAngle={0.03}
+							props={{ pie: { motion: 'tween' } }}
+							legend={false}
+						>
+							{#snippet tooltip()}
+								<Chart.Tooltip hideLabel />
+							{/snippet}
+						</PieChart>
+					</Chart.Container>
+					<div
+						class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center"
+					>
+						<span class="text-xl font-semibold tabular-nums">{breakdown.total}</span>
+						<span class="text-muted-foreground text-xs tracking-wide uppercase">
+							{t('app.metrics.job_total')}
+						</span>
+					</div>
+				{/if}
+			</div>
+			<ul class="grid w-full min-w-0 gap-2 @sm:flex-1">
+				{#each breakdown.slices as slice (slice.id)}
+					<li class="flex items-center justify-between gap-3 text-sm">
+						<span class="flex min-w-0 items-center gap-2">
+							<span class="inline-block size-2.5 shrink-0" style={`background: ${slice.color}`}
+							></span>
+							<span class="min-w-0 break-words">{slice.label}</span>
+						</span>
+						<span class="shrink-0 text-xs whitespace-nowrap tabular-nums">
+							{slice.count}
+							{#if breakdown.total > 0}
+								<span class="text-muted-foreground">
+									({Math.round((slice.count / breakdown.total) * 100)}%)
+								</span>
+							{/if}
+						</span>
+					</li>
+				{:else}
+					<li class="text-muted-foreground text-sm">{t('app.metrics.runtime_empty')}</li>
+				{/each}
+			</ul>
 		</div>
-		<ul class="grid w-full min-w-[12rem] gap-2 sm:max-w-xs">
-			{#each breakdown.slices as slice (slice.id)}
-				<li class="flex items-center justify-between gap-3 text-sm">
-					<span class="flex min-w-0 items-center gap-2">
-						<span class="inline-block size-2.5 shrink-0" style={`background: ${slice.color}`}
-						></span>
-						<span class="truncate">{slice.label}</span>
-					</span>
-					<span class="text-xs tabular-nums">
-						{slice.count}
-						{#if breakdown.total > 0}
-							<span class="text-muted-foreground">
-								({Math.round((slice.count / breakdown.total) * 100)}%)
-							</span>
-						{/if}
-					</span>
-				</li>
-			{:else}
-				<li class="text-muted-foreground text-sm">{t('app.metrics.runtime_empty')}</li>
-			{/each}
-		</ul>
 	</Card.Content>
 </Card.Root>

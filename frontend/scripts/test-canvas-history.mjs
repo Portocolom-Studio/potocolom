@@ -9700,6 +9700,33 @@ test('expired lineage roots stay visible beside their descendants and the root g
 	}
 });
 
+test('Generate keeps the selected image and its metadata reachable on phones', async () => {
+	const harness = await openStudio(stripFixtures());
+	try {
+		const { page } = harness;
+		await page.setViewport({ width: 390, height: 844 });
+		const imageSelector = 'section[aria-label="Generated image"] img.img-reveal';
+		await page.waitForSelector(`${imageSelector}[data-loaded]`);
+		await page.$eval(imageSelector, (image) => image.scrollIntoView({ block: 'center' }));
+		const imageReachable = await page.$eval(imageSelector, (image) => {
+			const rect = image.getBoundingClientRect();
+			const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+			return rect.width > 0 && rect.height > 0 && target === image;
+		});
+		assert.equal(imageReachable, true, 'the selected image can be reached by scrolling');
+		const detailSelector = 'section[aria-label="Generated image"] dl > div:last-child dd';
+		await page.$eval(detailSelector, (detail) => detail.scrollIntoView({ block: 'center' }));
+		const detailReachable = await page.$eval(detailSelector, (detail) => {
+			const rect = detail.getBoundingClientRect();
+			const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+			return target === detail || detail.contains(target);
+		});
+		assert.equal(detailReachable, true, 'the image metadata can be reached by scrolling');
+	} finally {
+		await harness.close();
+	}
+});
+
 test('the history strip gives six thumbnails exactly one tab stop', async () => {
 	const harness = await openStudio(stripFixtures());
 	try {

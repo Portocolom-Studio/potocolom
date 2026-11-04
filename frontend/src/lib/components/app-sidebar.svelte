@@ -66,7 +66,7 @@
 	const sidebarShortcut = $derived(shortcutLabel(['mod', 'b']));
 
 	const footerItemClass =
-		'h-[30px] gap-2.5 px-2 font-medium text-sidebar-foreground group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-2.5!';
+		'h-9 gap-2.5 px-2 font-medium text-sidebar-foreground group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-2.5!';
 </script>
 
 {#snippet searchTooltip()}
@@ -76,17 +76,18 @@
 
 <Sidebar.Root bind:ref collapsible="icon" class="border-sidebar-border" {...restProps}>
 	<Sidebar.Header
-		class="border-sidebar-border h-[52px] flex-row items-center gap-2 border-b px-3.5 py-0 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+		class="border-sidebar-border h-[60px] flex-row items-center gap-2 border-b px-3.5 py-0 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
 	>
 		<a
 			href={resolve('/')}
 			title={t('app.back')}
 			class="flex min-w-0 flex-1 items-baseline gap-2 rounded-md px-1.5 py-1 outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:hidden"
 		>
-			<span class="text-foreground font-[Lato] text-[15px] font-black tracking-[-0.03em]"
+			<span
+				class="text-foreground font-[Lato] text-[17px] leading-none font-black tracking-[-0.03em]"
 				>potocolom</span
 			>
-			<span class="text-dim text-[11.5px]">{t('app.title')}</span>
+			<span class="text-dim text-xs">{t('app.title')}</span>
 		</a>
 		<button
 			type="button"
@@ -118,7 +119,7 @@
 	</Sidebar.Header>
 	<div class="px-2 pt-2.5 pb-0.5 group-data-[collapsible=icon]:px-2.5">
 		<Sidebar.MenuButton
-			class="border-line-strong text-dim hover:text-muted-foreground h-[30px] gap-2 rounded-md border bg-transparent px-2.5 font-normal group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2.5!"
+			class="border-line-strong text-dim hover:text-muted-foreground h-9 gap-2 rounded-md border bg-transparent px-2.5 font-normal group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:border-0 group-data-[collapsible=icon]:p-2.5!"
 			tooltipContent={searchTooltip}
 			aria-keyshortcuts="Meta+K Control+K"
 			onclick={() => (commandOpen = true)}
@@ -128,7 +129,7 @@
 				>{t('app.shell.search_placeholder')}</span
 			>
 			<kbd
-				class="border-line-strong text-dim rounded border border-b-2 px-1 font-sans text-[11px] leading-[15px] group-data-[collapsible=icon]:hidden"
+				class="border-line-strong text-dim rounded border border-b-2 px-1 font-sans text-xs leading-[15px] group-data-[collapsible=icon]:hidden"
 				>{shortcut}</kbd
 			>
 		</Sidebar.MenuButton>

@@ -41,7 +41,7 @@
 </script>
 
 <header
-	class="bg-background border-border relative z-20 flex h-[52px] w-full shrink-0 items-center gap-3 border-b px-4"
+	class="bg-background border-border relative z-20 flex h-[60px] w-full shrink-0 items-center gap-3 border-b px-4"
 >
 	{#if sidebar.isMobile}
 		<button

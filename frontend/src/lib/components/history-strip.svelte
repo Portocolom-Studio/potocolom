@@ -259,12 +259,12 @@
 		{#if studio.historyExtended}
 			<button
 				type="button"
-				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-12 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-[0.65rem] leading-tight transition-colors"
+				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-xs leading-tight transition-colors"
 				title={t('app.gen.back_to_recent')}
 				onclick={backToRecent}
 			>
 				<ChevronLeftIcon class="size-4" />
-				<span class="max-w-[2.5rem] text-center">{t('app.gen.back_to_recent')}</span>
+				<span class="max-w-[3rem] text-center">{t('app.gen.back_to_recent')}</span>
 			</button>
 		{/if}
 
@@ -351,13 +351,13 @@
 		{#if studio.historyHasMore}
 			<button
 				type="button"
-				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-12 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-[0.65rem] leading-tight transition-colors disabled:opacity-50"
+				class="border-border bg-raised text-muted-foreground hover:bg-hover hover:text-foreground flex h-[72px] w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-md border text-xs leading-tight transition-colors disabled:opacity-50"
 				title={t('app.gen.load_older')}
 				disabled={loadingOlder}
 				onclick={loadOlder}
 			>
 				<ChevronRightIcon class="size-4" />
-				<span class="max-w-[2.5rem] text-center">{t('app.gen.load_older')}</span>
+				<span class="max-w-[3rem] text-center">{t('app.gen.load_older')}</span>
 			</button>
 		{/if}
 	</div>

@@ -1,11 +1,13 @@
 <script lang="ts">
-	import { AreaChart } from 'layerchart';
+	import type { ComponentProps } from 'svelte';
+	import { AreaChart, Text } from 'layerchart';
 	import { scaleTime } from 'd3-scale';
 	import { curveMonotoneX } from 'd3-shape';
 	import {
 		formatMetricValue,
 		formatTimeTick,
 		latestPoint,
+		timeTicks,
 		type ChartBandPoint,
 		type ChartPoint
 	} from '$lib/studio-gpu-chart';
@@ -59,6 +61,9 @@
 		value: { label: title, color: seriesColor }
 	} satisfies Chart.ChartConfig);
 
+	// Start, middle and end of the window, so the time axis reads at any range.
+	const xTicks = $derived(timeTicks(windowStartMs, windowEndMs, 3).map((ms) => new Date(ms)));
+
 	const series = $derived.by(() => {
 		const main = {
 			key: 'value',
@@ -86,8 +91,15 @@
 	});
 </script>
 
+{#snippet timeTickLabel({ props, index }: { props: ComponentProps<typeof Text>; index: number })}
+	<Text
+		{...props}
+		textAnchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'}
+	/>
+{/snippet}
+
 <div class="flex flex-col gap-2">
-	<div class="flex items-baseline justify-between gap-2">
+	<div class="flex h-7 items-center justify-between gap-2">
 		<span class="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
 			{#if live}
 				<span class="relative flex size-1.5" aria-hidden="true">
@@ -121,6 +133,7 @@
 				yDomain={unit === '%' ? [0, 100] : undefined}
 				{series}
 				rule={false}
+				padding={{ top: 8, right: 24, bottom: 32, left: 40 }}
 				props={{
 					area: {
 						curve: curveMonotoneX,
@@ -130,7 +143,9 @@
 					},
 					xAxis: {
 						format: (d: Date) => formatTimeTick(+d, range),
-						ticks: 4
+						ticks: xTicks,
+						tickLabel: timeTickLabel,
+						tickLabelProps: { dy: 10, capHeight: '9px', lineHeight: '14px' }
 					},
 					yAxis: {
 						format: (v: number) => `${v}${unit === '%' ? '%' : ''}`,

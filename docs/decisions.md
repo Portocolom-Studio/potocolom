@@ -2062,6 +2062,8 @@ readiness; replacing an unknown database password with a new random value.
 
 ## The studio, landing and auth pages follow one written design system
 
+The compact studio sizes below are superseded by "Studio polish uses readable type and responsive layouts".
+
 PR #774 redesigns the studio shell and views, the landing footer and the
 sign-in and join pages, and records the result in
 [design-system.md](design-system.md). The studio uses its own scoped tokens
@@ -2290,3 +2292,22 @@ service, which adds a second toolchain and a second place to keep in sync;
 rendering the repository `docs/` folder directly, because several of its files
 are internal working notes; and mdsvex, which needs a Svelte preprocessor step
 in the build, while this route does not.
+
+## Studio polish uses readable type and responsive layouts
+
+The studio keeps its neutral colours, Geist font, task groups and blue GPU
+actions. Its body text is 14px, labels are 12px, controls have 8px corners,
+and cards have 12px corners. Lighter grey panels separate the workspace
+without a glow or gradient. The values live in the studio scope in
+`frontend/src/app.css` and in [design-system.md](design-system.md).
+
+On phones, Generate keeps its action visible while the form scrolls. The
+result has its own natural height so its image and metadata remain reachable.
+Models uses cards with visible picker switches below the tablet breakpoint.
+Metrics uses explicit time ticks and a job-status card sized to its content.
+These choices keep the same controls usable at narrow widths.
+
+Rejected alternatives: retain the smaller type and near-black panels, which
+make labels harder to read; retain the wide Models table on phones, which
+hides its main controls; and give the studio a new palette, which would break
+the existing visual system without fixing the layout problems.
