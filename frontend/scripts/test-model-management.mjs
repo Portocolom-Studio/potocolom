@@ -84,6 +84,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 						};
 			else if (path === '/api/v1/config')
 				body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
+			else if (path === '/api/v1/studio/worker-presence') body = { connected: !workerGone };
 			else if (path === '/api/v1/admin/models') {
 				if (failInventory) {
 					failInventory = false;
@@ -265,6 +266,9 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		});
 		const page = await browser.newPage();
 		await page.setViewport({ width: 1440, height: 900 });
+		if (regression === 'panel-viewer') role = 'viewer';
+		if (regression === 'panel-offline' || regression === 'panel-viewer-offline') workerGone = true;
+		if (regression === 'panel-viewer-offline') role = 'viewer';
 		if (regression === 'footer-focus') {
 			worker.models.unshift(...Array.from({ length: 12 }, (_, i) => model(`preceding-${i}`)));
 		}
@@ -322,9 +326,37 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		if (regression === 'spanish' || regression === 'spanish-labels' || regression === 'locale-size')
 			await page.evaluateOnNewDocument(() => localStorage.setItem('locale', 'es'));
 		await page.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
-		await page.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
-			waitUntil: 'domcontentloaded'
-		});
+		await page.goto(
+			`http://127.0.0.1:${server.address().port}/app?view=${regression?.startsWith('panel-') ? 'models' : 'admin&tab=models'}`,
+			{
+				waitUntil: 'domcontentloaded'
+			}
+		);
+		if (regression?.startsWith('panel-')) {
+			await page.waitForFunction(
+				() =>
+					document.body.textContent.includes('No models installed yet.') ||
+					document.body.textContent.includes('Start a worker')
+			);
+			if (regression === 'panel-offline' || regression === 'panel-viewer-offline') {
+				await page.waitForFunction(() => document.body.textContent.includes('Start a worker'));
+				assert.equal(await page.$('::-p-text(Install models)'), null);
+			} else if (regression === 'panel-viewer') {
+				assert.match(
+					await page.evaluate(() => document.body.textContent),
+					/No models installed yet. Ask an administrator to install one./
+				);
+				assert.equal(await page.$('::-p-text(Install models)'), null);
+			} else {
+				const button = await page.waitForSelector('::-p-text(Install models)', { timeout: 2000 });
+				await button.click();
+				await page.waitForFunction(
+					() => location.search.includes('view=admin') && location.search.includes('tab=models')
+				);
+				await page.waitForSelector('[data-worker="worker-1"]');
+			}
+			return;
+		}
 		if (regression === 'error-focus') {
 			const retry = await page.waitForSelector('::-p-text(Retry)');
 			await retry.focus();

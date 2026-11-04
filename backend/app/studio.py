@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.auth import require_role
+from app import realtime
+from app.auth import current_user, require_role
 from app.realtime import gpu_command, pick_any_worker
 from app.tables import User
 
@@ -23,3 +24,8 @@ async def studio_gpu(_user: User = Depends(require_role("admin"))) -> dict:
         "loaded_models": result.get("loaded_models", []),
         "gpu": gpu,
     }
+
+
+@router.get("/api/v1/studio/worker-presence")
+async def worker_presence(_user: User = Depends(current_user)) -> dict[str, bool]:
+    return {"connected": bool(realtime.workers)}

@@ -84,3 +84,15 @@ def test_studio_gpu_returns_worker_snapshot(monkeypatch):
     body = response.json()
     assert body["loaded_models"] == ["sd-sim"]
     assert body["gpu"]["device"] == "cpu"
+
+
+def test_worker_presence_is_available_to_viewers(monkeypatch):
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        current_user,
+        lambda: User(email="viewer@example.test", role="viewer"),
+    )
+    monkeypatch.setattr(realtime, "workers", {})
+    assert client.get("/api/v1/studio/worker-presence").json() == {"connected": False}
+    monkeypatch.setitem(realtime.workers, "worker", object())
+    assert client.get("/api/v1/studio/worker-presence").json() == {"connected": True}
