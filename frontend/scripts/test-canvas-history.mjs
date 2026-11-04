@@ -3117,6 +3117,8 @@ test('the whole drawing surface is visible on a narrow screen', async () => {
 		const { page } = harness;
 		for (const width of [390, 320]) {
 			await page.setViewport({ width, height: 844 });
+			// A view-transition snapshot intercepts hits until the canvas view is ready.
+			await page.waitForFunction(() => !document.activeViewTransition, { timeout: WAIT_MS });
 			await page.$eval('canvas[aria-label="Drawing surface"]', (canvas) =>
 				canvas.scrollIntoView({ block: 'center' })
 			);
@@ -4841,7 +4843,9 @@ test('Grid search keeps a matching visible anchor in place', async () => {
 		}, rows[25].id);
 		assert.ok(anchor.scrollTop > 0, 'the Grid is scrolled before search');
 		assert.ok(rows.slice(8).some((row) => row.id === anchor.id));
-		await page.focus('[aria-label="Search prompts"]');
+		await page.$$eval('[aria-label="Search prompts"]', (fields) =>
+			fields.find((field) => field.getClientRects().length > 0).focus()
+		);
 		await page.keyboard.type('Match');
 		await page.waitForFunction(
 			() =>
@@ -6801,7 +6805,9 @@ test('filtered older grid images open in the inspector and close with Back or a 
 			(selector) => {
 				const image = document.querySelector(selector + ' img');
 				return (
-					image?.getAttribute('src') === '/api/v1/assets/held-thumbnail.png' && !image.complete
+					image?.getAttribute('src') === '/api/v1/assets/held-thumbnail.png' &&
+					!image.complete &&
+					getComputedStyle(image.parentElement).backgroundImage.includes('linear-gradient')
 				);
 			},
 			{ timeout: WAIT_MS },
@@ -9696,6 +9702,234 @@ test('expired lineage roots stay visible beside their descendants and the root g
 		assert.ok(Math.abs(before.point[0] - after.point[0]) < 0.01);
 		assert.ok(Math.abs(before.point[1] - after.point[1]) < 0.01);
 		assert.deepEqual(after.positions, before.positions);
+	} finally {
+		await harness.close();
+	}
+});
+
+for (const locale of ['en', 'es']) {
+	test(`Images header controls remain reachable with the sidebar open (${locale})`, async () => {
+		const harness = await launchStudio(
+			locale,
+			undefined,
+			stripFixtures(),
+			'domcontentloaded',
+			'/app?view=images'
+		);
+		try {
+			const { page } = harness;
+			const selector = '[data-images-header] [role="group"] button';
+			await page.waitForSelector(selector);
+			for (const width of [390, 768, 800, 880, 1024, 1440]) {
+				await page.setViewport({ width, height: 900 });
+				assert.equal(
+					await page.$$eval(
+						'[data-lineage-search] input[name="q"]',
+						(fields) => fields.filter((field) => field.getClientRects().length > 0).length
+					),
+					1,
+					'exactly one search field is visible'
+				);
+				const fits = await page.$$eval(selector, (buttons) =>
+					buttons.every((button) => {
+						const rect = button.getBoundingClientRect();
+						const hit = document.elementFromPoint(
+							rect.x + rect.width / 2,
+							rect.y + rect.height / 2
+						);
+						return (
+							rect.left >= 0 && rect.right <= innerWidth && (hit === button || button.contains(hit))
+						);
+					})
+				);
+				assert.equal(fits, true, `both layout buttons fit and can be clicked at ${width}px`);
+			}
+		} finally {
+			await harness.close();
+		}
+	});
+}
+
+async function openShownImageWithAnotherSource() {
+	const harness = await openStudio({
+		...stripFixtures(),
+		'/api/v1/models': {
+			body: [
+				{ ...MODEL, capabilities: [...MODEL.capabilities, 'image_to_image'] },
+				{
+					...MODEL,
+					id: 'upscale-smoke',
+					name: 'Upscale smoke',
+					capabilities: ['upscale'],
+					parameters: {
+						type: 'object',
+						properties: { scale: { type: 'integer', enum: [2, 4], default: 2 } }
+					}
+				}
+			]
+		}
+	});
+	try {
+		const { page } = harness;
+		await page.evaluate(() =>
+			[...document.querySelectorAll('section[aria-label="Generated image"] button')]
+				.find((button) => button.textContent.trim() === 'Use as source')
+				.click()
+		);
+		await page.waitForFunction(() => location.search.includes('view=image_to_image'));
+		await page.waitForFunction(
+			() =>
+				[...document.querySelectorAll('section[aria-label="Generated image"] button')]
+					.find((button) => button.textContent.trim() === 'Use as source')
+					.getAttribute('aria-pressed') === 'true'
+		);
+		await page.evaluate(() => document.querySelector('button[data-strip-thumb="1"]').click());
+		await page.waitForFunction(
+			(prompt) =>
+				document
+					.querySelector('section[aria-label="Generated image"] dl')
+					?.textContent.includes(prompt),
+			{},
+			STRIP_HISTORY[1].params.prompt
+		);
+		return harness;
+	} catch (error) {
+		await harness.close(false);
+		throw error;
+	}
+}
+
+test('Use as source reports the selected image rather than any source', async () => {
+	const harness = await openShownImageWithAnotherSource();
+	try {
+		assert.equal(
+			await harness.page.evaluate(() =>
+				[...document.querySelectorAll('section[aria-label="Generated image"] button')]
+					.find((button) => button.textContent.trim() === 'Use as source')
+					.getAttribute('aria-pressed')
+			),
+			'false',
+			'only the displayed source is announced as pressed'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Upscale does not pair its source thumbnail with another image prompt', async () => {
+	const harness = await openShownImageWithAnotherSource();
+	try {
+		const { page } = harness;
+		await page.evaluate(() =>
+			[...document.querySelectorAll('header button')]
+				.find((button) => button.textContent.trim() === 'Upscale')
+				.click()
+		);
+		await page.waitForSelector('#upscale-model');
+		const source = await page.$eval('aside img', (image) => ({
+			url: image.getAttribute('src'),
+			caption: image.parentElement.textContent.trim()
+		}));
+		assert.equal(source.url, STRIP_HISTORY[0].assets[0].thumbnail_url);
+		assert.notEqual(
+			source.caption,
+			STRIP_HISTORY[1].params.prompt,
+			'the source caption must not describe a different image'
+		);
+		await page.evaluate(() => document.querySelector('button[data-strip-thumb="0"]').click());
+		await page.waitForFunction(
+			(prompt) => document.querySelector('aside img')?.parentElement.textContent.trim() === prompt,
+			{},
+			STRIP_HISTORY[0].params.prompt
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Model activity keeps the full name of a single long model', async () => {
+	const id = 'ssd-1b-lightning';
+	const now = Date.now();
+	const rows = STRIP_HISTORY.map((generation, index) => ({
+		...generation,
+		model_id: id,
+		created_at: new Date(now - (index + 1) * 10000).toISOString()
+	}));
+	const harness = await launchStudio(
+		'en',
+		undefined,
+		{ ...stripFixtures(), '/api/v1/generations?limit=50': { body: rows } },
+		'domcontentloaded',
+		'/app?view=metrics'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('svg[aria-label="Model activity"]');
+		const text = await page.$eval(
+			'svg[aria-label="Model activity"]',
+			(svg) => svg.closest('[data-slot="card"]').textContent
+		);
+		assert.ok(text.includes(id), 'the complete model identity is available in its activity card');
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Generate can load older images after a full page of failed jobs', async () => {
+	const failed = Array.from({ length: 50 }, (_, index) => ({
+		...STRIP_HISTORY[0],
+		id: `failed-recent-${index}`,
+		state: 'failed',
+		assets: [],
+		failure_reason: 'Fixture failure'
+	}));
+	const harness = await launchStudio('en', undefined, {
+		...stripFixtures(),
+		'/api/v1/generations?limit=50': {
+			body: (url) => (url.searchParams.has('cursor') ? [STRIP_HISTORY[0]] : failed)
+		}
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.body.textContent.includes('Your image appears here'));
+		const older = await page.$('button[title="Older"]');
+		assert.notEqual(older, null, 'older images remain reachable when every recent job failed');
+		await older.click();
+		await waitForStrip(page, 1);
+		await page.click('button[data-strip-thumb]');
+		await page.waitForSelector('img.img-reveal[data-loaded]');
+		await page.click('button[title="Recent"]');
+		await page.waitForFunction(
+			() => document.querySelectorAll('button[data-strip-thumb]').length === 0
+		);
+		assert.notEqual(await page.$('button[title="Older"]'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
+test('Generate keeps the selected image and its metadata reachable on phones', async () => {
+	const harness = await openStudio(stripFixtures());
+	try {
+		const { page } = harness;
+		await page.setViewport({ width: 390, height: 844 });
+		const imageSelector = 'section[aria-label="Generated image"] img.img-reveal';
+		await page.waitForSelector(`${imageSelector}[data-loaded]`);
+		await page.$eval(imageSelector, (image) => image.scrollIntoView({ block: 'center' }));
+		const imageReachable = await page.$eval(imageSelector, (image) => {
+			const rect = image.getBoundingClientRect();
+			const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+			return rect.width > 0 && rect.height > 0 && target === image;
+		});
+		assert.equal(imageReachable, true, 'the selected image can be reached by scrolling');
+		const detailSelector = 'section[aria-label="Generated image"] dl > div:last-child dd';
+		await page.$eval(detailSelector, (detail) => detail.scrollIntoView({ block: 'center' }));
+		const detailReachable = await page.$eval(detailSelector, (detail) => {
+			const rect = detail.getBoundingClientRect();
+			const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+			return target === detail || detail.contains(target);
+		});
+		assert.equal(detailReachable, true, 'the image metadata can be reached by scrolling');
 	} finally {
 		await harness.close();
 	}

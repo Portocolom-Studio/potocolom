@@ -48,10 +48,10 @@
 {/snippet}
 
 <div class="no-scrollbar h-full min-h-0 overflow-y-auto">
-	<div class="flex flex-col gap-3 px-4 py-5 md:px-6">
-		<header class="md:sr-only">
-			<h1 class="text-xl font-semibold tracking-[-0.02em]">{title}</h1>
-			<p class="text-muted-foreground mt-1 text-[12.5px]">{t('app.metrics.sub')}</p>
+	<div class="flex flex-col gap-5 px-4 py-6 md:px-6 md:py-7">
+		<header class="flex flex-col gap-1">
+			<h1 class="text-2xl font-semibold tracking-[-0.02em]">{title}</h1>
+			<p class="text-muted-foreground mt-1 text-sm">{t('app.metrics.sub')}</p>
 		</header>
 		<nav class="flex gap-1 md:hidden" aria-label={t('app.metrics.title')}>
 			{#each tabs as tab (tab.value)}

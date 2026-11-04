@@ -96,12 +96,12 @@
 				<span class="bg-status-running size-[7px] shrink-0 rounded-full" aria-hidden="true"></span>
 				<span class="truncate">{t('app.shell.your_jobs')}</span>
 			{/if}
-			<span class="text-dim ms-auto shrink-0 text-[11px] tabular-nums">
+			<span class="text-dim ms-auto shrink-0 text-xs tabular-nums">
 				{t('app.shell.queue_depth').replace('{count}', String(queued))}
 			</span>
 		</div>
 		{#if mayReadGpu && gpu !== null}
-			<div class="text-dim mt-2 flex justify-between gap-2 text-[11px]">
+			<div class="text-dim mt-2 flex justify-between gap-2 text-xs">
 				<span class="truncate" title={gpu.device}
 					>{gpu.device}{vramGb !== null ? ` · ${vramGb} GB` : ''}</span
 				>
@@ -122,7 +122,7 @@
 				</div>
 			{/if}
 		{:else if running > 0}
-			<p class="text-dim mt-1.5 text-[11px] tabular-nums">
+			<p class="text-dim mt-1.5 text-xs tabular-nums">
 				{t('app.shell.running_count').replace('{count}', String(running))}
 			</p>
 		{/if}

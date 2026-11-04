@@ -89,7 +89,7 @@
 	}
 
 	const itemClass =
-		'h-[30px] gap-2.5 px-2 font-medium text-sidebar-foreground relative ' +
+		'h-9 gap-2.5 px-2 font-medium text-sidebar-foreground relative ' +
 		'data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground ' +
 		"data-[active=true]:before:content-[''] data-[active=true]:before:absolute data-[active=true]:before:-left-2 " +
 		'data-[active=true]:before:top-[7px] data-[active=true]:before:bottom-[7px] data-[active=true]:before:w-0.5 ' +
@@ -98,7 +98,7 @@
 		'group-data-[collapsible=icon]:data-[active=true]:before:hidden ' +
 		'group-data-[collapsible=icon]:data-[active=true]:ring-1 group-data-[collapsible=icon]:data-[active=true]:ring-line-strong';
 	const tailClass =
-		'text-dim pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 text-[11px] tabular-nums group-data-[collapsible=icon]:hidden';
+		'text-dim pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 text-xs tabular-nums group-data-[collapsible=icon]:hidden';
 </script>
 
 {#snippet lock(needs: 'user' | 'admin')}
@@ -119,7 +119,7 @@
 {/snippet}
 
 <Sidebar.Group class="py-1">
-	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-[11px] font-medium tracking-[0.02em]">
+	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-xs font-medium tracking-[0.02em]">
 		{t('app.shell.create')}
 	</Sidebar.GroupLabel>
 	<Sidebar.Menu class="gap-0">
@@ -150,7 +150,7 @@
 					{@render lock(needs)}
 				{:else if item.soon}
 					<span
-						class="border-line-strong text-dim pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 rounded border px-1.5 text-[10.5px] leading-4 group-data-[collapsible=icon]:hidden"
+						class="border-line-strong text-dim pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 rounded border px-1.5 text-xs leading-4 group-data-[collapsible=icon]:hidden"
 					>
 						{t('app.shell.soon')}
 					</span>
@@ -168,7 +168,7 @@
 <Sidebar.Separator class="mx-auto hidden w-6 group-data-[collapsible=icon]:block" />
 
 <Sidebar.Group class="py-1">
-	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-[11px] font-medium tracking-[0.02em]">
+	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-xs font-medium tracking-[0.02em]">
 		{t('app.shell.library')}
 	</Sidebar.GroupLabel>
 	<Sidebar.Menu class="gap-0">
@@ -226,10 +226,10 @@
 					</DropdownMenu.Label>
 					{#each prompts as prompt (prompt)}
 						<DropdownMenu.Item title={prompt} onclick={() => navigate(() => usePrompt(prompt))}>
-							<span class="line-clamp-2 text-[13px]">{prompt}</span>
+							<span class="line-clamp-2 text-sm">{prompt}</span>
 						</DropdownMenu.Item>
 					{:else}
-						<p class="text-muted-foreground px-2 py-1.5 text-[13px]">
+						<p class="text-muted-foreground px-2 py-1.5 text-sm">
 							{t('app.shell.prompt_history_empty')}
 						</p>
 					{/each}
@@ -245,7 +245,7 @@
 <Sidebar.Separator class="mx-auto hidden w-6 group-data-[collapsible=icon]:block" />
 
 <Sidebar.Group class="py-1">
-	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-[11px] font-medium tracking-[0.02em]">
+	<Sidebar.GroupLabel class="text-dim h-7 px-2 text-xs font-medium tracking-[0.02em]">
 		{t('app.shell.platform')}
 	</Sidebar.GroupLabel>
 	<Sidebar.Menu class="gap-0">

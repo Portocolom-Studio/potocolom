@@ -2532,46 +2532,54 @@
 
 <svelte:window onkeydown={onWindowKeyDown} />
 
+{#snippet imageSearchField()}
+	<label
+		class="bg-field border-line-strong focus-within:ring-ring/60 flex h-9 w-full min-w-0 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:w-64"
+	>
+		<SearchIcon class="text-dim size-3.5 shrink-0" aria-hidden="true" />
+		<input
+			type="search"
+			name="q"
+			autocomplete="off"
+			spellcheck={false}
+			class="placeholder:text-dim min-w-0 flex-1 bg-transparent text-sm outline-none"
+			bind:value={searchDraft}
+			placeholder={t('app.images.search')}
+			aria-label={t('app.images.search')}
+			oninput={() => scheduleSearchQuery(searchDraft)}
+		/>
+	</label>
+{/snippet}
+
+{#snippet imageSearchControls()}
+	{@render imageSearchField()}
+	{#if imagesMode === 'lineage'}
+		<Button
+			variant="outline"
+			size="sm"
+			class="hidden lg:inline-flex"
+			disabled={searchMatchIds === null || searchMatchIds.size === 0}
+			onclick={goToNextSearchMatch}
+		>
+			{t('app.images.next_match')}
+		</Button>
+	{/if}
+{/snippet}
+
 {#snippet imagesHeader()}
 	<div bind:this={imagesHeaderEl} class="contents" data-images-header>
-		<div class="flex items-center gap-1.5" data-lineage-search>
-			<label
-				class="bg-field border-line-strong focus-within:ring-ring/60 flex h-[30px] w-36 min-w-0 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:w-64"
-			>
-				<SearchIcon class="text-dim size-3.5 shrink-0" aria-hidden="true" />
-				<input
-					type="search"
-					name="q"
-					autocomplete="off"
-					spellcheck={false}
-					class="placeholder:text-dim min-w-0 flex-1 bg-transparent text-[13px] outline-none"
-					bind:value={searchDraft}
-					placeholder={t('app.images.search')}
-					aria-label={t('app.images.search')}
-					oninput={() => scheduleSearchQuery(searchDraft)}
-				/>
-			</label>
-			{#if imagesMode === 'lineage'}
-				<Button
-					variant="outline"
-					size="sm"
-					class="hidden lg:inline-flex"
-					disabled={searchMatchIds === null || searchMatchIds.size === 0}
-					onclick={goToNextSearchMatch}
-				>
-					{t('app.images.next_match')}
-				</Button>
-			{/if}
+		<div class="hidden items-center gap-1.5 xl:flex" data-lineage-search>
+			{@render imageSearchControls()}
 		</div>
 		<div
-			class="bg-field border-line-strong flex gap-0.5 rounded-[7px] border p-0.5"
+			class="bg-field border-line-strong flex gap-0.5 rounded-lg border p-0.5"
 			role="group"
 			aria-label={t('app.images.layout')}
 		>
 			{#each [{ mode: 'grid', label: t('app.images.mode_grid'), icon: LayoutGridIcon }, { mode: 'lineage', label: t('app.images.mode_lineage'), icon: GitForkIcon }] as const as option (option.mode)}
 				<button
 					type="button"
-					class={'flex h-[26px] min-w-24 items-center justify-center gap-1.5 rounded-[5px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+					class={'flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-[6px] px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-w-24 sm:px-3 ' +
 						(imagesMode === option.mode
 							? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
 							: 'text-muted-foreground hover:text-foreground')}
@@ -2605,7 +2613,7 @@
 		<h1>{t('app.images.title')}</h1>
 		<p>{t('app.images.sub')}</p>
 	</header>
-	<div class="col-start-1 row-start-1 flex flex-wrap items-center gap-2 px-4 pt-3 pb-3">
+	<div class="col-start-1 row-start-1 flex flex-wrap items-center gap-2.5 px-4 pt-4 pb-3">
 		<div class="flex flex-wrap gap-1.5" role="group" aria-label={t('app.images.filters')}>
 			<button
 				type="button"
@@ -2636,6 +2644,9 @@
 					>
 				{/each}
 			{/if}
+		</div>
+		<div class="flex w-full items-center gap-1.5 xl:hidden" data-lineage-search>
+			{@render imageSearchControls()}
 		</div>
 		<ImageFilterControls
 			filters={imageFilters}
@@ -2691,11 +2702,11 @@
 					</ul>
 				</div>
 			{:else if gridFailed && gridItems.length === 0}
-				<p class="text-muted-foreground grid h-40 place-items-center text-[13px]" role="alert">
+				<p class="text-muted-foreground grid h-40 place-items-center text-sm" role="alert">
 					{t('app.images.load_failed')}
 				</p>
 			{:else if gridItems.length === 0 && !gridLoading}
-				<p class="text-muted-foreground grid h-40 place-items-center text-[13px]">
+				<p class="text-muted-foreground grid h-40 place-items-center text-sm">
 					{starredOnly
 						? t('app.images.no_starred_roots')
 						: imageFiltersActive(imageFilters)
@@ -2740,7 +2751,7 @@
 				</ul>
 			{/if}
 			{#if gridFailed && gridItems.length > 0}
-				<p class="text-muted-foreground mt-4 text-center text-[13px]" role="alert">
+				<p class="text-muted-foreground mt-4 text-center text-sm" role="alert">
 					{t('app.images.load_failed')}
 				</p>
 			{/if}
@@ -2767,7 +2778,7 @@
 		<div
 			bind:this={viewportEl}
 			{@attach canvasInteractions}
-			class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 mx-4 mb-4 min-h-0 min-w-0 overflow-hidden rounded-[10px] border"
+			class="lineage-viewport border-border bg-card/20 relative col-start-1 row-start-2 mx-4 mb-4 min-h-0 min-w-0 overflow-hidden rounded-xl border"
 			class:is-panning={panPointerId !== null || pinch !== null || dragPointerId !== null}
 			role="application"
 			aria-label={t('app.images.canvas')}
@@ -3181,7 +3192,7 @@
 		>
 			<div class="mb-4 flex items-start justify-between gap-3">
 				<div>
-					<h2 id="selection-inspector-title" class="text-[13px] font-semibold">
+					<h2 id="selection-inspector-title" class="text-sm font-semibold">
 						{t('app.images.inspector_title')}
 					</h2>
 					<p class="text-muted-foreground mt-1 text-xs">
@@ -3283,7 +3294,7 @@
 				</Button>
 			</div>
 
-			<dl class="grid gap-3 text-[12.5px]">
+			<dl class="grid gap-3 text-sm">
 				<div>
 					<dt class="text-muted-foreground text-xs">{t('app.gen.prompt')}</dt>
 					<dd class="mt-1 whitespace-pre-wrap">{selectedPrompt || t('app.images.no_prompt')}</dd>
@@ -3333,7 +3344,7 @@
 <style>
 	.filter-pill {
 		display: inline-flex;
-		height: 26px;
+		height: 28px;
 		align-items: center;
 		border: 1px solid var(--line-strong);
 		border-radius: 999px;
@@ -3406,7 +3417,7 @@
 		background: rgb(0 0 0 / 55%);
 		padding: 0 5px;
 		color: #ededed;
-		font-size: 11px;
+		font-size: 12px;
 	}
 
 	.lineage-viewport {
@@ -3488,7 +3499,7 @@
 
 	.lineage-edges text {
 		fill: var(--muted-foreground);
-		font-size: 11px;
+		font-size: 12px;
 		text-anchor: middle;
 		paint-order: stroke;
 		stroke: var(--background);
@@ -3512,7 +3523,7 @@
 		border: 1px solid var(--border);
 		border-radius: 0.4rem;
 		color: var(--foreground);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.35;
 		pointer-events: auto;
 	}
@@ -3563,7 +3574,7 @@
 		position: absolute;
 		width: max-content;
 		color: var(--muted-foreground);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1;
 		pointer-events: none;
 		display: none;
@@ -3702,7 +3713,7 @@
 		max-width: 200px;
 		transform: translateX(-50%);
 		color: var(--muted-foreground);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.2;
 		text-align: center;
 		pointer-events: none;
@@ -3913,7 +3924,7 @@
 
 	.card-copy time {
 		margin-top: auto;
-		font-size: 10px;
+		font-size: 12px;
 		color: var(--muted-foreground);
 		white-space: nowrap;
 	}

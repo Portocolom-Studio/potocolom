@@ -41,16 +41,16 @@ Use the Tailwind class, not the raw value.
 
 | Token | Class | Value | Use |
 |---|---|---|---|
-| `--background` | `bg-background` | `#0a0a0a` | Page |
-| `--panel` / `--card` | `bg-panel`, `bg-card` | `#0f0f0f` | Sidebar, inspectors, cards |
-| `--raised` / `--popover` | `bg-raised`, `bg-popover` | `#161616` | Buttons, menus, popovers |
-| `--hover` / `--accent` | `bg-hover`, `bg-accent` | `#1f1f1f` | Hover, selected rows and items |
-| `--field` | `bg-field` | `#0b0b0b` | Input backgrounds |
-| `--border` | `border-border` | `#1f1f1f` | Hairlines between regions |
-| `--line-strong` / `--input` | `border-line-strong` | `#2e2e2e` | Control borders |
-| `--foreground` | `text-foreground` | `#ededed` | Primary text |
-| `--muted-foreground` | `text-muted-foreground` | `#a1a1a1` | Secondary text, labels |
-| `--dim` | `text-dim` | `#707070` | Tertiary text, units, captions |
+| `--background` | `bg-background` | `oklch(0.191 0 0)` | Page |
+| `--panel` / `--card` | `bg-panel`, `bg-card` | `oklch(0.224 0 0)` | Sidebar, inspectors, cards |
+| `--raised` / `--popover` | `bg-raised`, `bg-popover` | `oklch(0.266 0 0)` | Buttons, menus, popovers |
+| `--hover` / `--accent` | `bg-hover`, `bg-accent` | `oklch(0.308 0 0)` | Hover, selected rows and items |
+| `--field` | `bg-field` | `oklch(0.205 0 0)` | Input backgrounds |
+| `--border` | `border-border` | `oklch(0.316 0 0)` | Hairlines between regions |
+| `--line-strong` / `--input` | `border-line-strong` | `oklch(0.385 0 0)` | Control borders |
+| `--foreground` | `text-foreground` | `oklch(0.974 0 0)` | Primary text |
+| `--muted-foreground` | `text-muted-foreground` | `oklch(0.786 0 0)` | Secondary text, labels |
+| `--dim` | `text-dim` | `oklch(0.699 0 0)` | Tertiary text, units, captions |
 | `--brand` | `bg-brand`, `text-brand` | `#3a64f0` | GPU actions, chart series 1 |
 | `--brand-soft` | `bg-brand-soft` | brand at 14% | Selected brand surfaces |
 | `--ring` | `ring-ring` | `#6e96f8` | Focus rings |
@@ -81,11 +81,11 @@ must never equal a status colour, so a series is never read as a state.
 
 | Role | Font | Size and weight |
 |---|---|---|
-| Studio UI | Geist (self-hosted via `@fontsource/geist`) | 13px / 1.5 body, 12px labels, 11px captions |
-| Page title (`h1`) | Geist | 20px, 600, letter-spacing -0.02em |
+| Studio UI | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions |
+| Page title (`h1`) | Geist | 24px for Models and Metrics, 18px for the Generate panel; weight 600 |
 | KPI value | Geist | 22 to 24px, tabular figures |
 | Code, IDs, seeds, hashes | Geist Mono | 0.92em of the surrounding text |
-| Wordmark | Lato 900 | Landing and footer only |
+| Wordmark | Lato 900 | 17px in the studio; separate sizes on the landing and footer |
 | Landing and auth copy | Lato | Per landing component |
 
 Headings use `text-wrap: balance`; body copy uses `text-wrap: pretty`. Fonts
@@ -93,7 +93,7 @@ are bundled, so the CSP keeps `font-src 'self'`; do not add font CDNs.
 
 ## Shape, borders and elevation
 
-- Radius: 6px on controls (`rounded-md`), 10px on cards and panels
+- Radius: 8px on controls (`rounded-md`), 12px on cards and panels
   (`rounded-xl`), full round only for dots, swatches, avatars and pills. The
   landing keeps its own radii.
 - Where the browser supports `corner-shape: squircle`, cards, buttons and
@@ -107,13 +107,13 @@ are bundled, so the CSP keeps `font-src 'self'`; do not add font CDNs.
 ## Spacing and layout
 
 Spacing follows a 4px grid. Common values: 8px between related controls,
-12px inside compact rows, 14 by 16px section padding, 16 to 24px page padding.
+12px inside compact rows, 16px section padding on phones and 20px on desktop, 16 to 24px page padding.
 
 ### Shell
 
-- Sidebar: 16rem wide; collapses to a 3rem icon rail with Cmd/Ctrl+B; a sheet
+- Sidebar: 240px wide; collapses to a 56px icon rail with Cmd/Ctrl+B; a sheet
   on phones (swipe to dismiss).
-- Top bar: 52px. Breadcrumb on the left; the view's tabs, toggles and actions
+- Sidebar header and top bar: 60px. Navigation rows and search: 36px. Breadcrumb on the left; the view's tabs, toggles and actions
   register through `useStudioHeader()` in `src/lib/studio-chrome.svelte.ts`.
 - Worker status card and the user menu sit at the bottom of the sidebar.
 
@@ -137,9 +137,9 @@ Components live in `src/lib/components/ui` (shadcn-svelte on bits-ui). Use
 them rather than hand-rolled markup.
 
 - **Button** (`ui/button`): `default` (white primary), `brand` (GPU action),
-  `outline`/`secondary`, `ghost`, `destructive`. Height 30px; 36px for a
-  panel's main action. Icon buttons are 30px square.
-- **Fields**: `bg-field border-line-strong`, 32px high, label above in 12px
+  `outline`/`secondary`, `ghost`, `destructive`. Default height 36px, small 32px; 40px for the Generate and Upscale actions.
+  Default icon buttons are 36px square.
+- **Fields**: `bg-field border-line-strong`, normally 36px high, label above in 12px
   muted text, hint or error below. Number fields show their range.
 - **Images filter chips** (`image-filter-controls.svelte`): model, date and
   longest-side size choices use the shared input and select `chip` variants:
@@ -149,6 +149,31 @@ them rather than hand-rolled markup.
   replaying a draw animation when a tab mounts. Keep tooltips, axes and legends.
 - **Segmented control** (`ui/toggle-group`): two to five mutually exclusive
   options (Size, Generate / Image to image / Upscale, Workbench / Focus).
+- **Models** (`model-panel.svelte`): a table from `md` up, with 56px rows and 12px
+  model IDs. Below `md` each model is a stacked card, and its picker switch sits
+  beside the name. Capability filters wrap as separate pills on phones, and the
+  registered count is one compact line.
+- **Metrics charts** (`studio-job-status-chart.svelte`, `studio-gpu-*-chart.svelte`):
+  the job queue card has content height. Its legend stacks under the donut when
+  the card is narrow (a container query at 384px). Area charts use three evenly
+  spaced time ticks with edge-aligned end labels. Metrics and model activity
+  use the same plot edges and three ticks, all at 12px. Metric values sit beside
+  their labels. An unavailable VRAM lane becomes a short header note. A single
+  short model name does not repeat in a legend. A truncated lane label keeps
+  its full name in the legend. Model activity does not repeat the range caption.
+  Charts are at least 448px wide; on phones their scroll regions take the
+  overflow. The model SVG uses its measured width so labels keep their size.
+- **Images search**: in the top bar from 1280px wide; below the filters on
+  narrower screens so both Grid and Lineage controls remain visible.
+- **Parameter panel** (`generate-panel.svelte`): the mode title and subtitle show
+  from `lg`; on phones the top bar names the screen. Below `lg` the page scrolls
+  as one column, the result takes its content height, and the Generate or
+  Upscale footer sticks to the bottom while the fields scroll. From `lg` the
+  result frame fills the row, with a metadata column of 220px (260px from 1400px)
+  that aligns to the top so a long prompt stays reachable. A short fade marks
+  the form's scroll edge above the footer. An empty result shows a muted image
+  hint in a square frame, with no action bar. The history strip stays visible
+  when items or paging controls exist, including a recent page of failed jobs.
 - **Slider** (`param-slider-field`): label and value on one line, track,
   min and max underneath.
 - **Tag** (`.tag` classes): status and capability labels.
@@ -169,7 +194,11 @@ them rather than hand-rolled markup.
   in `model-panel.svelte` (`CAPABILITY_ICONS`): text to image Type, image to
   image Layers, upscale Maximize2, realtime Zap. Add new capabilities there.
 - **Empty states**: one muted sentence that says what will appear and how to
-  make it appear, plus the action if there is one.
+  make it appear, plus the action if there is one. For an administrator or a
+  local install, Generate's no-model state adds a short heading (`Set up your
+  worker`), an Open Models action, and a text link to the setup guide. Users and
+  viewers get the notice without an install action. Realtime shows its no-model
+  sentence once, in the picker.
 
 ## Adding a studio view
 

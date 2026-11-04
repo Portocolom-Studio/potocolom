@@ -391,11 +391,11 @@
 </script>
 
 {#snippet stat(label: string, value: string, sub?: string)}
-	<div class="bg-card border-border rounded-[10px] border px-4 py-3.5">
+	<div class="bg-card border-border rounded-xl border px-4 py-4">
 		<p class="text-muted-foreground text-xs">{label}</p>
 		<p class="mt-1.5 text-[22px] leading-tight font-medium tabular-nums">{value}</p>
 		{#if sub}
-			<p class="text-dim mt-1 text-[11.5px] tabular-nums">{sub}</p>
+			<p class="text-dim mt-1 text-xs tabular-nums">{sub}</p>
 		{/if}
 	</div>
 {/snippet}
@@ -403,7 +403,7 @@
 {#snippet loadingBlock(label: string, rows: number)}
 	<div role="status" class="flex flex-col gap-2">
 		<span class="sr-only">{label}</span>
-		<div class="bg-card border-border rounded-[10px] border" aria-hidden="true">
+		<div class="bg-card border-border rounded-xl border" aria-hidden="true">
 			{#each Array.from({ length: rows }, (_, index) => index) as index (index)}
 				<div class="border-border flex h-10 items-center gap-4 px-4 not-first:border-t">
 					<Skeleton class="h-3 w-24 rounded" />
@@ -415,27 +415,27 @@
 	</div>
 {/snippet}
 
-<div class="flex flex-col gap-3">
+<div class="flex flex-col gap-4">
 	{#if studio.metricsTab === 'usage' && !studio.historyLoaded}
 		<!-- The usage numbers come from the history; until its first page
 		     arrives the demo data would flash in, so show the layout instead. -->
-		<div role="status" class="flex flex-col gap-3">
+		<div role="status" class="flex flex-col gap-4">
 			<span class="sr-only">{t('app.metrics.loading')}</span>
-			<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-hidden="true">
+			<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-hidden="true">
 				{#each [0, 1, 2, 3] as index (index)}
-					<Skeleton class="h-[86px] rounded-[10px]" />
+					<Skeleton class="h-[86px] rounded-xl" />
 				{/each}
 			</div>
-			<div class="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]" aria-hidden="true">
-				<Skeleton class="h-72 rounded-[10px]" />
-				<Skeleton class="h-72 rounded-[10px]" />
+			<div class="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]" aria-hidden="true">
+				<Skeleton class="h-72 rounded-xl" />
+				<Skeleton class="h-72 rounded-xl" />
 			</div>
 		</div>
 	{:else if studio.metricsTab === 'usage'}
 		{#if demoMode}
 			<span class="tag tag-warning w-fit">{t('app.metrics.demo_data')}</span>
 		{/if}
-		<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 			{@render stat(
 				t('app.metrics.images_count'),
 				String(session.count),
@@ -467,7 +467,7 @@
 			</div>
 		{/if}
 
-		<div class="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+		<div class="grid items-start gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
 			<div class="min-w-0">
 				<StudioGpuTimelineChart
 					{timeline}
@@ -479,7 +479,7 @@
 			<StudioJobStatusChart breakdown={jobStatus} />
 		</div>
 
-		<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
 			{@render stat(t('app.metrics.avg_gpu'), formatMs(session.avgGpuMs))}
 			{@render stat(
 				t('app.metrics.postprocess_share'),
@@ -500,11 +500,11 @@
 		{/if}
 
 		<section class="flex flex-col gap-2">
-			<h3 class="text-[13px] font-semibold">{t('app.metrics.recent')}</h3>
+			<h3 class="text-sm font-semibold">{t('app.metrics.recent')}</h3>
 			{#if session.recent.length === 0}
 				<p class="text-muted-foreground text-sm">{t('app.metrics.runtime_empty')}</p>
 			{:else}
-				<div class="bg-card border-border overflow-x-auto rounded-[10px] border">
+				<div class="bg-card border-border overflow-x-auto rounded-xl border">
 					<table class="w-full min-w-[28rem] text-sm">
 						<thead class="text-muted-foreground border-border border-b text-left text-xs">
 							<tr>
@@ -516,9 +516,9 @@
 						<tbody>
 							{#each session.recent as row (row.id)}
 								<tr class="border-border border-t first:border-t-0">
-									<td class="px-4 py-3 text-[12.5px]">{modelName(row.modelId)}</td>
-									<td class="px-4 py-3 text-[12.5px] tabular-nums">{formatMs(row.gpuMs)}</td>
-									<td class="px-4 py-3 text-[12.5px] tabular-nums">
+									<td class="px-4 py-3 text-sm">{modelName(row.modelId)}</td>
+									<td class="px-4 py-3 text-sm tabular-nums">{formatMs(row.gpuMs)}</td>
+									<td class="px-4 py-3 text-sm tabular-nums">
 										{row.width} x {row.height}
 									</td>
 								</tr>
@@ -530,13 +530,13 @@
 		</section>
 
 		<section class="flex flex-col gap-2">
-			<h3 class="text-[13px] font-semibold">{t('app.metrics.failures')}</h3>
+			<h3 class="text-sm font-semibold">{t('app.metrics.failures')}</h3>
 			{#if failuresLoading && displayedFailures.length === 0}
 				{@render loadingBlock(t('app.metrics.failures_loading'), 3)}
 			{:else if displayedFailures.length === 0}
 				<p class="text-muted-foreground text-sm">{t('app.metrics.failures_empty')}</p>
 			{:else}
-				<div class="bg-card border-border overflow-x-auto rounded-[10px] border">
+				<div class="bg-card border-border overflow-x-auto rounded-xl border">
 					<table class="w-full min-w-[32rem] text-sm">
 						<thead class="text-muted-foreground border-border border-b text-left text-xs">
 							<tr>
@@ -551,8 +551,8 @@
 									<td class="text-muted-foreground px-4 py-2.5 text-xs whitespace-nowrap">
 										{formatFailureWhen(row.finished_at ?? row.created_at)}
 									</td>
-									<td class="px-4 py-3 text-[12.5px]">{modelName(row.model_id)}</td>
-									<td class="px-4 py-3 text-[12.5px] wrap-break-word whitespace-pre-wrap">
+									<td class="px-4 py-3 text-sm">{modelName(row.model_id)}</td>
+									<td class="px-4 py-3 text-sm wrap-break-word whitespace-pre-wrap">
 										{row.failure_reason ?? '-'}
 									</td>
 								</tr>

@@ -3,7 +3,9 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import HistoryIcon from '@lucide/svelte/icons/history';
+	import ImageIcon from '@lucide/svelte/icons/image';
 	import LayersIcon from '@lucide/svelte/icons/layers';
 	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
 	import MinusIcon from '@lucide/svelte/icons/minus';
@@ -57,6 +59,7 @@
 		pollWhileWorking,
 		recentPrompts,
 		selectGeneration,
+		starredGenerations,
 		studio,
 		toggleStarred,
 		type GenerationLineage,
@@ -71,13 +74,13 @@
 	// The field look of the studio's native controls (the prompt textarea).
 	const fieldClass =
 		'bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 w-full min-w-0 ' +
-		'rounded-md border px-2.5 py-2 font-sans text-[13px] leading-normal outline-none focus-visible:ring-2 ' +
+		'rounded-md border px-2.5 py-2 font-sans text-sm leading-normal outline-none focus-visible:ring-2 ' +
 		'disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50';
 	// A segmented control: the chosen segment lifts off the track.
 	const segmentRootClass =
-		'bg-field border-line-strong flex w-full gap-0.5 rounded-[7px] border p-0.5';
+		'bg-field border-line-strong flex w-full gap-0.5 rounded-lg border p-0.5';
 	const segmentItemClass =
-		'text-muted-foreground h-[30px] min-w-0 flex-1 rounded-[5px]! border-0 text-xs font-medium tabular-nums ' +
+		'text-muted-foreground h-[30px] min-w-0 flex-1 rounded-[6px]! border-0 text-xs font-medium tabular-nums ' +
 		'hover:bg-transparent hover:text-foreground data-[state=on]:bg-hover data-[state=on]:text-foreground ' +
 		'data-[state=on]:ring-line-strong data-[state=on]:ring-1 data-[state=on]:ring-inset';
 
@@ -568,6 +571,20 @@
 		if (canGenerate) (event.currentTarget as HTMLTextAreaElement).form?.requestSubmit();
 	}
 
+	const SETUP_GUIDE_URL =
+		'https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md';
+
+	const resultEmpty = $derived(shown === null && studio.historyLoaded);
+	const resultFrameClass = $derived(
+		resultEmpty
+			? 'flex min-h-0 flex-1 flex-col'
+			: 'bg-field border-border m-3 flex flex-none flex-col overflow-hidden rounded-xl border lg:min-h-0 lg:flex-1 lg:flex-row'
+	);
+	// The strip shows starred jobs too, so it is empty only when both lists are.
+	const hasHistoryItems = $derived(
+		starredGenerations().length > 0 || studio.history.some((g) => g.state !== 'failed')
+	);
+
 	const MODES = [
 		{ view: 'generate', label: 'app.service.generate' },
 		{ view: 'image_to_image', label: 'app.service.image_to_image' },
@@ -579,14 +596,14 @@
 
 {#snippet modeSwitch()}
 	<div
-		class="bg-field border-line-strong hidden gap-0.5 rounded-[7px] border p-0.5 md:flex"
+		class="bg-field border-line-strong hidden gap-0.5 rounded-lg border p-0.5 md:flex"
 		role="group"
 		aria-label={panelTitle}
 	>
 		{#each MODES as option (option.view)}
 			<button
 				type="button"
-				class={'flex h-[26px] min-w-28 items-center justify-center rounded-[5px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
+				class={'flex h-[26px] min-w-28 items-center justify-center rounded-[6px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
 					(mode === option.view
 						? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
 						: 'text-muted-foreground hover:text-foreground')}
@@ -607,7 +624,7 @@
 	<span class="grid min-w-0 flex-1 text-start leading-tight">
 		<span class="text-foreground truncate font-medium">{model?.name ?? t('app.gen.model')}</span>
 		{#if modelMeta(model) !== ''}
-			<span class="text-dim truncate text-[11px] tabular-nums">{modelMeta(model)}</span>
+			<span class="text-dim truncate text-xs tabular-nums">{modelMeta(model)}</span>
 		{/if}
 	</span>
 {/snippet}
@@ -615,7 +632,7 @@
 {#snippet progress()}
 	{#if working > 0}
 		<div class="mt-3">
-			<div class="text-dim flex items-center justify-between text-[11.5px] tabular-nums">
+			<div class="text-dim flex items-center justify-between text-xs tabular-nums">
 				<span role="status" title={t('app.gen.working_suffix')}
 					>{working} {t('app.gen.working_short')}</span
 				>
@@ -634,7 +651,7 @@
 		</div>
 	{/if}
 	{#if errorText !== ''}
-		<p role="alert" class="text-destructive mt-2 text-[13px] leading-relaxed">{errorText}</p>
+		<p role="alert" class="text-destructive mt-2 text-sm leading-relaxed">{errorText}</p>
 	{/if}
 {/snippet}
 
@@ -643,8 +660,17 @@
 		class="bg-panel border-border flex min-h-0 flex-none flex-col border-b lg:w-[340px] lg:border-e lg:border-b-0"
 		aria-label={panelTitle}
 	>
-		<h1 class="sr-only">{panelTitle}</h1>
-		<p class="sr-only">{panelSub}</p>
+		<!-- Below lg the top bar already names the screen, so the title is only for screen readers. -->
+		<div class="flex flex-col gap-1 lg:px-5 lg:pt-5 lg:pb-3">
+			<h1
+				class="text-foreground sr-only text-lg leading-tight font-semibold tracking-[-0.01em] lg:not-sr-only"
+			>
+				{panelTitle}
+			</h1>
+			<p class="text-muted-foreground sr-only text-xs leading-relaxed lg:not-sr-only">
+				{panelSub}
+			</p>
+		</div>
 		{#if !studio.modelsLoaded}
 			<!-- The parameter column's shape while the models load. -->
 			<div role="status" class="flex flex-col gap-4 p-4">
@@ -666,23 +692,35 @@
 				<Skeleton class="mt-2 h-9 rounded-md" aria-hidden="true" />
 			</div>
 		{:else if mode !== 'upscale'}
-			{#if diffusionModels.length === 0}
-				<div class="text-muted-foreground p-4 text-[13px] leading-relaxed">
-					{#if compatibleModelsRegistered}
-						{t('app.models.none_available')}
-					{:else if account.current?.role === 'user' || account.current?.role === 'viewer'}
-						{t('app.gen.no_models_viewer')}
-					{:else}
-						<p>{t('app.gen.no_models')}</p>
-						<Button variant="outline" size="sm" class="mt-3" onclick={() => openService('models')}
-							>{t('app.gen.open_models')}</Button
-						>
-					{/if}
+			{#if diffusionModels.length === 0 && compatibleModelsRegistered}
+				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
+					{t('app.models.none_available')}
+				</p>
+			{:else if diffusionModels.length === 0 && (account.current?.role === 'user' || account.current?.role === 'viewer')}
+				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
+					{t('app.gen.no_models_viewer')}
+				</p>
+			{:else if diffusionModels.length === 0}
+				<div class="flex flex-col gap-2 p-4 lg:p-5">
+					<h2 class="text-foreground text-sm font-semibold">{t('app.gen.setup_title')}</h2>
+					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
+					<Button variant="outline" size="sm" class="w-fit" onclick={() => openService('models')}
+						>{t('app.gen.open_models')}</Button
+					>
+					<a
+						href={SETUP_GUIDE_URL}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="text-foreground decoration-line-strong hover:decoration-foreground mt-1 inline-flex w-fit items-center gap-1.5 rounded-sm text-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						{t('app.gen.setup_guide')}
+						<ExternalLinkIcon class="size-3.5" aria-hidden="true" />
+					</a>
 				</div>
 			{:else}
 				<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
 					<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
-						<div class="border-border border-b p-4">
+						<div class="border-border border-b p-4 lg:p-5">
 							<Label for="gen-model" class="text-muted-foreground mb-2 text-xs font-medium"
 								>{t('app.gen.model')}</Label
 							>
@@ -714,7 +752,7 @@
 							{/if}
 						</div>
 						{#if mode === 'image_to_image'}
-							<div class="border-border border-b p-4">
+							<div class="border-border border-b p-4 lg:p-5">
 								<p class="text-muted-foreground mb-2 text-xs font-medium">
 									{t('app.image_to_image.source')}
 								</p>
@@ -729,11 +767,11 @@
 											width="48"
 											height="48"
 										/>
-										<p class="min-w-0 flex-1 truncate text-[13px]">
+										<p class="min-w-0 flex-1 truncate text-sm">
 											{t('app.image_to_image.ready')}
 										</p>
 									{:else}
-										<p class="text-muted-foreground flex-1 text-[13px]">
+										<p class="text-muted-foreground flex-1 text-sm">
 											{t('app.image_to_image.source_empty')}
 										</p>
 									{/if}
@@ -765,12 +803,12 @@
 								</div>
 							</div>
 						{/if}
-						<div class="border-border border-b p-4">
+						<div class="border-border border-b p-4 lg:p-5">
 							<div class="mb-2 flex items-center justify-between gap-2">
 								<Label for="gen-prompt" class="text-muted-foreground text-xs font-medium"
 									>{t('app.gen.prompt')}</Label
 								>
-								<span class="text-dim text-[11px] tabular-nums">{tokenLabel}</span>
+								<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
 							</div>
 							<textarea
 								id="gen-prompt"
@@ -801,7 +839,7 @@
 											<button
 												type="button"
 												{...props}
-												class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-[11.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+												class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
 											>
 												<HistoryIcon class="size-3" aria-hidden="true" />
 												{t('app.gen.prompt_history')}
@@ -811,10 +849,10 @@
 									<DropdownMenu.Content class="w-80 max-w-[calc(100vw-2rem)]" align="start">
 										{#each prompts as recent (recent)}
 											<DropdownMenu.Item title={recent} onclick={() => (studio.prompt = recent)}>
-												<span class="line-clamp-2 text-[13px]">{recent}</span>
+												<span class="line-clamp-2 text-sm">{recent}</span>
 											</DropdownMenu.Item>
 										{:else}
-											<p class="text-muted-foreground px-2 py-1.5 text-[13px]">
+											<p class="text-muted-foreground px-2 py-1.5 text-sm">
 												{t('app.shell.prompt_history_empty')}
 											</p>
 										{/each}
@@ -822,7 +860,7 @@
 								</DropdownMenu.Root>
 								<button
 									type="button"
-									class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-[11.5px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+									class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
 									disabled={shownPrompt === ''}
 									onclick={insertPrompt}
 								>
@@ -831,7 +869,7 @@
 								</button>
 							</div>
 						</div>
-						<div class="border-border border-b p-4">
+						<div class="border-border border-b p-4 lg:p-5">
 							<Label id="gen-size-label" class="text-muted-foreground mb-2 text-xs font-medium"
 								>{t('app.gen.size')}</Label
 							>
@@ -930,7 +968,7 @@
 							</div>
 						</div>
 						{#if normsReady}
-							<Collapsible.Root open class="group/advanced p-4">
+							<Collapsible.Root open class="group/advanced p-4 lg:p-5">
 								<Collapsible.Trigger
 									class="flex w-full items-center justify-between rounded text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
 								>
@@ -974,11 +1012,13 @@
 							</Collapsible.Root>
 						{/if}
 					</div>
-					<div class="border-border border-t p-4">
+					<div
+						class="bg-panel border-border sticky bottom-0 z-10 border-t p-4 lg:relative lg:p-5 lg:before:pointer-events-none lg:before:absolute lg:before:inset-x-0 lg:before:bottom-full lg:before:h-6 lg:before:bg-linear-to-t lg:before:from-panel lg:before:to-transparent"
+					>
 						<Button
 							type="submit"
 							variant="brand"
-							class="h-9 w-full tabular-nums"
+							class="h-10 w-full tabular-nums"
 							data-tour="generate"
 							disabled={!canGenerate}
 						>
@@ -989,7 +1029,7 @@
 								<span class="opacity-75">{totalEstimateLabel}</span>
 							{/if}
 							<kbd
-								class="ms-1 rounded border border-white/30 px-1 font-sans text-[11px] leading-[15px] text-[#dfe6ff]"
+								class="ms-1 hidden rounded border border-white/30 px-1 font-sans text-xs leading-[15px] text-[#dfe6ff] sm:inline-block pointer-coarse:hidden"
 								>{shortcutLabel(['mod', 'enter'])}</kbd
 							>
 						</Button>
@@ -998,17 +1038,17 @@
 				</form>
 			{/if}
 		{:else if upscaleModels.length === 0}
-			<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+			<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
 				{compatibleModelsRegistered ? t('app.models.none_available') : t('app.upscale.no_models')}
 			</p>
 		{:else if !canUpscale}
-			<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+			<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
 				{t('app.upscale.need_image')}
 			</p>
 		{:else}
 			<div class="flex min-h-0 flex-1 flex-col">
 				<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
-					<div class="border-border border-b p-4">
+					<div class="border-border border-b p-4 lg:p-5">
 						<p class="text-muted-foreground mb-2 text-xs font-medium">{t('app.upscale.source')}</p>
 						<div class="border-line-strong flex items-center gap-3 rounded-md border p-2.5">
 							{#if upscaleSourceAsset !== null}
@@ -1020,12 +1060,14 @@
 									height="48"
 								/>
 							{/if}
-							<p class="text-muted-foreground min-w-0 flex-1 truncate text-[13px]">
-								{shownPrompt !== '' ? shownPrompt : t('app.gen.result')}
+							<p class="text-muted-foreground min-w-0 flex-1 truncate text-sm">
+								{upscaleSourceAsset?.id === shown?.assets[0]?.id && shownPrompt !== ''
+									? shownPrompt
+									: t('app.gen.result')}
 							</p>
 						</div>
 					</div>
-					<div class="border-border border-b p-4">
+					<div class="border-border border-b p-4 lg:p-5">
 						<Label for="upscale-model" class="text-muted-foreground mb-2 text-xs font-medium"
 							>{t('app.gen.upscaler')}</Label
 						>
@@ -1052,7 +1094,7 @@
 							<p class="text-dim mt-2 text-xs leading-relaxed tabular-nums">{upscaleChoiceLabel}</p>
 						{/if}
 					</div>
-					<div class="p-4">
+					<div class="p-4 lg:p-5">
 						<Label id="upscale-factor-label" class="text-muted-foreground mb-2 text-xs font-medium"
 							>{t('app.upscale.factor')}</Label
 						>
@@ -1073,11 +1115,13 @@
 						</ToggleGroup.Root>
 					</div>
 				</div>
-				<div class="border-border border-t p-4">
+				<div
+					class="bg-panel border-border sticky bottom-0 z-10 border-t p-4 lg:relative lg:p-5 lg:before:pointer-events-none lg:before:absolute lg:before:inset-x-0 lg:before:bottom-full lg:before:h-6 lg:before:bg-linear-to-t lg:before:from-panel lg:before:to-transparent"
+				>
 					<Button
 						type="button"
 						variant="brand"
-						class="h-9 w-full tabular-nums"
+						class="h-10 w-full tabular-nums"
 						disabled={submitLock.busy || !canUpscale}
 						onclick={upscaleShown}
 					>
@@ -1091,74 +1135,75 @@
 	</aside>
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
+	<!-- Phones scroll the whole page, so the result takes its content height; the desktop workbench fills the row. -->
 	<section
-		class="flex min-h-0 min-w-0 flex-1 flex-col"
+		class="flex min-h-0 min-w-0 flex-none flex-col lg:flex-1"
 		class:tour-canvas={studio.tourOpen}
 		aria-label={t('app.gen.result')}
 		data-tour="canvas"
 		tabindex="-1"
 	>
-		<div
-			class="border-border flex min-h-[50px] flex-wrap items-center gap-2 border-b px-4 py-2 lg:flex-nowrap"
-		>
-			{#if shown !== null && lineage !== null}
-				<div
-					class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-					role="group"
-					aria-label={t('app.lineage.ancestors')}
-				>
-					{#each lineage.ancestors as entry (entry.asset_id)}
-						<button
-							type="button"
-							class="text-muted-foreground hover:text-foreground hover:bg-hover flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
-							disabled={entry.job_id === null}
-							title={lineageActionLabel(entry.action)}
-							onclick={() => selectLineage(entry)}
+		{#if shown !== null}
+			<div
+				class="border-border flex min-h-14 flex-wrap items-center gap-2 border-b px-4 py-2.5 lg:flex-nowrap"
+			>
+				{#if shown !== null && lineage !== null}
+					<div
+						class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+						role="group"
+						aria-label={t('app.lineage.ancestors')}
+					>
+						{#each lineage.ancestors as entry (entry.asset_id)}
+							<button
+								type="button"
+								class="text-muted-foreground hover:text-foreground hover:bg-hover flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+								disabled={entry.job_id === null}
+								title={lineageActionLabel(entry.action)}
+								onclick={() => selectLineage(entry)}
+							>
+								{#if entry.thumbnail_url !== null}
+									<img
+										src={entry.thumbnail_url}
+										alt=""
+										class="size-8 rounded object-cover"
+										width="32"
+										height="32"
+										loading="lazy"
+									/>
+								{:else}
+									<span
+										class="border-line-strong text-dim grid size-8 place-items-center rounded border border-dashed text-xs"
+										>?</span
+									>
+								{/if}
+								<span class="truncate">{lineageActionLabel(entry.action)}</span>
+							</button>
+							<ChevronRightIcon class="text-dim size-3 shrink-0" aria-hidden="true" />
+						{/each}
+						<div
+							class="text-foreground flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs"
+							aria-current="true"
 						>
-							{#if entry.thumbnail_url !== null}
+							{#if shownThumbnail !== null}
 								<img
-									src={entry.thumbnail_url}
+									src={shownThumbnail}
 									alt=""
-									class="size-8 rounded object-cover"
+									class="ring-brand size-8 rounded object-cover ring-1"
 									width="32"
 									height="32"
 									loading="lazy"
 								/>
-							{:else}
-								<span
-									class="border-line-strong text-dim grid size-8 place-items-center rounded border border-dashed text-[9px]"
-									>?</span
-								>
 							{/if}
-							<span class="truncate">{lineageActionLabel(entry.action)}</span>
-						</button>
-						<ChevronRightIcon class="text-dim size-3 shrink-0" aria-hidden="true" />
-					{/each}
-					<div
-						class="text-foreground flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs"
-						aria-current="true"
-					>
-						{#if shownThumbnail !== null}
-							<img
-								src={shownThumbnail}
-								alt=""
-								class="ring-brand size-8 rounded object-cover ring-1"
-								width="32"
-								height="32"
-								loading="lazy"
-							/>
-						{/if}
-						<span class="truncate">
-							{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
-							{shownFactor != null ? ` ×${shownFactor}` : ''}
-						</span>
+							<span class="truncate">
+								{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
+								{shownFactor != null ? ` ×${shownFactor}` : ''}
+							</span>
+						</div>
 					</div>
-				</div>
-			{:else}
-				<div class="flex-1"></div>
-			{/if}
-			{#if shown !== null}
-				<div class="flex shrink-0 items-center gap-1.5">
+				{:else}
+					<div class="flex-1"></div>
+				{/if}
+				{#if shown !== null}
 					<Button
 						type="button"
 						variant="ghost"
@@ -1172,42 +1217,53 @@
 					>
 						<StarIcon class={shownStarred ? 'fill-current' : ''} />
 					</Button>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						aria-pressed={sourceAssetId !== null && mode === 'image_to_image'}
-						disabled={!canEdit}
-						onclick={editShown}
-					>
-						<LayersIcon />
-						{t('app.gen.use_as_source')}
-					</Button>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						disabled={shown.assets.length === 0 ||
-							shown.state !== 'succeeded' ||
-							mode === 'upscale'}
-						onclick={() => openService('upscale')}
-					>
-						<Maximize2Icon />
-						{t('app.gen.upscale')}
-					</Button>
-					{#if shown.assets.length > 0}
-						<Button href={shown.assets[0].download_url} variant="outline" size="sm">
-							<DownloadIcon />
-							{t('app.gen.download')}
+					<div class="flex w-full min-w-0 items-center gap-1.5 sm:w-auto sm:shrink-0">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							class="h-12 min-w-0 flex-[1.4] px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
+							aria-pressed={mode === 'image_to_image' && sourceAssetId === shown.assets[0]?.id}
+							disabled={!canEdit}
+							onclick={editShown}
+						>
+							<LayersIcon class="hidden sm:block" />
+							{t('app.gen.use_as_source')}
 						</Button>
-					{/if}
-				</div>
-			{/if}
-		</div>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							class="h-12 min-w-0 flex-1 px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
+							disabled={shown.assets.length === 0 ||
+								shown.state !== 'succeeded' ||
+								mode === 'upscale'}
+							onclick={() => openService('upscale')}
+						>
+							<Maximize2Icon class="hidden sm:block" />
+							{t('app.gen.upscale')}
+						</Button>
+						{#if shown.assets.length > 0}
+							<Button
+								href={shown.assets[0].download_url}
+								variant="outline"
+								size="sm"
+								class="h-12 min-w-0 flex-1 px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
+							>
+								<DownloadIcon class="hidden sm:block" />
+								{t('app.gen.download')}
+							</Button>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
 
-		<div class="flex min-h-0 flex-1 flex-col lg:flex-row">
+		<div class={resultFrameClass}>
 			{#if shown !== null}
-				<div class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10">
+				<div
+					class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-5 min-[1400px]:p-7"
+				>
 					{#if shown.assets.length > 0}
 						{@const asset = shown.assets[0]}
 						<!-- The thumbnail, blurred, holds the frame while the full image
@@ -1216,7 +1272,7 @@
 							href={asset.url}
 							target="_blank"
 							rel="noopener"
-							class="reveal-stack grid h-full max-h-full w-full grid-cols-1 grid-rows-[minmax(0,1fr)]"
+							class="reveal-stack grid h-full max-h-full w-full grid-cols-1 grid-rows-[minmax(0,1fr)] place-items-center [--placeholder-radius:0.75rem]"
 							title={t('app.gen.open_full')}
 						>
 							{#if asset.thumbnail_url !== null && asset.thumbnail_url !== asset.url}
@@ -1224,7 +1280,7 @@
 									src={asset.thumbnail_url}
 									alt=""
 									aria-hidden="true"
-									class="img-placeholder col-start-1 row-start-1 mx-auto h-full max-h-full w-auto max-w-full rounded-[10px] object-contain"
+									class="img-placeholder col-start-1 row-start-1 h-auto max-h-full w-auto max-w-full rounded-xl object-contain"
 									width={asset.width}
 									height={asset.height}
 								/>
@@ -1232,7 +1288,7 @@
 							<img
 								src={asset.url}
 								alt={shown.params.prompt ?? t('app.gen.result')}
-								class="img-reveal col-start-1 row-start-1 mx-auto h-full max-h-full w-auto max-w-full rounded-[10px] object-contain"
+								class="img-reveal col-start-1 row-start-1 h-auto max-h-full w-auto max-w-full rounded-xl object-contain"
 								width={asset.width}
 								height={asset.height}
 								{@attach revealOnLoad(asset.url)}
@@ -1240,54 +1296,56 @@
 						</a>
 					{:else}
 						<div
-							class="border-line-strong text-muted-foreground grid h-full min-h-64 w-full place-items-center rounded-[10px] border border-dashed text-[13px]"
+							class="border-line-strong text-muted-foreground grid h-full min-h-64 w-full place-items-center rounded-xl border border-dashed text-sm"
 						>
 							{t('app.lineage.missing')}
 						</div>
 					{/if}
 				</div>
 				<dl
-					class="border-border flex shrink-0 flex-col gap-3.5 border-t px-6 py-5 text-[13px] lg:w-[260px] lg:justify-center lg:border-t-0 lg:ps-0"
+					class="border-border flex shrink-0 flex-col gap-4 border-t px-6 py-5 text-sm lg:w-[220px] lg:overflow-y-auto lg:border-t-0 lg:border-s lg:px-5 lg:py-6 min-[1400px]:w-[260px]"
 				>
 					{#if shownPrompt !== ''}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.gen.prompt')}</dt>
-							<dd class="mt-0.5 break-words">{shownPrompt}</dd>
+							<dt class="text-muted-foreground text-xs">{t('app.gen.prompt')}</dt>
+							<dd class="mt-1 break-words">{shownPrompt}</dd>
 						</div>
 					{/if}
 					<div>
-						<dt class="text-dim text-[11.5px]">{t('app.gen.model')}</dt>
-						<dd class="mt-0.5">{shownModel?.name ?? shown.model_id}</dd>
+						<dt class="text-muted-foreground text-xs">{t('app.gen.model')}</dt>
+						<dd class="mt-1">{shownModel?.name ?? shown.model_id}</dd>
 					</div>
 					{#if shownSize !== null}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.gen.size')}</dt>
-							<dd class="mt-0.5 tabular-nums">{shownSize}</dd>
+							<dt class="text-muted-foreground text-xs">{t('app.gen.size')}</dt>
+							<dd class="mt-1 tabular-nums">{shownSize}</dd>
 						</div>
 					{/if}
 					{#if shownSeed !== null}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.gen.seed')}</dt>
-							<dd class="mt-0.5 font-mono">{shownSeed}</dd>
+							<dt class="text-muted-foreground text-xs">{t('app.gen.seed')}</dt>
+							<dd class="mt-1 font-mono">{shownSeed}</dd>
 						</div>
 					{/if}
 					{#if shownSteps !== null || shownGuidance !== null}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.gen.steps')} · {t('app.gen.guidance')}</dt>
-							<dd class="mt-0.5 tabular-nums">
+							<dt class="text-muted-foreground text-xs">
+								{t('app.gen.steps')} · {t('app.gen.guidance')}
+							</dt>
+							<dd class="mt-1 tabular-nums">
 								{shownSteps ?? '-'} · {shownGuidance ?? '-'}
 							</dd>
 						</div>
 					{/if}
 					{#if shown.gpu_ms != null}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.gen.gpu_time')}</dt>
-							<dd class="mt-0.5 tabular-nums">{formatMs(shown.gpu_ms)}</dd>
+							<dt class="text-muted-foreground text-xs">{t('app.gen.gpu_time')}</dt>
+							<dd class="mt-1 tabular-nums">{formatMs(shown.gpu_ms)}</dd>
 						</div>
 					{/if}
 					{#if lineage !== null}
 						<div>
-							<dt class="text-dim text-[11.5px]">{t('app.lineage.derivatives')}</dt>
+							<dt class="text-muted-foreground text-xs">{t('app.lineage.derivatives')}</dt>
 							<dd class="mt-1">
 								{#if lineage.children.length > 0}
 									<div class="flex flex-wrap gap-1.5">
@@ -1308,7 +1366,7 @@
 														loading="lazy"
 													/>
 												{:else}
-													<span class="text-dim grid size-10 place-items-center text-[9px]"
+													<span class="text-dim grid size-10 place-items-center text-xs"
 														>{lineageActionLabel(entry.action)}</span
 													>
 												{/if}
@@ -1329,21 +1387,28 @@
 				>
 					<span class="sr-only">{t('app.gen.history_loading')}</span>
 					<Skeleton
-						class="aspect-square h-full max-h-full max-w-full rounded-[10px]"
+						class="aspect-square h-full max-h-full max-w-full rounded-xl"
 						aria-hidden="true"
 					/>
 				</div>
 			{:else}
-				<div
-					class="text-dim grid min-h-72 flex-1 place-items-center px-6 text-center text-xs tracking-[0.14em] uppercase"
-				>
-					{t('app.gen.result_hint')}
+				<div class="flex flex-1 items-center justify-center p-6 text-center lg:p-10">
+					<div
+						class="bg-panel/50 border-border flex aspect-square w-full max-w-lg flex-col items-center justify-center gap-3 rounded-xl border p-6"
+					>
+						<ImageIcon class="text-dim size-7" aria-hidden="true" />
+						<p class="text-muted-foreground text-balance max-w-xs text-sm leading-relaxed">
+							{t('app.gen.result_hint')}
+						</p>
+					</div>
 				</div>
 			{/if}
 		</div>
-		<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
-			<HistoryStrip />
-		</div>
+		{#if !studio.historyLoaded || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
+			<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
+				<HistoryStrip />
+			</div>
+		{/if}
 	</section>
 </div>
 

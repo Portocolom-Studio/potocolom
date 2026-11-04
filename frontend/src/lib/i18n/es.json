@@ -518,6 +518,8 @@
 	"app.gen.count": "Cantidad",
 	"app.gen.working_suffix": "en cola o renderizando; los resultados aparecen al terminar",
 	"app.gen.no_models": "Aún no hay modelos instalados. Abre Modelos para instalar uno.",
+	"app.gen.setup_title": "Configura tu worker",
+	"app.gen.setup_guide": "Lee la guía de configuración",
 	"app.gen.result": "Imagen generada",
 	"app.gen.result_hint": "Tu imagen aparece aquí",
 	"app.gen.open_full": "Abrir a tamaño completo",

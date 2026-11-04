@@ -12,7 +12,7 @@ export type ChartMargins = {
 	left: number;
 };
 
-export const CHART_MARGINS: ChartMargins = { top: 20, right: 52, bottom: 30, left: 44 };
+export const CHART_MARGINS: ChartMargins = { top: 8, right: 24, bottom: 32, left: 40 };
 
 /** Fixed entity colors - never cycle by visibility order. */
 export const GPU_METRIC_COLORS = {
@@ -89,7 +89,7 @@ export function formatRangeCaption(
 		year: 'numeric'
 	});
 	if (sameDay) {
-		return `${datePart}, ${formatClock(windowStartMs, withSeconds)}-${formatClock(windowEndMs, withSeconds)} (local)`;
+		return `${datePart}, ${formatClock(windowStartMs, withSeconds)} - ${formatClock(windowEndMs, withSeconds)} (local)`;
 	}
 	const endDate = end.toLocaleDateString(getLocale(), {
 		day: 'numeric',
