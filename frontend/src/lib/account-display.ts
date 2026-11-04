@@ -82,13 +82,19 @@ function refusedView(role: Role | null): ShellView {
 
 // A view the role may use stays; otherwise fall back to generate, the main
 // panel, and then images, which no role is locked out of.
-export function openViewFor(view: ShellView, tab: StudioTab, role: Role | null): ShellView {
+export function openViewFor(
+	view: ShellView,
+	tab: StudioTab,
+	role: Role | null,
+	localMode = false
+): ShellView {
 	// models and images are open to every role; metrics picks its section by
 	// tab; admin and every other view share their section's name.
 	if (view === 'models' || view === 'images') return view;
-	// The account view needs a signed-in account: AUTH_MODE=none has a null
-	// role and no account to show, so it is refused with everything else.
-	if (view === 'account') return role === null ? refusedView(role) : view;
+	// The account view needs a signed-in account. AUTH_MODE=none has a null
+	// role and no account, so its one settings view is the turn-on card, which
+	// localMode keeps open; every other null-role view is still refused.
+	if (view === 'account') return role === null && !localMode ? refusedView(role) : view;
 	const section: GatedSection = view === 'metrics' ? metricsSection(tab) : view;
 	if (sectionNeeds(section, role) === null) return view;
 	return refusedView(role);

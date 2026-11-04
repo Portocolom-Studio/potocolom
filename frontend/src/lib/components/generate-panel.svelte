@@ -12,6 +12,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { t } from '$lib/i18n.svelte';
+	import { account } from '$lib/account.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -666,9 +667,18 @@
 			</div>
 		{:else if mode !== 'upscale'}
 			{#if diffusionModels.length === 0}
-				<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
-					{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
-				</p>
+				<div class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+					{#if compatibleModelsRegistered}
+						{t('app.models.none_available')}
+					{:else if account.current?.role === 'user' || account.current?.role === 'viewer'}
+						{t('app.gen.no_models_viewer')}
+					{:else}
+						<p>{t('app.gen.no_models')}</p>
+						<Button variant="outline" size="sm" class="mt-3" onclick={() => openService('models')}
+							>{t('app.gen.open_models')}</Button
+						>
+					{/if}
+				</div>
 			{:else}
 				<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
 					<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
@@ -683,6 +693,7 @@
 							>
 								<Select.Trigger
 									id="gen-model"
+									data-tour="model"
 									class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
 								>
 									{@render modelCard(
@@ -763,6 +774,7 @@
 							</div>
 							<textarea
 								id="gen-prompt"
+								data-tour="prompt"
 								name="prompt"
 								autocomplete="off"
 								class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
@@ -967,6 +979,7 @@
 							type="submit"
 							variant="brand"
 							class="h-9 w-full tabular-nums"
+							data-tour="generate"
 							disabled={!canGenerate}
 						>
 							<SparklesIcon />
@@ -1078,7 +1091,13 @@
 	</aside>
 
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
-	<section class="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={t('app.gen.result')}>
+	<section
+		class="flex min-h-0 min-w-0 flex-1 flex-col"
+		class:tour-canvas={studio.tourOpen}
+		aria-label={t('app.gen.result')}
+		data-tour="canvas"
+		tabindex="-1"
+	>
 		<div
 			class="border-border flex min-h-[50px] flex-wrap items-center gap-2 border-b px-4 py-2 lg:flex-nowrap"
 		>
@@ -1327,3 +1346,11 @@
 		</div>
 	</section>
 </div>
+
+<style>
+	@media (max-width: 1023px) {
+		.tour-canvas {
+			min-height: 360px;
+		}
+	}
+</style>

@@ -240,8 +240,8 @@ Both `PUBLIC_URL` and `INTERNAL_URL` must use addresses reachable from the
 remote worker. `INTERNAL_URL` supplies worker upload and source-image URLs;
 its default `http://api:8080` works only on the local Compose network. A
 successful fleet WebSocket connection alone does not prove image jobs work.
-Configure the HTTPS proxy before using this example. Keep `AUTH_MODE=none`
-on a trusted network; anyone who can reach that API has full access.
+Configure the HTTPS proxy before using this example. Keep an install without
+accounts on a trusted network; anyone who can reach that API has full access.
 
 On the GPU host, create a private `worker.env` file (mode `0600`):
 
@@ -288,7 +288,8 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
   when it creates the volume; otherwise preflight warns and prints the
   `ALTER ROLE` command to change it. It prints `FLEET_SECRET` once. Copy
   that value to a worker on another machine. Non-empty keys in an existing
-  `.env` are left alone.
+  `.env` are left alone, including `AUTH_MODE`. Installs from a release before
+  the setup link may still carry `AUTH_MODE=none` from the old template.
 - The first generation per model downloads its weights from Hugging Face
   (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
   "Gated models" below); watch progress with
@@ -331,16 +332,81 @@ immediately and destroys nothing for 30 days: an administrator restores it with
 `POST /api/v1/users/{id}/restore` until the sweep runs. After that the objects, the rows
 that named them and the user row are gone, in that order.
 
-`AUTH_MODE` defaults to `none`. In that mode every request resolves to a single local
-user, and that user holds the `admin` role, so anyone who can reach the API can do anything
-the install can do. Keep it on a trusted network, and see the fleet secret above for the
-worker side of the same question.
+### First run
+
+A new install starts unclaimed. The installer generates every secret, including the
+root key ring, starts the API, and prints a one-use setup link. The link is good for one
+hour and works once. Whoever opens it in a browser chooses how the install works:
+
+- an administrator account, with an email and a password. The claimant adopts the
+  implicit local user, so every job and asset made before accounts existed belongs to
+  them; nothing is stranded and nothing is copied.
+- no accounts. Every request then resolves to one local administrator, which is what a
+  single-operator install wants. Anyone who can reach the API can do anything the install
+  can do, so keep it on a trusted network. The fleet secret above is the worker side of
+  the same question.
+
+Until somebody chooses, every API route answers `503` with `{"detail": "setup_required"}`.
+The exceptions are the health and readiness probes, `GET /api/v1/config`, the setup route
+and the fleet socket, which lets a worker report its hardware before anyone signs in.
+The setup page does not show that hardware; `/api/v1/admin/models` answers `503`
+until setup is complete.
+
+The choice is recorded in PostgreSQL. `AUTH_MODE` in `deploy/compose/.env` is an optional
+override, and it should stay empty: the API then follows the recorded choice. Setting
+`AUTH_MODE=none` or `AUTH_MODE=accounts` decides an install that has not chosen yet, and it
+must agree with an install that has. Otherwise the API refuses to start and names the
+variable. Scripted installs and CI use the override and never see the setup page.
+The mode is held per API process, so an install without a pinned `AUTH_MODE` must
+run a single API process, as self-hosted Compose does. A scaled deployment must pin
+`AUTH_MODE` to the recorded choice.
+
+An install that already exists is decided at upgrade: it keeps accounts if it had them,
+and it is `none` if it holds any user or work, so an upgrade never shows the setup page.
+
+The compose file passes the sign-in and mail settings to the API: `OAUTH_PROVIDERS`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
+`EMAIL_BACKEND`, `MAIL_FROM` and the `SMTP_*` keys. All are empty or at their defaults
+unless you set them in `.env`. A provider is offered only when both its credentials are set.
+
+### Accounts
 
 `AUTH_MODE=accounts` is the account mode. Turn it on with `make auth-enable`, which
-generates the root key ring, asks where browsers reach this install, records the switch
-in PostgreSQL, and prints a one-use call that claims the administrator account. The
-claimant adopts the implicit local user, so every job and asset made before accounts
-existed belongs to them; nothing is stranded and nothing is copied.
+generates the root key ring if it is missing, asks where browsers reach this install,
+records the switch in PostgreSQL, and prints a one-use call that claims the administrator
+account. It works on an install that is unclaimed or runs without accounts.
+
+An administrator of an install that runs without accounts can also turn them on with
+`POST /api/v1/auth/enable`, with an email and a password and no restart. The account they
+name takes over the implicit local user, as the setup claim does. The next request needs a
+session, and every browser canvas that was open without one is closed. The studio's
+settings page will use this route. The route refuses while `AUTH_MODE=none` is set in
+`deploy/compose/.env`, because the next start would refuse the accounts it records: remove
+every top-level `AUTH_MODE` line from `deploy/compose/.env`, restart the API, and then turn
+accounts on. This includes duplicate assignments with any value. A request already running as the
+administrator when the switch happens finishes under that authority, which is no more than
+the administrator already had.
+
+If you run `make auth-enable` while the API is still up, the running API keeps serving none
+until it restarts, and the route refuses to switch from it. Restart the API, which is what
+the command tells you to do.
+
+`make setup-link` prints a fresh setup link for an install that nobody has claimed yet. It
+replaces any link still outstanding. It runs inside the running compose API container, with
+the same compose invocation as `make compose-up`, so the link names that install's database
+and `PUBLIC_URL`. If the API is not running it refuses and names `make compose-up`. It
+refuses once the install runs without accounts, and once an account holds an identity.
+The command exits with status 3 when the install has already chosen; the installer shows
+that as a note rather than a failure.
+
+A release install has no Makefile. From the install directory, with `COMPOSE_PROJECT_NAME`
+unset in your shell, so Compose takes the project name from the saved env file, the command is:
+`env -u COMPOSE_PROJECT_NAME docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml exec -T api python -m app.operator setup-link`.
+The installer prints this command, with the absolute paths of your install, when it cannot mint a link.
+
+`make dev-setup-link` is the native dev stack's version. It runs the checkout's backend
+venv against the checkout's dev database. `PUBLIC_URL` defaults to this checkout's API port
+unless you export one. It never consults Docker, and it does not reach a compose install.
 
 Account setup keeps existing root keys, including quoted or `export` assignments
 in `.env`. Account setup and upgrades use the same locks. If either command is
@@ -359,11 +425,13 @@ That destroys every account, session, second factor and invitation on the instal
 and keeps the work: generations and assets move to the single local user, because
 the images belong to the installation and ending the accounts is not a reason to
 burn them. The phrase is typed out rather than a flag, because a flag is too easy
-to pass by accident and too easy to copy out of a forum post. Set `AUTH_MODE=none`
-and restart the API afterwards.
+to pass by accident and too easy to copy out of a forum post. Remove `AUTH_MODE=accounts`
+from `deploy/compose/.env` (or set `AUTH_MODE=none`) and restart the API afterwards, because
+an accounts override refuses to start an install that runs without accounts.
 
-The link lasts one hour, is good once, and is replaced if you run `make auth-enable`
-again. Nothing durable holds it, only its hash, so a lost link means minting another.
+The link lasts one hour, is good once, and is replaced if you run `make auth-enable` or
+`make setup-link` again. Nothing durable holds it, only its hash, so a lost link means
+minting another.
 
 Sign-in is here: address and password, an optional second factor, and Google or
 GitHub when you configure them. After you claim the administrator account, open
@@ -433,9 +501,19 @@ who an address belongs to, so the record names the administrator who vouched.
 Nobody can change their own role, and the last administrator cannot be demoted.
 
 Multi-user accounts mode has shipped: `AUTH_MODE=accounts` via `make auth-enable`, with
-password sign-in and optional Google or GitHub. `AUTH_MODE=none` remains the single-operator
-default on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
+password sign-in and optional Google or GitHub. Running without accounts remains the
+single-operator choice on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
 are still issue #10.
+
+## Models you already have
+
+The worker finds complete models already in its Hugging Face cache at the pinned
+revision, including downloads from older potocolom installs, the `hf` CLI, and
+other apps using the standard cache. A different revision of the same model is
+not reused. To share another app's cache, set `HF_HOME` to that cache when
+running natively, or replace the `hf-cache` volume in `deploy/compose/compose.yml`
+with the host cache mount shown in the file. If another app removes files, the
+model shows as not installed and can be installed again.
 
 ## Gated models
 
@@ -596,3 +674,5 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 
 Database migrations run automatically at API startup (docs/decisions.md,
 migrations on startup). Volumes are untouched by rebuilds.
+
+Legacy model caches require Hugging Face Hub metadata once before the worker can adopt them as installed. A permanently offline worker cannot adopt an unmarked cache; connect it to the Hub for adoption first. Upgrade the API before its workers.

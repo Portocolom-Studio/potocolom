@@ -81,6 +81,10 @@ def test_populated_released_schema_upgrades_to_current_head(origin, portal_runne
         connection = await asyncpg.connect(url)
         try:
             assert await connection.fetchval("SELECT version_num FROM alembic_version") == head
+            # It holds people and work, so migration 0035 decides it rather than showing setup.
+            assert await connection.fetchval(
+                "SELECT auth_mode FROM installation_auth_state WHERE id=1"
+            ) == "none"
             account = await connection.fetchrow(
                 "SELECT email,role,state FROM users WHERE id=$1", account_id,
             )

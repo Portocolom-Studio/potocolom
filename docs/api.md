@@ -7,7 +7,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 ## Conventions
 
 - Base path `/api/v1`. JSON request and response bodies.
-- Authentication resolves requests to a principal. With `AUTH_MODE=none`, the principal is one implicit local admin.
+- Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
+- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
@@ -25,6 +26,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
 - A role change revokes every session the account held, since the old session carries the old authority.
 - Enrolling a second factor writes nothing until it is confirmed. `POST /api/v1/account/totp` returns the secret, its `otpauth://` URI, the recovery codes, and an opaque `enrolment` value the browser hands back to `POST /api/v1/account/totp/confirm` along with a code from the authenticator. Only that confirmation writes the factor and its codes, replacing whatever the account had before in one transaction. An enrolment that is started and abandoned therefore leaves a working factor working, and the `enrolment` value is bound to the account that started it and expires in 30 minutes. The confirming code is spent like any other, so a sign-in inside the same 30 seconds needs the next one. Replacing a factor that already exists also needs `current_code`, a code from the authenticator being retired or one of its recovery codes: the code proving the new secret proves only that the caller holds the new authenticator, which whoever asked for the secret does by definition. A first enrolment has nothing to replace and is asked for nothing. Ten `current_code` attempts end replacement for that factor, counted whether or not the code was right, and answering a login challenge with it gives the budget back. So the bound is ten attempts between one successful factor challenge and the next. Confirming needs an active account, so an enrolment begun before a suspension does not land after it. Two first enrolments racing answer `409` to the one that loses, since an account holds one factor and neither of them had one to replace.
+- Passwords must be 10 to 128 characters and must not appear in the bundled blocklist.
 - A second factor is optional for every role. When an account has enrolled and confirmed one, a correct password or a provider sign-in returns `200 {"totp_required": true}` and a short-lived challenge cookie instead of a session. `POST /api/v1/auth/totp` answers it with a TOTP code or a one-use recovery code and returns the session. The challenge lives ten minutes, allows ten attempts, and carries no authority of its own: an administrator part way through it can reach nothing. TOTP gates sign-in and nothing else; it does not gate setup, invitation acceptance, promotion or recovery, and it changes neither what an account may do nor how long its session lasts.
 - `POST /api/v1/auth/reset` always answers `202` with the same body, whether or not anybody holds that address. A non-administrator is emailed a one-use link valid 30 minutes. An administrator is emailed nothing, ever: their way back is `make auth-recover`, run at the machine, which prints a one-use link valid 10 minutes. Completing either sets the password, revokes every session that account held, and returns the person to the login screen with no session and no recent-authentication grant.
 - Changing how an account is proved needs recent authentication, and changing a password that already exists needs the current one as well: recent authentication says this browser was somebody's, and the current password says it is still theirs at this keyboard. Every such change ends the account's other sessions and leaves the browser making it signed in, because the usual reason to change a credential is that somebody else holds the old one. It also rotates the token of the session making it: the response carries fresh `Set-Cookie` headers for both the session and the CSRF cookie, and the token presented with the request stops working. A copy of that cookie is what a stolen session is, so without this the one session the change most needs to end was the one it left alone. A client that loses the response is signed out and has to sign in again. Two changes presenting the same session token both reach that swap, since the principal is resolved before either of them writes; the one whose token is no longer the stored one answers `409`, writes nothing and sets no cookie. Saving the address the account already holds is not one of these changes and does none of it (see below).
@@ -44,7 +46,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 |---|---|---|
 | GET, HEAD `/api/v1/health` | implemented | process liveness for the load balancer; HEAD answers the same with no body, for probes |
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
-| GET `/api/v1/config` | implemented | runtime configuration for the SPA |
+| GET `/api/v1/config` | implemented | runtime configuration for the SPA; `setup_required` tells it to show setup |
 | WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
 | WS `/api/v1/fleet` | implemented | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret; an unset key refuses API startup |
 | GET `/api/v1/models` | implemented | registered models with parameter schemas and GPU-time estimates; requires a principal |
@@ -72,7 +74,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/worker-input` | implemented | local-storage worker fetch of a source image; opaque 15-minute capability |
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
 | GET `/api/v1/auth/verify` | not implemented | no mail-verification link target; invitation accept is `POST /api/v1/auth/register` |
-| POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
+| POST `/api/v1/auth/setup` | implemented | spend the one-use setup link and choose accounts (returns a session) or none (no session) |
+| POST `/api/v1/auth/enable` | implemented | none mode only: an administrator turns accounts on with an email and password, with no restart; returns a session, and closes every canvas opened without one |
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies; rate limited per identifier, and delayed but never refused per address |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials; accepts an optional `next`, a same-origin `/app` address whose query a successful callback returns to (a factor challenge carries it to `/login`), and anything else is ignored |
@@ -136,13 +139,14 @@ The SPA's first call. One build artifact serves every deployment; this response 
 ```json
 {
   "auth_methods": [],
+  "setup_required": false,
   "billing_enabled": false,
   "languages": ["en", "es"],
   "banner": null
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests. The studio login and join routes read this field to decide which sign-in controls to render.
+`setup_required` is `true` while the installation is unclaimed: no choice has been made, every other API route answers `503 setup_required`, and the studio shows the setup page. `auth_methods` is empty in none mode and while unclaimed; the implicit local admin is used for requests. In accounts mode it lists `password` and each provider that has credentials. The studio login and join routes read this field to decide which sign-in controls to render.
 
 `banner` is `null` when no banner is set, otherwise `{"kind": "high_demand" | "degraded" | "maintenance", "message_key": "..." | null, "custom_text": "..." | null}`. The SPA shows `custom_text` when it is set, otherwise the text behind `message_key` (an i18n key, `app.banner.<kind>` by default). See [Administration](#administration) for how it is set.
 
@@ -352,6 +356,9 @@ GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu
                                         vram_total_bytes, temperature_c, power_w, available}}
                                         loaded_models lists the model ids currently resident
                                         on the connected worker's GPU; [] when it has none
+                                        gpu is null and loaded_models is [] when workers are
+                                        connected but none can answer GPU commands; 503 when
+                                        no worker is connected
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
@@ -420,8 +427,54 @@ These four routes and the OAuth flow below them are implemented. There is no
 `GET /api/v1/auth/verify`; invitation accept is `POST /api/v1/auth/register`.
 
 ```
-POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}
+POST /api/v1/auth/setup      {"token": "...", "mode": "accounts", "email": "ana@example.com", "password": "..."}
                              204 + the session cookies; the link is one use and lasts one hour
+                             mode "accounts" (the default) claims the administrator account and
+                             records accounts; email and password are then required
+POST /api/v1/auth/setup/status {"token": "..."}
+                             200 {"claimed": true | false} for a live setup link, without spending it
+                             403 with the setup route's identical refusal for an unknown, spent or
+                                 expired link; 503 if the database is unavailable
+POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
+                             204, no cookies: the install is recorded as running without accounts
+                             Answers on this route, for either choice:
+                             400 an invalid email, or a password that fails the policy (accounts);
+                                 the link is not spent, so the same link can be retried
+                             403 a link that is unknown, spent or expired, with one body for all
+                                 three; an accounts install answers this for every link, because
+                                 its links are all spent or never existed
+                             404 an install that runs without accounts (none mode)
+                             409 a live link, but the install is already claimed or decided; the
+                                 link is not spent. Minting refuses such a link, so this answers
+                                 only a link minted before the install changed
+                             422 a body that does not parse; the password is never echoed
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the link is not spent
+                             500 the root key ring is unusable; the link is not spent
+                             503 the database is unavailable
+POST /api/v1/auth/enable     {"email": "ana@example.com", "password": "..."}
+                             204 + the session cookies, and the install is accounts from then on;
+                             sockets without a session close with 4401, and a socket without one is
+                             refused at its next open
+                             A request authorized as the implicit administrator before the switch and
+                             still running when it completes is accepted: in none mode every caller is
+                             that administrator, so it gains nothing from the switch and loses nothing
+                             Answers on this route, in the order the checks run:
+                             503 the install is unclaimed (setup_required), or the database is
+                                 unavailable, or the implicit administrator row is missing
+                             404 an install that already runs with accounts
+                             403 a caller without the admin role; none mode never produces this
+                             422 a body that does not parse
+                             403 the request carries no Origin, or one that is not allowed
+                             409 AUTH_MODE=none is set in the environment (remove it from
+                                 deploy/compose/.env and restart first), or the recorded mode is
+                                 already accounts (for example after make auth-enable ran elsewhere),
+                                 or an account already holds an identity
+                             400 an invalid email, or a password that fails the policy; the install
+                                 stays none
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the install stays none
+                             500 the root key ring is unusable; the install stays none
 POST /api/v1/auth/register   {"token": "...", "password": "..."}
                              204 + the session cookies; the invitation carries the address
 POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "remember_me": true}
@@ -480,6 +533,23 @@ DELETE /api/v1/admin/banner           204; admin only; clears the banner
 - Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. The twentieth account is not the anomaly; the twenty-first is. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
 - There is no global gallery and no cross-user search of generations or assets. An administrator answering a complaint names the account; the user list's `q` only narrows which accounts show up, by email.
+
+## Worker models
+
+Admin only. These routes install, cancel and remove the model weights on a connected worker (docs/connection-handling.md, "Model store"). The worker answers asynchronously. Each accepted action returns `202 {"op_id": "<20-digit time_ns>-<8 random hex digits>"}`. IDs sort in issue order. A record with a later ID for the same model also answers every earlier operation on that model, which the worker runs in FIFO order.
+
+```text
+GET    /api/v1/admin/models                                       one entry per connected worker
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/install   202 queued; 409 needs_token
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/cancel    202
+DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refused in the download list, see below
+```
+
+- Each entry of `GET /api/v1/admin/models` has `worker_id`, `manageable`, `hardware`, `disk_free_bytes`, `suggested` (one model id or null for each of `realtime`, `text_to_image` and `upscale`) and `models`. A worker that predates model management has `manageable: false`, a `reason`, and no models; no command is sent to it (`409` on the routes above).
+- Each model carries its catalog fields, `installed`, `download_bytes`, `needs_token`, `fits` (its `min_vram_gb` is at most the worker's VRAM), `suggested`, and `download`: the last `store_status` entry for it (`kind`, `state`, `bytes_done`, `bytes_total`, `error`, `op_id`), or null. The `kind` is `install`, `remove` or `cancel` and identifies the reported operation.
+- Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
+- A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.
+- Every route is audited by the administrator role check, as the other admin routes are.
 
 ## Account states
 

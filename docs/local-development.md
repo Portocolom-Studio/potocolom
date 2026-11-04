@@ -53,7 +53,7 @@ make verify          # optional; the same lint/test/build CI runs
 
 `make init` first checks Python 3.11+, Node 24+, Docker with Compose v2, and the GPU driver, and stops on a blocking problem.
 
-`make verify` also runs the CPU inference tests in `worker/tests_inference`. They use `worker/.venv-inference` when that exists (CI builds it) and `worker/.venv` otherwise, so the worker venv needs the inference extras: `make setup-cuda` or `make setup-rocm`.
+`make verify-worker-inference` runs the CPU inference tests in `worker/tests_inference` (`.local/bin/pr push` runs it after `make verify`). They use `worker/.venv-inference` when that exists (CI builds it) and `worker/.venv` otherwise, so the worker venv needs the inference extras: `make setup-cuda` or `make setup-rocm`.
 
 `make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
 
@@ -220,6 +220,18 @@ Model weights download into the Hugging Face hub cache, `$HF_HOME/hub` (or `HF_H
 `AUTH_MODE` defaults to `none` and the dev loop wants it that way: every request
 resolves to one implicit local administrator, so nothing asks you to sign in.
 
+`make api` starts the API with `AUTH_MODE=none`, so the dev database is decided as none the
+first time and nothing asks you to sign in. To try the first-run page, start the API and
+print its link with the same database and port, as a pair:
+
+    make api FIRST_RUN=1     # this checkout's dev database and API port; the mode is left to the database
+    make dev-setup-link      # the one-use link for that database, on that port
+
+Open the link in a browser. Both targets derive the database and port from this checkout, so
+a linked worktree gets its own pair. `make api` without `FIRST_RUN=1` decides the database as
+none, and `make dev-setup-link` then says the install already chose. `make setup-link` is for
+the compose install and needs `make compose-up`.
+
 To exercise the account path, `make auth-enable` writes `ROOT_KEYS`, sets
 `AUTH_MODE=accounts`, records the switch in PostgreSQL and prints a one-use call
 that claims the administrator account. It is one way: the same database refuses
@@ -231,7 +243,7 @@ account on the installation.
 Sign-in is here: address and password, an optional second factor, and Google or
 GitHub when they are configured. After the administrator account is claimed, open
 `/login` in the studio (or call `POST /api/v1/auth/login`) and invite everybody else.
-Accepting an invitation is `/join#{token}`. The password policy is fifteen to one
+Accepting an invitation is `/join#{token}`. The password policy is ten to one
 hundred and twenty-eight characters against a bundled blocklist.
 
 ## Mail, and doing without it

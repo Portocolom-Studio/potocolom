@@ -18,15 +18,21 @@
 		"test:canvas": "node scripts/test-canvas-history.mjs",
 		"test:footer": "node scripts/test-footer-contrast.mjs",
 		"test:signin": "node scripts/test-signin-cookie.mjs",
+		"test:setup": "node scripts/test-setup-page.mjs && node scripts/test-setup-handoff.mjs",
 		"test:views": "node scripts/test-studio-view-state.mjs",
+		"test:tour": "node scripts/test-studio-tour.mjs",
 		"test:owner-focus": "node scripts/test-owner-focus.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",
+		"test:self-hosted": "node scripts/test-self-hosted-build.mjs",
+		"test:studio-shell": "node scripts/test-studio-shell.mjs",
 		"format": "prettier --write .",
 		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
 		"generate:gallery-images": "node scripts/generate-gallery-images.mjs",
 		"generate:making-images": "node scripts/generate-making-images.mjs",
 		"generate:hero-images": "node scripts/generate-hero-images.mjs",
-		"compare:collages": "node scripts/compare-collages.mjs"
+		"compare:collages": "node scripts/compare-collages.mjs",
+		"test:models": "node scripts/test-model-management.mjs && npm run test:models:regressions",
+		"test:models:regressions": "for scenario in panel-admin panel-protocol6 panel-viewer panel-offline panel-viewer-offline error-focus footer-focus dismiss-focus unknown-reservation spanish-labels bulk-focus failed-bulk-focus refused-remove-focus unknown-space locale-size wide-grid install-focus preview-transition reserved gated-button; do MODEL_REGRESSION=$scenario node scripts/test-model-management.mjs || exit 1; done"
 	},
 	"devDependencies": {
 		"@fontsource/geist": "^5.3.0",

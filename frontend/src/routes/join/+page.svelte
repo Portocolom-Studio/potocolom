@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
@@ -7,11 +8,10 @@
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as Field from '$lib/components/ui/field';
-	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { apiFetch } from '$lib/api';
 	import { createSubmitGuard, parseAuthError, readInviteTokenFromHash } from '$lib/auth-flow';
-	import { t } from '$lib/i18n.svelte';
+	import { t, passwordLengthMessage } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
@@ -52,6 +52,8 @@
 				error = t('auth.join.missing_token');
 				return;
 			}
+			error = passwordLengthMessage(password);
+			if (error) return;
 			if (password !== confirmPassword) {
 				error = t('auth.join.password_mismatch');
 				return;
@@ -116,22 +118,22 @@
 				<form class="flex flex-col gap-4" onsubmit={submitJoin}>
 					<Field.Field>
 						<Label for="join-password">{t('auth.join.password_label')}</Label>
-						<Input
+						<PasswordInput
 							id="join-password"
 							name="password"
-							type="password"
 							autocomplete="new-password"
+							hint
 							required
 							bind:value={password}
 						/>
 					</Field.Field>
 					<Field.Field>
 						<Label for="join-confirm">{t('auth.join.confirm_label')}</Label>
-						<Input
+						<PasswordInput
 							id="join-confirm"
 							name="confirm"
-							type="password"
 							autocomplete="new-password"
+							toggleLabel="auth.password.show_confirmation"
 							required
 							bind:value={confirmPassword}
 						/>

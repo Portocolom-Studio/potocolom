@@ -137,7 +137,8 @@
 				audit: 'app.admin.audit',
 				fleet: 'app.admin.fleet',
 				banner: 'app.admin.banner',
-				invitations: 'app.admin.invitations'
+				invitations: 'app.admin.invitations',
+				models: 'app.model_management.title'
 			} as const;
 			for (const tab of ADMIN_TABS) {
 				entries.push({
@@ -258,6 +259,7 @@
 	}
 
 	function onWindowKeydown(event: KeyboardEvent): void {
+		if (studio.tourOpen) return;
 		if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return;
 		if (event.altKey || event.shiftKey) return;
 		event.preventDefault();

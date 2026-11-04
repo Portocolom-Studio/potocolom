@@ -21,7 +21,7 @@
 	import { formatCapabilities, MODEL_SPECS } from '$lib/model-specs';
 	import { t, getLocale } from '$lib/i18n.svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import '../../landing-tokens.css';
+	import '../../../landing-tokens.css';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
 

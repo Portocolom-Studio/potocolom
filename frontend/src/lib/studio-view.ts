@@ -12,7 +12,7 @@ const SHELL_VIEWS = [
 	'account'
 ] as const;
 const METRICS_TABS = ['usage', 'benchmarks', 'mine'] as const;
-export const ADMIN_TABS = ['users', 'audit', 'fleet', 'banner', 'invitations'] as const;
+export const ADMIN_TABS = ['users', 'audit', 'fleet', 'banner', 'invitations', 'models'] as const;
 
 export type ShellView = (typeof SHELL_VIEWS)[number];
 export type MetricsTab = (typeof METRICS_TABS)[number];
@@ -41,7 +41,11 @@ export function studioViewSearch(search: string, view: ShellView, tab: StudioTab
 	if (view === 'metrics' && (tab === 'benchmarks' || tab === 'mine')) params.set('tab', tab);
 	else if (
 		view === 'admin' &&
-		(tab === 'audit' || tab === 'fleet' || tab === 'banner' || tab === 'invitations')
+		(tab === 'audit' ||
+			tab === 'fleet' ||
+			tab === 'banner' ||
+			tab === 'invitations' ||
+			tab === 'models')
 	)
 		params.set('tab', tab);
 	else params.delete('tab');

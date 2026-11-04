@@ -186,6 +186,16 @@ async def maintain_scheduler_lease() -> None:
         await asyncio.sleep(3)
 
 
+def _execution_envelope(manifests: list[dict], device: str | None, memory_mode: str | None,
+                        realtime_p95_ms: dict | None, realtime_batch_ms: dict | None) -> tuple[dict, bool]:
+    envelope = {"device": device, "memory_mode": memory_mode, "models": manifests,
+                "realtime_p95_ms": realtime_p95_ms or {},
+                "realtime_batch_ms": realtime_batch_ms or {}}
+    ready = bool(manifests) and isinstance(device, str) and bool(device) \
+        and isinstance(memory_mode, str) and bool(memory_mode)
+    return envelope, ready
+
+
 async def register_worker(
     *,
     worker_id: str,
@@ -250,15 +260,8 @@ async def register_worker(
                 {"worker_id": worker_id},
             ):
                 raise AuthorityUnavailable("worker id is connected to another owner")
-            envelope = {
-                "device": device,
-                "memory_mode": memory_mode,
-                "models": manifests,
-                "realtime_p95_ms": realtime_p95_ms or {},
-                "realtime_batch_ms": realtime_batch_ms or {},
-            }
-            envelope_ready = bool(manifests) and isinstance(device, str) and bool(device) \
-                and isinstance(memory_mode, str) and bool(memory_mode)
+            envelope, envelope_ready = _execution_envelope(
+                manifests, device, memory_mode, realtime_p95_ms, realtime_batch_ms)
             await session.execute(
                 text(
                     "INSERT INTO worker_connections "
@@ -295,6 +298,42 @@ async def register_worker(
                 },
             )
     return lease
+
+
+async def update_worker_models(worker_id: str, incarnation: uuid.UUID, manifests: list[dict]) -> None:
+    if db.session_factory is None:
+        raise AuthorityUnavailable("durable authority unavailable")
+    async with db.session_factory() as session:
+        async with session.begin():
+            params = {"worker_id": worker_id, "incarnation": incarnation,
+                      "owner": TRANSPORT_OWNER_ID}
+            lease = (await session.execute(
+                text("SELECT owner_epoch, lease_id FROM scheduler_leases WHERE region = :region "
+                     "AND expires_at > clock_timestamp() FOR UPDATE"), {"region": REGION},
+            )).mappings().one_or_none()
+            row = (await session.execute(
+                text("SELECT execution_envelope, envelope_revision, owner_epoch, lease_id "
+                     "FROM worker_connections WHERE worker_id = :worker_id "
+                     "AND incarnation = :incarnation AND transport_owner_id = :owner "
+                     "AND closed_at IS NULL AND region = :region FOR UPDATE"),
+                {**params, "region": REGION},
+            )).mappings().one_or_none()
+            if (lease is None or row is None or row["owner_epoch"] != lease["owner_epoch"]
+                    or row["lease_id"] != lease["lease_id"]):
+                raise AuthorityUnavailable("worker authority is no longer current")
+            previous = row["execution_envelope"]
+            envelope, ready = _execution_envelope(
+                manifests, previous.get("device"), previous.get("memory_mode"),
+                previous.get("realtime_p95_ms"), previous.get("realtime_batch_ms"))
+            await session.execute(
+                text("UPDATE worker_connections SET manifests = CAST(:manifests AS jsonb), "
+                     "execution_envelope = CAST(:envelope AS jsonb), envelope_revision = :revision "
+                     "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                     "AND transport_owner_id = :owner AND closed_at IS NULL"),
+                {**params, "manifests": json.dumps(manifests), "envelope": json.dumps(envelope),
+                 "revision": max(row["envelope_revision"], 1) if ready else 0},
+            )
+    await activate_initial_worker(worker_id, incarnation)
 
 
 async def activate_initial_worker(worker_id: str, incarnation: uuid.UUID) -> bool:

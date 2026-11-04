@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import nullcontext
 from typing import Any, Callable
 
@@ -250,12 +251,20 @@ def load_candidate_pipeline(manifest: Manifest, *, rung: str, device: str) -> An
 def _load_moss(manifest: Manifest, rung: str, device: str) -> MossAdapter:
     import torch
     from diffusers import DiffusionPipeline
+    from huggingface_hub import try_to_load_from_cache
 
-    pin = _revision(manifest)
+    # A repo id makes diffusers resolve the custom pipeline code through model_info(),
+    # which ignores local_files_only, so load from the installed snapshot folder. Not
+    # snapshot_download(local_files_only=True): it refuses a snapshot the store
+    # installed, because the store fetches only the files the load needs.
+    index = try_to_load_from_cache(manifest.source, "model_index.json", revision=_revision(manifest))
+    if not isinstance(index, str):
+        raise OSError(f"{manifest.id} is not installed")
+    model_dir = os.path.dirname(index)
     pipe = DiffusionPipeline.from_pretrained(
-        manifest.source, revision=pin, custom_pipeline="pipeline_moss_image",
-        custom_revision=pin, trust_remote_code=True,
+        model_dir, custom_pipeline="pipeline_moss_image", trust_remote_code=True,
         torch_dtype={"default": torch.bfloat16, "vae": torch.float32},
+        local_files_only=True,
     )
     pipe.set_progress_bar_config(disable=True)
     pipe.text_encoder.to("cpu")
@@ -273,7 +282,7 @@ def _load_iris(manifest: Manifest, rung: str, device: str) -> IrisAdapter:
 
     model_dir = snapshot_download(
         repo_id=manifest.source, revision=_revision(manifest),
-        allow_patterns=["config.yaml", "model.safetensors"],
+        allow_patterns=["config.yaml", "model.safetensors"], local_files_only=True,
     )
     raw, weights = load_for_inference(model_dir)
     cfg = inference_config(raw)
@@ -283,6 +292,7 @@ def _load_iris(manifest: Manifest, rung: str, device: str) -> IrisAdapter:
                         "tokenizer_config.json", "special_tokens_map.json", "vocab.json",
                         "merges.txt", "added_tokens.json", "*.safetensors",
                         "model.safetensors.index.json"],
+        local_files_only=True,
     )
     with torch.device("meta"):
         model = IrisDiT(cfg.model)
@@ -304,11 +314,14 @@ def _load_flux3(manifest: Manifest, rung: str, device: str) -> Flux3Adapter:
     manager: Any = ComponentsManager()
     pipe: Any = Flux3DistilledModularPipeline(
         blocks=blocks, pretrained_model_name_or_path=manifest.source,
-        revision=_revision(manifest), components_manager=manager,
+        revision=_revision(manifest), components_manager=manager, local_files_only=True,
     )
     pipe.set_progress_bar_config(disable=True)
+    # The constructor reads the pipeline config and load_components forwards its kwargs to
+    # each component's from_pretrained, so both stay on the installed files.
     pipe.load_components(
         dtype={"vae": torch.float32, "default": torch.bfloat16}, revision=_revision(manifest),
+        local_files_only=True,
     )
     if rung == "model_offload":
         manager.enable_auto_cpu_offload(

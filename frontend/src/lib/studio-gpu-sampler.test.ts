@@ -18,6 +18,32 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+test('a connected worker without GPU metrics clears the previous hardware', async (context) => {
+	const originalFetch = globalThis.fetch;
+	let gpu: { device: string; available: boolean; util_pct: number } | null = {
+		device: 'old-gpu',
+		available: true,
+		util_pct: 61
+	};
+	context.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+	try {
+		globalThis.fetch = async () => new Response(JSON.stringify({ gpu }));
+		startGpuSampler(() => []);
+		for (let index = 0; index < 8; index += 1) await Promise.resolve();
+		assert.equal(lastGpuHardware()?.device, 'old-gpu');
+
+		gpu = null;
+		context.mock.timers.tick(2000);
+		for (let index = 0; index < 8; index += 1) await Promise.resolve();
+		assert.equal(lastGpuHardware(), null);
+		assert.equal(gpuSamples().at(-1)?.hardwareAvailable, false);
+	} finally {
+		stopGpuSampler();
+		clearGpuSamples();
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test('a late old request cannot detach a pending new-owner request', async (context) => {
 	const originalFetch = globalThis.fetch;
 	const requests: Array<{

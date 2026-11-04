@@ -7,7 +7,7 @@ This document sits between [architecture.md](architecture.md) and real code. It 
 All mode differences are environment variables read once at startup into a settings object. Nothing branches on "self-hosted or cloud"; code branches on the specific setting.
 
 ```
-AUTH_MODE            = none | accounts           # default none; accounts is one-way, see auth-enable
+AUTH_MODE            = (unset) | none | accounts  # optional override; unset, the database decides (unclaimed until the setup link is spent); accounts is one-way, see auth-enable
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
 TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
@@ -276,12 +276,16 @@ async def oauth_callback(provider, code, state):
 
 ### The mode seam
 
-There are two modes and no provider objects behind them. `AUTH_MODE` decides whether a request resolves to the implicit local administrator or to a session, and `Settings.auth_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
+There are two modes and no provider objects behind them, plus one state before either is chosen. The mode is recorded in PostgreSQL as `unclaimed`, `none` or `accounts`, and the process serves the copy it loaded at startup (`app/auth_mode.py`). `none` resolves every request to the implicit local administrator and `accounts` resolves a request to a session. `auth_mode.sign_in_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
 
 ```python
-AUTH_MODE = "none"       # auth_methods == []; every request is the one implicit local admin
-AUTH_MODE = "accounts"   # auth_methods == ["password", *configured_providers]
+AUTH_MODE = None         # unset: the database decides; a new install is unclaimed
+# unclaimed: every API route answers 503 setup_required except config, health, ready, setup and the fleet socket
+# none:      sign_in_methods == []; every request is the one implicit local admin
+# accounts:  sign_in_methods == ["password", *configured_providers]
 ```
+
+`AUTH_MODE` set to `none` or `accounts` is an override. It decides an unclaimed install at startup and must agree with a decided one, or startup refuses and names the variable.
 
 The routes do not move between modes. Every account route is mounted in both and answers `404` in `none` once its body parses (a body that fails to parse is refused `422` before the route runs), which is what keeps a mode switch a configuration change rather than a different application.
 
@@ -336,12 +340,14 @@ One WebSocket from worker to `wss://api.../api/v1/fleet`, authenticated by a sho
 
 | Direction | Message | Payload |
 |---|---|---|
-| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, optional realtime_batch_ms map of model id to batch p95 curve, gpu info |
+| worker to api | `hello` | protocol_version, models with capabilities as measured (the memory ladder may drop `realtime`, see [architecture.md](architecture.md)), realtime_slots, optional realtime_p95_ms map of model id to p95, optional realtime_batch_ms map of model id to batch p95 curve, gpu info; models lists installed models only ([connection-handling.md](connection-handling.md#model-store)) |
 | api to worker | `registered` or `rejected` | rejected carries min_supported_version |
 | worker to api | `heartbeat` | every 30 s: slots_in_use, vram_free, loaded_models, gpu (util, vram_used, vram_total, temperature, power - NVML or amd-smi, see [metrics.md](metrics.md)) |
 | api to worker | `dispatch_job` | job id, model, params, dispatch_token, upload targets; `load_model` first if not loaded |
 | worker to api | `job_progress`, `job_done`, `job_failed` | each echoes dispatch_token; done carries gpu_ms and the output `category` ([metrics.md](metrics.md)); failed carries reason |
 | api to worker | `open_session`, `close_session`, `pause_job`, `drain` | drain: finish current work, stop accepting |
+| api to worker | `install_model`, `cancel_install`, `remove_model` | only to a worker the API signalled with `model_store` in its registration reply; each carries `model_id` and `op_id`; the worker answers with `store_status` and `models_changed` |
+| worker to api | `store_inventory`, `store_status`, `models_changed` | `store_inventory` once after a signalled registration: hardware, disk and the bundled catalog; `store_status` gives download state, operation kind (`install`, `remove` or `cancel`), the operation ID (or null), and free disk; `models_changed` gives the live model set after an install or removal |
 | worker to api | `session_ready`, `session_closed` | closed carries gpu_ms, frames and the final frame's `category` |
 | both | binary frame | 1 byte type, 16 byte session uuid, 4 byte big endian input revision, then WebP payload ([connection-handling.md](connection-handling.md) has the 17 byte form an older peer speaks) |
 | api to browser | `credits_tick` | on the browser socket: live drain display while Active |
@@ -527,7 +533,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-api:v0.x
     ports: ["8080:8080"]
     environment:
-      AUTH_MODE: none            # accounts is the other one; make auth-enable turns it on, one way
+      AUTH_MODE: ""              # empty: the database decides; the installer prints a setup link that chooses none or accounts
       DATABASE_URL: postgresql://potocolom:...@postgres/potocolom
       STORAGE_BACKEND: local
       FLEET_TOKEN_KEY: ${FLEET_SECRET}

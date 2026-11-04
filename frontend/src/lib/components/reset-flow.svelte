@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { Button } from '$lib/components/ui/button';
@@ -8,7 +9,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { apiFetch } from '$lib/api';
 	import { createSubmitGuard, parseAuthError, readInviteTokenFromHash } from '$lib/auth-flow';
-	import { t } from '$lib/i18n.svelte';
+	import { t, passwordLengthMessage } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
 	let { recovery = false }: { recovery?: boolean } = $props();
@@ -76,6 +77,8 @@
 		await completeGuard.run(async () => {
 			error = '';
 			invalid = false;
+			error = passwordLengthMessage(password);
+			if (error) return;
 			if (password !== confirmPassword) {
 				error = t('auth.reset.password_mismatch');
 				return;
@@ -176,22 +179,22 @@
 			<form class="flex flex-col gap-4" onsubmit={submitComplete}>
 				<Field.Field>
 					<Label for="reset-password">{t('auth.reset.password_label')}</Label>
-					<Input
+					<PasswordInput
 						id="reset-password"
 						name="password"
-						type="password"
 						autocomplete="new-password"
+						hint
 						required
 						bind:value={password}
 					/>
 				</Field.Field>
 				<Field.Field>
 					<Label for="reset-confirm">{t('auth.reset.confirm_label')}</Label>
-					<Input
+					<PasswordInput
 						id="reset-confirm"
 						name="confirm"
-						type="password"
 						autocomplete="new-password"
+						toggleLabel="auth.password.show_confirmation"
 						required
 						bind:value={confirmPassword}
 					/>

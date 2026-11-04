@@ -30,7 +30,8 @@ def test_lifespan_initialization_close_error_preserves_startup_outcome(
     monkeypatch.setattr(main, "get_settings", lambda: settings)
     monkeypatch.setattr(db, "_postgres_version", lambda _: asyncio.sleep(0, result=(16, 0)))
     monkeypatch.setattr(db, "_migrate", lambda _: None)
-    monkeypatch.setattr(db, "validate_startup_auth_mode", lambda _: asyncio.sleep(0))
+    monkeypatch.setattr(db, "decide_startup_auth_mode",
+                        lambda _: asyncio.sleep(0, result="none"))
     monkeypatch.setattr(db, "validate_startup_key_ring", lambda: asyncio.sleep(0))
     monkeypatch.setattr(main, "check_mail_configuration", lambda _: None)
     monkeypatch.setattr(main, "check_oauth_configuration", lambda _: None)
@@ -95,7 +96,7 @@ def test_lifespan_initialization_close_error_preserves_startup_outcome(
 
     monkeypatch.setattr(selected_class, "close", instrumented_close)
 
-    async def ensure_local_user(factory):
+    async def ensure_local_user(factory, mode):
         assert factory is db.session_factory
         assert factory.class_ is selected_class
         assert factory.kw["bind"] is db.engine

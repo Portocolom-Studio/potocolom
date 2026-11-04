@@ -6,6 +6,7 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
+import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const WAIT_MS = 20000;
@@ -692,7 +693,7 @@ test('Metrics restores tabs, ranges and sessions with a real benchmark report', 
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		page = await browser.newPage();
+		page = await newStudioPage(browser);
 		browserLog = watchBrowser(page);
 		await page.setViewport({ width: 1440, height: 1000 });
 		if (REPORT_RENDER_MEASURE) await installRenderRecorder(page);
@@ -882,7 +883,7 @@ test('Benchmarks warm tab return refreshes sessions once without refetching cach
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
 			waitUntil: 'domcontentloaded'
@@ -935,7 +936,7 @@ test('Benchmarks report entry animates one report root and respects reduced moti
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
 		await installReportMotionRecorder(page);
@@ -1054,7 +1055,7 @@ test('Benchmarks replaces report payloads by selected session and restores fresh
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
 			waitUntil: 'domcontentloaded'
@@ -1121,7 +1122,7 @@ test('Benchmarks keeps the latest selection through held replies and retries fai
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
 			waitUntil: 'domcontentloaded'
@@ -1193,7 +1194,7 @@ test('Benchmarks ignores a held report reply after the confirmed account changes
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.evaluateOnNewDocument(() => {
 			let now = Date.now();
@@ -1269,7 +1270,7 @@ test('Benchmarks list refresh does not restart a pending selected report detail'
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
 			waitUntil: 'domcontentloaded'
@@ -1352,7 +1353,7 @@ test('Benchmarks commits a cold detail that completes before the refreshed sessi
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
 			waitUntil: 'domcontentloaded'
@@ -1402,7 +1403,7 @@ test('Metrics tab navigation skips page transitions but view navigation still tr
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		const browserLog = watchBrowser(page);
 		await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
 		await page.evaluateOnNewDocument(() => {

@@ -9,11 +9,21 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TypeIcon from '@lucide/svelte/icons/type';
 	import ZapIcon from '@lucide/svelte/icons/zap';
+	import { account } from '$lib/account.svelte';
+	import { apiFetch } from '$lib/api';
+	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { formatMs } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
-	import { addModel, modelIsRemoved, removeModel, studio, type Model } from '$lib/studio.svelte';
+	import {
+		addModel,
+		modelIsRemoved,
+		openAdmin,
+		removeModel,
+		studio,
+		type Model
+	} from '$lib/studio.svelte';
 	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 	import { offerUndo } from '$lib/studio-toasts';
 
@@ -36,6 +46,24 @@
 
 	let query = $state('');
 	let filter = $state<Filter>('all');
+	let workerConnected = $state<boolean | null>(null);
+	const canInstall = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+
+	$effect(() => {
+		if (!canInstall || !studio.modelsLoaded || studio.models.length !== 0) return;
+		let active = true;
+		workerConnected = null;
+		void apiFetch('/api/v1/admin/models')
+			.then(async (response) => {
+				if (!response.ok) return;
+				const workers: unknown = await response.json();
+				if (active && Array.isArray(workers)) workerConnected = workers.length > 0;
+			})
+			.catch(() => {});
+		return () => {
+			active = false;
+		};
+	});
 
 	const allRemoved = $derived(
 		studio.models.length > 0 && studio.models.every((model) => modelIsRemoved(model.id))
@@ -175,7 +203,16 @@
 			<div
 				class="bg-card border-border text-muted-foreground rounded-[10px] border p-6 text-[13px]"
 			>
-				{t('app.models.empty')}
+				{#if canInstall && workerConnected === false}
+					{t('app.models.empty')}
+				{:else if canInstall}
+					<p>{t('app.models.empty_installed')}</p>
+					<Button class="mt-3" onclick={() => openAdmin('models')}
+						>{t('app.models.install_models')}</Button
+					>
+				{:else}
+					{t('app.models.empty_viewer')}
+				{/if}
 			</div>
 		{:else}
 			<div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

@@ -12,8 +12,8 @@ from app.passwords import (
 GOOD = "correct horse battery staple"
 
 
-def test_the_designed_length_window_is_fifteen_to_one_hundred_and_twenty_eight():
-    assert (MIN_LENGTH, MAX_LENGTH) == (15, 128)
+def test_the_designed_length_window_is_ten_to_one_hundred_and_twenty_eight():
+    assert (MIN_LENGTH, MAX_LENGTH) == (10, 128)
 
 
 @pytest.mark.parametrize("password", ["", "short", "a" * (MIN_LENGTH - 1)])
@@ -44,6 +44,12 @@ def test_the_bundled_blocklist_is_offline_and_not_empty():
     assert len(blocklist()) >= 50
     assert all(len(entry) >= MIN_LENGTH for entry in blocklist())
     assert all(entry == entry.strip().lower() for entry in blocklist())
+
+
+@pytest.mark.parametrize("password", ["1234567890", "qwertyuiop"])
+def test_common_ten_character_passwords_are_refused(password):
+    with pytest.raises(PasswordRejected, match="blocklist"):
+        hash_password(password)
 
 
 def test_a_blocklisted_password_is_refused_whatever_its_case():

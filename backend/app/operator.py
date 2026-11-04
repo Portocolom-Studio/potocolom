@@ -9,6 +9,7 @@ stealing a session for.
 
 import argparse
 import asyncio
+import sys
 import uuid
 
 from sqlalchemy import delete, func, select, text, update
@@ -263,7 +264,7 @@ def _configured() -> dict:
 
     settings = get_settings()
     report: dict = {"public_url": settings.public_url, "email_backend": settings.email_backend,
-                    "auth_methods": settings.auth_methods}
+                    "oauth_offered": settings.oauth_offered}
     for name, check in (("mail", mail.check_configuration), ("oauth", oauth.check_configuration)):
         try:
             check(settings)
@@ -298,6 +299,7 @@ def main(argv: list[str] | None = None) -> None:
                                    help="remove one account's second factor")
     clearing.add_argument("email")
     commands.add_parser("configure", help="what mail and OAuth would do right now")
+    commands.add_parser("setup-link", help="print a one-use setup link for an unclaimed install")
     parsed = parser.parse_args(argv)
 
     if parsed.command == "collapse":
@@ -308,6 +310,8 @@ def main(argv: list[str] | None = None) -> None:
         _run_rotate(parsed.check)
     elif parsed.command == "clear-factor":
         _run_clear_factor(parsed.email)
+    elif parsed.command == "setup-link":
+        _run_setup_link()
     else:
         for key, value in _configured().items():
             print(f"{key}: {value}")
@@ -337,7 +341,22 @@ def _run_collapse(confirmation: str) -> None:
             f'  make auth-collapse CONFIRM="{COLLAPSE_PHRASE}"') from None
     print(f"accounts off: {counted['accounts']} accounts destroyed, "
           f"{counted['generations']} generations kept and moved to the local user")
-    print("Set AUTH_MODE=none in deploy/compose/.env and restart the API.")
+    print("Set AUTH_MODE=none in deploy/compose/.env, or remove it, and restart the API.")
+
+
+# Exit status for "the install already chose": there is no link to give, and that
+# is not a failure. Any other nonzero status is a real problem worth showing.
+SETUP_ALREADY_DECIDED = 3
+
+
+def _run_setup_link() -> None:
+    """The bare link, for scripts: the installer prints it after first start."""
+    try:
+        token = asyncio.run(_connected(reclaim_claim))
+    except LookupError as refused:
+        print(refused, file=sys.stderr)
+        raise SystemExit(SETUP_ALREADY_DECIDED) from None
+    print(f"{get_settings().public_url.rstrip('/')}/setup#{token}")
 
 
 def _run_reclaim(parsed: argparse.Namespace) -> None:
@@ -364,7 +383,7 @@ def _run_reclaim(parsed: argparse.Namespace) -> None:
     print("    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"token\": \"{token}\",")
     print("         \"email\": \"you@example.com\",")
-    print("         \"password\": \"a password of fifteen characters or more\"}'")
+    print("         \"password\": \"a password of ten characters or more\"}'")
     print()
     print("One use, one hour. A password typed on a command line reaches your")
     print("shell history.")

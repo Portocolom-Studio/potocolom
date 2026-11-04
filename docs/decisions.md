@@ -2290,3 +2290,35 @@ service, which adds a second toolchain and a second place to keep in sync;
 rendering the repository `docs/` folder directly, because several of its files
 are internal working notes; and mdsvex, which needs a Svelte preprocessor step
 in the build, while this route does not.
+
+## First run is decided in the browser through a setup link
+
+Refines "First run generates its own secrets, and that is what closes the fleet socket" and "Self-hosted installs are multi-user". The first of those made the env file the place where secrets are generated, and an empty `AUTH_MODE` was read as `none` without anybody choosing it. This entry makes the choice of how the install works a decision somebody makes, and records that decision in PostgreSQL.
+
+The installer generates every secret, now including `ROOT_KEYS` (`scripts/ensure-env.sh`), and starts the API. A new install is `unclaimed`. Until the setup link is spent, every API route answers `503 setup_required`, except the health and readiness probes, `GET /api/v1/config`, the setup route and the fleet socket. Workers can connect in that state; their hardware is not shown on the setup page, and the admin models route remains unavailable until setup. The link is printed once to the installer's output, which keeps the claim with the person who ran the install: it is one use, lasts one hour, and only its hash is stored. Whoever spends it chooses an administrator account, which adopts the implicit local user as before, or no accounts, which records `none` and returns no session. Both refusals of the link answer the same way.
+
+`installation_auth_state.auth_mode` holds `unclaimed`, `none` or `accounts`. Migration 0035 decides every existing install at upgrade: an install with any user or work is `none` unless it already holds `accounts`, so an upgrade never shows setup. Only an empty database is unclaimed. `AUTH_MODE` becomes an optional override. Unset, the API follows the database. Set, it decides an unclaimed install at startup and must agree with a decided one, and startup refuses with a message that names the variable, as it did before. Scripted installs and CI keep working without a browser.
+
+A none install can turn accounts on from its own administrator, with an email and password and no restart. The switch is one way, as the offline command was. It is refused unless the request carries an allowed origin, because a none install answers every request as the administrator and a cross-site page must not be able to take it over. It is also refused when an explicit `AUTH_MODE=none` override is set, because the next start would refuse the accounts it records; the refusal names the variable, and nothing is written. The mode is read again under SETUP_LOCK, so a switch that `make auth-enable` made from another process cannot be completed by a request that holds no link. The switch closes every socket with no session, the ones opened while the install ran without accounts, because they bind the implicit administrator and no revocation would ever reach them. A socket with no session is live only while the install still runs without accounts, which is checked after the socket registers, so a socket that withholds its first `open` across the switch is refused.
+
+Each process holds the mode it serves in one in-process value, loaded from the database at startup and changed only by the two moves to accounts. Nothing else reads `AUTH_MODE` as the decision.
+
+Accepted: a request that was authorized as the implicit administrator before the switch and finishes after it is still accepted. Every caller of a none install is that administrator, so the switch cannot give such a request more authority than it already had, and holding requests back would make the switch wait on work it does not need to stop.
+
+OAuth configuration is judged whatever the mode. A none install can switch to accounts while it runs, and a provider offered over plain HTTP is unsafe from the moment it can be offered.
+
+Rejected alternatives: first visitor wins a web form, which lets anybody on the LAN claim an install before its operator returns; a fourth guest role for an anonymous session, which adds a tier to the role model to serve one install mode; usernames instead of email, which add a second identifier to every sign-in path for no gain on a single-operator install; keeping the mode in `.env` alone, which makes every choice an edit and a restart; prompting for the choice in the installer, which breaks unattended installs; and leaving `AUTH_MODE` as the decision with a runtime toggle, which lets two processes disagree about who must sign in.
+
+## Passwords are ten to 128 characters
+
+The owner chose a ten-character minimum after fifteen refused ordinary passwords at first-run setup without explaining why. The maximum remains 128. The bundled blocklist was extended down to ten characters in the same change. This supersedes any earlier decision setting the minimum to fifteen.
+
+Rejected alternatives: fifteen, the NIST SP 800-63B-4 minimum for a password used as the only factor, because it refused passwords people use and the install offers TOTP as a second factor; and eight, the NIST floor for a password used with a second factor, because this install does not require one.
+
+## Model store rollout and legacy caches
+
+Upgrade the API before workers. Legacy caches are adopted only after Hub metadata verifies the exact download plan; a permanently offline cache cannot be adopted. A loose directory walk was rejected because a partial cache could be marked installed. A legacy hello for unsignalled APIs was rejected because hello precedes the API signal.
+
+## Bundled Hub metadata lets the worker adopt models offline
+
+The worker ships the pinned Hub listings, pipeline indexes and upscaler sizes needed to reproduce its installation plans without a network connection. This supersedes only the statement in "Model store rollout and legacy caches" that a permanently offline cache cannot be adopted. Exact file names and sizes remain required. Scanning extra cache folders and importing them was rejected in favor of sharing through `HF_HOME`; a loose directory walk remains rejected. Hashing every file at startup was rejected because tens of gigabytes can take minutes; the existing exact plan and size checks remain the bar.

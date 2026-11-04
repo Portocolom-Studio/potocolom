@@ -45,6 +45,7 @@
 >
 	{#if sidebar.isMobile}
 		<button
+			data-sidebar="trigger"
 			type="button"
 			class="text-muted-foreground hover:bg-hover hit-slop relative grid size-[30px] shrink-0 place-items-center rounded-md"
 			aria-keyshortcuts="Meta+B Control+B"

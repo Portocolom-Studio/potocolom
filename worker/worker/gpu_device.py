@@ -75,3 +75,9 @@ def select_device(
         f"visible devices: {', '.join(skipped)}; "
         f"supported targets: {', '.join(sorted(supported_arches)) or 'none'}"
     )
+
+
+def weight_config(manifest_dtype: str, device: str) -> tuple[str, str]:
+    """Return the dtype name and Hugging Face weight variant for a device."""
+    dtype = manifest_dtype or ("float16" if device.startswith(("cuda", "rocm")) else "float32")
+    return dtype, "fp16" if dtype == "float16" else ""

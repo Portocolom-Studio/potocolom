@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The cloud waitlist signup, shown as the second tab of /login when
 	// PUBLIC_WAITLIST_URL is baked in at build time.
+	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { resolve } from '$app/paths';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -13,6 +14,11 @@
 	let { endpoint }: { endpoint: string } = $props();
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
+	// Self-hosted builds serve no document pages, so the privacy link goes to the public site.
+	const privacyUrl =
+		PUBLIC_SITE_MODE === 'landing'
+			? resolve('/privacy')
+			: 'https://potocolom.leonfuller.com/privacy';
 
 	let email = $state('');
 	let honeypot = $state('');
@@ -71,7 +77,7 @@
 			</form>
 		{/if}
 		<p class="text-muted-foreground text-sm">
-			<a href={resolve('/privacy')}>{t('wl.privacy_note')}</a>
+			<a href={privacyUrl}>{t('wl.privacy_note')}</a>
 		</p>
 		<p class="text-muted-foreground text-sm">
 			{t('wl.selfhost_note')}

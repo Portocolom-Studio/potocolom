@@ -5,7 +5,7 @@
 	import Seo from '$lib/components/Seo.svelte';
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import { t } from '$lib/i18n.svelte';
-	import '../../landing-tokens.css';
+	import '../../../landing-tokens.css';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 

@@ -18,6 +18,7 @@ export type SidebarStateProps = {
 	 * the sub-components and any `bind:` references.
 	 */
 	setOpen: (open: boolean) => void;
+	shortcutDisabled: Getter<boolean>;
 };
 
 class SidebarState {
@@ -42,6 +43,7 @@ class SidebarState {
 
 	// Event handler to apply to the `<svelte:window>`
 	handleShortcutKeydown = (e: KeyboardEvent) => {
+		if (this.props.shortcutDisabled()) return;
 		if (e.key === SIDEBAR_KEYBOARD_SHORTCUT && (e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
 			this.toggle();

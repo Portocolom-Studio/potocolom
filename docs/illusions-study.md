@@ -13,7 +13,7 @@ so nothing else is needed to render it. Then run
 `<name>-dark.webp` that the page picks by theme, or name one or two, as in
 `python3 scripts/render-illusion-figures.py sds recipe`. The export needs
 the draw.io desktop CLI and the Lato font installed. Update the width and
-height in `frontend/src/routes/illusions/+page.svelte` when a figure
+height in `frontend/src/routes/(public-site)/illusions/+page.svelte` when a figure
 changes size.
 
 <!-- figure: families -->

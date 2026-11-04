@@ -10,6 +10,33 @@ test('the built landing /app contains the studio preview', async () => {
 
 const built = (name) => readFile(new URL(`../build/${name}.html`, import.meta.url), 'utf8');
 
+test('the landing build prerenders the public-site pages', async () => {
+	for (const name of [
+		'whitepaper',
+		'benchmark',
+		'illusions',
+		'legal',
+		'privacy',
+		'hero-preview',
+		'collage-preview',
+		'docs',
+		'docs/guide/introduction'
+	]) {
+		assert.match(await built(name), /<html\b/, name);
+	}
+});
+
+test('the landing build prerenders every collage variant document', async () => {
+	const source = await readFile(new URL('../src/lib/collage-variants.ts', import.meta.url), 'utf8');
+	const variants = [...source.matchAll(/^\t(?:'([^']+)'|(\w[\w-]*)): \{/gm)].map(
+		(match) => match[1] ?? match[2]
+	);
+	assert.ok(variants.includes('masonry') && variants.includes('graph'), 'variant ids');
+	for (const id of variants) {
+		assert.match(await built(`collage-preview/${id}`), /<html\b/, id);
+	}
+});
+
 test('built pages share one horizon footer with the same landmarks', async () => {
 	for (const name of [
 		'index',
@@ -18,6 +45,7 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 		'illusions',
 		'login',
 		'join',
+		'setup',
 		'reset',
 		'recover',
 		'shared',
@@ -47,8 +75,20 @@ test('built pages share one horizon footer with the same landmarks', async () =>
 	}
 });
 
+test('setup prerenders as an unavailable card with no form', async () => {
+	const html = await built('setup');
+	assert.match(html, /<h1[^>]*>[^<]*Set up[^<]*<\/h1>/);
+	assert.ok(html.includes('Sign-in is available on a self-hosted or cloud studio install'));
+	assert.doesNotMatch(html, /<form\b/);
+	assert.doesNotMatch(html, /id="setup-email"/);
+});
+
 test('the studio has no page footer', async () => {
 	assert.doesNotMatch(await built('app'), /<footer class="horizon\b/);
+});
+
+test('the landing preview has no Show tour launcher', async () => {
+	assert.doesNotMatch(await built('app'), /Show tour/);
 });
 
 test('headers lead to sign in or the waitlist, and login has no kicker', async () => {

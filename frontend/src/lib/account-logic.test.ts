@@ -7,6 +7,7 @@ import {
 	deleteConfirmed,
 	isFollowableRedirect,
 	linkableProviders,
+	passwordLengthError,
 	refusalKey,
 	signInAgainHref
 } from './account-logic.ts';
@@ -201,4 +202,27 @@ test('isFollowableRedirect refuses an address that carries credentials', () => {
 		isFollowableRedirect('https://user:pass@github.com/login', 'http://localhost'),
 		false
 	);
+});
+
+test('password length follows the backend trimmed Unicode code point policy', () => {
+	assert.deepEqual(passwordLengthError('Pepepepe1'), { count: 9, limit: 10, kind: 'short' });
+	assert.equal(passwordLengthError('a'.repeat(10)), null);
+	assert.deepEqual(passwordLengthError('  ' + 'a'.repeat(9) + '  '), {
+		count: 9,
+		limit: 10,
+		kind: 'short'
+	});
+	assert.equal(passwordLengthError('😀'.repeat(10)), null);
+	assert.deepEqual(passwordLengthError(' ' + 'b'.repeat(128)), {
+		count: 129,
+		limit: 128,
+		kind: 'long'
+	});
+	assert.deepEqual(passwordLengthError('\u0085' + 'b'.repeat(9)), {
+		count: 9,
+		limit: 10,
+		kind: 'short'
+	});
+	assert.equal(passwordLengthError('\ufeff' + 'b'.repeat(9)), null);
+	assert.deepEqual(passwordLengthError('a'.repeat(129)), { count: 129, limit: 128, kind: 'long' });
 });
