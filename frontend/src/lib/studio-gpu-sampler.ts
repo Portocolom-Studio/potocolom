@@ -84,14 +84,14 @@ function sampleFromHistory(history: Generation[], hardware: GpuHardware | null):
 	};
 }
 
-async function fetchHardware(signal: AbortSignal): Promise<GpuHardware | null> {
+async function fetchHardware(signal: AbortSignal): Promise<GpuHardware | null | undefined> {
 	try {
 		const response = await fetch('/api/v1/studio/gpu', { signal });
-		if (!response.ok) return null;
-		const body = (await response.json()) as { gpu?: GpuHardware };
+		if (!response.ok) return undefined;
+		const body = (await response.json()) as { gpu?: GpuHardware | null };
 		return body.gpu ?? null;
 	} catch {
-		return null;
+		return undefined;
 	}
 }
 
@@ -120,8 +120,8 @@ export function startGpuSampler(history: () => Generation[]): void {
 				activeTick !== request
 			)
 				return;
-			if (fetched) lastHardware = fetched;
-			const hardware = fetched ?? lastHardware;
+			if (fetched !== undefined) lastHardware = fetched;
+			const hardware = lastHardware;
 			const point = sampleFromHistory(history(), hardware);
 			samples = [...samples, point].slice(-MAX_SAMPLES);
 			notify();
