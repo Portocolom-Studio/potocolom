@@ -903,6 +903,8 @@ class ModelStore:
         self._probe_task: asyncio.Task | None = None
         self._probe_generation = 0
         self._adoption_task: asyncio.Task | None = None
+        self._connection_generation = 0
+        self._incomplete_adoptions: set[str] = set()
         self._gpu: tuple[str, int | None] = ("unknown", None)
         self._adoption_lock = asyncio.Lock()
         self._adoption_wakeup = asyncio.Event()
@@ -952,6 +954,8 @@ class ModelStore:
     def attach(self, send: Callable[[dict], Any], busy: Callable[[str], bool]) -> None:
         """Start reporting on this connection. Operations already running keep going.
         Called only once the API has signalled that it speaks model_store."""
+        self._connection_generation += 1
+        self._incomplete_adoptions.clear()
         self._adoption_wakeup.clear()
         self._send = send
         self._busy = busy
@@ -1180,6 +1184,7 @@ class ModelStore:
             if manifest.id == model_id or repos.intersection(
                     ref.repo for ref in repo_refs(manifest, self._device)):
                 _PROBES.pop(manifest.id, None)
+                self._incomplete_adoptions.discard(manifest.id)
 
     def _removal_pending(self, model_id: str) -> bool:
         return any(op is not None and op.model_id == model_id and op.kind == "remove"
@@ -1191,11 +1196,10 @@ class ModelStore:
 
     async def _retry_adoption(self) -> None:
         delay = ADOPTION_RETRY_SECONDS
-        incomplete: set[str] = set()
         while self._send is not None:
             pending = False
             for manifest in self.bundled.values():
-                if (manifest.id in incomplete or manifest.id in self.installed
+                if (manifest.id in self._incomplete_adoptions or manifest.id in self.installed
                         or _read_marker(manifest.id) is not None):
                     continue
                 pending = True
@@ -1204,10 +1208,11 @@ class ModelStore:
                         if (manifest.id in self.installed or _read_marker(manifest.id) is not None
                                 or self._removal_pending(manifest.id)):
                             continue
+                        generation = self._connection_generation
                         adopted = await asyncio.to_thread(
                             adopt_legacy, manifest, self._models_dir, self._device)
-                        if adopted is False:
-                            incomplete.add(manifest.id)
+                        if adopted is False and generation == self._connection_generation:
+                            self._incomplete_adoptions.add(manifest.id)
                         if adopted and not self._removal_pending(manifest.id):
                             self.installed[manifest.id] = manifest
                             await self._announce()

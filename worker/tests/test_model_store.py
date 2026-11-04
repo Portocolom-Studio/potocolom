@@ -2881,3 +2881,112 @@ def test_adoption_stops_probing_incomplete_cache_after_cancel(monkeypatch, tmp_p
     model_store.install_blocking(shared, str(tmp_path))
     assert fetched == ["second"]
     assert model_store.is_installed(shared, str(tmp_path))
+
+
+def test_adoption_retries_when_sibling_install_completes_shared_cache(monkeypatch, tmp_path):
+    first = pipeline_manifest('first', vae='')
+    sibling = pipeline_manifest('sibling', vae='')
+    pending = pipeline_manifest('pending', source='org/other', vae='')
+    put_snapshot_file(first.source, REV, 'first', 4)
+    remote(first.source, REV, 'second', 4)
+    first_checked = threading.Event()
+    plan = fake_plan((first.source, REV, "first", 4), (first.source, REV, "second", 4))
+
+    def tracked_plan(manifest, *args):
+        result = plan(manifest, *args)
+        if manifest.id == first.id:
+            first_checked.set()
+        return result
+
+    monkeypatch.setattr(model_store, 'plan_items', tracked_plan)
+    monkeypatch.setattr(model_store, '_check_volumes', lambda _: None)
+    monkeypatch.setattr(model_store, '_fetch_hub', write_fetch())
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    monkeypatch.setattr(model_store, 'ADOPTION_RETRY_SECONDS', 0.01)
+
+    async def scenario():
+        store = ModelStore([first, sibling, pending], FakeEngine(), str(tmp_path))
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            assert await asyncio.to_thread(first_checked.wait, 1)
+            store.handle({'type': 'install_model', 'model_id': sibling.id})
+            await asyncio.wait_for(store._queue.join(), 2)
+            for _ in range(100):
+                if first.id in store.installed:
+                    break
+                await asyncio.sleep(0.01)
+            assert sibling.id in store.installed
+            assert first.id in store.installed
+        finally:
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_adoption_retries_incomplete_cache_after_reconnect_during_other_adoption(monkeypatch, tmp_path):
+    first = pipeline_manifest('first', vae='')
+    blocked = pipeline_manifest('blocked', source='org/blocked', vae='')
+    put_snapshot_file(first.source, REV, 'first', 4)
+    remote(first.source, REV, 'second', 4)
+    put_snapshot_file(blocked.source, REV, 'first', 4)
+    entered, release = threading.Event(), threading.Event()
+
+    def plan(manifest, *args):
+        if manifest.id == blocked.id:
+            entered.set()
+            release.wait(3)
+            raise ModelStoreError('unavailable')
+        return fake_plan((first.source, REV, "first", 4),
+                         (first.source, REV, "second", 4))(manifest, *args)
+
+    monkeypatch.setattr(model_store, 'plan_items', plan)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    monkeypatch.setattr(model_store, 'ADOPTION_RETRY_SECONDS', 0.01)
+
+    async def scenario():
+        store = ModelStore([first, blocked], FakeEngine(), str(tmp_path))
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            await store.close()
+            put_snapshot_file(first.source, REV, 'second', 4)
+            store.attach(lambda _: _noop(), lambda _: False)
+            release.set()
+            for _ in range(100):
+                if first.id in store.installed:
+                    break
+                await asyncio.sleep(0.01)
+            assert first.id in store.installed
+        finally:
+            release.set()
+            await store.shutdown()
+    asyncio.run(scenario())
+
+
+def test_real_adoption_retries_when_metadata_recovers(monkeypatch, tmp_path):
+    manifest = pipeline_manifest(vae='')
+    put_snapshot_file(manifest.source, REV, 'first', 4)
+    attempts = []
+
+    def plan(*args):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ModelStoreError('unavailable')
+        return fake_plan((manifest.source, REV, "first", 4))(*args)
+
+    monkeypatch.setattr(model_store, 'plan_items', plan)
+    monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
+    monkeypatch.setattr(model_store, 'ADOPTION_RETRY_SECONDS', 0.01)
+
+    async def scenario():
+        store = ModelStore([manifest], FakeEngine(), str(tmp_path))
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            for _ in range(100):
+                if manifest.id in store.installed:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(attempts) >= 2
+            assert model_store.is_installed(manifest, str(tmp_path))
+        finally:
+            await store.shutdown()
+    asyncio.run(scenario())
