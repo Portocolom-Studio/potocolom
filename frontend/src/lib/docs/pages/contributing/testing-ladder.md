@@ -45,9 +45,11 @@ Run `make verify` before you push a branch. Some checks are not part of `make ve
 
 `make verify-frontend` runs more than unit tests. It:
 
-1. Runs the lint, type checks and unit tests.
-2. Builds the landing mode and runs its test.
-3. Builds the studio and runs the browser checks for the footer, the drawing canvas, sign-in, the view state and the owner focus.
+1. Runs lint, type checks and unit tests.
+2. Builds the landing mode and checks the studio preview, docs and footer.
+3. Builds the studio after every landing check passes, then checks the self-hosted build, studio shell, setup, canvas, sign-in, saved views, owner focus, Models and the first-run tour.
+
+CI uses `make -j3 --output-sync=target verify-frontend` to run up to three checks of one build mode at once. Both builds and the static checks stay in order. Plain `make verify-frontend` runs the same checks one at a time.
 
 The canvas check drives the built studio in headless Chrome. Set `PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if Chrome is not at a standard Linux path. The gate fails when it finds no browser. It does not skip the checks.
 

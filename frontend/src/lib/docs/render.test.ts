@@ -77,3 +77,14 @@ test('slugify keeps ASCII letters, digits and hyphens', () => {
 	assert.equal(slugify('Accounts and the root key'), 'accounts-and-the-root-key');
 	assert.equal(slugify('TLS & HSTS'), 'tls-hsts');
 });
+
+test('keeps table content inside a keyboard-accessible scroll region', () => {
+	const { html } = renderBody('| Method | Path |\n| --- | --- |\n| GET | `/api/v1/health` |');
+	assert.match(
+		html,
+		/<div class="table-scroll" role="region" aria-label="Scrollable table" tabindex="0"><table>/
+	);
+	assert.match(html, /<th>Method<\/th>/);
+	assert.match(html, /<code>\/api\/v1\/health<\/code>/);
+	assert.match(html, /<\/table>\s*<\/div>/);
+});

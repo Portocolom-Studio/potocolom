@@ -383,16 +383,18 @@ real browser downloads and file selection, then compare canvas pixels and
 undo/redo after a reload. `make verify-frontend` builds the app and
 runs them after the unit tests.
 
-The frontend gate builds both modes. It first builds with
-`PUBLIC_SITE_MODE=landing` and checks that the built `/app` contains the studio
-preview. It then builds with an empty `PUBLIC_SITE_MODE` and checks the footer's
-contrast over its particle-sea canvas and over the CSS fallback when the canvas is
-blocked, its keyboard focus, the canvas, and sign-in. It also runs
-`npm run test:views` for remembered Metrics choices, fresh run lists, report identity, request races and local motion (including reduced motion), and
-`npm run test:owner-focus` for account probes before private refresh, startup
-redirects, late replies and local-mode failures. These checks use the built
-product with browser-visible results; the sign-in suite also uses real account
-sessions and CSRF cookies. The final
+The frontend gate builds both modes. It runs lint, type checks and unit tests,
+then builds with `PUBLIC_SITE_MODE=landing` and checks the studio preview, docs,
+and footer contrast and keyboard focus. Only after all landing checks pass does
+it build with an empty `PUBLIC_SITE_MODE`. It then checks the self-hosted build,
+studio shell, setup, drawing canvas, sign-in, saved views, owner focus, Models,
+and the first-run tour. The sign-in and setup handoff checks use separate
+throwaway databases and API processes.
+
+Use `make -j3 --output-sync=target verify-frontend` to run up to three checks
+of one build mode at once, as CI does. The builds and static checks stay in
+order; no build can overwrite files while a browser check uses them. Plain
+`make verify-frontend` runs the same checks one at a time. The final
 `frontend/build` artifact is always the product, even if the shell had
 `PUBLIC_SITE_MODE=landing` set.
 

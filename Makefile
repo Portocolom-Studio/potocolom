@@ -252,10 +252,33 @@ verify-worker-inference:
 	cd worker && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 		$(WORKER_INFERENCE_PYTHON) -m pytest tests_inference
 
-verify-frontend:
-	cd frontend && npm run lint && npm run check && npm test \
-		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing && npm run test:footer \
-		&& PUBLIC_SITE_MODE= npm run build && npm run test:self-hosted && npm run test:studio-shell && npm run test:setup && npm run test:canvas && npm run test:signin && npm run test:views && npm run test:owner-focus && npm run test:models && npm run test:tour
+# Browser checks run per build mode. Each build waits for every check of the mode
+# before it, because vite build rewrites frontend/build and npm run check rewrites
+# .svelte-kit, so no static step or build may overlap a browser check. make -j3
+# runs at most three leaves at once; plain make runs the same leaves one at a time
+# in the order listed here.
+FE_LANDING_CHECKS := fe-test-landing fe-test-docs fe-test-footer
+FE_PRODUCT_CHECKS := fe-test-canvas fe-test-models fe-test-self-hosted fe-test-studio-shell \
+	fe-test-setup fe-test-signin fe-test-views fe-test-owner-focus fe-test-tour
+
+.PHONY: fe-static fe-build-landing fe-build-product $(FE_LANDING_CHECKS) $(FE_PRODUCT_CHECKS)
+
+verify-frontend: $(FE_PRODUCT_CHECKS)
+
+fe-static:
+	cd frontend && npm run lint && npm run check && npm test
+
+fe-build-landing: fe-static
+	cd frontend && PUBLIC_SITE_MODE=landing npm run build
+
+$(FE_LANDING_CHECKS): fe-build-landing
+	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
+
+fe-build-product: $(FE_LANDING_CHECKS)
+	cd frontend && PUBLIC_SITE_MODE= npm run build
+
+$(FE_PRODUCT_CHECKS): fe-build-product
+	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 
@@ -358,6 +381,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-ensure-env-root-keys.sh
 	@bash scripts/test-install-setup-link.sh
 	@bash scripts/test-setup-link.sh
+	@bash scripts/test-frontend-verify-graph.sh
 	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)

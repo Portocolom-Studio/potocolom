@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { tick } from 'svelte';
+	import CopyIcon from '@lucide/svelte/icons/copy';
+	import CheckIcon from '@lucide/svelte/icons/check';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ModeToggle from '$lib/components/landing/ModeToggle.svelte';
 	import { iconSvg } from '$lib/docs/icons';
@@ -9,6 +12,9 @@
 
 	const repoUrl = 'https://github.com/Portocolom-Studio/potocolom';
 	const searchIcon = iconSvg('search');
+	// The sidebar is a drawer at or below this width. Keep it equal to the CSS breakpoint.
+	const phoneQuery = '(max-width: 860px)';
+	const focusable = 'a[href], button:not([disabled]), input:not([disabled])';
 
 	let navOpen = $state(false);
 	let navEl = $state<HTMLElement | null>(null);
@@ -16,6 +22,7 @@
 	let copyPageLabel = $state('Copy Page');
 	let proseEl = $state<HTMLElement | null>(null);
 	let searchEl = $state<HTMLInputElement | null>(null);
+	let tabsEl = $state<HTMLElement | null>(null);
 	let query = $state('');
 
 	const results = $derived.by(() => {
@@ -26,14 +33,41 @@
 		);
 	});
 
-	// Opening the menu moves focus into it, so keyboard users land on the first link.
-	function toggleNav() {
-		navOpen = !navOpen;
-		if (navOpen) queueMicrotask(() => navEl?.querySelector<HTMLElement>('a')?.focus());
+	async function openNav(focusTarget: () => HTMLElement | null | undefined) {
+		navOpen = true;
+		await tick();
+		focusTarget()?.focus();
 	}
 
-	function closeNav() {
+	// Opening the menu moves focus into it, so keyboard users land on the first link.
+	function toggleNav() {
+		if (navOpen) closeNav(true);
+		else void openNav(() => navEl?.querySelector<HTMLElement>('a'));
+	}
+
+	// Escape, the backdrop and the Close button hand focus back to Menu. Links pass nothing,
+	// so the page they open takes focus.
+	function closeNav(returnFocus = false) {
 		navOpen = false;
+		if (returnFocus) menuEl?.focus({ preventScroll: true });
+	}
+
+	function keepFocusInNav(event: KeyboardEvent) {
+		const items = [...(navEl?.querySelectorAll<HTMLElement>(focusable) ?? [])];
+		const first = items.at(0);
+		const last = items.at(-1);
+		if (!first || !last) return;
+		const active = document.activeElement;
+		if (!navEl?.contains(active)) {
+			event.preventDefault();
+			(event.shiftKey ? last : first).focus();
+		} else if (event.shiftKey && active === first) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && active === last) {
+			event.preventDefault();
+			first.focus();
+		}
 	}
 
 	function flash(set: (label: string) => void, idle: string, label: string) {
@@ -81,21 +115,63 @@
 		navOpen = false;
 	});
 
-	// Ctrl K (Cmd K on Mac) moves the cursor to the sidebar search.
+	// Ctrl K (Cmd K on Mac) moves the cursor to the sidebar search. On a phone the
+	// drawer is closed, so it opens first and search gets focus once it is shown.
 	$effect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			// Escape closes the mobile menu, so keyboard users are not stuck in it.
-			if (event.key === 'Escape' && navOpen) {
-				navOpen = false;
-				menuEl?.focus();
-			}
+			if (event.key === 'Escape' && navOpen) closeNav(true);
+			if (event.key === 'Tab' && navOpen) keepFocusInNav(event);
 			if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
 				event.preventDefault();
-				searchEl?.focus();
+				if (!navOpen && matchMedia(phoneQuery).matches) void openNav(() => searchEl);
+				else searchEl?.focus();
 			}
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
+	});
+
+	$effect(() => {
+		const media = matchMedia(phoneQuery);
+		const onChange = () => {
+			if (!media.matches) navOpen = false;
+		};
+		media.addEventListener('change', onChange);
+		return () => media.removeEventListener('change', onChange);
+	});
+
+	$effect(() => {
+		if (!navOpen) return;
+		const body = document.body;
+		const x = window.scrollX;
+		const y = window.scrollY;
+		const previous = ['position', 'top', 'left', 'width', 'overflow'].map((property) => ({
+			property,
+			value: body.style.getPropertyValue(property),
+			priority: body.style.getPropertyPriority(property)
+		}));
+		Object.assign(body.style, {
+			position: 'fixed',
+			top: `-${y}px`,
+			left: `-${x}px`,
+			width: '100%',
+			overflow: 'hidden'
+		});
+		return () => {
+			for (const { property, value, priority } of previous) {
+				body.style.setProperty(property, value, priority);
+			}
+			window.scrollTo({ left: x, top: y, behavior: 'instant' });
+		};
+	});
+
+	// The phone tab row scrolls, so bring the current section tab into view on each page.
+	$effect(() => {
+		void data.page.tab;
+		tabsEl
+			?.querySelector<HTMLElement>('[aria-current="true"]')
+			?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 	});
 	// "On this page" follows the reader: the last heading that has scrolled past the top wins.
 	let activeId = $state<string | null>(null);
@@ -132,13 +208,16 @@
 	<link rel="canonical" href={data.canonical} />
 </svelte:head>
 
-<div class="landing-surface docs">
+<div class="landing-surface docs" data-docs-shell data-docs-tab={data.page.tab}>
 	<a class="skip" href="#article">Skip to content</a>
 
 	<nav id="docs-nav" bind:this={navEl} class="side" class:open={navOpen} aria-label="Documentation">
 		<div class="side-top">
 			<a class="brand" href="/" aria-label="potocolom home"><BrandMark /></a>
-			<ModeToggle />
+			<div class="side-tools">
+				<ModeToggle />
+				<button class="close-nav" type="button" onclick={() => closeNav(true)}>Close menu</button>
+			</div>
 		</div>
 
 		<label class="search">
@@ -163,7 +242,7 @@
 			<ul class="results">
 				{#each results as item (item.href)}
 					<li>
-						<a href={item.href} onclick={closeNav}>
+						<a href={item.href} onclick={() => closeNav()}>
 							<span class="ico">{@html item.icon}</span>
 							<span class="res-text">
 								<span class="res-title">{item.title}</span>
@@ -185,7 +264,7 @@
 								<a
 									href={item.href}
 									aria-current={item.current ? 'page' : undefined}
-									onclick={closeNav}
+									onclick={() => closeNav()}
 								>
 									<span class="ico">{@html item.icon}</span>
 									<span>{item.title}</span>
@@ -199,7 +278,13 @@
 	</nav>
 
 	{#if navOpen}
-		<button class="scrim" type="button" aria-label="Close menu" onclick={closeNav}></button>
+		<button
+			class="scrim"
+			type="button"
+			tabindex="-1"
+			aria-hidden="true"
+			onclick={() => closeNav(true)}
+		></button>
 	{/if}
 
 	<div class="main">
@@ -212,7 +297,7 @@
 				aria-expanded={navOpen}
 				onclick={toggleNav}>Menu</button
 			>
-			<nav class="tabs" aria-label="Docs sections">
+			<nav class="tabs" bind:this={tabsEl} aria-label="Docs sections">
 				{#each data.tabs as tab (tab.slug)}
 					<a href={tab.href} aria-current={tab.slug === data.page.tab ? 'true' : undefined}
 						>{tab.label}</a
@@ -225,11 +310,16 @@
 		<div class="content">
 			<main class="article" id="article" tabindex="-1">
 				<div class="head-row">
-					<div>
-						<h1>{data.page.title}</h1>
-						<p class="subtitle">{data.page.subtitle}</p>
-					</div>
-					<button class="copy-page" type="button" onclick={copyPage}>{copyPageLabel}</button>
+					<h1>{data.page.title}</h1>
+					<p class="subtitle">{data.page.subtitle}</p>
+					<button class="copy-page" type="button" onclick={copyPage} title={copyPageLabel}>
+						{#if copyPageLabel === 'Copied'}
+							<CheckIcon aria-hidden="true" />
+						{:else}
+							<CopyIcon aria-hidden="true" />
+						{/if}
+						<span class="copy-label" aria-live="polite">{copyPageLabel}</span>
+					</button>
 				</div>
 
 				<div class="prose" bind:this={proseEl}>
@@ -273,12 +363,20 @@
 </div>
 
 <style>
+	/* Docs-only surfaces. Landing, auth and studio keep the shared tokens. Dark values
+	   are local; the light selector below is more specific than the landing one. */
 	.docs {
 		--docs-accent: var(--k-focus);
 		--docs-warn: oklch(0.8 0.15 75);
 		--docs-planned: oklch(0.75 0.12 300);
+		--k-paper: oklch(0.18 0.004 265);
+		--k-panel: oklch(0.22 0.004 265);
+		--k-hover: oklch(0.26 0.004 265);
+		--k-ink: oklch(0.94 0.004 265);
+		--k-muted: oklch(0.72 0.008 265);
+		--k-line: oklch(1 0 0 / 12%);
 		display: grid;
-		grid-template-columns: 300px minmax(0, 1fr);
+		grid-template-columns: 264px minmax(0, 1fr);
 		min-height: 100svh;
 		font-family: var(--k-display);
 		font-size: 17px;
@@ -286,6 +384,12 @@
 	:global(:root[data-landing-mode='light']) .docs {
 		--docs-warn: oklch(0.5 0.14 65);
 		--docs-planned: oklch(0.5 0.16 300);
+		--k-paper: oklch(0.985 0.002 265);
+		--k-panel: oklch(1 0 0);
+		--k-hover: oklch(0.955 0.004 265);
+		--k-ink: oklch(0.2 0.01 265);
+		--k-muted: oklch(0.42 0.01 265);
+		--k-line: oklch(0.2 0.01 265 / 12%);
 	}
 
 	/* landing-tokens.css sets white-space: nowrap on every link. Docs links must wrap. */
@@ -327,7 +431,7 @@
 		position: sticky;
 		top: 0;
 		align-self: start;
-		height: 100svh;
+		max-height: 100svh;
 		padding: 22px 20px 32px 24px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -338,6 +442,27 @@
 		justify-content: space-between;
 		margin-bottom: 22px;
 		padding: 0 4px;
+	}
+	.side-tools {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+	.close-nav {
+		display: none;
+		align-items: center;
+		height: 36px;
+		padding: 0 12px;
+		background: none;
+		border: 1px solid var(--k-line);
+		border-radius: 8px;
+		color: var(--k-muted);
+		font-size: 14px;
+		cursor: pointer;
+	}
+	.close-nav:hover {
+		color: var(--k-ink);
+		background: var(--k-hover);
 	}
 	.brand {
 		font-size: 20px;
@@ -385,11 +510,15 @@
 	}
 
 	.group + .group {
-		margin-top: 28px;
+		margin-top: 24px;
+		padding-top: 20px;
+		border-top: 1px solid var(--k-line);
 	}
 	.group-title {
 		margin-bottom: 8px;
-		font-size: 15px;
+		padding: 0 12px;
+		color: var(--k-ink);
+		font-size: 14px;
 		font-weight: 700;
 	}
 	.group ul,
@@ -405,7 +534,8 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
-		padding: 8px 10px;
+		min-height: 38px;
+		padding: 8px 12px;
 		border-radius: 8px;
 		color: var(--k-muted);
 		font-size: 15px;
@@ -419,6 +549,8 @@
 	.group a[aria-current='page'] {
 		color: var(--docs-accent);
 		font-weight: 600;
+		background: var(--k-panel);
+		box-shadow: inset 2px 0 0 var(--docs-accent);
 	}
 	.ico {
 		display: inline-flex;
@@ -448,6 +580,7 @@
 	/* Main column: tab bar on top, then the article and "On this page" */
 	.main {
 		min-width: 0;
+		border-left: 1px solid var(--k-line);
 	}
 	.tabbar {
 		position: sticky;
@@ -511,67 +644,82 @@
 
 	.content {
 		display: grid;
-		grid-template-columns: minmax(0, 720px) 220px;
+		grid-template-columns: minmax(0, 70ch) 190px;
 		justify-content: center;
-		column-gap: 72px;
+		column-gap: 44px;
+		padding: 0 40px;
 	}
 	.article {
 		min-width: 0;
 		padding: 56px 0 96px;
 	}
 	.head-row {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: 16px;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		grid-template-areas:
+			'title copy'
+			'sub sub';
+		align-items: start;
+		column-gap: 16px;
 	}
 	h1 {
+		grid-area: title;
 		margin: 0;
-		font-size: 44px;
-		font-weight: 800;
-		line-height: 1.1;
-		letter-spacing: -0.03em;
+		font-size: 42px;
+		font-weight: 700;
+		line-height: 1.12;
+		letter-spacing: -0.02em;
 		overflow-wrap: anywhere;
 	}
 	.subtitle {
-		margin: 12px 0 0;
+		grid-area: sub;
+		margin: 10px 0 0;
 		color: var(--k-muted);
-		font-size: 20px;
+		font-size: 19px;
 		line-height: 1.5;
 	}
 	.copy-page {
+		grid-area: copy;
 		display: inline-flex;
 		flex: none;
 		align-items: center;
 		gap: 8px;
-		height: 40px;
+		height: 36px;
 		margin-top: 6px;
 		padding: 0 12px;
 		background: var(--k-panel);
 		border: 1px solid var(--k-line);
 		border-radius: 8px;
-		font-size: 15px;
+		color: var(--k-muted);
+		font-size: 14px;
 		white-space: nowrap;
 		cursor: pointer;
 	}
 	.copy-page:hover {
+		color: var(--k-ink);
 		background: var(--k-hover);
+	}
+	.copy-page :global(svg) {
+		display: block;
+		width: 15px;
+		height: 15px;
 	}
 
 	/* Markdown output. The HTML is injected, so these rules are global under .prose. */
 	.prose {
 		margin-top: 36px;
 		font-size: 17px;
-		line-height: 1.75;
+		line-height: 1.7;
 	}
 	.prose :global(p) {
 		margin: 0 0 18px;
 	}
 	.prose :global(h2) {
-		margin: 56px 0 16px;
-		font-size: 28px;
+		margin: 52px 0 14px;
+		font-size: 25px;
 		font-weight: 700;
-		letter-spacing: -0.02em;
+		line-height: 1.25;
+		letter-spacing: -0.01em;
 		scroll-margin-top: 90px;
 	}
 	.prose :global(h3) {
@@ -584,6 +732,12 @@
 	.prose :global(ol) {
 		margin: 0 0 18px;
 		padding-left: 22px;
+	}
+	.prose :global(ul) {
+		list-style: disc;
+	}
+	.prose :global(ol) {
+		list-style: decimal;
 	}
 	.prose :global(li) {
 		margin-bottom: 6px;
@@ -603,13 +757,42 @@
 		font-family: var(--k-mono);
 		font-size: 0.9em;
 	}
-	.prose :global(table) {
-		display: block;
-		width: 100%;
+	.prose :global(.table-scroll) {
 		margin: 16px 0 22px;
 		overflow-x: auto;
+		scrollbar-width: thin;
+	}
+	.prose :global(.table-scroll:focus-visible) {
+		outline: 2px solid var(--k-focus);
+		outline-offset: 4px;
+		border-radius: 4px;
+	}
+	.prose :global(table) {
+		width: 100%;
+		min-width: 560px;
 		border-collapse: collapse;
 		font-size: 15px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(table) {
+		table-layout: fixed;
+		min-width: 640px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(th:first-child) {
+		width: 96px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(th:nth-child(2)) {
+		width: 220px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(td:first-child) {
+		white-space: nowrap;
+	}
+	.prose :global(td code) {
+		display: inline-block;
+		max-width: 100%;
+		overflow-x: visible;
+		vertical-align: middle;
+		white-space: normal;
+		overflow-wrap: break-word;
 	}
 	.prose :global(th),
 	.prose :global(td) {
@@ -657,11 +840,19 @@
 		padding: 14px 16px;
 		overflow-x: auto;
 		font-family: var(--k-mono);
-		font-size: 15px;
-		line-height: 1.6;
+		font-size: 14px;
+		line-height: 1.7;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.prose :global(pre code) {
 		font-family: var(--k-mono);
+	}
+	.prose :global(pre code.language-text) {
+		white-space: pre;
+	}
+	.prose :global(.codeblock:has(code.language-text) .codeblock-bar > span::after) {
+		content: ': scroll to read';
 	}
 
 	/* Callouts */
@@ -698,44 +889,66 @@
 		color: var(--docs-warn);
 	}
 
-	/* Link cards on the Introduction page */
+	/* Link cards on the Introduction page: one column of compact rows.
+	   Grid: icon in column 1, title and text stacked in column 2, arrow in column 3. */
 	.prose :global(.docs-cards) {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-		gap: 16px;
+		gap: 10px;
 		margin: 12px 0 30px;
 	}
 	.prose :global(.docs-card) {
-		display: flex;
-		text-decoration: none;
-		flex-direction: column;
-		gap: 6px;
-		min-height: 184px;
-		padding: 22px;
+		position: relative;
+		display: grid;
+		grid-template-columns: 28px minmax(0, 1fr) 16px;
+		column-gap: 16px;
+		align-items: center;
+		min-height: 84px;
+		padding: 16px 18px;
 		background: var(--k-panel);
 		border: 1px solid var(--k-line);
-		border-radius: 14px;
+		border-radius: 12px;
 		color: var(--k-ink);
+		text-decoration: none;
 	}
 	.prose :global(.docs-card:hover) {
 		background: var(--k-hover);
 	}
+	.prose :global(.docs-card::after) {
+		grid-column: 3;
+		grid-row: 1 / span 2;
+		justify-self: center;
+		width: 8px;
+		height: 8px;
+		border-top: 2px solid var(--k-muted);
+		border-right: 2px solid var(--k-muted);
+		transform: rotate(45deg);
+		content: '';
+	}
 	.prose :global(.docs-icon) {
+		grid-column: 1;
+		grid-row: 1 / span 2;
 		display: block;
 		width: 28px;
 		height: 28px;
-		margin-bottom: 12px;
+		margin: 0;
 		color: var(--docs-accent);
 	}
 	.prose :global(.docs-card-title) {
-		font-size: 20px;
+		grid-column: 2;
+		grid-row: 1;
+		align-self: end;
+		font-size: 18px;
 		font-weight: 700;
 		line-height: 1.3;
 	}
 	.prose :global(.docs-card-text) {
+		grid-column: 2;
+		grid-row: 2;
+		align-self: start;
+		margin-top: 2px;
 		color: var(--k-muted);
 		font-size: 15px;
-		line-height: 1.55;
+		line-height: 1.5;
 	}
 
 	/* Pager */
@@ -774,7 +987,7 @@
 		position: sticky;
 		top: 60px;
 		align-self: start;
-		padding: 56px 24px 0 8px;
+		padding: 56px 0 0;
 		font-size: 15px;
 	}
 	.toc-title {
@@ -810,23 +1023,27 @@
 	/* Responsive */
 	@media (max-width: 1240px) {
 		.content {
-			grid-template-columns: minmax(0, 720px);
+			grid-template-columns: minmax(0, 70ch);
 		}
 		.toc {
 			display: none;
 		}
 	}
+	/* Phone and tablet: the sidebar becomes a drawer behind a 60px tab row. */
 	@media (max-width: 860px) {
 		.docs {
 			grid-template-columns: minmax(0, 1fr);
 		}
 		.side {
+			align-self: stretch;
+			height: 100dvh;
+			max-height: 100dvh;
 			position: fixed;
 			inset: 0 auto 0 0;
 			z-index: 40;
 			display: none;
 			width: min(300px, 84vw);
-			padding-top: 18px;
+			padding: 18px 18px 32px;
 			background: var(--k-paper);
 			border-right: 1px solid var(--k-line);
 		}
@@ -841,42 +1058,82 @@
 		.side.open {
 			display: block;
 		}
+		.close-nav {
+			display: inline-flex;
+		}
 		.menu-btn {
-			display: inline-block;
+			display: inline-flex;
+			flex: none;
+			align-items: center;
+			height: 36px;
+			padding: 0 14px;
+			color: var(--k-ink);
+			font-size: 15px;
 		}
 		.tabbar {
-			gap: 16px;
-			height: auto;
-			min-height: 60px;
-			padding: 8px 16px;
+			gap: 12px;
+			height: 60px;
+			padding: 0 0 0 16px;
 		}
 		.tabs {
-			gap: 20px;
-			flex-wrap: wrap;
-			row-gap: 4px;
-			overflow: visible;
+			flex: 1;
+			min-width: 0;
+			gap: 22px;
+			padding-right: 32px;
+			scroll-padding-inline: 24px;
+			mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
+			overflow-x: auto;
+			overflow-y: hidden;
 		}
 		.top-link {
 			display: none;
 		}
+		.main {
+			border-left: 0;
+		}
+		.content {
+			padding: 0;
+		}
 		.article {
-			padding: 32px 18px 64px;
+			padding: 28px 20px 64px;
 		}
 		h1 {
-			font-size: 28px;
+			font-size: 32px;
 		}
-		.head-row {
-			flex-direction: column;
-			align-items: stretch;
+		.subtitle {
+			font-size: 17px;
 		}
 		.copy-page {
-			align-self: flex-start;
+			margin-top: 4px;
 		}
 		.pager {
 			grid-template-columns: 1fr;
 		}
 		.pager a.next {
 			grid-column: 1;
+		}
+	}
+	@media (max-width: 480px) {
+		.copy-page {
+			width: 36px;
+			justify-content: center;
+			padding: 0;
+		}
+		.copy-label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
+		}
+	}
+	/* Touch screens get no keyboard shortcut hint. */
+	@media (pointer: coarse) and (max-width: 860px) {
+		.search kbd {
+			display: none;
 		}
 	}
 </style>

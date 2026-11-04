@@ -389,7 +389,7 @@ def test_final_cross_loop_startup_lock_exit_closes_on_owner_loop(monkeypatch):
 
 
 @pytest.mark.db
-def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
+def test_a_supplied_database_is_read_but_never_emptied(monkeypatch, portal_runner):
     """conftest promises an exported DATABASE_URL is left alone.
 
     That held for the drop and not for the truncate, so a developer who pointed
@@ -398,6 +398,7 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
     import asyncpg
 
     import conftest
+    from app import db
 
     # Named per run like every other database here: a fixed name inside the
     # fix for shared names would let two runs of this test drop each other's
@@ -415,6 +416,17 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
             return await conn.fetchval(fetch) if fetch else None
         finally:
             await conn.close()
+
+    async def refuse_mode_change(*_args, **_kwargs):
+        pytest.fail("schema preparation must not record an auth decision")
+
+    # Teardown needs the schema, but preparing it must preserve the installation decision.
+    with monkeypatch.context() as startup:
+        startup.setattr(db, "record_mode", refuse_mode_change)
+        try:
+            assert portal_runner(db.connect(serving=False)) is True
+        finally:
+            portal_runner(db.dispose())
 
     asyncio.run(sql(admin, f'DROP DATABASE IF EXISTS "{supplied}" WITH (FORCE)',
                     f'CREATE DATABASE "{supplied}"'))

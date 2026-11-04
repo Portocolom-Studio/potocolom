@@ -25,6 +25,7 @@ on:
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
+      - "scripts/test-frontend-verify-graph.sh"
       - "**/pyproject.toml"
       - "frontend/package.json"
       - "frontend/.npmrc"
@@ -56,6 +57,7 @@ jobs:
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-guards.sh
+        scripts/test-frontend-verify-graph.sh
         **/pyproject.toml
         frontend/package.json
         frontend/.npmrc

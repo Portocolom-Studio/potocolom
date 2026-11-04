@@ -23,6 +23,7 @@
 		"test:tour": "node scripts/test-studio-tour.mjs",
 		"test:owner-focus": "node scripts/test-owner-focus.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",
+		"test:docs": "node scripts/test-docs-browser.mjs",
 		"test:self-hosted": "node scripts/test-self-hosted-build.mjs",
 		"test:studio-shell": "node scripts/test-studio-shell.mjs",
 		"format": "prettier --write .",

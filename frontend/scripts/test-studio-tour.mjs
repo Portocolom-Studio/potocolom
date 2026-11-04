@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, readFile, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
@@ -544,10 +544,6 @@ async function main() {
 					true,
 					'long tour text overflows'
 				);
-				const shots =
-					'/tmp/claude-1000/-home-leon-Nextcloud-ETSIIT-ETSHIT-Github-potocolom/c7eba735-0ba3-4fd0-ba50-94f893f5f5e0/scratchpad/tour-shots';
-				await mkdir(shots, { recursive: true });
-				await run.page.screenshot({ path: `${shots}/r2-1024x500-${finding}.png` });
 			} else if (finding === '5') {
 				await clickButton(run.page, '[data-studio-tour] button', 'Next');
 				await waitFor(
@@ -743,9 +739,6 @@ async function main() {
 		fixture.models = [model];
 
 		// Check every visible step at desktop, tablet and phone sizes.
-		const shots =
-			'/tmp/claude-1000/-home-leon-Nextcloud-ETSIIT-ETSHIT-Github-potocolom/c7eba735-0ba3-4fd0-ba50-94f893f5f5e0/scratchpad/tour-shots';
-		await mkdir(shots, { recursive: true });
 		for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, phone]) {
 			const context = await browser.createBrowserContext();
 			const run = await openStudio(context, server, { viewport });
@@ -793,9 +786,6 @@ async function main() {
 						await run.page.$eval('#studio-tour-body', (el) => el.textContent),
 						/Open the menu to find Images/
 					);
-				await run.page.screenshot({
-					path: `${shots}/${i === 0 ? 'r3' : 'r2'}-${viewport.width}x${viewport.height}-step${i + 1}.png`
-				});
 				if (i < titles.length - 1) await clickButton(run.page, '[data-studio-tour] button', 'Next');
 			}
 			await run.page.keyboard.press('Escape');

@@ -10,11 +10,11 @@ file in the same PR.
 
 The frontend has three visual surfaces. Keep them apart.
 
-| Surface | Routes | Tokens | Scope |
-|---|---|---|---|
-| Studio | `/app` | `frontend/src/app.css`, block `:root:has([data-studio-shell])` | Applies only while the studio shell is mounted, so menus, dialogs and toasts rendered outside the page pick it up too |
-| Landing and auth | `/`, `/login`, `/join`, legal pages | `frontend/src/landing-tokens.css` (`.landing-surface`, `--k-*` variables) and component styles | Lato type, its own dark and light modes |
-| Docs | `/docs` and `/docs/[tab]/[page]` | The same landing tokens (`.landing-surface`), plus `--docs-accent` (= `--k-focus`), `--docs-warn` and `--docs-planned` | Reading layout: sidebar with logo, search and icons; tab bar; article; "On this page". The accent colours the eyebrow, the active tab and the active sidebar item. Brand blue (`bg-brand`) is never used. Markdown output is styled under `.prose`. `landing-tokens.css` sets `white-space: nowrap` on every link, so docs links set `white-space: normal` or card text does not wrap |
+| Surface          | Routes                              | Tokens                                                                                                                                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Studio           | `/app`                              | `frontend/src/app.css`, block `:root:has([data-studio-shell])`                                                                                   | Applies only while the studio shell is mounted, so menus, dialogs and toasts rendered outside the page pick it up too                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Landing and auth | `/`, `/login`, `/join`, legal pages | `frontend/src/landing-tokens.css` (`.landing-surface`, `--k-*` variables) and component styles                                                   | Lato type, its own dark and light modes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Docs             | `/docs` and `/docs/[tab]/[page]`    | Landing token names with local neutral surfaces on `[data-docs-shell]`, plus `--docs-accent` (= `--k-focus`), `--docs-warn` and `--docs-planned` | Lato reading layout with a 264px sidebar, article up to 70ch, and a 190px on-page rail above 1240px. Article text is 17px; resource links are compact rows. Below 860px the sidebar becomes a drawer and the six section tabs scroll in one 60px header. Ctrl/Meta+K opens and focuses search on phones; Escape and Close menu restore Menu focus. The phone drawer fills the dynamic viewport, contains keyboard focus, and fixes the page in place while open; closing restores the exact scroll position and prior body styles. Copy Page uses an icon below 480px, with a checkmark and accessible Copied feedback. Active links and focus keep the existing blue. Markdown output stays under `.prose`, with wrapping links, soft-wrapped commands, aligned text diagrams with local scrolling, and locally scrollable native tables in keyboard-accessible regions. API tables use shared column widths; code values wrap inside cells so a path needs no nested scrollbar. Other tables keep configuration names whole. List markers remain visible; the desktop rail uses a content-height sticky sidebar. |
 
 The base `:root` block in `app.css` holds the older navy shadcn values. Do not
 build new studio UI on them; the studio block overrides them.
@@ -39,32 +39,32 @@ build new studio UI on them; the studio block overrides them.
 
 Use the Tailwind class, not the raw value.
 
-| Token | Class | Value | Use |
-|---|---|---|---|
-| `--background` | `bg-background` | `oklch(0.191 0 0)` | Page |
-| `--panel` / `--card` | `bg-panel`, `bg-card` | `oklch(0.224 0 0)` | Sidebar, inspectors, cards |
-| `--raised` / `--popover` | `bg-raised`, `bg-popover` | `oklch(0.266 0 0)` | Buttons, menus, popovers |
-| `--hover` / `--accent` | `bg-hover`, `bg-accent` | `oklch(0.308 0 0)` | Hover, selected rows and items |
-| `--field` | `bg-field` | `oklch(0.205 0 0)` | Input backgrounds |
-| `--border` | `border-border` | `oklch(0.316 0 0)` | Hairlines between regions |
-| `--line-strong` / `--input` | `border-line-strong` | `oklch(0.385 0 0)` | Control borders |
-| `--foreground` | `text-foreground` | `oklch(0.974 0 0)` | Primary text |
-| `--muted-foreground` | `text-muted-foreground` | `oklch(0.786 0 0)` | Secondary text, labels |
-| `--dim` | `text-dim` | `oklch(0.699 0 0)` | Tertiary text, units, captions |
-| `--brand` | `bg-brand`, `text-brand` | `#3a64f0` | GPU actions, chart series 1 |
-| `--brand-soft` | `bg-brand-soft` | brand at 14% | Selected brand surfaces |
-| `--ring` | `ring-ring` | `#6e96f8` | Focus rings |
-| `--destructive` | `text-destructive` | `#f85149` | Errors, destructive actions |
+| Token                       | Class                     | Value              | Use                            |
+| --------------------------- | ------------------------- | ------------------ | ------------------------------ |
+| `--background`              | `bg-background`           | `oklch(0.191 0 0)` | Page                           |
+| `--panel` / `--card`        | `bg-panel`, `bg-card`     | `oklch(0.224 0 0)` | Sidebar, inspectors, cards     |
+| `--raised` / `--popover`    | `bg-raised`, `bg-popover` | `oklch(0.266 0 0)` | Buttons, menus, popovers       |
+| `--hover` / `--accent`      | `bg-hover`, `bg-accent`   | `oklch(0.308 0 0)` | Hover, selected rows and items |
+| `--field`                   | `bg-field`                | `oklch(0.205 0 0)` | Input backgrounds              |
+| `--border`                  | `border-border`           | `oklch(0.316 0 0)` | Hairlines between regions      |
+| `--line-strong` / `--input` | `border-line-strong`      | `oklch(0.385 0 0)` | Control borders                |
+| `--foreground`              | `text-foreground`         | `oklch(0.974 0 0)` | Primary text                   |
+| `--muted-foreground`        | `text-muted-foreground`   | `oklch(0.786 0 0)` | Secondary text, labels         |
+| `--dim`                     | `text-dim`                | `oklch(0.699 0 0)` | Tertiary text, units, captions |
+| `--brand`                   | `bg-brand`, `text-brand`  | `#3a64f0`          | GPU actions, chart series 1    |
+| `--brand-soft`              | `bg-brand-soft`           | brand at 14%       | Selected brand surfaces        |
+| `--ring`                    | `ring-ring`               | `#6e96f8`          | Focus rings                    |
+| `--destructive`             | `text-destructive`        | `#f85149`          | Errors, destructive actions    |
 
 ### Status colours
 
-| Token | Value | Meaning |
-|---|---|---|
-| `--status-success` | `#3fb950` | Completed, active, online |
-| `--status-running` | `#4493f8` | Running, informational |
+| Token              | Value     | Meaning                    |
+| ------------------ | --------- | -------------------------- |
+| `--status-success` | `#3fb950` | Completed, active, online  |
+| `--status-running` | `#4493f8` | Running, informational     |
 | `--status-warning` | `#d29922` | Queued, waiting, attention |
-| `--status-error` | `#f85149` | Failed, refused |
-| `--status-neutral` | `#707070` | Idle, unknown |
+| `--status-error`   | `#f85149` | Failed, refused            |
+| `--status-neutral` | `#707070` | Idle, unknown              |
 
 Show a status as an outlined pill with a dot: `.tag` plus `.tag-success`,
 `.tag-info`, `.tag-warning` or `.tag-danger`. A live state in a header is a
@@ -79,14 +79,14 @@ must never equal a status colour, so a series is never read as a state.
 
 ## Type
 
-| Role | Font | Size and weight |
-|---|---|---|
-| Studio UI | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions |
-| Page title (`h1`) | Geist | 24px for Models and Metrics, 18px for the Generate panel; weight 600 |
-| KPI value | Geist | 22 to 24px, tabular figures |
-| Code, IDs, seeds, hashes | Geist Mono | 0.92em of the surrounding text |
-| Wordmark | Lato 900 | 17px in the studio; separate sizes on the landing and footer |
-| Landing and auth copy | Lato | Per landing component |
+| Role                     | Font                                        | Size and weight                                                      |
+| ------------------------ | ------------------------------------------- | -------------------------------------------------------------------- |
+| Studio UI                | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions                            |
+| Page title (`h1`)        | Geist                                       | 24px for Models and Metrics, 18px for the Generate panel; weight 600 |
+| KPI value                | Geist                                       | 22 to 24px, tabular figures                                          |
+| Code, IDs, seeds, hashes | Geist Mono                                  | 0.92em of the surrounding text                                       |
+| Wordmark                 | Lato 900                                    | 17px in the studio; separate sizes on the landing and footer         |
+| Landing and auth copy    | Lato                                        | Per landing component                                                |
 
 Headings use `text-wrap: balance`; body copy uses `text-wrap: pretty`. Fonts
 are bundled, so the CSP keeps `font-src 'self'`; do not add font CDNs.
@@ -121,15 +121,15 @@ Spacing follows a 4px grid. Common values: 8px between related controls,
 
 Pick the closest template before inventing a layout.
 
-| Template | Example | Shape |
-|---|---|---|
-| Workbench | Realtime canvas | Tool rail, two square panes, 312px inspector, bottom bar |
-| Focus | Realtime canvas, Focus mode | One large stage, floating tools and prompt bar |
-| Parameter panel and viewer | Generate, Image to image, Upscale | 340px parameter column, viewer, metadata column, history strip |
-| Collection | Images | Filter pills, Grid or Lineage, inspector panel |
-| Table and detail | Models, Admin users | Filterable table; selecting a row opens a detail panel |
-| Dashboard | Metrics | KPI row, charts, tables; tabs in the top bar |
-| Settings | Account | Sub-navigation on the left, sections of label, description and action rows |
+| Template                   | Example                           | Shape                                                                      |
+| -------------------------- | --------------------------------- | -------------------------------------------------------------------------- |
+| Workbench                  | Realtime canvas                   | Tool rail, two square panes, 312px inspector, bottom bar                   |
+| Focus                      | Realtime canvas, Focus mode       | One large stage, floating tools and prompt bar                             |
+| Parameter panel and viewer | Generate, Image to image, Upscale | 340px parameter column, viewer, metadata column, history strip             |
+| Collection                 | Images                            | Filter pills, Grid or Lineage, inspector panel                             |
+| Table and detail           | Models, Admin users               | Filterable table; selecting a row opens a detail panel                     |
+| Dashboard                  | Metrics                           | KPI row, charts, tables; tabs in the top bar                               |
+| Settings                   | Account                           | Sub-navigation on the left, sections of label, description and action rows |
 
 ## Components
 
@@ -196,7 +196,7 @@ them rather than hand-rolled markup.
 - **Empty states**: one muted sentence that says what will appear and how to
   make it appear, plus the action if there is one. For an administrator or a
   local install, Generate's no-model state adds a short heading (`Set up your
-  worker`), an Open Models action, and a text link to the setup guide. Users and
+worker`), an Open Models action, and a text link to the setup guide. Users and
   viewers get the notice without an install action. Realtime shows its no-model
   sentence once, in the picker.
 
@@ -223,25 +223,25 @@ them rather than hand-rolled markup.
 
 ## Interaction patterns
 
-| Pattern | Where it lives |
-|---|---|
-| Command palette (Cmd/Ctrl+K) | `studio-command.svelte`, `useViewCommands()` |
-| Keyboard shortcuts and hints | `src/lib/shortcuts.ts`; shortcuts never fire while typing (`isTypingTarget`) |
-| Undo instead of confirm | `offerUndo()` in `studio-toasts.ts` |
-| Optimistic updates | Update local state first, roll back and toast on failure (see star toggling) |
-| Stale-while-revalidate | `studioCache`; models and history also refresh on focus, at most every 30s. Owner or role changes clear private view data |
-| Remembered views | Metrics ranges/report choice and Images filters, mode, position and validated selection; versioned bounded browser preferences per confirmed owner |
-| Prefetch | `prefetchView()` on hover and focus |
-| Blurred placeholders | `revealOnLoad()` in `src/lib/image-reveal.ts`: thumbnail under the full image |
-| View transitions | `startStudioViewTransition()` / `withViewTransition()`; exclude the live canvas and Metrics tab-only changes |
-| Benchmark changes | One keyed report pane fades from 40 percent opacity and rises 4px over 200ms; keep SVG geometry static and selector focus stable; disable the effect under reduced motion |
-| Back closes overlays | `pushOverlay()` / `popOverlay()` in `src/lib/overlay-history.ts` for the inspector, palette and mobile sidebar |
-| Grid grab scroll | `dragScroll()` in `src/lib/drag-scroll.ts`; mouse only, native touch and keyboard scrolling |
-| Swipe to dismiss | `attachSwipeDismiss()` in `src/lib/swipe-dismiss.ts` for sheets and the mobile inspector |
-| Interruptible motion | Overlays use CSS transitions, not one-shot keyframes |
-| Hit areas | `.hit-slop` gives small controls a 40px pointer target without overlapping neighbours |
-| Safe areas | `viewport-fit=cover`; fixed edges pad with `env(safe-area-inset-*)` |
-| One-time codes | `autocomplete="one-time-code"` on every second-factor field |
+| Pattern                      | Where it lives                                                                                                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command palette (Cmd/Ctrl+K) | `studio-command.svelte`, `useViewCommands()`                                                                                                                              |
+| Keyboard shortcuts and hints | `src/lib/shortcuts.ts`; shortcuts never fire while typing (`isTypingTarget`)                                                                                              |
+| Undo instead of confirm      | `offerUndo()` in `studio-toasts.ts`                                                                                                                                       |
+| Optimistic updates           | Update local state first, roll back and toast on failure (see star toggling)                                                                                              |
+| Stale-while-revalidate       | `studioCache`; models and history also refresh on focus, at most every 30s. Owner or role changes clear private view data                                                 |
+| Remembered views             | Metrics ranges/report choice and Images filters, mode, position and validated selection; versioned bounded browser preferences per confirmed owner                        |
+| Prefetch                     | `prefetchView()` on hover and focus                                                                                                                                       |
+| Blurred placeholders         | `revealOnLoad()` in `src/lib/image-reveal.ts`: thumbnail under the full image                                                                                             |
+| View transitions             | `startStudioViewTransition()` / `withViewTransition()`; exclude the live canvas and Metrics tab-only changes                                                              |
+| Benchmark changes            | One keyed report pane fades from 40 percent opacity and rises 4px over 200ms; keep SVG geometry static and selector focus stable; disable the effect under reduced motion |
+| Back closes overlays         | `pushOverlay()` / `popOverlay()` in `src/lib/overlay-history.ts` for the inspector, palette and mobile sidebar                                                            |
+| Grid grab scroll             | `dragScroll()` in `src/lib/drag-scroll.ts`; mouse only, native touch and keyboard scrolling                                                                               |
+| Swipe to dismiss             | `attachSwipeDismiss()` in `src/lib/swipe-dismiss.ts` for sheets and the mobile inspector                                                                                  |
+| Interruptible motion         | Overlays use CSS transitions, not one-shot keyframes                                                                                                                      |
+| Hit areas                    | `.hit-slop` gives small controls a 40px pointer target without overlapping neighbours                                                                                     |
+| Safe areas                   | `viewport-fit=cover`; fixed edges pad with `env(safe-area-inset-*)`                                                                                                       |
+| One-time codes               | `autocomplete="one-time-code"` on every second-factor field                                                                                                               |
 
 ## Landing and auth
 
