@@ -16,7 +16,8 @@ const pages = {
 	quickstart: '/docs/guide/quickstart',
 	endpoints: '/docs/api/endpoints',
 	decisions: '/docs/reference/decisions',
-	sharing: '/docs/api/sharing'
+	sharing: '/docs/api/sharing',
+	profiles: '/docs/architecture/deployment-profiles'
 };
 const contentTypes = {
 	'.html': 'text/html',
@@ -448,6 +449,20 @@ async function checkOverflowAndTheme(browser, baseUrl) {
 					[],
 					`${path} table code is readable without a nested scroller at ${width}px`
 				);
+				if (path === pages.profiles) {
+					const wrappedKeys = await page.$$eval('td:first-child code', (codes) =>
+						codes
+							.filter((code) => {
+								const range = document.createRange();
+								range.selectNodeContents(code);
+								return (
+									new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size > 1
+								);
+							})
+							.map((code) => code.textContent)
+					);
+					assert.deepEqual(wrappedKeys, [], `configuration keys stay whole at ${width}px`);
+				}
 				// Chrome reports computed colours as oklch(L C H); L is the first number.
 				const paper = await page.$eval('.docs', (docs) => getComputedStyle(docs).backgroundColor);
 				const lightness = Number(paper.match(/^oklch\(([\d.]+)/)?.[1]);

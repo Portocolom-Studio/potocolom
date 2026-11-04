@@ -792,7 +792,7 @@
 		overflow-x: visible;
 		vertical-align: middle;
 		white-space: normal;
-		overflow-wrap: anywhere;
+		overflow-wrap: break-word;
 	}
 	.prose :global(th),
 	.prose :global(td) {
