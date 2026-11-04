@@ -7,7 +7,7 @@ This document sits between [architecture.md](architecture.md) and real code. It 
 All mode differences are environment variables read once at startup into a settings object. Nothing branches on "self-hosted or cloud"; code branches on the specific setting.
 
 ```
-AUTH_MODE            = none | accounts           # default none; accounts is one-way, see auth-enable
+AUTH_MODE            = (unset) | none | accounts  # optional override; unset, the database decides (unclaimed until the setup link is spent); accounts is one-way, see auth-enable
 BILLING_ENABLED      = false | true              # default false
 SAFETY_CHECKS        = false | true              # prompt screen + output checker, default false
 TELEMETRY            = true | false              # self-hosted daily aggregate report, see metrics.md
@@ -276,12 +276,16 @@ async def oauth_callback(provider, code, state):
 
 ### The mode seam
 
-There are two modes and no provider objects behind them. `AUTH_MODE` decides whether a request resolves to the implicit local administrator or to a session, and `Settings.auth_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
+There are two modes and no provider objects behind them, plus one state before either is chosen. The mode is recorded in PostgreSQL as `unclaimed`, `none` or `accounts`, and the process serves the copy it loaded at startup (`app/auth_mode.py`). `none` resolves every request to the implicit local administrator and `accounts` resolves a request to a session. `auth_mode.sign_in_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
 
 ```python
-AUTH_MODE = "none"       # auth_methods == []; every request is the one implicit local admin
-AUTH_MODE = "accounts"   # auth_methods == ["password", *configured_providers]
+AUTH_MODE = None         # unset: the database decides; a new install is unclaimed
+# unclaimed: every API route answers 503 setup_required except config, health, ready, setup and the fleet socket
+# none:      sign_in_methods == []; every request is the one implicit local admin
+# accounts:  sign_in_methods == ["password", *configured_providers]
 ```
+
+`AUTH_MODE` set to `none` or `accounts` is an override. It decides an unclaimed install at startup and must agree with a decided one, or startup refuses and names the variable.
 
 The routes do not move between modes. Every account route is mounted in both and answers `404` in `none` once its body parses (a body that fails to parse is refused `422` before the route runs), which is what keeps a mode switch a configuration change rather than a different application.
 
@@ -527,7 +531,7 @@ services:
     image: ghcr.io/portocolom-studio/potocolom-api:v0.x
     ports: ["8080:8080"]
     environment:
-      AUTH_MODE: none            # accounts is the other one; make auth-enable turns it on, one way
+      AUTH_MODE: ""              # empty: the database decides; the installer prints a setup link that chooses none or accounts
       DATABASE_URL: postgresql://potocolom:...@postgres/potocolom
       STORAGE_BACKEND: local
       FLEET_TOKEN_KEY: ${FLEET_SECRET}

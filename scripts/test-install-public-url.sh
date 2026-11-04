@@ -73,10 +73,32 @@ case "$*" in
 	'compose version') printf '2.30.0\n' ;;
 	'info') exit 0 ;;
 	'volume inspect'*) exit 1 ;;
+	*' config --environment')
+		# The saved project is read from the env file, as Compose reads it.
+		env_file=""; prev=""
+		for arg in "$@"; do
+			[[ "$prev" == --env-file ]] && env_file="$arg"
+			prev="$arg"
+		done
+		[[ -n "$env_file" && -f "$env_file" ]] && grep -v '^[[:space:]]*#' "$env_file"
+		exit 0 ;;
 	*' config --images')
 		if [[ "$*" == *'--profile api'* ]]; then printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\n' "$POTOCOLOM_VERSION"
 		else printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\nghcr.io/portocolom-studio/potocolom-worker:%s-cuda\n' "$POTOCOLOM_VERSION" "$POTOCOLOM_VERSION"; fi ;;
 	'image inspect'*) [[ "${DOCKER_IMAGES_CACHED:-}" == 1 ]] ;;
+	*' exec -T api python -m app.operator setup-link')
+		# Pinned for the cases that set SETUP_LINK_EXPECT: the project, env file,
+		# compose file and profile the installer resolved, nothing looser.
+		if [[ -n "${SETUP_LINK_EXPECT:-}" && "$*" != "$SETUP_LINK_EXPECT" ]]; then
+			echo "unexpected mint: $*" >&2
+			exit 4
+		fi
+		case "${SETUP_LINK_MODE:-link}" in
+			link) printf 'http://192.168.1.10:8080/setup#installer-fixture-token\n' ;;
+			decided) echo 'installation already claimed' >&2; exit 3 ;;
+			fail) echo 'boom' >&2; exit 1 ;;
+		esac
+		exit 0 ;;
 	*' pull --policy'* ) exit 99 ;;
 	*' pull') [[ "${DOCKER_FAIL_PULL:-}" != 1 ]] ;;
 	*' up -d --no-build')
@@ -136,7 +158,7 @@ run_install() {
 	local profile_env=()
 	shift
 	[[ "$profile" == auto ]] || profile_env=(POTOCOLOM_PROFILE="$profile")
-	env PATH="$case_dir/bin:$PATH" RELEASE_TEST_AWK="$release_test_awk" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" READY_COUNT_FILE="$case_dir/ready-count" READY_AFTER="${READY_AFTER:-0}" READY_FAIL="${READY_FAIL:-0}" FAKE_NVIDIA="$fake_nvidia" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" \
+	env -u DISPLAY -u WAYLAND_DISPLAY PATH="$case_dir/bin:$PATH" RELEASE_TEST_AWK="$release_test_awk" CURL_LOG="$case_dir/curl.log" DOCKER_LOG="$case_dir/docker.log" BUNDLE_DIR="$tmp" REAL_CURL="$REAL_CURL" READY_COUNT_FILE="$case_dir/ready-count" READY_AFTER="${READY_AFTER:-0}" READY_FAIL="${READY_FAIL:-0}" FAKE_NVIDIA="$fake_nvidia" DOCKER_FAIL_PULL="${DOCKER_FAIL_PULL:-}" DOCKER_IMAGES_CACHED="${DOCKER_IMAGES_CACHED:-}" SETUP_LINK_MODE="${SETUP_LINK_MODE:-link}" SETUP_LINK_EXPECT="${SETUP_LINK_EXPECT:-}" \
 		POTOCOLOM_SKIP_GPU_TEST=1 POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_VERSION=v9.9.9 POTOCOLOM_DIR="$case_dir/install" \
 		"${profile_env[@]}" "$@" bash "$repo/scripts/install.sh" 2>&1
 }
@@ -209,6 +231,41 @@ TEST_PROFILE=api output="$(run_install "$case_dir")" && rc=0 || rc=$?
 if [[ "$rc" -eq 0 && "$output" == *'API and database are ready'* && "$(grep 'up -d --no-build' "$case_dir/docker.log")" == *'--profile api'* ]]; then
 	printf 'ok explicit-api-bypasses-gpu-detection\n'
 else fail_case explicit-api-bypasses-gpu-detection; fi
+
+make_case migrated-install-mints-with-its-saved-project
+mkdir -p "$case_dir/install/deploy/compose"
+{ sed 's#^PUBLIC_URL=.*#PUBLIC_URL=http://192.168.1.10:8080#' "$repo/deploy/compose/.env.example"; echo 'COMPOSE_PROJECT_NAME=compose-migrated'; } >"$case_dir/install/deploy/compose/.env"
+migrated_expect="compose -p compose-migrated --env-file $case_dir/install/deploy/compose/.env -f $case_dir/install/deploy/compose/compose.yml --profile api exec -T api python -m app.operator setup-link"
+TEST_PROFILE=api SETUP_LINK_MODE=link SETUP_LINK_EXPECT="$migrated_expect" output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'/setup#installer-fixture-token'* && "$output" != *'warning: no setup link'* \
+	&& "$(grep -c 'exec -T api python -m app.operator setup-link' "$case_dir/docker.log")" -eq 1 ]]; then
+	printf 'ok migrated-install-mints-with-its-saved-project\n'
+else fail_case migrated-install-mints-with-its-saved-project; printf 'rc=%s\n%s\n' "$rc" "$output"; cat "$case_dir/docker.log"; fi
+# An assignment with no command persists in the shell, so the expectation is cleared here.
+unset SETUP_LINK_EXPECT
+
+make_case fresh-install-prints-the-setup-link
+TEST_PROFILE=api SETUP_LINK_MODE=link output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'The link works once'* && "$output" == *'/setup#installer-fixture-token'* \
+	&& "$(grep -c 'exec -T api python -m app.operator setup-link' "$case_dir/docker.log")" -eq 1 ]]; then
+	printf 'ok fresh-install-prints-the-setup-link\n'
+else fail_case fresh-install-prints-the-setup-link; printf 'rc=%s\n%s\n' "$rc" "$output"; fi
+
+make_case decided-install-prints-a-note-and-no-link
+TEST_PROFILE=api SETUP_LINK_MODE=decided output="$(run_install "$case_dir")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'already chose how it works'* && "$output" != *'/setup#'* \
+	&& "$output" != *'warning: no setup link'* ]]; then
+	printf 'ok decided-install-prints-a-note-and-no-link\n'
+else fail_case decided-install-prints-a-note-and-no-link; printf 'rc=%s\n%s\n' "$rc" "$output"; fi
+
+make_case failed-mint-prints-a-warning-with-the-retry-command
+TEST_PROFILE=api SETUP_LINK_MODE=fail output="$(run_install "$case_dir")" && rc=0 || rc=$?
+retry="env -u COMPOSE_PROJECT_NAME docker compose --env-file \"$case_dir/install/deploy/compose/.env\" -f \"$case_dir/install/deploy/compose/compose.yml\" exec -T api python -m app.operator setup-link"
+if [[ "$rc" -eq 0 && "$output" == *'warning: no setup link was made: boom'* \
+	&& "$output" == *"  Retry with: $retry"* \
+	&& "$output" != *'already chose'* ]]; then
+	printf 'ok failed-mint-prints-a-warning-with-the-retry-command\n'
+else fail_case failed-mint-prints-a-warning-with-the-retry-command; printf 'rc=%s\n%s\n' "$rc" "$output"; fi
 
 make_case invalid-install-profile
 TEST_PROFILE=invalid output="$(run_install "$case_dir")" && rc=0 || rc=$?

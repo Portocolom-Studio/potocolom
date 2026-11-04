@@ -175,11 +175,14 @@ def stop(process: subprocess.Popen | None) -> None:
 
 async def main() -> None:
     api = worker = None
+    # A scratch database has no decision yet, so the API is told to run without
+    # accounts, as the dev loop does (scripts/dev-stack.sh).
     api = subprocess.Popen(
         [interpreter("backend"), "-m", "uvicorn", "app.main:app",
          "--port", str(PORT), "--log-level", "warning",
          "--ws-max-size", "2097152"],
-        cwd=ROOT / "backend")
+        cwd=ROOT / "backend",
+        env=os.environ | {"AUTH_MODE": os.environ.get("AUTH_MODE") or "none"})
     worker = subprocess.Popen(
         [interpreter("worker"), "-m", "worker"],
         env=os.environ | {

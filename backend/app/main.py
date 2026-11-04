@@ -15,7 +15,7 @@ from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from app import access_log, db, jobs
+from app import access_log, auth_mode, db, jobs
 from app.benchmark import router as benchmark_router
 from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
@@ -187,7 +187,9 @@ app = FastAPI(
 # SECURITY_HEADERS. Request id wraps both so every HTTP answer carries
 # X-Request-ID; it also answers unhandled 500s itself with the Exception
 # handler below, because ServerErrorMiddleware is outside this whole stack
-# and by the time it fires the id's contextvar is reset.
+# and by the time it fires the id's contextvar is reset. The setup gate is
+# added first, so it is innermost and its 503 still carries both.
+app.add_middleware(auth_mode.SetupGate)
 app.add_middleware(RequestBodyLimitMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestIdMiddleware)
@@ -262,7 +264,8 @@ async def ready() -> Response:
 async def config() -> dict:
     settings = get_settings()
     return {
-        "auth_methods": settings.auth_methods,
+        "auth_methods": auth_mode.sign_in_methods(settings),
+        "setup_required": auth_mode.setup_required(),
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
         "banner": await current_banner(),

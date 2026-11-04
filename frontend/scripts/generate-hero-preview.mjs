@@ -49,7 +49,7 @@ function startDevServer() {
 		{
 			cwd: frontendRoot,
 			stdio: ['ignore', 'pipe', 'pipe'],
-			env: { ...process.env, PUBLIC_WAITLIST_URL: '' }
+			env: { ...process.env, PUBLIC_WAITLIST_URL: '', PUBLIC_SITE_MODE: 'landing' }
 		}
 	);
 

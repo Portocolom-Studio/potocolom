@@ -2,7 +2,7 @@
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ModeToggle from '$lib/components/landing/ModeToggle.svelte';
 	import { iconSvg } from '$lib/docs/icons';
-	import '../../../../landing-tokens.css';
+	import '../../../../../landing-tokens.css';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();

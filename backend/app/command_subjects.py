@@ -10,9 +10,8 @@ from collections.abc import Collection
 
 from sqlalchemy import text
 
-from app import db
+from app import auth_mode, db
 from app.account_lock import hold_the_account
-from app.settings import get_settings
 
 MAX_SEQUENCE = 2**63 - 1
 SUBJECT_FIELDS = {
@@ -67,10 +66,10 @@ async def lock_browser_binding(
 ) -> tuple[object, object] | None:
     if not await current_owner(session, account_user_id):
         return None
-    auth_mode = get_settings().auth_mode
-    if auth_mode == "none":
+    mode = auth_mode.current()
+    if mode == auth_mode.NONE:
         return (None, None) if db.local_user_id == account_user_id and auth_session_id is None else None
-    if auth_mode != "accounts" or auth_session_id is None:
+    if mode != auth_mode.ACCOUNTS or auth_session_id is None:
         return None
     bound = (await session.execute(
         text(

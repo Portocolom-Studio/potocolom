@@ -51,8 +51,7 @@ def check_configuration(settings: Settings) -> None:
     anyone on the path reads it and can spend it before the browser does. Mail
     refuses the same configuration for the same reason.
     """
-    offered = [method for method in settings.auth_methods if method != "password"]
-    if not offered:
+    if not settings.oauth_offered:
         return
     parsed = urlsplit(settings.public_url)
     try:
@@ -107,7 +106,7 @@ async def _start(provider: str, link_user_id: uuid.UUID | None) -> tuple[str, st
     server started.
     """
     settings = get_settings()
-    if provider not in AUTHORIZE or provider not in settings.auth_methods:
+    if provider not in AUTHORIZE or provider not in settings.oauth_offered:
         raise HTTPException(status_code=404, detail="Not Found")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")

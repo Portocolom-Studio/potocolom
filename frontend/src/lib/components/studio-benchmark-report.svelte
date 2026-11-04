@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { leaderboardRows, type BenchmarkReport } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
@@ -33,7 +32,12 @@
 			{report.succeeded}/{report.total_jobs}
 			{t('app.metrics.benchmark_images')}
 		</span>
-		<Button href={resolve('/benchmark')} variant="outline" size="sm" class="ms-auto">
+		<Button
+			href="https://potocolom.leonfuller.com/benchmark"
+			variant="outline"
+			size="sm"
+			class="ms-auto"
+		>
 			<ExternalLinkIcon />
 			{t('app.metrics.open_benchmark_page')}
 		</Button>
