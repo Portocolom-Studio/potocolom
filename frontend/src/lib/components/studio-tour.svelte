@@ -43,6 +43,7 @@
 	async function place(): Promise<void> {
 		await tick();
 		if (!anchor || !card || step === -1) return;
+		anchor.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
 		bodyOverflows = !!body && body.scrollHeight > body.clientHeight;
 		const r = anchor.getBoundingClientRect();
 		const left = Math.max(0, r.left),
@@ -126,12 +127,6 @@
 		if (body) body.scrollTop = 0;
 		studio.tourOpen = true;
 		anchor = target(STUDIO_TOUR_STEPS[index].anchor);
-		// A control in a scrolled column can sit below the fold. Bring it into view
-		// first, so the card is placed against where the control really is.
-		void tick().then(() => {
-			anchor?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-			void place();
-		});
 		refreshNav(index);
 		void place();
 		void tick().then(() => nextButton?.focus());
@@ -325,7 +320,12 @@
 	});
 </script>
 
-<svelte:window onresize={settle} onscroll={place} onkeydown={keydown} onpagehide={finish} />
+<svelte:window
+	onresize={() => requestAnimationFrame(settle)}
+	onscroll={place}
+	onkeydown={keydown}
+	onpagehide={finish}
+/>
 
 {#if current}
 	<div class="tour-blocker" aria-hidden="true"></div>

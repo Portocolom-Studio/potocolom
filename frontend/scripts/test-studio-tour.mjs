@@ -810,6 +810,65 @@ async function main() {
 			await context.close();
 		}
 
+		// Resize an already-open step across each responsive breakpoint.
+		for (const [before, after] of [
+			[
+				{ width: 1440, height: 900 },
+				{ width: 900, height: 900 }
+			],
+			[
+				{ width: 1024, height: 768 },
+				{ width: 390, height: 768 }
+			]
+		]) {
+			for (const [index, title] of titles.entries()) {
+				const context = await browser.createBrowserContext();
+				const run = await openStudio(context, server, { viewport: before });
+				await run.page.waitForSelector('[data-studio-tour] h2');
+				await stepTo(run.page, title);
+				await run.page.setViewport(after);
+				await waitFor(
+					async () => {
+						if ((await heading(run.page)) !== title) return false;
+						return run.page.evaluate((i) => {
+							const names = ['canvas', 'prompt', 'model', 'generate', 'images'];
+							let target = document.querySelector(`[data-tour="${names[i]}"]`);
+							if (!target || !target.getClientRects().length)
+								target = [...document.querySelectorAll('[data-sidebar="trigger"]')].find(
+									(el) => el.getClientRects().length > 0
+								);
+							if (!target) return false;
+							const r = target.getBoundingClientRect();
+							const ringElement = document.querySelector('[data-tour-ring]');
+							const cardElement = document.querySelector('[data-studio-tour]');
+							if (!ringElement || !cardElement) return false;
+							const ring = ringElement.getBoundingClientRect();
+							const card = cardElement.getBoundingClientRect();
+							const width = Math.max(
+								0,
+								Math.min(r.right, ring.right, innerWidth) - Math.max(r.left, ring.left, 0)
+							);
+							const height = Math.max(
+								0,
+								Math.min(r.bottom, ring.bottom, innerHeight) - Math.max(r.top, ring.top, 0)
+							);
+							return (
+								width >= Math.min(120, r.width / 2) - 1 &&
+								height >= Math.min(120, r.height / 2) - 1 &&
+								card.left >= 0 &&
+								card.top >= 0 &&
+								card.right <= innerWidth &&
+								card.bottom <= innerHeight
+							);
+						}, index);
+					},
+					`${before.width} to ${after.width}, step ${index + 1} placement`
+				);
+				assert.deepEqual(run.errors, []);
+				await context.close();
+			}
+		}
+
 		// Storage that reads but refuses writes: finishing could not save the flag,
 		// so the tour must not auto-start at all.
 		const unwritable = await browser.createBrowserContext();
