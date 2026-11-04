@@ -363,6 +363,34 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 				link.remove();
 			}, invitationToken);
 			await page.waitForSelector('#join-password');
+			assert.equal(
+				await page.$eval('#join-password', (input) => input.getAttribute('aria-describedby')),
+				'join-password-hint'
+			);
+			assert.equal(
+				await page.$eval('#join-confirm', (input) => input.getAttribute('aria-describedby')),
+				null
+			);
+			assert.equal(
+				await page.$eval('button[aria-controls="join-confirm"]', (button) =>
+					button.getAttribute('aria-label')
+				),
+				'Show confirmation'
+			);
+			await page.type('#join-password', 'short');
+			await page.type('#join-confirm', 'short');
+			await page.click('button[type="submit"]');
+			await page.waitForFunction(() =>
+				document.body.textContent.includes('This password has 5 characters. Use at least 10.')
+			);
+			await page.$eval('#join-password', (input) => {
+				input.value = '';
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			});
+			await page.$eval('#join-confirm', (input) => {
+				input.value = '';
+				input.dispatchEvent(new Event('input', { bubbles: true }));
+			});
 			await page.type('#join-password', PASSWORD);
 			await page.type('#join-confirm', PASSWORD);
 			await page.click('button[type="submit"]');
@@ -421,6 +449,32 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 				'account A restores its allowed Metrics tab'
 			);
 
+			await page.goto(`${publicUrl}/app?view=account`, { waitUntil: 'domcontentloaded' });
+			await page.waitForFunction(() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Security'
+				)
+			);
+			await clickButtonText(page, 'Security');
+			await page.waitForSelector('#account-new-password');
+			assert.equal(
+				await page.$eval('button[aria-controls="account-current-password"]', (button) =>
+					button.getAttribute('aria-label')
+				),
+				'Show current password'
+			);
+			assert.equal(
+				await page.$eval('button[aria-controls="account-new-password"]', (button) =>
+					button.getAttribute('aria-label')
+				),
+				'Show new password'
+			);
+			assert.equal(
+				await page.$eval('#account-new-password', (input) =>
+					input.getAttribute('aria-describedby')
+				),
+				'account-new-password-hint'
+			);
 			const resetRequest = waitForUnsafeRequest(page, '/api/v1/auth/reset');
 			await page.goto(`${publicUrl}/reset`, { waitUntil: 'networkidle0' });
 			await page.waitForSelector('#reset-email');
@@ -434,6 +488,24 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 			const sent = request.headers()['x-csrf-token'];
 			assert.ok(sent, 'the shipped apiFetch must send x-csrf-token');
 			assert.ok(sent === currentCsrfCookie, 'x-csrf-token must match the active CSRF cookie');
+			await page.goto(`${publicUrl}/reset#Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM`, {
+				waitUntil: 'networkidle0'
+			});
+			await page.waitForSelector('#reset-password');
+			assert.equal(
+				await page.$eval('#reset-password', (input) => input.getAttribute('aria-describedby')),
+				'reset-password-hint'
+			);
+			assert.equal(
+				await page.$eval('#reset-confirm', (input) => input.getAttribute('aria-describedby')),
+				null
+			);
+			assert.equal(
+				await page.$eval('button[aria-controls="reset-confirm"]', (button) =>
+					button.getAttribute('aria-label')
+				),
+				'Show confirmation'
+			);
 		} finally {
 			await browser.close();
 		}

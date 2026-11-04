@@ -6,13 +6,14 @@
 	import MapIcon from '@lucide/svelte/icons/map';
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import { resolve } from '$app/paths';
 	import { account } from '$lib/account.svelte';
 	import { sectionNeeds } from '$lib/account-display';
 	import { t } from '$lib/i18n.svelte';
 	import { shortcutLabel } from '$lib/platform.svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import { studio } from '$lib/studio.svelte';
+	import { openAccount, studio } from '$lib/studio.svelte';
 	import { closeOnHistoryStep, popOverlay, pushOverlay } from '$lib/overlay-history';
 	import { Kbd } from '$lib/components/ui/kbd';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
@@ -144,6 +145,18 @@
 	<Sidebar.Footer class="gap-0 p-0">
 		<StudioWorkerStatus />
 		<Sidebar.Menu class="gap-0 px-2 pt-1 pb-1.5">
+			{#if account.localModeConfirmed}
+				<Sidebar.MenuItem>
+					<Sidebar.MenuButton
+						class={footerItemClass}
+						tooltipContent={t('app.shell.settings')}
+						onclick={() => navigateFromSidebar(() => openAccount())}
+					>
+						<SettingsIcon />
+						<span>{t('app.shell.settings')}</span>
+					</Sidebar.MenuButton>
+				</Sidebar.MenuItem>
+			{/if}
 			<!-- Replays the studio tour. Sits with the help links below it. The landing
 			     preview renders this sidebar too, but it has no tour to replay. -->
 			{#if !landing && sectionNeeds('generate', account.current?.role ?? null) === null}

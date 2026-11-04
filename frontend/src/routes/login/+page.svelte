@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { onMount } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
@@ -296,10 +297,9 @@
 						</Field.Field>
 						<Field.Field>
 							<Label for="login-password">{t('auth.login.password_label')}</Label>
-							<Input
+							<PasswordInput
 								id="login-password"
 								name="password"
-								type="password"
 								autocomplete="current-password"
 								required
 								bind:value={password}

@@ -39,6 +39,7 @@ from worker.engine import (
 )
 from worker.categorize import categorize_output, enable_categorizer
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
+from worker.model_store import CAPABILITY as MODEL_STORE_CAPABILITY, ModelStore
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
 
@@ -69,6 +70,8 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 UPLOAD_TIMEOUT = 60.0
 # Heartbeat interval while a job runs without denoising progress (model load).
 PROGRESS_KEEPALIVE_SECONDS = 60.0
+# Sent by the API only to a worker whose hello lists MODEL_STORE_CAPABILITY.
+STORE_COMMANDS = frozenset({"install_model", "cancel_install", "remove_model"})
 
 
 
@@ -199,6 +202,26 @@ def control_generation(control: dict) -> int | None:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
         return None
     return raw
+
+
+def unavailable_model_report(control: dict, by_id: dict[str, Manifest]) -> dict | None:
+    """The answer to a dispatch or an open for a model this worker no longer holds.
+
+    A removal can overtake a command the API sent before it heard models_changed.
+    The answer is the one an unavailable model gets everywhere else: a failed job,
+    or a refused session. The socket stays open, so the other sessions survive.
+    """
+    if control.get("model_id") in by_id:
+        return None
+    if control["type"] == "dispatch_job":
+        token = control.get("dispatch_token")
+        stamp = {"dispatch_token": token} if isinstance(token, str) and token else {}
+        return {"type": "job_failed", "job_id": control["job_id"],
+                "reason": "model_unavailable", "failure_code": "model_unavailable", **stamp}
+    if control["type"] == "open_session" and control_generation(control) is not None:
+        return {"type": "session_refused", "session_id": control["session_id"],
+                "control_generation": control["control_generation"], "reason": "not_resident"}
+    return None
 
 
 class LockedWebSocket:
@@ -514,6 +537,15 @@ async def warmup_realtime(engine: Engine, manifests: list[Manifest],
         setattr(engine, "_calibration_failed", True)
 
 
+async def _send_under_identity(ws, message: dict[str, Any], identity: dict[str, Any]) -> None:
+    """Send a control whose protocol 6 fields come from the command it answers."""
+    token = _protocol6_identity.set(identity)
+    try:
+        await ws.send(json.dumps(message))
+    finally:
+        _protocol6_identity.reset(token)
+
+
 class JobRun:
     """A dispatched job and the flag that asks it to stop.
 
@@ -524,8 +556,10 @@ class JobRun:
     dispatch that is running may be stopped.
     """
 
-    def __init__(self, job_id: str, token: object, identity: dict[str, Any] | None = None) -> None:
+    def __init__(self, job_id: str, token: object, identity: dict[str, Any] | None = None,
+                 model_id: str | None = None) -> None:
         self.job_id = job_id
+        self.model_id = model_id
         self.identity = identity or {}
         # Filtered the way run_job filters what it stamps: a dispatch that
         # carries no usable token cannot be cancelled at all, which is the
@@ -776,10 +810,12 @@ class SessionRunner:
 class SessionManager:
     """Own realtime runner lifecycle and generation fencing for one connection."""
 
-    def __init__(self, ws, engine: Engine, manifests: list[Manifest]):
+    def __init__(self, ws, engine: Engine, by_id: dict[str, Manifest]):
         self._ws = ws
         self._engine = engine
-        self._by_id = {manifest.id: manifest for manifest in manifests}
+        # The live table, shared with the model store: an install or removal is
+        # seen here without rebuilding the manager.
+        self._by_id = by_id
         self._runners: dict[uuid.UUID, SessionRunner] = {}
         self._highest_generation: dict[uuid.UUID, int] = {}
         self._retired: set[SessionRunner] = set()
@@ -787,6 +823,11 @@ class SessionManager:
     @property
     def active_count(self) -> int:
         return len(self._runners)
+
+    def serving(self, model_id: str) -> bool:
+        """True while a live or draining runner holds this model on the GPU."""
+        return any(runner._manifest.id == model_id
+                   for runner in (*self._runners.values(), *self._retired))
 
     def _forget_retired(self, runner: SessionRunner) -> None:
         self._retired.discard(runner)
@@ -1082,16 +1123,31 @@ async def _gpu_unload(ws, engine: Engine, control: dict) -> None:
         }))
 
 
+def model_busy(sessions: SessionManager, jobs: dict[asyncio.Task, JobRun]):
+    """What a removal asks: does a live session or a running job hold this model."""
+    def busy(model_id: str) -> bool:
+        return sessions.serving(model_id) or any(job.model_id == model_id for job in jobs.values())
+
+    return busy
+
+
 async def _serve_protocol5(
     ws,
     settings: Settings,
     manifests: list[Manifest],
     engine: Engine,
+    store: ModelStore | None = None,
+    store_supported: bool = False,
 ) -> None:
     ws = LockedWebSocket(ws)
-    by_id = {manifest.id: manifest for manifest in manifests}
-    sessions = SessionManager(ws, engine, manifests)
+    by_id = store.installed if store is not None else {
+        manifest.id: manifest for manifest in manifests}
+    sessions = SessionManager(ws, engine, by_id)
     jobs: dict[asyncio.Task, JobRun] = {}
+    if store is not None and store_supported:
+        store.attach(lambda message: ws.send(json.dumps(message)), model_busy(sessions, jobs))
+        await store.send_inventory()
+        await store._announce()
 
     def forget(task: asyncio.Task) -> None:
         jobs.pop(task, None)
@@ -1131,14 +1187,21 @@ async def _serve_protocol5(
                     sessions.submit(session_id, revision, message[FRAME_HEADER_BYTES:])
                 else:
                     control = json.loads(message)
-                    if control["type"] == "open_session":
+                    if (store is not None and control.get("type") in
+                            {"dispatch_job", "open_session", "load_model"}):
+                        await store.verify_for_load(control.get("model_id", ""))
+                    refusal = unavailable_model_report(control, by_id)
+                    if refusal is not None:
+                        await ws.send(json.dumps(refusal))
+                    elif control["type"] == "open_session":
                         await sessions.open(control)
                     elif control["type"] == "update_session":
                         await sessions.update(control)
                     elif control["type"] == "close_session":
                         await sessions.close(control)
                     elif control["type"] == "dispatch_job":
-                        job = JobRun(control["job_id"], control.get("dispatch_token"))
+                        job = JobRun(control["job_id"], control.get("dispatch_token"),
+                                     model_id=control["model_id"])
                         task = asyncio.create_task(run_job(
                             ws, engine, by_id[control["model_id"]], control,
                             job.stop))
@@ -1160,9 +1223,16 @@ async def _serve_protocol5(
                             "gpu": gpu,
                         }))
                     elif control["type"] == "load_model":
-                        await _gpu_load(ws, engine, by_id, control)
+                        if control["model_id"] not in by_id:
+                            await ws.send(json.dumps({"type": "gpu_error",
+                                                      "request_id": control["request_id"],
+                                                      "reason": f"{control['model_id']} is not installed"}))
+                        else:
+                            await _gpu_load(ws, engine, by_id, control)
                     elif control["type"] == "unload_model":
                         await _gpu_unload(ws, engine, control)
+                    elif control["type"] in STORE_COMMANDS and store is not None:
+                        store.handle(control)
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
                 logger.warning("protocol violation from the API (%s), closing", error)
                 await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
@@ -1171,6 +1241,8 @@ async def _serve_protocol5(
         heartbeat_task.cancel()
         for task in jobs:
             task.cancel()
+        if store is not None:
+            await store.close()
         await asyncio.gather(heartbeat_task, *jobs, sessions.shutdown(),
                              return_exceptions=True)
 
@@ -1182,6 +1254,8 @@ async def _serve_protocol6(
     engine: Engine,
     registered: dict[str, Any],
     hello_grant_nonce: str,
+    store: ModelStore | None = None,
+    store_supported: bool = False,
 ) -> None:
     worker_id = settings.worker_id
     incarnation = registered["incarnation"]
@@ -1189,9 +1263,21 @@ async def _serve_protocol6(
     incarnation_uuid = uuid.UUID(incarnation)
     transport = LockedWebSocket(ws)
     output = Protocol6WebSocket(transport, worker_id, incarnation)
-    by_id = {manifest.id: manifest for manifest in manifests}
-    sessions = SessionManager(output, engine, manifests)
+    by_id = store.installed if store is not None else {
+        manifest.id: manifest for manifest in manifests}
+    sessions = SessionManager(output, engine, by_id)
     jobs: dict[asyncio.Task, JobRun] = {}
+    # Refusals for commands this worker can no longer serve, sent after their ack:
+    # the API must learn the command was consumed before it hears it failed.
+    refused_after_ack: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    if store is not None and store_supported:
+        store.attach(
+            lambda message: output.send_message(
+                {**message, "worker_id": worker_id, "incarnation": incarnation}),
+            model_busy(sessions, jobs),
+        )
+        await store.send_inventory()
+        await store._announce()
     commands = Protocol6CommandLedger()
     grant_remaining_ms = 0
     grant_ready = False
@@ -1239,8 +1325,14 @@ async def _serve_protocol6(
 
     async def apply_command(command: dict[str, Any]) -> tuple[str, str | None]:
         kind = command["type"]
+        if store is not None and kind in {"open_session", "dispatch_job"}:
+            await store.verify_for_load(command.get("model_id", ""))
         if kind == "open_session":
             identity = _command_identity(command)
+            refusal = unavailable_model_report(command, by_id)
+            if refusal is not None:
+                refused_after_ack.append((refusal, identity))
+                return "accepted", None
             await sessions.open(command, p6_identity=identity)
             return "accepted", None
         if kind == "update_session":
@@ -1256,7 +1348,12 @@ async def _serve_protocol6(
             return "accepted", None
         if kind == "dispatch_job":
             identity = _command_identity(command)
-            job = JobRun(command["job_id"], command.get("dispatch_token"), identity)
+            refusal = unavailable_model_report(command, by_id)
+            if refusal is not None:
+                refused_after_ack.append((refusal, identity))
+                return "accepted", None
+            job = JobRun(command["job_id"], command.get("dispatch_token"), identity,
+                         model_id=command["model_id"])
 
             async def run_dispatched_job() -> None:
                 token = _protocol6_identity.set(identity)
@@ -1297,6 +1394,10 @@ async def _serve_protocol6(
                     expected_worker_id=worker_id,
                     expected_incarnation=incarnation_uuid,
                 )
+                if control["type"] in STORE_COMMANDS:
+                    if store is not None:
+                        store.handle(control)
+                    continue
                 if control["type"] == "work_grant":
                     grant_remaining_ms = control["remaining_ms"]
                     grant_ready = control["ready"]
@@ -1314,6 +1415,9 @@ async def _serve_protocol6(
                         worker_id=worker_id, incarnation=incarnation_uuid,
                     )
                     await transport.send(ack_text)
+                    while refused_after_ack:
+                        refusal, identity = refused_after_ack.pop(0)
+                        await _send_under_identity(output, refusal, identity)
                     continue
             except (Protocol6Error, json.JSONDecodeError, KeyError, ValueError, TypeError) as error:
                 logger.warning("protocol violation from the API (%s), closing", error)
@@ -1324,13 +1428,22 @@ async def _serve_protocol6(
         heartbeat_task.cancel()
         for task in jobs:
             task.cancel()
+        if store is not None:
+            await store.close()
         await asyncio.gather(grant_task, heartbeat_task, *jobs, sessions.shutdown(),
                              return_exceptions=True)
 
 
 async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
-                           engine: Engine) -> None:
-    wire_manifests = engine.measured_manifests(manifests)
+                           engine: Engine, store: ModelStore | None = None) -> None:
+    # Only a real engine has weights to install; the simulated one serves its
+    # single built-in manifest with nothing to download, as before. run() passes
+    # the process's store, which outlives this connection.
+    if store is None and settings.models_dir:
+        store = ModelStore(manifests, engine, settings.models_dir)
+        await store.scan()
+    installed = list(store.installed.values()) if store is not None else manifests
+    wire_manifests = engine.measured_manifests(installed)
     p95_map: dict[str, int] = {}
     for wire in wire_manifests:
         p95 = engine.realtime_p95_ms(wire["id"])
@@ -1340,11 +1453,14 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     p95_map.update(frame_p95_payload(engine))
     incarnation = str(uuid.uuid4())
     hello_grant_nonce = str(uuid.uuid4())
+    capabilities = list(PROTOCOL6_CAPABILITIES)
+    if store is not None:
+        capabilities.append(MODEL_STORE_CAPABILITY)
     hello = {
         "type": "hello",
         "protocol_version": PROTOCOL_VERSION,
         "compatible_versions": [6, 5],
-        "capabilities": list(PROTOCOL6_CAPABILITIES),
+        "capabilities": capabilities,
         "incarnation": incarnation,
         "grant_nonce": hello_grant_nonce,
         "worker_id": settings.worker_id,
@@ -1359,6 +1475,12 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         batch_map = batch_ms_payload(engine)
         if batch_map:
             hello["realtime_batch_ms"] = batch_map
+    if store is not None:
+        # The hardware reaches the API in store_inventory after registration. hello
+        # keeps the fields an older API validates, so it carries nothing new.
+        selected_device = getattr(engine, "device", settings.device)
+        gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
+        store.remember_hardware(engine.device_name(), gpu.get("vram_total_bytes"))
     await ws.send(json.dumps(hello))
     try:
         raw_response = await ws.recv()
@@ -1382,6 +1504,8 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     if reply_type != "registered":
         raise RegistrationRejected(f"unexpected registration reply: {response}")
     protocol_version = response.get("protocol_version", 5)
+    # Only an API that says so receives store messages; an older one gets none.
+    store_supported = response.get("model_store") is True
     if protocol_version == 6:
         try:
             registered = decode_control(raw_response)
@@ -1404,7 +1528,8 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
             return
         logger.info("registered as %s (protocol 6)", settings.worker_id)
         await _serve_protocol6(
-            ws, settings, manifests, engine, registered, hello_grant_nonce,
+            ws, settings, manifests, engine, registered, hello_grant_nonce, store,
+            store_supported,
         )
         return
     if protocol_version != 5:
@@ -1412,17 +1537,23 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
         await ws.close(code=CLOSE_PROTOCOL_VIOLATION)
         return
     logger.info("registered as %s", settings.worker_id)
-    await _serve_protocol5(ws, settings, manifests, engine)
+    await _serve_protocol5(ws, settings, manifests, engine, store, store_supported)
 
 
 async def run() -> None:
     settings = get_settings()
     manifests, engine = build_runtime(settings)
+    store = None
+    if settings.models_dir:
+        # One store per process: a download in progress outlives a dropped connection.
+        store = ModelStore(manifests, engine, settings.models_dir)
+        await store.scan()
     delay = BACKOFF_INITIAL
     try:
         while True:
             try:
-                await warmup_realtime(engine, manifests, settings.realtime_slots)
+                warm = list(store.installed.values()) if store is not None else manifests
+                await warmup_realtime(engine, warm, settings.realtime_slots)
                 async with websockets.connect(
                     settings.api_url,
                     # Lowercase: header names are case-insensitive, but not every
@@ -1431,7 +1562,7 @@ async def run() -> None:
                     max_size=FLEET_MAX_MESSAGE_BYTES,
                 ) as ws:
                     delay = BACKOFF_INITIAL
-                    await serve_connection(ws, settings, manifests, engine)
+                    await serve_connection(ws, settings, manifests, engine, store)
             except RegistrationRejected as error:
                 logger.error("registration rejected (%s); update this worker, not retrying", error)
                 return
@@ -1440,6 +1571,9 @@ async def run() -> None:
             await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
             delay = min(delay * 2, BACKOFF_CAP)
     finally:
-        # build_runtime is called once, so the engine outlives every reconnect:
-        # it is stopped when the process is, never inside the retry loop.
+        # build_runtime and the store are made once, so the engine and any download
+        # outlive every reconnect: both are stopped when the process is, never inside
+        # the retry loop.
+        if store is not None:
+            await store.shutdown()
         await engine.close()

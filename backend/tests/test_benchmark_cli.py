@@ -70,6 +70,7 @@ class BenchmarkLoadFailureTests(unittest.TestCase):
             patch.object(benchmark.httpx, "Client", return_value=client),
             patch.object(benchmark, "fetch_registered_models", return_value={"first", "second"}),
             patch.object(benchmark, "require_clean_gpu"),
+            patch.object(benchmark, "ensure_remote_installed"),
             patch.object(benchmark, "gpu_status", return_value=[]),
             patch.object(benchmark, "load_model", side_effect=load_side_effect) as load,
             patch.object(benchmark, "unload_all") as unload_all,

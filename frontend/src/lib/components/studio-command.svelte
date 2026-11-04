@@ -137,7 +137,8 @@
 				audit: 'app.admin.audit',
 				fleet: 'app.admin.fleet',
 				banner: 'app.admin.banner',
-				invitations: 'app.admin.invitations'
+				invitations: 'app.admin.invitations',
+				models: 'app.model_management.title'
 			} as const;
 			for (const tab of ADMIN_TABS) {
 				entries.push({

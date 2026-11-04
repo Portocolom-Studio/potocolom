@@ -4,6 +4,7 @@ import logging
 
 from PIL import Image
 
+import pytest
 from worker import categorize as categorizer
 from worker.categorize import LABELS, categorize_output
 from worker.client import build_runtime
@@ -154,3 +155,20 @@ def test_building_the_real_engine_enables_the_categorizer(monkeypatch, tmp_path)
 
     assert isinstance(engine, FakeDiffusersEngine)
     assert categorizer._enabled is True
+
+
+def test_the_categorizer_loads_from_the_local_cache_only(monkeypatch):
+    transformers = pytest.importorskip("transformers")
+    calls = []
+
+    def record(*_args, **kwargs):
+        calls.append(kwargs)
+        raise OSError("stop before a load")
+
+    monkeypatch.setattr(transformers.AutoProcessor, "from_pretrained", record)
+    monkeypatch.setattr(transformers.AutoModel, "from_pretrained", record)
+
+    with pytest.raises(OSError):
+        categorizer._load_model()
+    assert calls == [{"revision": categorizer.SOURCE_REVISION, "local_files_only": True}]
+
