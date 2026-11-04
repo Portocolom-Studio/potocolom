@@ -383,7 +383,7 @@ def _run_reclaim(parsed: argparse.Namespace) -> None:
     print("    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"token\": \"{token}\",")
     print("         \"email\": \"you@example.com\",")
-    print("         \"password\": \"a password of fifteen characters or more\"}'")
+    print("         \"password\": \"a password of ten characters or more\"}'")
     print()
     print("One use, one hour. A password typed on a command line reaches your")
     print("shell history.")

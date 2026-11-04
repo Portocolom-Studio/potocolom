@@ -18,7 +18,7 @@ import random
 import time
 import uuid
 from collections import deque
-from collections.abc import Coroutine
+from collections.abc import Coroutine, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Literal
@@ -1187,8 +1187,8 @@ def takes_sessions(worker: Worker) -> bool:
     return takes_work(worker) or worker.has_current_work_grant
 
 
-def pick_any_worker() -> Worker | None:
-    """Return a connected worker, pruning sockets already closed under us.
+def connected_workers() -> Iterator[Worker]:
+    """Yield connected workers, pruning sockets already closed under us.
 
     Fleet cleanup removes workers in its `finally`, but a socket can die in
     the window before that runs; picking it would crash the studio GPU
@@ -1199,10 +1199,11 @@ def pick_any_worker() -> Worker | None:
         if state is not None and state != WebSocketState.CONNECTED:
             forget_worker(worker)
             continue
-        if not takes_work(worker):
-            continue
-        return worker
-    return None
+        yield worker
+
+
+def pick_any_worker() -> Worker | None:
+    return next((worker for worker in connected_workers() if takes_work(worker)), None)
 
 
 def pick_worker_for_model(model_id: str) -> Worker | None:

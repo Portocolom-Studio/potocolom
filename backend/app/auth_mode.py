@@ -39,6 +39,7 @@ SETUP_OPEN_HTTP = frozenset({
     ("GET", "/api/v1/ready"),
     ("HEAD", "/api/v1/ready"),
     ("POST", "/api/v1/auth/setup"),
+    ("POST", "/api/v1/auth/setup/status"),
 })
 SETUP_OPEN_SOCKETS = frozenset({"/api/v1/fleet"})
 

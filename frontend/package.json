@@ -18,6 +18,7 @@
 		"test:canvas": "node scripts/test-canvas-history.mjs",
 		"test:footer": "node scripts/test-footer-contrast.mjs",
 		"test:signin": "node scripts/test-signin-cookie.mjs",
+		"test:setup": "node scripts/test-setup-page.mjs && node scripts/test-setup-handoff.mjs",
 		"test:views": "node scripts/test-studio-view-state.mjs",
 		"test:owner-focus": "node scripts/test-owner-focus.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",

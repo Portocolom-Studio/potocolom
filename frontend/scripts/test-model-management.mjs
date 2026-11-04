@@ -1322,11 +1322,11 @@ test('model management selection, disk margin, progress, cancel and removal', as
 				() => new URL(location.href).searchParams.get('tab') === 'models'
 			);
 		}
+		// The account view in local mode is the turn-on-accounts card (#795).
 		await local.goto(`http://127.0.0.1:${server.address().port}/app?view=account`);
-		await local.waitForFunction(
-			() => new URL(location.href).searchParams.get('view') !== 'account'
-		);
-		await new Promise((done) => setTimeout(done, 500));
+		await local.waitForSelector('#turn-on-email');
+		assert.equal(new URL(local.url()).searchParams.get('view'), 'account');
+		await local.goto(`http://127.0.0.1:${server.address().port}/app`);
 		await local.click('[data-testid="admin-nav-entry"]');
 		await local.waitForSelector('[data-model="suggested"]');
 		await local.evaluate(() =>
