@@ -400,11 +400,6 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch, portal_runne
     import conftest
     from app import db
 
-    # The autouse cleanup reads the suite database at teardown, and this test
-    # never opens it otherwise, so migrate it first.
-    assert portal_runner(db.connect()) is True
-    portal_runner(db.dispose())
-
     # Named per run like every other database here: a fixed name inside the
     # fix for shared names would let two runs of this test drop each other's
     # probe, which is the defect the branch exists to remove.
@@ -421,6 +416,17 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch, portal_runne
             return await conn.fetchval(fetch) if fetch else None
         finally:
             await conn.close()
+
+    async def refuse_mode_change(*_args, **_kwargs):
+        pytest.fail("schema preparation must not record an auth decision")
+
+    # Teardown needs the schema, but preparing it must preserve the installation decision.
+    with monkeypatch.context() as startup:
+        startup.setattr(db, "record_mode", refuse_mode_change)
+        try:
+            assert portal_runner(db.connect(serving=False)) is True
+        finally:
+            portal_runner(db.dispose())
 
     asyncio.run(sql(admin, f'DROP DATABASE IF EXISTS "{supplied}" WITH (FORCE)',
                     f'CREATE DATABASE "{supplied}"'))

@@ -438,6 +438,16 @@ async function checkOverflowAndTheme(browser, baseUrl) {
 				const page = await openDocs(browser, baseUrl, path, { width, height: 800, mode });
 				const applied = await page.evaluate(() => document.documentElement.dataset.landingMode);
 				assert.equal(applied, mode, `${path} applies the ${mode} theme`);
+				const clippedCode = await page.$$eval('td code', (codes) =>
+					codes
+						.filter((code) => code.scrollWidth > code.clientWidth + 1)
+						.map((code) => code.textContent)
+				);
+				assert.deepEqual(
+					clippedCode,
+					[],
+					`${path} table code is readable without a nested scroller at ${width}px`
+				);
 				// Chrome reports computed colours as oklch(L C H); L is the first number.
 				const paper = await page.$eval('.docs', (docs) => getComputedStyle(docs).backgroundColor);
 				const lightness = Number(paper.match(/^oklch\(([\d.]+)/)?.[1]);

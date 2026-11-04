@@ -789,9 +789,10 @@
 	.prose :global(td code) {
 		display: inline-block;
 		max-width: 100%;
-		overflow-x: auto;
+		overflow-x: visible;
 		vertical-align: middle;
-		white-space: nowrap;
+		white-space: normal;
+		overflow-wrap: anywhere;
 	}
 	.prose :global(th),
 	.prose :global(td) {
