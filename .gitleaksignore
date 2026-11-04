@@ -20,3 +20,79 @@ frontend/src/lib/hero-images.json:generic-api-key:117
 # hero-images.json line 189 today: a hero image file name, not a
 # credential.
 frontend/src/lib/hero-images.json:generic-api-key:189
+# setup-flow.test.ts and test-setup-page.mjs in this commit and today: made-up
+# setup link tokens used as test fixtures, not credentials.
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/src/lib/setup-flow.test.ts:generic-api-key:6
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:13
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:14
+frontend/scripts/test-setup-page.mjs:generic-api-key:13
+frontend/scripts/test-setup-page.mjs:generic-api-key:14
+frontend/src/lib/setup-flow.test.ts:generic-api-key:6
+# worker/worker/hub_lock.json in this commit and today: Hugging Face file
+# hashes (40-character git blob ids and 64-character sha256 values) from the
+# public pinned Hub listings, not credentials. A regenerated lock file moves
+# these lines; rescan and replace these entries.
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:306
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:307
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:482
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:483
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:571
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:572
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:731
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:735
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:736
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:874
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:875
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1073
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1074
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1075
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1076
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1146
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1147
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1394
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1395
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1398
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1399
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1730
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1731
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1734
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1735
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1737
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1739
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1740
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1960
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1961
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1964
+6dabe9fb6c2a983625e11c1de283cbe6835462a2:worker/worker/hub_lock.json:generic-api-key:1965
+worker/worker/hub_lock.json:generic-api-key:306
+worker/worker/hub_lock.json:generic-api-key:307
+worker/worker/hub_lock.json:generic-api-key:482
+worker/worker/hub_lock.json:generic-api-key:483
+worker/worker/hub_lock.json:generic-api-key:571
+worker/worker/hub_lock.json:generic-api-key:572
+worker/worker/hub_lock.json:generic-api-key:731
+worker/worker/hub_lock.json:generic-api-key:735
+worker/worker/hub_lock.json:generic-api-key:736
+worker/worker/hub_lock.json:generic-api-key:874
+worker/worker/hub_lock.json:generic-api-key:875
+worker/worker/hub_lock.json:generic-api-key:1073
+worker/worker/hub_lock.json:generic-api-key:1074
+worker/worker/hub_lock.json:generic-api-key:1075
+worker/worker/hub_lock.json:generic-api-key:1076
+worker/worker/hub_lock.json:generic-api-key:1146
+worker/worker/hub_lock.json:generic-api-key:1147
+worker/worker/hub_lock.json:generic-api-key:1394
+worker/worker/hub_lock.json:generic-api-key:1395
+worker/worker/hub_lock.json:generic-api-key:1398
+worker/worker/hub_lock.json:generic-api-key:1399
+worker/worker/hub_lock.json:generic-api-key:1730
+worker/worker/hub_lock.json:generic-api-key:1731
+worker/worker/hub_lock.json:generic-api-key:1734
+worker/worker/hub_lock.json:generic-api-key:1735
+worker/worker/hub_lock.json:generic-api-key:1737
+worker/worker/hub_lock.json:generic-api-key:1739
+worker/worker/hub_lock.json:generic-api-key:1740
+worker/worker/hub_lock.json:generic-api-key:1960
+worker/worker/hub_lock.json:generic-api-key:1961
+worker/worker/hub_lock.json:generic-api-key:1964
+worker/worker/hub_lock.json:generic-api-key:1965

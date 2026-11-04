@@ -194,9 +194,11 @@ them rather than hand-rolled markup.
   in `model-panel.svelte` (`CAPABILITY_ICONS`): text to image Type, image to
   image Layers, upscale Maximize2, realtime Zap. Add new capabilities there.
 - **Empty states**: one muted sentence that says what will appear and how to
-  make it appear, plus the action if there is one. The Generate no-model state
-  adds a short heading (`Set up your worker`) and a text link to the setup guide,
-  not a button. Realtime shows its no-model sentence once, in the picker.
+  make it appear, plus the action if there is one. For an administrator or a
+  local install, Generate's no-model state adds a short heading (`Set up your
+  worker`), an Open Models action, and a text link to the setup guide. Users and
+  viewers get the notice without an install action. Realtime shows its no-model
+  sentence once, in the picker.
 
 ## Adding a studio view
 

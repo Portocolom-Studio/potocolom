@@ -2049,7 +2049,7 @@ def test_run_closes_the_engine_when_the_worker_stops(monkeypatch):
             async def __aexit__(self, *exc):
                 return None
 
-        async def fake_serve_connection(ws, settings, manifests, served):
+        async def fake_serve_connection(ws, settings, manifests, served, _store=None):
             await served.frame(SIMULATED_MANIFEST, {}, b"payload")
             serving.set()
             await asyncio.Event().wait()

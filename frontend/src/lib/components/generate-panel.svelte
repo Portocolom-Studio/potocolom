@@ -14,6 +14,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { t } from '$lib/i18n.svelte';
+	import { account } from '$lib/account.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -695,10 +696,17 @@
 				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
 					{t('app.models.none_available')}
 				</p>
+			{:else if diffusionModels.length === 0 && (account.current?.role === 'user' || account.current?.role === 'viewer')}
+				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
+					{t('app.gen.no_models_viewer')}
+				</p>
 			{:else if diffusionModels.length === 0}
 				<div class="flex flex-col gap-2 p-4 lg:p-5">
 					<h2 class="text-foreground text-sm font-semibold">{t('app.gen.setup_title')}</h2>
 					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
+					<Button variant="outline" size="sm" class="w-fit" onclick={() => openService('models')}
+						>{t('app.gen.open_models')}</Button
+					>
 					<a
 						href={SETUP_GUIDE_URL}
 						target="_blank"
@@ -723,6 +731,7 @@
 							>
 								<Select.Trigger
 									id="gen-model"
+									data-tour="model"
 									class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
 								>
 									{@render modelCard(
@@ -803,6 +812,7 @@
 							</div>
 							<textarea
 								id="gen-prompt"
+								data-tour="prompt"
 								name="prompt"
 								autocomplete="off"
 								class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
@@ -1009,6 +1019,7 @@
 							type="submit"
 							variant="brand"
 							class="h-10 w-full tabular-nums"
+							data-tour="generate"
 							disabled={!canGenerate}
 						>
 							<SparklesIcon />
@@ -1127,7 +1138,10 @@
 	<!-- Phones scroll the whole page, so the result takes its content height; the desktop workbench fills the row. -->
 	<section
 		class="flex min-h-0 min-w-0 flex-none flex-col lg:flex-1"
+		class:tour-canvas={studio.tourOpen}
 		aria-label={t('app.gen.result')}
+		data-tour="canvas"
+		tabindex="-1"
 	>
 		{#if shown !== null}
 			<div
@@ -1397,3 +1411,11 @@
 		{/if}
 	</section>
 </div>
+
+<style>
+	@media (max-width: 1023px) {
+		.tour-canvas {
+			min-height: 360px;
+		}
+	}
+</style>

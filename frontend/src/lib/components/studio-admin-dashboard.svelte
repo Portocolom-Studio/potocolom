@@ -1,11 +1,13 @@
 <script lang="ts">
 	import MailPlusIcon from '@lucide/svelte/icons/mail-plus';
 	import { t } from '$lib/i18n.svelte';
+	import { account } from '$lib/account.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import StudioAdminAudit from '$lib/components/studio-admin-audit.svelte';
 	import StudioAdminBanner from '$lib/components/studio-admin-banner.svelte';
 	import StudioAdminFleet from '$lib/components/studio-admin-fleet.svelte';
 	import StudioAdminInvitations from '$lib/components/studio-admin-invitations.svelte';
+	import StudioModelManagement from '$lib/components/studio-model-management.svelte';
 	import StudioAdminUsers from '$lib/components/studio-admin-users.svelte';
 	import StudioHeaderTabs from '$lib/components/studio-header-tabs.svelte';
 	import { openAdmin, studio } from '$lib/studio.svelte';
@@ -13,23 +15,38 @@
 	import type { AdminTab } from '$lib/studio-view';
 
 	const tabs = $derived<{ value: AdminTab; label: string }[]>([
-		{ value: 'users', label: t('app.admin.users') },
-		{ value: 'invitations', label: t('app.admin.invitations') },
+		...(!account.localModeConfirmed
+			? [
+					{ value: 'users' as const, label: t('app.admin.users') },
+					{ value: 'invitations' as const, label: t('app.admin.invitations') }
+				]
+			: []),
 		{ value: 'fleet', label: t('app.admin.fleet') },
-		{ value: 'audit', label: t('app.admin.audit') },
-		{ value: 'banner', label: t('app.admin.banner') }
+		{ value: 'models', label: t('app.model_management.title') },
+		...(!account.localModeConfirmed
+			? [
+					{ value: 'audit' as const, label: t('app.admin.audit') },
+					{ value: 'banner' as const, label: t('app.admin.banner') }
+				]
+			: [])
 	]);
+	$effect(() => {
+		if (account.localModeConfirmed && studio.adminTab !== 'fleet' && studio.adminTab !== 'models')
+			openAdmin('models');
+	});
 	const title = $derived(tabs.find((tab) => tab.value === studio.adminTab)?.label ?? '');
 	const description = $derived(
-		studio.adminTab === 'users'
-			? t('app.admin.users_sub')
-			: studio.adminTab === 'audit'
-				? t('app.admin.audit_search_sub')
-				: studio.adminTab === 'fleet'
-					? t('app.admin.fleet_history_sub')
-					: studio.adminTab === 'banner'
-						? t('app.admin.banner_sub')
-						: t('app.admin.invitations_sub')
+		studio.adminTab === 'models'
+			? t('app.model_management.description')
+			: studio.adminTab === 'users'
+				? t('app.admin.users_sub')
+				: studio.adminTab === 'audit'
+					? t('app.admin.audit_search_sub')
+					: studio.adminTab === 'fleet'
+						? t('app.admin.fleet_history_sub')
+						: studio.adminTab === 'banner'
+							? t('app.admin.banner_sub')
+							: t('app.admin.invitations_sub')
 	);
 
 	useStudioHeader(() => ({ center: headerTabs, actions: headerActions }));
@@ -45,7 +62,7 @@
 {/snippet}
 
 {#snippet headerActions()}
-	{#if studio.adminTab !== 'invitations'}
+	{#if !account.localModeConfirmed && studio.adminTab !== 'invitations'}
 		<Button size="sm" onclick={() => openAdmin('invitations')}>
 			<MailPlusIcon />
 			{t('app.admin.invite_someone')}
@@ -73,11 +90,13 @@
 		{#if studio.adminTab === 'users'}
 			<StudioAdminUsers />
 		{:else}
-			<div class="no-scrollbar h-full overflow-y-auto px-4 py-5 md:px-6">
+			<div class="no-scrollbar h-full overflow-y-auto px-4 py-5 md:px-6" data-model-scroller>
 				{#if studio.adminTab === 'audit'}
 					<StudioAdminAudit />
 				{:else if studio.adminTab === 'fleet'}
 					<StudioAdminFleet />
+				{:else if studio.adminTab === 'models'}
+					<StudioModelManagement />
 				{:else if studio.adminTab === 'banner'}
 					<StudioAdminBanner />
 				{:else}

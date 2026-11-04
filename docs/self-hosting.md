@@ -505,6 +505,16 @@ password sign-in and optional Google or GitHub. Running without accounts remains
 single-operator choice on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
 are still issue #10.
 
+## Models you already have
+
+The worker finds complete models already in its Hugging Face cache at the pinned
+revision, including downloads from older potocolom installs, the `hf` CLI, and
+other apps using the standard cache. A different revision of the same model is
+not reused. To share another app's cache, set `HF_HOME` to that cache when
+running natively, or replace the `hf-cache` volume in `deploy/compose/compose.yml`
+with the host cache mount shown in the file. If another app removes files, the
+model shows as not installed and can be installed again.
+
 ## Gated models
 
 `sd35-medium` (Stable Diffusion 3.5 Medium) is a gated Hugging Face
@@ -664,3 +674,5 @@ docker compose -f deploy/compose/compose.yml --profile gpu up -d --build
 
 Database migrations run automatically at API startup (docs/decisions.md,
 migrations on startup). Volumes are untouched by rebuilds.
+
+Legacy model caches require Hugging Face Hub metadata once before the worker can adopt them as installed. A permanently offline worker cannot adopt an unmarked cache; connect it to the Hub for adoption first. Upgrade the API before its workers.

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import puppeteer from 'puppeteer-core';
+import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 // A ceiling, never a delay: every use waits on a condition or polls for one.
@@ -295,7 +296,7 @@ async function launchStudio(
 			headless: true,
 			args: ['--no-sandbox', '--disable-gpu']
 		});
-		const page = await browser.newPage();
+		const page = await newStudioPage(browser);
 		page.setDefaultTimeout(WAIT_MS);
 		const errors = [];
 		page.on('pageerror', (error) => errors.push(error.stack ?? error.message));

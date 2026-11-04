@@ -8,7 +8,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
-- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
+- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
@@ -26,6 +26,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target or an explicit `attested` flag. The attestation is recorded with the target, because on an install with no mail nothing else can say who that address belongs to. An administrator can never change their own role, and the last administrator cannot be demoted: an install with no administrator can only be recovered offline.
 - A role change revokes every session the account held, since the old session carries the old authority.
 - Enrolling a second factor writes nothing until it is confirmed. `POST /api/v1/account/totp` returns the secret, its `otpauth://` URI, the recovery codes, and an opaque `enrolment` value the browser hands back to `POST /api/v1/account/totp/confirm` along with a code from the authenticator. Only that confirmation writes the factor and its codes, replacing whatever the account had before in one transaction. An enrolment that is started and abandoned therefore leaves a working factor working, and the `enrolment` value is bound to the account that started it and expires in 30 minutes. The confirming code is spent like any other, so a sign-in inside the same 30 seconds needs the next one. Replacing a factor that already exists also needs `current_code`, a code from the authenticator being retired or one of its recovery codes: the code proving the new secret proves only that the caller holds the new authenticator, which whoever asked for the secret does by definition. A first enrolment has nothing to replace and is asked for nothing. Ten `current_code` attempts end replacement for that factor, counted whether or not the code was right, and answering a login challenge with it gives the budget back. So the bound is ten attempts between one successful factor challenge and the next. Confirming needs an active account, so an enrolment begun before a suspension does not land after it. Two first enrolments racing answer `409` to the one that loses, since an account holds one factor and neither of them had one to replace.
+- Passwords must be 10 to 128 characters and must not appear in the bundled blocklist.
 - A second factor is optional for every role. When an account has enrolled and confirmed one, a correct password or a provider sign-in returns `200 {"totp_required": true}` and a short-lived challenge cookie instead of a session. `POST /api/v1/auth/totp` answers it with a TOTP code or a one-use recovery code and returns the session. The challenge lives ten minutes, allows ten attempts, and carries no authority of its own: an administrator part way through it can reach nothing. TOTP gates sign-in and nothing else; it does not gate setup, invitation acceptance, promotion or recovery, and it changes neither what an account may do nor how long its session lasts.
 - `POST /api/v1/auth/reset` always answers `202` with the same body, whether or not anybody holds that address. A non-administrator is emailed a one-use link valid 30 minutes. An administrator is emailed nothing, ever: their way back is `make auth-recover`, run at the machine, which prints a one-use link valid 10 minutes. Completing either sets the password, revokes every session that account held, and returns the person to the login screen with no session and no recent-authentication grant.
 - Changing how an account is proved needs recent authentication, and changing a password that already exists needs the current one as well: recent authentication says this browser was somebody's, and the current password says it is still theirs at this keyboard. Every such change ends the account's other sessions and leaves the browser making it signed in, because the usual reason to change a credential is that somebody else holds the old one. It also rotates the token of the session making it: the response carries fresh `Set-Cookie` headers for both the session and the CSRF cookie, and the token presented with the request stops working. A copy of that cookie is what a stolen session is, so without this the one session the change most needs to end was the one it left alone. A client that loses the response is signed out and has to sign in again. Two changes presenting the same session token both reach that swap, since the principal is resolved before either of them writes; the one whose token is no longer the stored one answers `409`, writes nothing and sets no cookie. Saving the address the account already holds is not one of these changes and does none of it (see below).
@@ -355,6 +356,9 @@ GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu
                                         vram_total_bytes, temperature_c, power_w, available}}
                                         loaded_models lists the model ids currently resident
                                         on the connected worker's GPU; [] when it has none
+                                        gpu is null and loaded_models is [] when workers are
+                                        connected but none can answer GPU commands; 503 when
+                                        no worker is connected
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
@@ -427,6 +431,10 @@ POST /api/v1/auth/setup      {"token": "...", "mode": "accounts", "email": "ana@
                              204 + the session cookies; the link is one use and lasts one hour
                              mode "accounts" (the default) claims the administrator account and
                              records accounts; email and password are then required
+POST /api/v1/auth/setup/status {"token": "..."}
+                             200 {"claimed": true | false} for a live setup link, without spending it
+                             403 with the setup route's identical refusal for an unknown, spent or
+                                 expired link; 503 if the database is unavailable
 POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
                              204, no cookies: the install is recorded as running without accounts
                              Answers on this route, for either choice:
@@ -525,6 +533,23 @@ DELETE /api/v1/admin/banner           204; admin only; clears the banner
 - Opening more than 20 different accounts within 30 minutes raises one high-severity `admin.anomaly` event and puts that administrator on the anomalies panel. The twentieth account is not the anomaly; the twenty-first is. Nothing is refused: one administrator working through a queue of complaints looks exactly like a stolen administrator session, and the difference is a person deciding, not a rule. The counting is in process, like the rest of the self-hosted path.
 - Exporting the audit is itself a privileged action, so it is recorded with the ids of the events it took, capped at 100 ids with a truncation flag: the cap is what keeps one action from writing an unbounded row, and the flag is what stops a reader believing the short list is everything.
 - There is no global gallery and no cross-user search of generations or assets. An administrator answering a complaint names the account; the user list's `q` only narrows which accounts show up, by email.
+
+## Worker models
+
+Admin only. These routes install, cancel and remove the model weights on a connected worker (docs/connection-handling.md, "Model store"). The worker answers asynchronously. Each accepted action returns `202 {"op_id": "<20-digit time_ns>-<8 random hex digits>"}`. IDs sort in issue order. A record with a later ID for the same model also answers every earlier operation on that model, which the worker runs in FIFO order.
+
+```text
+GET    /api/v1/admin/models                                       one entry per connected worker
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/install   202 queued; 409 needs_token
+POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/cancel    202
+DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refused in the download list, see below
+```
+
+- Each entry of `GET /api/v1/admin/models` has `worker_id`, `manageable`, `hardware`, `disk_free_bytes`, `suggested` (one model id or null for each of `realtime`, `text_to_image` and `upscale`) and `models`. A worker that predates model management has `manageable: false`, a `reason`, and no models; no command is sent to it (`409` on the routes above).
+- Each model carries its catalog fields, `installed`, `download_bytes`, `needs_token`, `fits` (its `min_vram_gb` is at most the worker's VRAM), `suggested`, and `download`: the last `store_status` entry for it (`kind`, `state`, `bytes_done`, `bytes_total`, `error`, `op_id`), or null. The `kind` is `install`, `remove` or `cancel` and identifies the reported operation.
+- Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
+- A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.
+- Every route is audited by the administrator role check, as the other admin routes are.
 
 ## Account states
 

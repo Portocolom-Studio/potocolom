@@ -86,8 +86,12 @@ def _load_model() -> tuple[Any, Any, Any]:
     from transformers import AutoModel, AutoProcessor
 
     with torch.inference_mode():
-        processor = AutoProcessor.from_pretrained(SOURCE, revision=SOURCE_REVISION)
-        model = AutoModel.from_pretrained(SOURCE, revision=SOURCE_REVISION)
+        # Local cache only: the model store installs this repository with every
+        # diffusion model, so a missing file fails the load instead of downloading.
+        processor = AutoProcessor.from_pretrained(
+            SOURCE, revision=SOURCE_REVISION, local_files_only=True)
+        model = AutoModel.from_pretrained(
+            SOURCE, revision=SOURCE_REVISION, local_files_only=True)
         model.to(torch.device("cpu"), torch.float32)
         model.eval()
         text_inputs = processor(

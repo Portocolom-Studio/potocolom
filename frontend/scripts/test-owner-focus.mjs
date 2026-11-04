@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const timeoutMs = 15_000;
@@ -173,7 +174,7 @@ async function waitFor(predicate, description) {
 }
 
 async function newPage(browser, server, { holdInitialAccount = false, path = '/app' } = {}) {
-	const page = await browser.newPage();
+	const page = await newStudioPage(browser);
 	page.setDefaultTimeout(timeoutMs);
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.stack ?? error.message));

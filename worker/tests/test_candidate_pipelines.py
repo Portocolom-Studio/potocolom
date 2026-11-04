@@ -385,3 +385,58 @@ def test_candidate_source_must_be_pinned():
     manifest = Manifest(id="candidate", name="Candidate", capabilities=["text_to_image"])
     with pytest.raises(ValueError, match="pinned source_revision"):
         _revision(manifest)
+
+
+def test_moss_loads_from_the_local_cache_only(monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    from worker.candidate_pipelines import load_candidate_pipeline
+
+    calls = []
+
+    def record(*args, **kwargs):
+        calls.append({"source": args[0] if args else None, **kwargs})
+        raise OSError("stop before a load")
+
+    monkeypatch.setattr(diffusers.DiffusionPipeline, "from_pretrained", record)
+    lookups = []
+
+    def cached(repo_id, filename, **kwargs):
+        lookups.append((repo_id, filename, kwargs))
+        return "/installed/moss/model_index.json"
+
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", cached)
+    manifest = Manifest(
+        id="moss-test", name="MOSS", capabilities=["text_to_image"], pipeline="MOSSImage",
+        source="OpenMOSS-Team/MOSS-Image-SFT", source_revision="a" * 40,
+    )
+    with pytest.raises(OSError):
+        load_candidate_pipeline(manifest, rung="full", device="cpu")
+    assert calls and calls[0].get("local_files_only") is True
+    # The pipeline is loaded from the installed folder, never resolved by repo id.
+    assert lookups == [(manifest.source, "model_index.json", {"revision": "a" * 40})]
+    assert calls[0]["source"] == "/installed/moss"
+    assert calls[0].get("custom_revision") is None
+
+
+def test_flux3_reads_its_pipeline_config_from_the_local_cache_only(monkeypatch):
+    diffusers = pytest.importorskip("diffusers")
+    if not hasattr(diffusers, "Flux3DistilledModularPipeline"):
+        pytest.skip("this diffusers has no Flux3DistilledModularPipeline")
+    from worker.candidate_pipelines import load_candidate_pipeline
+
+    calls = []
+
+    def record(_self, *_args, **kwargs):
+        calls.append(kwargs)
+        raise OSError("stop before a load")
+
+    monkeypatch.setattr(diffusers.Flux3DistilledModularPipeline, "__init__", record)
+    manifest = Manifest(
+        id="flux3-test", name="FLUX.3", capabilities=["text_to_image"],
+        pipeline="Flux3Distilled", source="black-forest-labs/flux-3-image-klein",
+        source_revision="a" * 40,
+    )
+    with pytest.raises(OSError):
+        load_candidate_pipeline(manifest, rung="full", device="cpu")
+    assert calls and calls[0].get("local_files_only") is True
