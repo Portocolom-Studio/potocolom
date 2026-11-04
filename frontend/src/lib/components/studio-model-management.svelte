@@ -319,7 +319,7 @@
 			for (const model of models) {
 				await command(worker, model, 'install');
 				await tick();
-				if (only && focused && !focused.isConnected) {
+				if (focused && !focused.isConnected && document.activeElement === document.body) {
 					root
 						.querySelector<HTMLElement>(
 							`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
@@ -805,7 +805,7 @@
 
 	.model-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, max(17rem, (100% - 3rem) / 4)), 1fr));
 		gap: 1rem;
 	}
 </style>

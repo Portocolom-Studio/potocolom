@@ -310,26 +310,99 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
-		if (regression === 'footer-focus') {
-			await page.setViewport({ width: 390, height: 600 });
+		if (regression === 'bulk-focus') {
+			holdInstalls = true;
 			await page.click('[data-model="suggested"] input');
-			await page.$eval('[data-model="suggested"] input', (el) => el.focus());
-			for (const key of [...Array(9).fill('Tab'), ...Array(9).fill('Shift+Tab')]) {
-				if (key === 'Shift+Tab') await page.keyboard.down('Shift');
-				await page.keyboard.press('Tab');
-				await page.keyboard.up('Shift');
-				const visible = await page.evaluate(() => {
-					const focus = document.activeElement.getBoundingClientRect();
-					if (!document.activeElement.closest('[data-model]')) return true;
-					const footer = document.querySelector('[data-selection-footer]').getBoundingClientRect();
-					return (
-						focus.bottom <= footer.top ||
-						focus.top >= footer.bottom ||
-						focus.right <= footer.left ||
-						focus.left >= footer.right
+			await page.$eval('[data-selection-footer] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForFunction(() => !document.querySelector('[data-selection-footer]'));
+			assert.equal(
+				await page.evaluate(() =>
+					document.activeElement.matches(
+						'[data-model="suggested"] [data-heading], [data-model="suggested"] button'
+					)
+				),
+				true,
+				'focus returns to the model after the bulk button disappears'
+			);
+			return;
+		}
+		if (regression === 'wide-grid') {
+			for (const [width, expected] of [
+				[272, 1],
+				[560, 2],
+				[848, 3],
+				[1424, 4],
+				[2200, 4]
+			]) {
+				const columns = await page.$eval(
+					'.model-grid',
+					(el, width) => {
+						el.style.width = `${width}px`;
+						return getComputedStyle(el).gridTemplateColumns.split(' ').length;
+					},
+					width
+				);
+				assert.equal(columns, expected, `grid column count at ${width}px`);
+			}
+			return;
+		}
+		if (regression === 'footer-focus') {
+			for (const viewport of [
+				{ width: 390, height: 844 },
+				{ width: 1024, height: 768 }
+			]) {
+				await page.setViewport(viewport);
+				if (!(await page.$('[data-selection-footer]')))
+					await page.click('[data-model="suggested"] input');
+				const count = await page.evaluate(() => {
+					const controls = [
+						...document.querySelectorAll(
+							'[data-model] input:not(:disabled), [data-model] button:not(:disabled), [data-model] a[href]'
+						)
+					];
+					controls.forEach((control, index) =>
+						control.setAttribute('data-test-focus-index', String(index))
 					);
+					return controls.length;
 				});
-				assert.ok(visible, `focus obscured after ${key}`);
+				assert.ok(count > 0);
+				for (const reverse of [false, true]) {
+					const indices = [...Array(count).keys()];
+					if (reverse) indices.reverse();
+					await page.$eval(`[data-test-focus-index="${indices[0]}"]`, (el) => el.focus());
+					for (const [position, index] of indices.entries()) {
+						if (position) {
+							if (reverse) await page.keyboard.down('Shift');
+							await page.keyboard.press('Tab');
+							if (reverse) await page.keyboard.up('Shift');
+						}
+						const result = await page.evaluate(() => {
+							const active = document.activeElement;
+							const focus = active.getBoundingClientRect();
+							const footer = document
+								.querySelector('[data-selection-footer]')
+								.getBoundingClientRect();
+							return {
+								index: active.getAttribute('data-test-focus-index'),
+								visible:
+									focus.bottom <= footer.top ||
+									focus.top >= footer.bottom ||
+									focus.right <= footer.left ||
+									focus.left >= footer.right
+							};
+						});
+						assert.equal(
+							result.index,
+							String(index),
+							`visited every card control at ${viewport.width} in ${reverse ? 'reverse' : 'forward'} order`
+						);
+						assert.ok(
+							result.visible,
+							`control ${index} obscured at ${viewport.width} in ${reverse ? 'reverse' : 'forward'} order`
+						);
+					}
+				}
 			}
 			return;
 		}
