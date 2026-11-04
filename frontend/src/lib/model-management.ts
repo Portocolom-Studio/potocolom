@@ -5,14 +5,14 @@ export function formatSize(bytes: number, locale: string): string {
 }
 
 export function knownSize(value: number | null | undefined): number | null {
-	return value != null && value > 0 ? value : null;
+	return value != null && value >= 0 ? value : null;
 }
 export function remainingReservation(
 	total: number | null,
 	fallback: number | null,
 	done: number
 ): number | null {
-	const size = knownSize(total) ?? knownSize(fallback);
+	const size = (total != null && total > 0 ? total : null) ?? knownSize(fallback);
 	return size === null ? null : Math.max(0, size - done);
 }
 export function sumKnown(values: (number | null)[]): number | null {

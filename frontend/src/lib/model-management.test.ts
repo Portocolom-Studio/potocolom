@@ -62,10 +62,10 @@ test('disk preview accounts separately for reserved and selected space', async (
 test('unknown sizes propagate through reservations and available space', async () => {
 	const { knownSize, remainingReservation, sumKnown } = await import('./model-management.ts');
 	assert.equal(knownSize(null), null);
-	assert.equal(knownSize(0), null);
+	assert.equal(knownSize(0), 0);
 	assert.equal(knownSize(undefined), null);
 	assert.equal(remainingReservation(0, null, 0), null);
-	assert.equal(remainingReservation(0, 0, 0), null);
+	assert.equal(remainingReservation(0, 0, 0), 0);
 	assert.equal(remainingReservation(0, 3 * gib, gib), 2 * gib);
 	assert.equal(remainingReservation(3 * gib, null, gib), 2 * gib);
 	assert.equal(sumKnown([gib, null]), null);
@@ -75,7 +75,12 @@ test('unknown sizes propagate through reservations and available space', async (
 		allowed: false
 	});
 	assert.deepEqual(selectionSpace(null, [gib]), { total: gib, freeAfter: null, allowed: false });
-	assert.deepEqual(selectionSpace(7 * gib, [0]), { total: null, freeAfter: null, allowed: false });
+	assert.deepEqual(selectionSpace(7 * gib, [0]), { total: 0, freeAfter: 7 * gib, allowed: true });
+	assert.deepEqual(selectionSpace(7 * gib, [0, gib]), {
+		total: gib,
+		freeAfter: 6 * gib,
+		allowed: true
+	});
 	assert.deepEqual(selectionSpace(7 * gib, [null, gib]), {
 		total: null,
 		freeAfter: null,

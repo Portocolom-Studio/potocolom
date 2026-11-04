@@ -417,12 +417,6 @@
 	});
 </script>
 
-{#if loading}<p role="status">{t('app.model_management.loading')}</p>{/if}
-{#if error}<p role="alert">{t('app.model_management.error')}</p>
-	<Button variant="outline" onclick={() => retryRefresh()}>{t('app.model_management.retry')}</Button
-	>{/if}
-{#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
-<p class="sr-only" aria-live="polite">{announcement}</p>
 <div
 	bind:this={root}
 	class="space-y-8"
@@ -430,6 +424,13 @@
 	tabindex="-1"
 	onfocusin={(event) => revealFocus(event.target)}
 >
+	{#if loading}<p role="status">{t('app.model_management.loading')}</p>{/if}
+	{#if error}<p role="alert">{t('app.model_management.error')}</p>
+		<Button variant="outline" onclick={() => retryRefresh()}
+			>{t('app.model_management.retry')}</Button
+		>{/if}
+	{#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
+	<p class="sr-only" aria-live="polite">{announcement}</p>
 	{#each workers as worker (worker.worker_id)}
 		<section class="space-y-4" aria-label={worker.worker_id} data-worker={worker.worker_id}>
 			<h2 tabindex="-1" class="text-lg font-semibold">{worker.worker_id}</h2>

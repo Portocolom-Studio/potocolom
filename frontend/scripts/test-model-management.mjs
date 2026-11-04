@@ -56,6 +56,7 @@ let refuseRemoval = false;
 let silentInstall = false;
 let holdInstalls = false;
 let cancelNotRunning = false;
+let failInventory = process.env.MODEL_REGRESSION === 'error-focus';
 const regression = process.env.MODEL_REGRESSION;
 let awaitingInventory = !regression;
 const op = (n) => `${String(n).padStart(20, '0')}-00000000`;
@@ -84,6 +85,11 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			else if (path === '/api/v1/config')
 				body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
 			else if (path === '/api/v1/admin/models') {
+				if (failInventory) {
+					failInventory = false;
+					res.writeHead(500).end();
+					return;
+				}
 				if (delayNext) {
 					delayNext = false;
 					const snapshot = JSON.stringify([worker]);
@@ -259,6 +265,9 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		});
 		const page = await browser.newPage();
 		await page.setViewport({ width: 1440, height: 900 });
+		if (regression === 'footer-focus') {
+			worker.models.unshift(...Array.from({ length: 12 }, (_, i) => model(`preceding-${i}`)));
+		}
 		if (regression === 'reserved') {
 			worker.disk_free_bytes = 12 * gib;
 			worker.models[1].download = {
@@ -316,6 +325,13 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		await page.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
 			waitUntil: 'domcontentloaded'
 		});
+		if (regression === 'error-focus') {
+			const retry = await page.waitForSelector('::-p-text(Retry)');
+			await retry.focus();
+			await page.waitForSelector('[data-model="suggested"]', { timeout: 15000 });
+			assert.equal(await page.evaluate(() => document.activeElement !== document.body), true);
+			return;
+		}
 		if (!regression) {
 			await page.waitForSelector('[data-worker="worker-1"]');
 			assert.equal(await page.$('[data-model]'), null);
@@ -485,6 +501,15 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					const bounds = scroller.getBoundingClientRect();
 					scroller.scrollBy(0, el.getBoundingClientRect().bottom - bounds.bottom + 10);
 				});
+				assert.equal(
+					await page.$eval('[data-model="suggested"] input', (el) => {
+						const bounds = el.getBoundingClientRect();
+						const scroller = el.closest('[data-model-scroller]').getBoundingClientRect();
+						return bounds.bottom > scroller.bottom - 60 && bounds.bottom <= scroller.bottom;
+					}),
+					true,
+					'checkbox starts in the future footer area'
+				);
 				await page.keyboard.press('Space');
 				await page.waitForSelector('[data-selection-footer]');
 				await new Promise((resolve) => setTimeout(resolve, 150));
@@ -569,6 +594,9 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.click(button);
 			assert.equal(calls.filter((c) => c.endsWith('/install')).length, before);
 			return;
+		}
+		if (regression === 'footer-focus') {
+			worker.models.unshift(...Array.from({ length: 12 }, (_, i) => model(`preceding-${i}`)));
 		}
 		if (regression === 'reserved') {
 			await page.click('[data-model="suggested"] input');
