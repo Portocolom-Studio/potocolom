@@ -616,13 +616,14 @@ worker-deploy: ## deploy the waitlist worker (operator only, config in .local)
 	@test -d .local/waitlist-worker || { echo "no .local/waitlist-worker on this machine"; exit 1; }
 	cd .local/waitlist-worker && npx wrangler deploy
 
-# A linked worktree on a new branch from origin/main. The venvs and node_modules
+# A linked worktree on a new branch from origin/main, always under the main
+# checkout, wherever it is run from. The venvs and node_modules
 # are absolute symlinks into the main checkout, so the worktree runs without a
 # second install.
 worktree: ## new branch NAME in .local/worktrees/NAME from origin/main, venvs and node_modules linked
 	@test -n "$(NAME)" || { echo 'usage: make worktree NAME=x' >&2; exit 1; }
-	git worktree add -b "$(NAME)" ".local/worktrees/$(NAME)" origin/main
 	@main="$$(dirname "$$(git rev-parse --path-format=absolute --git-common-dir)")"; \
+	git worktree add -b "$(NAME)" "$$main/.local/worktrees/$(NAME)" origin/main && \
 	for d in backend/.venv worker/.venv frontend/node_modules; do \
-		ln -s "$$main/$$d" ".local/worktrees/$(NAME)/$$d"; \
+		ln -s "$$main/$$d" "$$main/.local/worktrees/$(NAME)/$$d"; \
 	done
