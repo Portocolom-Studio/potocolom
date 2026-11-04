@@ -411,6 +411,23 @@ async function waitForBenchmarkReport(page, targetVramGb, modelCount) {
 }
 
 async function renderedBenchmarkReport(page) {
+	// Chart paths are sized by ResizeObserver from CSS and fonts, so wait for both to be
+	// applied (bounded by WAIT_MS) and for two frames before reading path geometry.
+	await page.waitForFunction(
+		() =>
+			document.readyState === 'complete' &&
+			[...document.querySelectorAll('link[rel="stylesheet"]')].every(
+				(link) => link.sheet !== null
+			) &&
+			document.fonts.status === 'loaded',
+		{ timeout: WAIT_MS }
+	);
+	await page.evaluate(
+		() =>
+			new Promise((resolveFrames) =>
+				requestAnimationFrame(() => requestAnimationFrame(resolveFrames))
+			)
+	);
 	return page.evaluate(() => {
 		const badge = [...document.querySelectorAll('span')].find((element) =>
 			/^\d+ GB VRAM$/.test(element.textContent.trim())
