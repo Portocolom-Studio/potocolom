@@ -105,7 +105,11 @@ export function renderBody(markdown: string): { html: string; toc: TocEntry[] } 
 	const raw = marked.parse(markdown, { async: false, gfm: true }) as string;
 	const withIds = addHeadingIds(raw);
 	return {
-		html: wrapCodeBlocks(addCallouts(addCardIcons(withIds.html))),
+		html: wrapCodeBlocks(addCallouts(addCardIcons(withIds.html))).replace(
+			/<table>[\s\S]*?<\/table>/g,
+			(table) =>
+				`<div class="table-scroll" role="region" aria-label="Scrollable table" tabindex="0">${table}</div>`
+		),
 		toc: withIds.toc
 	};
 }

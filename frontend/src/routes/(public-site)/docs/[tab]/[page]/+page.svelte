@@ -192,7 +192,7 @@
 	<link rel="canonical" href={data.canonical} />
 </svelte:head>
 
-<div class="landing-surface docs" data-docs-shell>
+<div class="landing-surface docs" data-docs-shell data-docs-tab={data.page.tab}>
 	<a class="skip" href="#article">Skip to content</a>
 
 	<nav id="docs-nav" bind:this={navEl} class="side" class:open={navOpen} aria-label="Documentation">
@@ -415,7 +415,7 @@
 		position: sticky;
 		top: 0;
 		align-self: start;
-		height: 100svh;
+		max-height: 100svh;
 		padding: 22px 20px 32px 24px;
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -564,6 +564,7 @@
 	/* Main column: tab bar on top, then the article and "On this page" */
 	.main {
 		min-width: 0;
+		border-left: 1px solid var(--k-line);
 	}
 	.tabbar {
 		position: sticky;
@@ -716,6 +717,12 @@
 		margin: 0 0 18px;
 		padding-left: 22px;
 	}
+	.prose :global(ul) {
+		list-style: disc;
+	}
+	.prose :global(ol) {
+		list-style: decimal;
+	}
 	.prose :global(li) {
 		margin-bottom: 6px;
 	}
@@ -734,13 +741,41 @@
 		font-family: var(--k-mono);
 		font-size: 0.9em;
 	}
-	.prose :global(table) {
-		display: block;
-		width: 100%;
+	.prose :global(.table-scroll) {
 		margin: 16px 0 22px;
 		overflow-x: auto;
+		scrollbar-width: thin;
+	}
+	.prose :global(.table-scroll:focus-visible) {
+		outline: 2px solid var(--k-focus);
+		outline-offset: 4px;
+		border-radius: 4px;
+	}
+	.prose :global(table) {
+		width: 100%;
+		min-width: 560px;
 		border-collapse: collapse;
 		font-size: 15px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(table) {
+		table-layout: fixed;
+		min-width: 640px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(th:first-child) {
+		width: 96px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(th:nth-child(2)) {
+		width: 220px;
+	}
+	.docs[data-docs-tab='api'] .prose :global(td:first-child) {
+		white-space: nowrap;
+	}
+	.prose :global(td code) {
+		display: inline-block;
+		max-width: 100%;
+		overflow-x: auto;
+		vertical-align: middle;
+		white-space: nowrap;
 	}
 	.prose :global(th),
 	.prose :global(td) {
@@ -788,8 +823,10 @@
 		padding: 14px 16px;
 		overflow-x: auto;
 		font-family: var(--k-mono);
-		font-size: 15px;
-		line-height: 1.6;
+		font-size: 14px;
+		line-height: 1.7;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
 	}
 	.prose :global(pre code) {
 		font-family: var(--k-mono);
@@ -1016,12 +1053,17 @@
 			flex: 1;
 			min-width: 0;
 			gap: 22px;
-			padding-right: 16px;
+			padding-right: 32px;
+			scroll-padding-inline: 24px;
+			mask-image: linear-gradient(to right, black calc(100% - 24px), transparent);
 			overflow-x: auto;
 			overflow-y: hidden;
 		}
 		.top-link {
 			display: none;
+		}
+		.main {
+			border-left: 0;
 		}
 		.content {
 			padding: 0;
