@@ -6,11 +6,7 @@ packages). Inference is always tiled so VRAM stays bounded at 1024 x4 -> 4096.
 
 from __future__ import annotations
 
-import logging
-import shutil
-import tempfile
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,8 +15,6 @@ from typing import Any
 from PIL import Image
 
 from worker.engine import Cancelled
-
-logger = logging.getLogger("potocolom.worker")
 
 UPSCALE_TILE = 512
 UPSCALE_OVERLAP = 32
@@ -72,26 +66,12 @@ def weight_cache_path(models_dir: str, model_id: str, factor: int, source: str =
     return cache_dir / WEIGHT_FILES[factor]
 
 
-def ensure_weights(source: str, models_dir: str, model_id: str, factor: int) -> Path:
+def local_weights(source: str, models_dir: str, model_id: str, factor: int) -> Path:
+    """The installed weight file for this factor. A load never downloads: the
+    model store fetches the file, and a missing one fails the load here."""
     path = weight_cache_path(models_dir, model_id, factor, source)
-    if path.is_file() and path.stat().st_size > 0:
-        return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    url = weight_url(source, factor)
-    tmp: Path | None = None
-    logger.info("downloading upscale weights factor=%s from %s", factor, url)
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310
-            with tempfile.NamedTemporaryFile(
-                mode="wb", prefix=f"{path.name}.", suffix=".tmp",
-                dir=path.parent, delete=False,
-            ) as out:
-                tmp = Path(out.name)
-                shutil.copyfileobj(response, out)
-        tmp.replace(path)
-    finally:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
+    if not (path.is_file() and path.stat().st_size > 0):
+        raise FileNotFoundError(f"upscale weights for {model_id} are not installed: {path}")
     return path
 
 

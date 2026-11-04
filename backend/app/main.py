@@ -23,6 +23,7 @@ from app.gpu_samples import maintain_loop
 from app.jobs import maintain_deletes_loop, router as jobs_router
 from app.logs import setup_logging
 from app.metrics import router as metrics_router
+from app.worker_models import router as worker_models_router
 from app.realtime import (
     drain_worker_deliveries,
     reap_dead_workers,
@@ -210,6 +211,7 @@ app.include_router(invitations_router)
 app.include_router(oauth_router)
 app.include_router(recovery_router)
 app.include_router(roles_router)
+app.include_router(worker_models_router)
 app.include_router(states_router)
 app.include_router(mail_router)
 app.include_router(ses_feedback_router)

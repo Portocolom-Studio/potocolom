@@ -471,3 +471,28 @@ def test_a_v6_hello_without_durable_authority_registers_as_protocol5(monkeypatch
             assert realtime.takes_work(worker)
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_empty_v6_store_install_activates_grant(monkeypatch):
+    root_keys(monkeypatch)
+    worker_id = f"p6-store-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model = manifest("store-model")
+    model["capabilities"] = ["text_to_image"]
+    catalog = {**model, "installed": True, "needs_token": False, "download_bytes": 0}
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+        with client.websocket_connect("/api/v1/fleet") as ws:
+            message = hello(worker_id, [], incarnation=incarnation)
+            message["capabilities"].append("model_store")
+            ws.send_json(message)
+            assert ws.receive_json()["protocol_version"] == 6
+            ws.send_json({"type": "models_changed", "worker_id": worker_id,
+                          "incarnation": str(incarnation), "models": [model], "catalog": [catalog]})
+            row = client.portal.call(_wait_for_row, worker_id, incarnation,
+                                     "envelope_revision, manifests, execution_envelope",
+                                     lambda row: row["envelope_revision"] > 0)
+            assert row["manifests"][0]["id"] == model["id"]
+            assert row["execution_envelope"]["models"][0]["id"] == model["id"]
+            request_work_grant(ws, worker_id, incarnation)

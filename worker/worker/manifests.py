@@ -16,10 +16,24 @@ logger = logging.getLogger("potocolom.worker")
 _REVISION = r"^(?:[0-9a-f]{40})?$"
 
 
+class ExtraRepo(BaseModel):
+    """A hub repository a loader reads besides the manifest's own source. Worker side only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
+# A model id names a directory in the store's caches, so it is a plain slug: no
+# separators, and no leading dot that could name a parent directory.
+_MODEL_ID = r"^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,127}$"
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    id: str = Field(pattern=_MODEL_ID)
     name: str
     capabilities: list[str]  # text_to_image, image_to_image, realtime, upscale
     # Routing tier for the API's unpinned requests. The default is the N-1
@@ -73,11 +87,14 @@ class Manifest(BaseModel):
     # measured on only one path (e.g. sdxl-turbo, realtime only) can stay out
     # of the queued pickers while its verified path stays offered.
     studio_capabilities: list[str] | None = None
+    # Hub repositories a loader reads besides `source`, each at a pinned commit, such
+    # as a text encoder the loader fetches itself. Worker side only.
+    worker_repos: list[ExtraRepo] = Field(default_factory=list)
 
     def wire(self) -> dict:
         return self.model_dump(exclude={
             "source", "vae", "preview_decoder", "scheduler", "lora", "quantize",
-            "t2i_adapter", "dtype", "pipeline", "model_offload_vram_gb",
+            "t2i_adapter", "dtype", "pipeline", "model_offload_vram_gb", "worker_repos",
         } | set(PINNED_REFERENCES.values()))
 
     def with_defaults(self, params: dict) -> dict:

@@ -43,7 +43,7 @@ from worker.memory_ladder import (
     slots_from_frame_ms,
 )
 from worker.region_composite import composite_rgb, keep_unchanged_pixels, selection_alpha
-from worker.gpu_device import select_device
+from worker.gpu_device import select_device, weight_config
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -249,6 +249,8 @@ class Engine(Protocol):
 
     def loaded_models(self) -> list[str]: ...
 
+    def device_name(self) -> str: ...
+
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]: ...
 
     def effective_realtime_slots(self, wire_manifests: list[dict], configured: int) -> int: ...
@@ -381,6 +383,9 @@ class SimulatedEngine:
 
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)
+
+    def device_name(self) -> str:
+        return "simulated"
 
     def measured_manifests(self, manifests: list[Manifest]) -> list[dict]:
         return measured_wire_manifests(manifests, 1 << 60, "full", on_cpu=True)
@@ -941,6 +946,7 @@ class DiffusersEngine:
                 pipeline.load_lora_weights(
                     repo, weight_name=weight,
                     revision=manifest.lora_revision or None,
+                    local_files_only=True,
                 )
                 pipeline.fuse_lora()
             rung = self._pick_rung(manifest)
@@ -1244,6 +1250,7 @@ class DiffusersEngine:
         adapter = T2IAdapter.from_pretrained(
             manifest.t2i_adapter, torch_dtype=self.dtype,
             revision=manifest.t2i_adapter_revision or None,
+            local_files_only=True,
         )
         pipeline = StableDiffusionXLAdapterPipeline.from_pipe(
             base,
@@ -1264,12 +1271,12 @@ class DiffusersEngine:
         return pipeline
 
     def _load_upscale(self, manifest: Manifest, factor: int) -> Any:
-        from worker.upscale import ensure_weights, load_upscale_model
+        from worker.upscale import load_upscale_model, local_weights
 
         source = manifest.source or (
             "https://github.com/xinntao/Real-ESRGAN/releases/download"
         )
-        path = ensure_weights(source, self.models_dir, manifest.id, factor)
+        path = local_weights(source, self.models_dir, manifest.id, factor)
         return load_upscale_model(path, self.device, self.dtype)
 
     def _scheduler(self, name: str, config: Any) -> Any:
@@ -1331,6 +1338,7 @@ class DiffusersEngine:
             decoder = AutoencoderTiny.from_pretrained(
                 manifest.preview_decoder, torch_dtype=self.dtype,
                 revision=manifest.preview_decoder_revision or None,
+                local_files_only=True,
             ).to(self.device)
         except Exception as error:
             # Every failure is treated as transient. frame()'s evict-and-retry
@@ -1743,6 +1751,14 @@ class DiffusersEngine:
     def loaded_models(self) -> list[str]:
         return sorted({key[0] for key in self._pipelines})
 
+    def device_name(self) -> str:
+        if self.device == "cpu":
+            return "cpu"
+        try:
+            return self.torch.cuda.get_device_name(self.device)
+        except Exception:
+            return self.device
+
     def _free_gpu_cache(self) -> None:
         import gc
 
@@ -1893,16 +1909,18 @@ class DiffusersEngine:
         return cls
 
     def _pipeline_dtype(self, manifest: Manifest) -> Any:
-        declared = manifest.dtype
-        if declared:
-            return getattr(self.torch, declared)
-        return self.dtype
+        dtype, _variant = weight_config(manifest.dtype, self.device)
+        return getattr(self.torch, dtype)
 
     def _from_pretrained(self, cls: Any, manifest: Manifest) -> Any:
         source = manifest.source
         dtype = self._pipeline_dtype(manifest)
+        # Every load reads the local hub cache only. The model store installs
+        # the files a load needs, and a missing file fails the load instead of
+        # starting a download nobody asked for.
         kwargs: dict[str, Any] = {
             "torch_dtype": dtype, "revision": manifest.source_revision or None,
+            "local_files_only": True,
         }
         if manifest.vae:
             from diffusers import AutoencoderKL
@@ -1913,12 +1931,14 @@ class DiffusersEngine:
             kwargs["vae"] = AutoencoderKL.from_pretrained(
                 manifest.vae, torch_dtype=dtype,
                 revision=manifest.vae_revision or None,
+                local_files_only=True,
             )
-        if dtype is self.torch.float16:
+        _dtype, variant = weight_config(manifest.dtype, self.device)
+        if variant:
             try:
                 # fp16 variants halve the download and the disk footprint;
                 # not every repository ships one.
-                return cls.from_pretrained(source, variant="fp16", **kwargs)
+                return cls.from_pretrained(source, variant=variant, **kwargs)
             except Exception:
                 pass
         return cls.from_pretrained(source, **kwargs)

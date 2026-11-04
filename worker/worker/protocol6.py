@@ -24,7 +24,7 @@ _SHAPE_ROWS = (
     ('resume_job', 'body_hash,checkpoint,command_id,command_sequence,dispatch_sequence,dispatch_token,grant_nonce,incarnation,job_id,lease_expires_at,lease_id,model_id,owner_epoch,params,parent_dispatch_sequence,region,type,upload,work_budget,worker_id', 'input,thumb_upload'),
     ('drain_worker', 'body_hash,command_id,command_sequence,grant_nonce,incarnation,lease_expires_at,lease_id,owner_epoch,region,type,worker_id', ''),
     ('hello', 'capabilities,compatible_versions,device,grant_nonce,incarnation,memory_mode,models,protocol_version,realtime_slots,type,worker_id', 'previous_incarnation,realtime_batch_ms,realtime_p95_ms'),
-    ('registered', 'grant_nonce,incarnation,lease_expires_at,lease_id,owner_epoch,protocol_version,ready,region,remaining_ms,transport_owner_id,type,worker_id', ''),
+    ('registered', 'grant_nonce,incarnation,lease_expires_at,lease_id,owner_epoch,protocol_version,ready,region,remaining_ms,transport_owner_id,type,worker_id', 'model_store'),
     ('grant_request', 'grant_nonce,incarnation,region,type,worker_id', ''),
     ('work_grant', 'grant_nonce,incarnation,lease_expires_at,lease_id,owner_epoch,ready,region,remaining_ms,type,worker_id', ''),
     ('command_ack', 'attempt_id,body_hash,command_id,command_sequence,control_generation,grant_nonce,incarnation,lease_expires_at,lease_id,owner_epoch,region,session_id,status,type,worker_id', ''),
@@ -46,6 +46,12 @@ _SHAPE_ROWS = (
     ('class_prepared', 'attempt_id,class_components,class_id,control_generation,envelope_revision,grant_nonce,incarnation,lease_expires_at,lease_id,measured_envelope_id,model_id,model_revision,owner_epoch,params_hash,params_revision,region,request_id,serial_cost_ms,session_id,type,worker_id', ''),
     ('class_refused', 'attempt_id,code,control_generation,envelope_revision,grant_nonce,incarnation,lease_expires_at,lease_id,model_id,model_revision,owner_epoch,params_hash,params_revision,region,request_id,session_id,type,worker_id', ''),
     ('gpu_status', 'incarnation,region,request_id,type,worker_id', ''),
+    ('install_model', 'incarnation,model_id,type,worker_id', 'op_id'),
+    ('cancel_install', 'incarnation,model_id,type,worker_id', 'op_id'),
+    ('remove_model', 'incarnation,model_id,type,worker_id', 'op_id'),
+    ('store_status', 'disk_free_bytes,downloads,incarnation,type,worker_id', ''),
+    ('store_inventory', 'catalog,hardware,incarnation,op_id,type,worker_id', ''),
+    ('models_changed', 'catalog,incarnation,models,type,worker_id', ''),
     ('gpu_status', 'envelope_revision,gpu,incarnation,loaded_models,region,request_id,type,worker_id', ''),
     ('load_model', 'body_hash,command_id,command_sequence,grant_nonce,incarnation,lease_expires_at,lease_id,model_id,model_revision,owner_epoch,profile,region,request_id,type,worker_id', ''),
     ('unload_model', 'body_hash,command_id,command_sequence,grant_nonce,incarnation,lease_expires_at,lease_id,model_id,owner_epoch,region,request_id,type,worker_id', ''),
@@ -151,7 +157,7 @@ def preflight_worker_control(
 
 def message_limit(control: Mapping[str, Any]) -> int:
     kind = control.get("type")
-    if kind == "hello":
+    if kind in {"hello", "models_changed", "store_inventory"}:
         return MAX_HELLO_BYTES
     if kind in {"open_session", "update_session", "dispatch_job", "resume_job",
                 "prepare_realtime_class"}:
@@ -200,7 +206,9 @@ _POSITIVE = frozenset({"protocol_version", "owner_epoch", "command_sequence", "c
 _NONNEGATIVE = frozenset({"min_supported_version", "realtime_slots", "slots_in_use", "gpu_ms", "frames",
                           "images", "duration_ms", "active_attempt_count", "input_fetch_ms", "load_ms",
                           "postprocess_ms", "vram_used_bytes", "vram_total_bytes", "util_pct",
-                          "vram_used_pct", "remaining_ms", "start_gpu_ms", "byte_size"})
+                          "vram_used_pct", "remaining_ms", "start_gpu_ms", "byte_size",
+                          "disk_free_bytes", "disk_total_bytes", "download_bytes", "bytes_done",
+                          "bytes_total"})
 _HASH_FIELDS = frozenset({"body_hash", "report_hash", "params_hash", "class_id", "checkpoint_hash", "sha256"})
 _STRING_FIELDS = frozenset({"worker_id", "region", "device", "model_id", "model_revision", "memory_mode",
                             "reason", "status", "code", "category", "phase", "failure_code",
@@ -225,6 +233,8 @@ def _uuid(value: Any) -> bool:
 
 
 def _validate_types(value: Any, key: str = "") -> None:
+    if key == "op_id" and value is not None and not isinstance(value, str):
+        raise Protocol6Error("op_id must be a string or null")
     if key in _UUID_FIELDS and not _uuid(value):
         raise Protocol6Error("identity must be a canonical UUID")
     if key in _POSITIVE and not _integer(value, True):
@@ -302,6 +312,13 @@ def validate_message(
     if variants is None or not any(req <= actual and actual <= req | optional for req, optional in variants):
         raise Protocol6Error("control fields do not match a closed message shape")
     _validate_types(control)
+    if control["type"] == "store_status" and isinstance(control.get("downloads"), list):
+        for entry in control["downloads"]:
+            if (not isinstance(entry, dict) or not isinstance(entry.get("kind"), str)
+                    or entry["kind"] not in {"install", "remove", "cancel"}):
+                raise Protocol6Error("download kind is invalid")
+            if "op_id" in entry:
+                _validate_types(entry["op_id"], "op_id")
     if expected_worker_id is not None and control.get("worker_id") != expected_worker_id:
         raise Protocol6Error("control targets a different worker")
     if (expected_incarnation is not None and control.get("type") != "hello"

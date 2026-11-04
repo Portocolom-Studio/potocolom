@@ -368,3 +368,26 @@ def test_one_repository_is_pinned_to_one_commit_across_manifests():
             repo = reference.rpartition("/")[0] if field == "lora" else reference
             pins.setdefault(repo, set()).add(getattr(manifest, f"{field}_revision"))
     assert {repo: found for repo, found in pins.items() if len(found) > 1} == {}
+
+
+def test_extra_repositories_need_a_pinned_commit_and_stay_worker_side():
+    base = {"id": "extra-test", "name": "Extra", "capabilities": ["text_to_image"]}
+    with pytest.raises(ValidationError):
+        Manifest.model_validate({**base, "worker_repos": [{"repo": "org/x", "revision": "main"}]})
+    manifest = Manifest.model_validate(
+        {**base, "worker_repos": [{"repo": "org/x", "revision": PIN}]})
+    assert manifest.worker_repos[0].repo == "org/x"
+    assert "worker_repos" not in manifest.wire()
+
+
+@pytest.mark.parametrize("model_id", ["..", ".hidden", "a/b", "a\\b", "", "x" * 129, "bad id"])
+def test_model_ids_that_name_a_path_are_refused(model_id):
+    with pytest.raises(ValidationError):
+        Manifest.model_validate({"id": model_id, "name": "Bad", "capabilities": ["text_to_image"]})
+
+
+def test_plain_slug_model_ids_are_accepted():
+    manifest = Manifest.model_validate(
+        {"id": "sdxl-base_1.0", "name": "Ok", "capabilities": ["text_to_image"]})
+    assert manifest.id == "sdxl-base_1.0"
+

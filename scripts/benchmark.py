@@ -156,6 +156,56 @@ def load_model(client: httpx.Client, api: str, model_id: str) -> int:
     return int(data.get("load_ms", 0))
 
 
+def find_model_row(client: httpx.Client, api: str, model_id: str,
+                   worker_id: str | None = None) -> tuple[str | None, dict | None]:
+    """(worker id, catalog entry) for the connected worker that lists the model."""
+    response = client.get(f"{api}/api/v1/admin/models", timeout=30)
+    response.raise_for_status()
+    for worker in response.json():
+        if worker_id is not None and worker["worker_id"] != worker_id:
+            continue
+        for entry in worker.get("models", []):
+            if entry["id"] == model_id:
+                return worker["worker_id"], entry
+    return None, None
+
+
+def ensure_remote_installed(client: httpx.Client, api: str, model_id: str,
+                            *, poll_seconds: float = 2.0, timeout: float = 7200.0) -> None:
+    """The worker loads only what it has installed. Ask the admin API to install the model
+    if it is missing, then wait until the download is done. Raises RuntimeError with the
+    reason when it cannot be installed."""
+    worker_id, entry = find_model_row(client, api, model_id)
+    if entry is None:
+        raise RuntimeError(f"no connected worker lists {model_id} in its catalog")
+    if entry["installed"]:
+        return
+    if entry["needs_token"]:
+        raise RuntimeError(f"{model_id} needs HF_TOKEN on the worker")
+    response = client.post(
+        f"{api}/api/v1/admin/workers/{worker_id}/models/{model_id}/install", timeout=30)
+    response.raise_for_status()
+    op_id = response.json()["op_id"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(poll_seconds)
+        _worker_id, entry = find_model_row(client, api, model_id, worker_id)
+        if entry is None:
+            raise RuntimeError(f"{model_id} left the worker's catalog while installing")
+        download = entry.get("download") or {}
+        if not isinstance(download.get("op_id"), str) or download["op_id"] < op_id:
+            continue
+        if entry["installed"]:
+            print(f"  installed {model_id}")
+            return
+        if download.get("state") == "failed":
+            raise RuntimeError(f"{model_id} is not installed ({download.get('error')})")
+        done = download.get("bytes_done", 0) / 2**30
+        total = download.get("bytes_total", 0) / 2**30
+        print(f"\r  installing {model_id}: {done:.2f} of {total:.2f} GiB", end="", flush=True)
+    raise RuntimeError(f"{model_id} did not finish installing within {timeout:.0f} s")
+
+
 def unload_model(client: httpx.Client, api: str, model_id: str) -> list[str]:
     response = client.post(f"{api}/api/v1/benchmark/gpu/unload",
                            json={"model_id": model_id}, timeout=GPU_TIMEOUT)
@@ -422,6 +472,7 @@ def main() -> None:
             for model in matrix_models:
                 print(f"\n=== model: {model['id']} ===")
                 try:
+                    ensure_remote_installed(client, args.api, model["id"])
                     load_ms = load_model(client, args.api, model["id"])
                 except (httpx.HTTPError, RuntimeError) as error:
                     if not args.continue_on_error:
