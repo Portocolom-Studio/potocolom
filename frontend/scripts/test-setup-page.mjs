@@ -268,6 +268,48 @@ async function testTokenReadAndAccountsChoice(browser, server) {
 	await page.close();
 }
 
+async function testPasswordControlsAndLength(browser, server) {
+	resetFixture();
+	const { page, errors } = await open(browser, server, `/setup#${token}`);
+	try {
+		await clickButton(page, 'Create an admin account');
+		await page.type('#setup-email', 'ana@example.com');
+		await page.type('#setup-password', 'Pepepepe123-*');
+		await page.type('#setup-confirm', 'Pepepepe123-*');
+		await page.focus('#setup-password');
+		await page.click('button[aria-controls="setup-password"]');
+		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'text');
+		assert.equal(await page.$eval('#setup-password', (input) => input.value), 'Pepepepe123-*');
+		assert.equal(await page.evaluate(() => document.activeElement?.id), 'setup-password');
+		await page.click('button[aria-controls="setup-password"]');
+		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'password');
+		await clickButton(page, 'Create admin account');
+		await waitForText(page, 'This password has 13 characters. Use at least 15.');
+		assert.equal(postsTo('/api/v1/auth/setup').length, 0);
+		assert.deepEqual(errors, []);
+	} finally {
+		await page.close();
+	}
+}
+
+async function testPasswordPolicyRefusal(browser, server) {
+	resetFixture();
+	fixture.setup = { status: 400, body: { detail: 'password does not meet the policy' } };
+	const { page, errors } = await open(browser, server, `/setup#${token}`);
+	try {
+		await clickButton(page, 'Create an admin account');
+		await page.type('#setup-email', 'ana@example.com');
+		await page.type('#setup-password', password);
+		await page.type('#setup-confirm', password);
+		await clickButton(page, 'Create admin account');
+		await waitForText(page, 'That password is too common. Pick a different one.');
+		assert.equal(postsTo('/api/v1/auth/setup').length, 1);
+		assert.deepEqual(errors, []);
+	} finally {
+		await page.close();
+	}
+}
+
 async function testNoneChoiceNeedsConfirm(browser, server) {
 	resetFixture();
 	const { page, errors } = await open(browser, server, `/setup#${token}`);
@@ -611,6 +653,8 @@ async function main() {
 			'the token leaves the address bar and the accounts choice posts it',
 			testTokenReadAndAccountsChoice
 		],
+		['password visibility and length are checked before submitting', testPasswordControlsAndLength],
+		['a password policy refusal explains the blocklist', testPasswordPolicyRefusal],
 		['the none choice asks to confirm before it posts', testNoneChoiceNeedsConfirm],
 		['a refused token shows only the instruction', testRefusedTokenShowsOnlyInstruction],
 		['status refusal and late status body respect the link', testStatusRefusalAndLateBody],

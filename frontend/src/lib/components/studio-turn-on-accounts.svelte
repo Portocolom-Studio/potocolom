@@ -1,9 +1,10 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { resolve } from '$app/paths';
 	import { apiFetch } from '$lib/api';
 	import { refusalKey } from '$lib/account-logic';
 	import { createSubmitGuard, parseAuthError } from '$lib/auth-flow';
-	import { t } from '$lib/i18n.svelte';
+	import { t, passwordLengthMessage } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import * as Field from '$lib/components/ui/field';
@@ -31,7 +32,8 @@
 	async function turnOn(event: SubmitEvent) {
 		event.preventDefault();
 		await guard.run(async () => {
-			error = '';
+			error = passwordLengthMessage(password);
+			if (error) return;
 			submitting = true;
 			try {
 				const response = await apiFetch('/api/v1/auth/enable', {
@@ -84,10 +86,9 @@
 						</Field.Field>
 						<Field.Field>
 							<Label for="turn-on-password">{t('auth.join.password_label')}</Label>
-							<Input
+							<PasswordInput
 								id="turn-on-password"
 								name="password"
-								type="password"
 								autocomplete="new-password"
 								required
 								bind:value={password}

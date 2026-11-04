@@ -1,6 +1,19 @@
 import { resolve } from '$app/paths';
 import type en from './i18n/en.json';
 
+// Mirrors MIN_LENGTH and MAX_LENGTH in backend/app/passwords.py.
+export const MIN_PASSWORD_LENGTH = 15;
+export const MAX_PASSWORD_LENGTH = 128;
+
+export function passwordLengthError(
+	password: string
+): { count: number; limit: number; kind: 'short' | 'long' } | null {
+	const count = [...password.trim()].length;
+	if (count < MIN_PASSWORD_LENGTH) return { count, limit: MIN_PASSWORD_LENGTH, kind: 'short' };
+	if (count > MAX_PASSWORD_LENGTH) return { count, limit: MAX_PASSWORD_LENGTH, kind: 'long' };
+	return null;
+}
+
 // Pure helpers for the studio account view: the values its dialogs and forms
 // gate on. Kept out of the component so they have tests.
 

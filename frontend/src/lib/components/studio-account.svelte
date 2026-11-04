@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { onDestroy, onMount } from 'svelte';
@@ -16,7 +17,7 @@
 	import { accountRoleLabelKey, type Role } from '$lib/account-display';
 	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
-	import { t, formatDateTime } from '$lib/i18n.svelte';
+	import { t, formatDateTime, passwordLengthMessage } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
@@ -247,7 +248,8 @@
 		event?.preventDefault();
 		if (detail === null || !detail.recent_auth || savingPassword) return;
 		passwordNotice = '';
-		passwordError = '';
+		passwordError = passwordLengthMessage(newPassword);
+		if (passwordError) return;
 		savingPassword = true;
 		try {
 			const response = await apiFetch('/api/v1/account/password', {
@@ -835,24 +837,24 @@
 							{/if}
 							{@render freshSignIn('app.account.recent_auth_note')}
 							<form class="grid gap-3 sm:grid-cols-2" onsubmit={savePassword}>
-								<label class="flex flex-col gap-1 text-xs font-medium">
-									{t('app.account.current_password')}
-									<Input
-										type="password"
+								<div class="flex flex-col gap-1 text-xs font-medium">
+									<label for="account-current-password">{t('app.account.current_password')}</label>
+									<PasswordInput
+										id="account-current-password"
 										autocomplete="current-password"
 										disabled={!detail.recent_auth || savingPassword}
 										bind:value={currentPassword}
 									/>
-								</label>
-								<label class="flex flex-col gap-1 text-xs font-medium">
-									{t('app.account.new_password')}
-									<Input
-										type="password"
+								</div>
+								<div class="flex flex-col gap-1 text-xs font-medium">
+									<label for="account-new-password">{t('app.account.new_password')}</label>
+									<PasswordInput
+										id="account-new-password"
 										autocomplete="new-password"
 										disabled={!detail.recent_auth || savingPassword}
 										bind:value={newPassword}
 									/>
-								</label>
+								</div>
 								<div class="flex items-end sm:col-span-2">
 									<Button
 										type="submit"

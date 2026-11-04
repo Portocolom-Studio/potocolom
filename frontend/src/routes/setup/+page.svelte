@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PasswordInput from '$lib/components/password-input.svelte';
 	import { onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import AuthSplit from '$lib/components/auth/AuthSplit.svelte';
@@ -12,7 +13,7 @@
 	import { apiFetch } from '$lib/api';
 	import { parseAuthError } from '$lib/auth-flow';
 	import { setupStepFrom, setupTokenFromHash, type SetupStep } from '$lib/setup-flow';
-	import { t } from '$lib/i18n.svelte';
+	import { t, passwordLengthMessage } from '$lib/i18n.svelte';
 	import { resolve } from '$app/paths';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
@@ -192,6 +193,8 @@
 	async function submitAccounts(event: SubmitEvent) {
 		event.preventDefault();
 		error = '';
+		error = passwordLengthMessage(password);
+		if (error) return;
 		if (password !== confirmPassword) {
 			error = t('auth.join.password_mismatch');
 			return;
@@ -294,10 +297,9 @@
 					</Field.Field>
 					<Field.Field>
 						<Label for="setup-password">{t('auth.join.password_label')}</Label>
-						<Input
+						<PasswordInput
 							id="setup-password"
 							name="password"
-							type="password"
 							autocomplete="new-password"
 							required
 							bind:value={password}
@@ -305,10 +307,9 @@
 					</Field.Field>
 					<Field.Field>
 						<Label for="setup-confirm">{t('auth.join.confirm_label')}</Label>
-						<Input
+						<PasswordInput
 							id="setup-confirm"
 							name="confirm"
-							type="password"
 							autocomplete="new-password"
 							required
 							bind:value={confirmPassword}
