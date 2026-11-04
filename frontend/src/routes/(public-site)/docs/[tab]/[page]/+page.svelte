@@ -49,7 +49,7 @@
 	// so the page they open takes focus.
 	function closeNav(returnFocus = false) {
 		navOpen = false;
-		if (returnFocus) menuEl?.focus();
+		if (returnFocus) menuEl?.focus({ preventScroll: true });
 	}
 
 	function keepFocusInNav(event: KeyboardEvent) {
@@ -143,10 +143,26 @@
 
 	$effect(() => {
 		if (!navOpen) return;
-		const previous = document.body.style.overflow;
-		document.body.style.overflow = 'hidden';
+		const body = document.body;
+		const x = window.scrollX;
+		const y = window.scrollY;
+		const previous = ['position', 'top', 'left', 'width', 'overflow'].map((property) => ({
+			property,
+			value: body.style.getPropertyValue(property),
+			priority: body.style.getPropertyPriority(property)
+		}));
+		Object.assign(body.style, {
+			position: 'fixed',
+			top: `-${y}px`,
+			left: `-${x}px`,
+			width: '100%',
+			overflow: 'hidden'
+		});
 		return () => {
-			document.body.style.overflow = previous;
+			for (const { property, value, priority } of previous) {
+				body.style.setProperty(property, value, priority);
+			}
+			window.scrollTo({ left: x, top: y, behavior: 'instant' });
 		};
 	});
 
@@ -831,6 +847,9 @@
 	.prose :global(pre code) {
 		font-family: var(--k-mono);
 	}
+	.prose :global(pre code.language-text) {
+		white-space: pre;
+	}
 
 	/* Callouts */
 	.prose :global(.callout) {
@@ -1012,6 +1031,9 @@
 			grid-template-columns: minmax(0, 1fr);
 		}
 		.side {
+			align-self: stretch;
+			height: 100dvh;
+			max-height: 100dvh;
 			position: fixed;
 			inset: 0 auto 0 0;
 			z-index: 40;

@@ -15,7 +15,8 @@ const pages = {
 	introduction: '/docs/guide/introduction',
 	quickstart: '/docs/guide/quickstart',
 	endpoints: '/docs/api/endpoints',
-	decisions: '/docs/reference/decisions'
+	decisions: '/docs/reference/decisions',
+	sharing: '/docs/api/sharing'
 };
 const contentTypes = {
 	'.html': 'text/html',
@@ -155,6 +156,10 @@ async function checkPhoneDrawer(browser, baseUrl) {
 		'Ctrl+K on the closed phone drawer focuses the search field'
 	);
 	assert.equal(await drawerOpen(page), true, 'Ctrl+K opens the phone drawer');
+	assert.ok(
+		await page.$eval('#docs-nav', (nav) => nav.getBoundingClientRect().height >= innerHeight - 1),
+		'the phone drawer fills the viewport height'
+	);
 	assert.equal(
 		await page.evaluate(() => document.body.style.overflow),
 		'hidden',
@@ -274,6 +279,107 @@ async function checkPhoneDrawer(browser, baseUrl) {
 		'the Ctrl K hint stays on a pointer device'
 	);
 	await mouse.close();
+}
+
+async function checkDiagramRows(browser, baseUrl) {
+	const page = await openDocs(browser, baseUrl, pages.sharing, { width: 1440, height: 900 });
+	const rows = await page.$eval('pre code.language-text', (code) => {
+		const range = document.createRange();
+		let offset = 0;
+		let start = 0;
+		let length = 0;
+		for (const line of code.textContent.split('\n')) {
+			if (line.length > length) {
+				start = offset;
+				length = line.length;
+			}
+			offset += line.length + 1;
+		}
+		range.setStart(code.firstChild, start);
+		range.setEnd(code.firstChild, start + length);
+		return new Set([...range.getClientRects()].map((box) => Math.round(box.top))).size;
+	});
+	assert.equal(rows, 1, 'each diagram row stays on one line');
+	await page.close();
+}
+
+async function checkScrolledDrawer(browser, baseUrl) {
+	const page = await openDocs(browser, baseUrl, pages.introduction, { width: 390, height: 844 });
+	const before = await page.evaluate(() => {
+		document.body.style.setProperty('position', 'relative', 'important');
+		document.body.style.setProperty('overflow', 'auto', 'important');
+		window.scrollTo(0, 400);
+		return { y: window.scrollY, top: document.querySelector('.prose').getBoundingClientRect().top };
+	});
+	assert.ok(before.y > 0, 'the scroll-lock check starts below the page top');
+	await page.click('.menu-btn');
+	assert.equal(await drawerIs(page, true), true, 'the scrolled drawer opens');
+	assert.equal(
+		await page.evaluate(() => document.body.style.position),
+		'fixed',
+		'the drawer fixes the page in place for Safari'
+	);
+	assert.ok(
+		Math.abs((await page.$eval('.prose', (el) => el.getBoundingClientRect().top)) - before.top) <=
+			1,
+		'opening the drawer preserves the visible article position'
+	);
+	await page.mouse.move(370, 600);
+	await page.mouse.wheel({ deltaY: 240 });
+	await page.evaluate(
+		() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+	);
+	assert.ok(
+		Math.abs((await page.$eval('.prose', (el) => el.getBoundingClientRect().top)) - before.top) <=
+			1,
+		'the article stays in place behind the drawer'
+	);
+	await page.keyboard.press('Escape');
+	assert.equal(await drawerIs(page, false), true, 'the scrolled drawer closes');
+	assert.equal(
+		await happens(page, (y) => window.scrollY === y, before.y),
+		true,
+		'closing restores the original page scroll'
+	);
+	const restored = await page.evaluate(() => ({
+		position: document.body.style.position,
+		positionPriority: document.body.style.getPropertyPriority('position'),
+		overflow: document.body.style.overflow,
+		overflowPriority: document.body.style.getPropertyPriority('overflow'),
+		top: document.body.style.top,
+		left: document.body.style.left,
+		width: document.body.style.width
+	}));
+	assert.deepEqual(
+		restored,
+		{
+			position: 'relative',
+			positionPriority: 'important',
+			overflow: 'auto',
+			overflowPriority: 'important',
+			top: '',
+			left: '',
+			width: ''
+		},
+		'closing restores each prior body declaration and its priority'
+	);
+	assert.equal(await focusOnMenu(page), true, 'closing the scrolled drawer restores Menu focus');
+	await page.keyboard.down('Control');
+	await page.keyboard.press('k');
+	await page.keyboard.up('Control');
+	await page.type('input[name="search"]', 'quickstart');
+	await page.click('.results a');
+	assert.equal(
+		await happens(page, (path) => location.pathname === path, pages.quickstart),
+		true,
+		'a scrolled menu can open another page'
+	);
+	assert.equal(
+		await happens(page, () => window.scrollY === 0 && document.body.style.position === 'relative'),
+		true,
+		'navigation restores body styles and starts the new page at the top'
+	);
+	await page.close();
 }
 
 async function checkDesktop(browser, baseUrl) {
@@ -461,6 +567,8 @@ try {
 		args: ['--no-sandbox', '--disable-gpu']
 	});
 
+	await checkDiagramRows(browser, baseUrl);
+	await checkScrolledDrawer(browser, baseUrl);
 	await checkPhoneDrawer(browser, baseUrl);
 	await checkDesktop(browser, baseUrl);
 	await checkOverflowAndTheme(browser, baseUrl);
