@@ -1251,6 +1251,7 @@
 	"app.model_management.announce_not_running": "{model}: No download running",
 	"app.model_management.disk_usage": "Worker disk",
 	"app.model_management.used": "Used",
+	"app.model_management.reserved": "Reserved",
 	"app.model_management.free": "Free",
 	"app.model_management.preview": "Install preview",
 	"app.model_management.download_size": "Download",

@@ -14,6 +14,15 @@ export function selectionSpace(free: number, sizes: (number | null)[], reserved 
 	};
 }
 
+export function diskPreview(total: number, free: number, reserved: number, selected: number) {
+	return {
+		used: Math.max(0, Math.min(total, total - free)),
+		reserved: Math.min(Math.max(0, free), reserved),
+		selected: Math.min(Math.max(0, free - reserved), selected),
+		freeAfter: free - reserved - selected
+	};
+}
+
 export function shouldPoll(states: string[]): boolean {
 	return states.some((state) => state === 'queued' || state === 'downloading');
 }

@@ -90,7 +90,7 @@
 		{#if studio.adminTab === 'users'}
 			<StudioAdminUsers />
 		{:else}
-			<div class="no-scrollbar h-full overflow-y-auto px-4 py-5 md:px-6">
+			<div class="no-scrollbar h-full overflow-y-auto px-4 py-5 md:px-6" data-model-scroller>
 				{#if studio.adminTab === 'audit'}
 					<StudioAdminAudit />
 				{:else if studio.adminTab === 'fleet'}

@@ -8,7 +8,8 @@
 		selectionSpace,
 		shouldPoll,
 		pollInterval,
-		initialSelection
+		initialSelection,
+		diskPreview
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
 	import { HardDrive, MemoryStick, Check, Download, AlertTriangle } from '@lucide/svelte';
@@ -230,6 +231,45 @@
 		}
 	}
 
+	function footerSpace(footer: HTMLElement) {
+		const scroller = footer.closest<HTMLElement>('[data-model-scroller]');
+		if (!scroller) return;
+		const update = () => {
+			const height = Math.max(
+				0,
+				...[...scroller.querySelectorAll<HTMLElement>('[data-selection-footer]')].map(
+					(el) => el.offsetHeight
+				)
+			);
+			scroller.style.scrollPaddingBottom = `${height + 8}px`;
+		};
+		const observer = new ResizeObserver(update);
+		observer.observe(footer);
+		return {
+			destroy() {
+				observer.disconnect();
+				requestAnimationFrame(update);
+			}
+		};
+	}
+	function revealFocus(event: FocusEvent) {
+		const target = event.target;
+		if (!(target instanceof HTMLElement)) return;
+		const footer = target
+			.closest('[data-worker]')
+			?.querySelector<HTMLElement>('[data-selection-footer]');
+		const scroller = target.closest<HTMLElement>('[data-model-scroller]');
+		if (!footer || !scroller || footer.contains(target)) return;
+		const rect = target.getBoundingClientRect();
+		const overlay = footer.getBoundingClientRect();
+		if (
+			rect.bottom > overlay.top &&
+			rect.top < overlay.bottom &&
+			rect.right > overlay.left &&
+			rect.left < overlay.right
+		)
+			scroller.scrollBy({ top: rect.bottom - overlay.top + 8 });
+	}
 	function toggle(worker: string, id: string) {
 		const ids = selected[worker] ?? [];
 		selected[worker] = ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
@@ -272,10 +312,20 @@
 			).allowed
 		)
 			return;
+		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		preview = null;
 		busy = true;
 		try {
 			for (const model of models) {
 				await command(worker, model, 'install');
+				await tick();
+				if (only && focused && !focused.isConnected) {
+					root
+						.querySelector<HTMLElement>(
+							`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
+						)
+						?.focus();
+				}
 				selected[worker.worker_id] = (selected[worker.worker_id] ?? []).filter(
 					(id) => id !== model.id
 				);
@@ -336,7 +386,7 @@
 	>{/if}
 {#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
 <p class="sr-only" aria-live="polite">{announcement}</p>
-<div bind:this={root} class="space-y-8" data-model-list tabindex="-1">
+<div bind:this={root} class="space-y-8" data-model-list tabindex="-1" onfocusin={revealFocus}>
 	{#each workers as worker (worker.worker_id)}
 		<section class="space-y-4" aria-label={worker.worker_id} data-worker={worker.worker_id}>
 			<h2 class="text-lg font-semibold">{worker.worker_id}</h2>
@@ -375,7 +425,13 @@
 					{@const total = worker.hardware.disk_total_bytes}
 					{@const previewModel =
 						preview?.worker === worker.worker_id
-							? worker.models.find((m) => m.id === preview?.model)
+							? worker.models.find(
+									(m) =>
+										m.id === preview?.model &&
+										!m.installed &&
+										!active(m) &&
+										!pending[key(worker.worker_id, m.id)]
+								)
 							: undefined}
 					{@const previewSizes = previewModel
 						? [previewModel.download_bytes]
@@ -384,7 +440,8 @@
 						? selectionSpace(free, previewSizes, reserved(worker))
 						: null}
 					{@const known = previewSizes.every((size) => size != null)}
-					{@const used = Math.max(0, Math.min(total, total - free))}
+					{@const segments = diskPreview(total, free, reserved(worker), previewSpace?.total ?? 0)}
+					{@const used = segments.used}
 					{@const percent = total > 0 ? Math.round((used / total) * 100) : 0}
 					<div class="space-y-3 rounded-lg border bg-card p-4" data-disk>
 						<div class="flex justify-between gap-3 text-sm">
@@ -402,10 +459,15 @@
 							aria-valuetext={`${percent}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
 						>
 							<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
+							{#if segments.reserved > 0}<div
+									class="disk-reserved"
+									data-reserved
+									style:width={`${(segments.reserved / (total || 1)) * 100}%`}
+								></div>{/if}
 							{#if previewSpace && known}<div
 									class="disk-preview"
 									class:over={!previewSpace.allowed}
-									style:width={`${(Math.min(Math.max(0, free), previewSpace.total) / (total || 1)) * 100}%`}
+									style:width={`${(segments.selected / (total || 1)) * 100}%`}
 								></div>{/if}
 						</div>
 						<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
@@ -419,6 +481,11 @@
 									free
 								)}</span
 							>
+							{#if reserved(worker) > 0}<span
+									><span class="disk-swatch disk-reserved"></span>{t(
+										'app.model_management.reserved'
+									)}: {formatSize(reserved(worker))}</span
+								>{/if}
 							{#if previewSpace}<span class:text-destructive={!previewSpace.allowed}
 									><span class="disk-swatch disk-preview" class:over={!previewSpace.allowed}
 									></span>{t('app.model_management.after_install').replace(
@@ -511,6 +578,7 @@
 									>
 								</div>{/if}
 							{#if model.needs_token || model.download?.error === 'needs_token'}<div
+									id={`access-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`}
 									class="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
 								>
 									<strong>{t('app.model_management.access_badge')}</strong>
@@ -592,9 +660,18 @@
 									free != null &&
 									!model.needs_token &&
 									selectionSpace(free, [model.download_bytes], reserved(worker)).allowed}
+								{#if !allowed && !model.needs_token}<p
+										id={`margin-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`}
+										class="text-sm text-muted-foreground"
+									>
+										{t('app.model_management.margin')}
+									</p>{/if}
 								<Button
 									variant="outline"
-									class="mt-auto"
+									class="mt-auto aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+									aria-describedby={!allowed
+										? `${model.needs_token ? 'access' : 'margin'}-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`
+										: undefined}
 									aria-disabled={!allowed || busy}
 									onclick={() => {
 										if (allowed && !busy) void install(worker, model);
@@ -620,7 +697,7 @@
 					{/each}
 				</div>
 				{#if picks.length}
-					<div class="selection-footer" data-selection-footer>
+					<div class="selection-footer" data-selection-footer use:footerSpace>
 						<div class="text-sm">
 							<strong
 								>{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
@@ -662,6 +739,9 @@
 	.disk-free {
 		background: var(--muted);
 		border: 1px solid var(--muted-foreground);
+	}
+	.disk-reserved {
+		background: var(--status-running);
 	}
 	.disk-preview {
 		background: repeating-linear-gradient(

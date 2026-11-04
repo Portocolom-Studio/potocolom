@@ -45,3 +45,13 @@ test('first-run suggestions include only fitting, available models', async () =>
 	assert.deepEqual(initialSelection(models), ['suggested']);
 	assert.deepEqual(initialSelection([...models, { ...models[3], installed: true }]), []);
 });
+
+test('disk preview accounts separately for reserved and selected space', async () => {
+	const { diskPreview } = await import('./model-management.ts');
+	assert.deepEqual(diskPreview(20 * gib, 12 * gib, 6 * gib, gib), {
+		used: 8 * gib,
+		reserved: 6 * gib,
+		selected: gib,
+		freeAfter: 5 * gib
+	});
+});

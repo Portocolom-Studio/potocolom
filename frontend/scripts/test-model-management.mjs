@@ -259,6 +259,17 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		});
 		const page = await browser.newPage();
 		await page.setViewport({ width: 1440, height: 900 });
+		if (regression === 'reserved') {
+			worker.disk_free_bytes = 12 * gib;
+			worker.models[1].download = {
+				kind: 'install',
+				state: 'downloading',
+				bytes_done: 0,
+				bytes_total: 6 * gib,
+				error: null,
+				op_id: op(0)
+			};
+		}
 		if (regression === 'retry' || regression === 'failure') {
 			holdInstalls = true;
 			worker.models[0].download = {
@@ -299,6 +310,108 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
+		if (regression === 'footer-focus') {
+			await page.setViewport({ width: 390, height: 600 });
+			await page.click('[data-model="suggested"] input');
+			await page.$eval('[data-model="suggested"] input', (el) => el.focus());
+			for (const key of [...Array(9).fill('Tab'), ...Array(9).fill('Shift+Tab')]) {
+				if (key === 'Shift+Tab') await page.keyboard.down('Shift');
+				await page.keyboard.press('Tab');
+				await page.keyboard.up('Shift');
+				const visible = await page.evaluate(() => {
+					const focus = document.activeElement.getBoundingClientRect();
+					if (!document.activeElement.closest('[data-model]')) return true;
+					const footer = document.querySelector('[data-selection-footer]').getBoundingClientRect();
+					return (
+						focus.bottom <= footer.top ||
+						focus.top >= footer.bottom ||
+						focus.right <= footer.left ||
+						focus.left >= footer.right
+					);
+				});
+				assert.ok(visible, `focus obscured after ${key}`);
+			}
+			return;
+		}
+		if (regression === 'gated-button') {
+			const button = '[data-model="gated"] button';
+			const details = await page.$eval(button, (el) => ({
+				disabled: el.getAttribute('aria-disabled'),
+				described: document.getElementById(el.getAttribute('aria-describedby'))?.textContent,
+				opacity: getComputedStyle(el).opacity
+			}));
+			assert.equal(details.disabled, 'true');
+			assert.match(details.described ?? '', /Hugging Face/);
+			assert.ok(Number(details.opacity) < 1);
+			const before = calls.filter((c) => c.endsWith('/install')).length;
+			await page.click(button);
+			assert.equal(calls.filter((c) => c.endsWith('/install')).length, before);
+			return;
+		}
+		if (regression === 'reserved') {
+			await page.click('[data-model="suggested"] input');
+			const disk = await page.$eval('[data-disk]', (el) => ({
+				text: el.textContent,
+				reserved: el.querySelector('[data-reserved]')?.getBoundingClientRect().width,
+				track: el.querySelector('[role=meter]').getBoundingClientRect().width
+			}));
+			assert.match(disk.text, /Reserved: 6.00 GiB/);
+			assert.match(disk.text, /After install: 5.00 GiB free/);
+			assert.ok(Math.abs(disk.reserved / disk.track - 0.3) < 0.01);
+			return;
+		}
+		if (regression === 'install-focus' || regression === 'preview-transition') {
+			holdInstalls = true;
+			if (regression === 'preview-transition') {
+				await page.$eval('[data-model="suggested"] button', (el) => {
+					el.dispatchEvent(new MouseEvent('mouseenter'));
+					el.click();
+				});
+			} else {
+				await page.$eval('[data-model="suggested"] button', (el) => el.focus());
+				await page.keyboard.press('Enter');
+			}
+			await page.waitForFunction(() => !document.querySelector('[data-model="suggested"] input'));
+			if (regression === 'install-focus') {
+				assert.equal(
+					await page.evaluate(() =>
+						document.activeElement.matches(
+							'[data-model="suggested"] [data-heading], [data-model="suggested"] button'
+						)
+					),
+					true
+				);
+				return;
+			}
+			assert.doesNotMatch(
+				await page.$eval('[data-disk]', (el) => el.textContent),
+				/After install: 5.00 GiB free/
+			);
+			worker.models[0].download = {
+				kind: 'install',
+				state: 'downloading',
+				bytes_done: 0,
+				bytes_total: gib,
+				error: null,
+				op_id: op(opSequence)
+			};
+			await page.waitForSelector('[data-model="suggested"] progress');
+			assert.doesNotMatch(
+				await page.$eval('[data-disk]', (el) => el.textContent),
+				/After install: 5.00 GiB free/
+			);
+			worker.models[0].installed = true;
+			worker.models[0].download = { ...worker.models[0].download, state: 'done', bytes_done: gib };
+			await page.waitForFunction(() =>
+				document.querySelector('[data-model="suggested"]').textContent.includes('Installed')
+			);
+			await page.click('[data-model="large"] input');
+			assert.match(
+				await page.$eval('[data-disk]', (el) => el.textContent),
+				/After install: 5.00 GiB free/
+			);
+			return;
+		}
 		if (!regression) {
 			const meter = await page.$eval('[role="meter"]', (el) => ({
 				now: el.getAttribute('aria-valuenow'),
