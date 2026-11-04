@@ -2,9 +2,9 @@
 	import { onMount, tick } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import { recheckAdminAccess } from '$lib/studio-admin-logic';
-	import { t } from '$lib/i18n.svelte';
+	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
-		formatSize,
+		formatSize as formatLocalizedSize,
 		selectionSpace,
 		shouldPoll,
 		pollInterval,
@@ -68,6 +68,7 @@
 	let preview = $state<{ worker: string; model: string } | null>(null);
 	let refreshVersion = 0;
 	let root: HTMLDivElement;
+	const formatSize = (bytes: number) => formatLocalizedSize(bytes, getLocale());
 	const key = (worker: string, model: string) => `${worker}\u0000${model}`;
 	const actionKey = (worker: string, model: string, action: string) =>
 		`${key(worker, model)}\u0000${action}`;
@@ -213,7 +214,12 @@
 			error = false;
 			await tick();
 			if (!alive || version !== refreshVersion) return;
-			if (focused && focusedHere && !focused.isConnected) {
+			if (
+				focused &&
+				focusedHere &&
+				!focused.isConnected &&
+				document.activeElement === document.body
+			) {
 				const target = [...root.querySelectorAll<HTMLElement>('[data-worker]')]
 					.find((el) => el.dataset.worker === workerId)
 					?.querySelector<HTMLElement>(
@@ -293,6 +299,19 @@
 		if (action === 'install')
 			announcement = t('app.model_management.announce_started').replace('{model}', model.name);
 	}
+	async function recoverActionFocus(focused: HTMLElement | null, worker: Worker, model: Model) {
+		await tick();
+		if (!focused || document.activeElement !== document.body) return;
+		if (focused.isConnected && !focused.matches(':disabled, [aria-disabled="true"]')) {
+			focused.focus();
+		} else {
+			root
+				.querySelector<HTMLElement>(
+					`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
+				)
+				?.focus();
+		}
+	}
 	async function install(worker: Worker, only?: Model) {
 		const models = worker.models.filter(
 			(m) =>
@@ -318,14 +337,6 @@
 		try {
 			for (const model of models) {
 				await command(worker, model, 'install');
-				await tick();
-				if (focused && !focused.isConnected && document.activeElement === document.body) {
-					root
-						.querySelector<HTMLElement>(
-							`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
-						)
-						?.focus();
-				}
 				selected[worker.worker_id] = (selected[worker.worker_id] ?? []).filter(
 					(id) => id !== model.id
 				);
@@ -341,6 +352,7 @@
 			busy = false;
 			clearTimeout(timer);
 			await refresh();
+			if (models[0]) await recoverActionFocus(focused, worker, models[0]);
 		}
 	}
 	async function change(worker: Worker, model: Model, action: 'cancel' | 'remove') {
@@ -361,13 +373,7 @@
 			busy = false;
 			clearTimeout(timer);
 			await refresh();
-			if (focused && !focused.isConnected) {
-				root
-					.querySelector<HTMLElement>(
-						`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
-					)
-					?.focus();
-			}
+			await recoverActionFocus(focused, worker, model);
 		}
 	}
 	onMount(() => {
@@ -702,7 +708,9 @@
 							<strong
 								>{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
 									? t('app.model_management.unknown')
-									: formatSize(space?.total ?? 0)}</strong
+									: formatSize(
+											picks.reduce((total, model) => total + (model.download_bytes ?? 0), 0)
+										)}</strong
 							>
 							<span class="text-muted-foreground">
 								· {t('app.model_management.free_after')}: {space == null ||

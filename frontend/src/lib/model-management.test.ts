@@ -12,7 +12,10 @@ test('selection space reserves five GiB and rejects unknown sizes', () => {
 	assert.equal(selectionSpace(10 * gib, [6 * gib]).allowed, false);
 	assert.equal(selectionSpace(10 * gib, [null]).allowed, false);
 });
-test('formats binary sizes', () => assert.equal(formatSize(gib), '1.00 GiB'));
+test('formats binary sizes for English and Spanish', () => {
+	assert.equal(formatSize(1.5 * gib, 'en'), '1.50 GiB');
+	assert.equal(formatSize(1.5 * gib, 'es'), '1,50 GiB');
+});
 test('polls only active downloads', () => {
 	assert.equal(shouldPoll(['queued', 'done']), true);
 	assert.equal(shouldPoll(['downloading']), true);

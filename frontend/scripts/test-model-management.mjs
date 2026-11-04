@@ -293,7 +293,11 @@ test('model management selection, disk margin, progress, cancel and removal', as
 				op_id: op(0)
 			};
 		}
-		if (regression === 'spanish')
+		if (regression === 'unknown-space') {
+			worker.disk_free_bytes = null;
+			worker.hardware.disk_free_bytes = null;
+		}
+		if (regression === 'spanish' || regression === 'locale-size')
 			await page.evaluateOnNewDocument(() => localStorage.setItem('locale', 'es'));
 		await page.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
 		await page.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
@@ -310,6 +314,60 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
+		if (regression === 'locale-size') {
+			assert.match(await page.$eval('[data-model="large"]', (el) => el.textContent), /2,00 GiB/);
+			assert.match(await page.$eval('[data-disk]', (el) => el.textContent), /7,00 GiB/);
+			return;
+		}
+		if (regression === 'unknown-space') {
+			await page.click('[data-model="large"] input');
+			assert.match(
+				await page.$eval('[data-selection-footer]', (el) => el.textContent),
+				/Selected total: 2.00 GiB/
+			);
+			assert.equal(await page.$eval('[data-selection-footer] button', (el) => el.disabled), true);
+			return;
+		}
+		if (regression === 'failed-bulk-focus') {
+			failNextInstall = true;
+			await page.click('[data-model="suggested"] input');
+			await page.$eval('[data-selection-footer] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForFunction(() =>
+				document
+					.querySelector('[data-model="suggested"]')
+					.textContent.includes('409: busy right now')
+			);
+			await page.waitForFunction(
+				() => !document.querySelector('[data-selection-footer] button').disabled
+			);
+			assert.equal(
+				await page.evaluate(() => document.activeElement.matches('[data-selection-footer] button')),
+				true,
+				'failed bulk action restores the button'
+			);
+			return;
+		}
+		if (regression === 'refused-remove-focus') {
+			refuseRemoval = true;
+			page.once('dialog', (dialog) => dialog.accept());
+			await page.$eval('[data-model="installed"] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForFunction(() =>
+				document.querySelector('[data-model="installed"]').textContent.includes('Remove: in_use')
+			);
+			await page.waitForFunction(
+				() => !document.querySelector('[data-model="installed"] button:last-child').disabled
+			);
+			assert.equal(
+				await page.evaluate(() =>
+					document.activeElement.matches('[data-model="installed"] button:last-child')
+				),
+				true,
+				'refused removal restores the button'
+			);
+			return;
+		}
 		if (regression === 'bulk-focus') {
 			holdInstalls = true;
 			await page.click('[data-model="suggested"] input');

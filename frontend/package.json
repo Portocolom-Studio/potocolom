@@ -30,7 +30,7 @@
 		"generate:hero-images": "node scripts/generate-hero-images.mjs",
 		"compare:collages": "node scripts/compare-collages.mjs",
 		"test:models": "node scripts/test-model-management.mjs && npm run test:models:regressions",
-		"test:models:regressions": "for scenario in footer-focus bulk-focus wide-grid install-focus preview-transition reserved gated-button; do MODEL_REGRESSION=$scenario node scripts/test-model-management.mjs || exit 1; done"
+		"test:models:regressions": "for scenario in footer-focus bulk-focus failed-bulk-focus refused-remove-focus unknown-space locale-size wide-grid install-focus preview-transition reserved gated-button; do MODEL_REGRESSION=$scenario node scripts/test-model-management.mjs || exit 1; done"
 	},
 	"devDependencies": {
 		"@fontsource/geist": "^5.3.0",

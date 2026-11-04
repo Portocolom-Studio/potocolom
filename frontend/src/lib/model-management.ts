@@ -1,7 +1,7 @@
 export const GIB = 1024 ** 3;
 
-export function formatSize(bytes: number): string {
-	return `${(bytes / GIB).toFixed(2)} GiB`;
+export function formatSize(bytes: number, locale: string): string {
+	return `${new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bytes / GIB)} GiB`;
 }
 
 export function selectionSpace(free: number, sizes: (number | null)[], reserved = 0) {
