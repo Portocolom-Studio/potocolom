@@ -60,7 +60,8 @@ jobs:
       - run: python3.11 -m venv backend/.venv && backend/.venv/bin/pip install -e ./backend
         working-directory: .
       # The Makefile target is the single definition of what the job checks.
-      - run: make verify-frontend
+      # -j3 runs up to three browser checks of one build mode at once.
+      - run: make -j3 --output-sync=target verify-frontend
         working-directory: .
         env:
           POSTGRES_ADMIN_URL: >-
