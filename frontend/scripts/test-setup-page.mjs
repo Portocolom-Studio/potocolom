@@ -300,6 +300,14 @@ async function testPasswordControlsAndLength(browser, server) {
 		await page.focus('#setup-password');
 		await page.click('button[aria-controls="setup-password"]');
 		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'text');
+		assert.deepEqual(
+			await page.$eval('#setup-password', (input) => [
+				input.getAttribute('autocapitalize'),
+				input.getAttribute('autocorrect'),
+				input.spellcheck
+			]),
+			['none', 'off', false]
+		);
 		assert.equal(await page.$eval('#setup-password', (input) => input.value), 'Pepepepe1');
 		assert.equal(await page.evaluate(() => document.activeElement?.id), 'setup-password');
 		await page.click('button[aria-controls="setup-password"]');

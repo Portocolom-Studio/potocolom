@@ -37,6 +37,9 @@
 		{...rest}
 		aria-describedby={description}
 		type={revealed ? 'text' : 'password'}
+		autocapitalize="none"
+		autocorrect="off"
+		spellcheck={false}
 		bind:value
 		class="pr-10"
 	/>
