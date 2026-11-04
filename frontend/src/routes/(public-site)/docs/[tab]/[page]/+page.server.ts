@@ -4,8 +4,6 @@ import { docsIndex } from '$lib/docs/source';
 import { findPage } from '$lib/docs/model';
 import { docPageData } from '$lib/docs/page-data';
 
-export const prerender = true;
-
 export const entries: EntryGenerator = () =>
 	docsIndex.pages.map((page) => ({ tab: page.tab, page: page.slug }));
 

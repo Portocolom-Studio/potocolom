@@ -21,6 +21,7 @@ class Base(DeclarativeBase):
 
 ROLES = ("viewer", "user", "admin")
 ACCOUNT_STATES = ("active", "suspended", "disabled", "deletion_pending", "purging")
+INSTALLATION_AUTH_MODES = ("unclaimed", "none", "accounts")
 IDENTITY_PROVIDERS = ("password", "google", "github")
 AUTH_TOKEN_PURPOSES = ("setup", "reset", "recovery", "challenge")
 LOGIN_ATTEMPT_SCOPES = ("identifier", "address")
@@ -460,6 +461,11 @@ class PendingDelete(Base):
 
 class InstallationAuthState(Base):
     __tablename__ = "installation_auth_state"
+    # Named as migration 0035 names it, so create_all and a migrated schema agree.
+    __table_args__ = (
+        CheckConstraint(_one_of("auth_mode", INSTALLATION_AUTH_MODES),
+                        name="installation_auth_state_mode"),
+    )
 
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     auth_mode: Mapped[str] = mapped_column(Text)

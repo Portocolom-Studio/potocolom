@@ -280,7 +280,7 @@ def test_the_configuration_report_says_what_would_happen(monkeypatch):
     assert "SMTP_HOST" in report["mail"]
     assert report["oauth"] == "ok"
     # The resolved list, not the property object behind it.
-    assert isinstance(report["auth_methods"], list)
+    assert isinstance(report["oauth_offered"], list)
 
 
 def test_reclaim_takes_one_of_the_two_things_it_can_do():

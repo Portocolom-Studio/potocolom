@@ -77,6 +77,7 @@ def spawn_api() -> subprocess.Popen:
     root_key = base64.b64encode(secrets.token_bytes(32)).decode()
     database_url = os.environ.get("DATABASE_URL", DEFAULT_URL)
     env = os.environ | {
+        "AUTH_MODE": os.environ.get("AUTH_MODE") or "none",
         "FLEET_TOKEN_KEY": _FLEET_TOKEN,
         "ROOT_KEYS": f"1:{root_key}",
         "DATABASE_URL": database_url,

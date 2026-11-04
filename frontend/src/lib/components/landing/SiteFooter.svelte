@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import ShieldCheckIcon from '@lucide/svelte/icons/shield-check';
 	import BrandMark from '$lib/components/brand-mark.svelte';
 	import ParticleSea from './ParticleSea.svelte';
@@ -8,6 +9,17 @@
 	let wordmark: HTMLElement | undefined = $state();
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
+	// Document pages exist on the public site. resolve() gives a relative path in the
+	// prerendered build, so self-hosted links use the whole public URL.
+	const pageHref = (
+		path:
+			| '/whitepaper'
+			| '/benchmark'
+			| '/illusions'
+			| '/legal'
+			| '/privacy'
+			| '/docs/guide/introduction'
+	) => (PUBLIC_SITE_MODE === 'landing' ? resolve(path) : `https://potocolom.leonfuller.com${path}`);
 	const year = new Date().getFullYear();
 </script>
 
@@ -26,10 +38,10 @@
 			<div>
 				<h2>{t('footer.col_product')}</h2>
 				<a href={resolve('/app')}>{t('nav.launch')}</a>
-				<a href={resolve('/whitepaper')}>{t('nav.whitepaper')}</a>
-				<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
-				<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
-				<a href={resolve('/docs/guide/introduction')}>{t('nav.docs')}</a>
+				<a href={pageHref('/whitepaper')}>{t('nav.whitepaper')}</a>
+				<a href={pageHref('/benchmark')}>{t('nav.benchmark')}</a>
+				<a href={pageHref('/illusions')}>{t('nav.illusions')}</a>
+				<a href={pageHref('/docs/guide/introduction')}>{t('nav.docs')}</a>
 			</div>
 			<div>
 				<h2>{t('footer.col_source')}</h2>
@@ -40,8 +52,8 @@
 			<div>
 				<h2>{t('footer.col_company')}</h2>
 				<a href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>
-				<a href={resolve('/legal')}>{t('footer.legal')}</a>
-				<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
+				<a href={pageHref('/legal')}>{t('footer.legal')}</a>
+				<a href={pageHref('/privacy')}>{t('footer.privacy')}</a>
 			</div>
 		</nav>
 	</div>
@@ -53,7 +65,7 @@
 		</div>
 		<p>
 			{t('footer.gdpr_body')}
-			<a href={resolve('/privacy')}>{t('footer.privacy')}</a>
+			<a href={pageHref('/privacy')}>{t('footer.privacy')}</a>
 		</p>
 	</section>
 

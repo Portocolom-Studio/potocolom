@@ -7,7 +7,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 ## Conventions
 
 - Base path `/api/v1`. JSON request and response bodies.
-- Authentication resolves requests to a principal. With `AUTH_MODE=none`, the principal is one implicit local admin.
+- Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
+- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
@@ -44,7 +45,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 |---|---|---|
 | GET, HEAD `/api/v1/health` | implemented | process liveness for the load balancer; HEAD answers the same with no body, for probes |
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
-| GET `/api/v1/config` | implemented | runtime configuration for the SPA |
+| GET `/api/v1/config` | implemented | runtime configuration for the SPA; `setup_required` tells it to show setup |
 | WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
 | WS `/api/v1/fleet` | implemented | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret; an unset key refuses API startup |
 | GET `/api/v1/models` | implemented | registered models with parameter schemas and GPU-time estimates; requires a principal |
@@ -72,7 +73,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/worker-input` | implemented | local-storage worker fetch of a source image; opaque 15-minute capability |
 | POST `/api/v1/auth/register` | implemented | accept an invitation and set a password; returns a clean session |
 | GET `/api/v1/auth/verify` | not implemented | no mail-verification link target; invitation accept is `POST /api/v1/auth/register` |
-| POST `/api/v1/auth/setup` | implemented | claim the installation with the one-use link; returns a clean session |
+| POST `/api/v1/auth/setup` | implemented | spend the one-use setup link and choose accounts (returns a session) or none (no session) |
+| POST `/api/v1/auth/enable` | implemented | none mode only: an administrator turns accounts on with an email and password, with no restart; returns a session, and closes every canvas opened without one |
 | POST `/api/v1/auth/login` | implemented | password sign-in; sets the session and CSRF cookies; rate limited per identifier, and delayed but never refused per address |
 | POST `/api/v1/auth/logout` | implemented | revoke the session this request used |
 | GET `/api/v1/auth/redirect/{provider}` | implemented | start a provider sign-in; 404 unless that provider is listed and has credentials; accepts an optional `next`, a same-origin `/app` address whose query a successful callback returns to (a factor challenge carries it to `/login`), and anything else is ignored |
@@ -136,13 +138,14 @@ The SPA's first call. One build artifact serves every deployment; this response 
 ```json
 {
   "auth_methods": [],
+  "setup_required": false,
   "billing_enabled": false,
   "languages": ["en", "es"],
   "banner": null
 }
 ```
 
-`auth_methods` is empty in `AUTH_MODE=none`; the implicit local admin is used for requests. The studio login and join routes read this field to decide which sign-in controls to render.
+`setup_required` is `true` while the installation is unclaimed: no choice has been made, every other API route answers `503 setup_required`, and the studio shows the setup page. `auth_methods` is empty in none mode and while unclaimed; the implicit local admin is used for requests. In accounts mode it lists `password` and each provider that has credentials. The studio login and join routes read this field to decide which sign-in controls to render.
 
 `banner` is `null` when no banner is set, otherwise `{"kind": "high_demand" | "degraded" | "maintenance", "message_key": "..." | null, "custom_text": "..." | null}`. The SPA shows `custom_text` when it is set, otherwise the text behind `message_key` (an i18n key, `app.banner.<kind>` by default). See [Administration](#administration) for how it is set.
 
@@ -420,8 +423,50 @@ These four routes and the OAuth flow below them are implemented. There is no
 `GET /api/v1/auth/verify`; invitation accept is `POST /api/v1/auth/register`.
 
 ```
-POST /api/v1/auth/setup      {"token": "...", "email": "ana@example.com", "password": "..."}
+POST /api/v1/auth/setup      {"token": "...", "mode": "accounts", "email": "ana@example.com", "password": "..."}
                              204 + the session cookies; the link is one use and lasts one hour
+                             mode "accounts" (the default) claims the administrator account and
+                             records accounts; email and password are then required
+POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
+                             204, no cookies: the install is recorded as running without accounts
+                             Answers on this route, for either choice:
+                             400 an invalid email, or a password that fails the policy (accounts);
+                                 the link is not spent, so the same link can be retried
+                             403 a link that is unknown, spent or expired, with one body for all
+                                 three; an accounts install answers this for every link, because
+                                 its links are all spent or never existed
+                             404 an install that runs without accounts (none mode)
+                             409 a live link, but the install is already claimed or decided; the
+                                 link is not spent. Minting refuses such a link, so this answers
+                                 only a link minted before the install changed
+                             422 a body that does not parse; the password is never echoed
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the link is not spent
+                             500 the root key ring is unusable; the link is not spent
+                             503 the database is unavailable
+POST /api/v1/auth/enable     {"email": "ana@example.com", "password": "..."}
+                             204 + the session cookies, and the install is accounts from then on;
+                             sockets without a session close with 4401, and a socket without one is
+                             refused at its next open
+                             A request authorized as the implicit administrator before the switch and
+                             still running when it completes is accepted: in none mode every caller is
+                             that administrator, so it gains nothing from the switch and loses nothing
+                             Answers on this route, in the order the checks run:
+                             503 the install is unclaimed (setup_required), or the database is
+                                 unavailable, or the implicit administrator row is missing
+                             404 an install that already runs with accounts
+                             403 a caller without the admin role; none mode never produces this
+                             422 a body that does not parse
+                             403 the request carries no Origin, or one that is not allowed
+                             409 AUTH_MODE=none is set in the environment (remove it from
+                                 deploy/compose/.env and restart first), or the recorded mode is
+                                 already accounts (for example after make auth-enable ran elsewhere),
+                                 or an account already holds an identity
+                             400 an invalid email, or a password that fails the policy; the install
+                                 stays none
+                             503 root_keys_missing when ROOT_KEYS is empty; run scripts/ensure-env.sh or the installer to write keys,
+                                 then recreate the API container to read them; the install stays none
+                             500 the root key ring is unusable; the install stays none
 POST /api/v1/auth/register   {"token": "...", "password": "..."}
                              204 + the session cookies; the invitation carries the address
 POST /api/v1/auth/login      {"email": "ana@example.com", "password": "...", "remember_me": true}

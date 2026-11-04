@@ -193,6 +193,18 @@ one, because it measures the kernel socket buffers rather than the API.
 `AUTH_MODE` defaults to `none` and the dev loop wants it that way: every request
 resolves to one implicit local administrator, so nothing asks you to sign in.
 
+`make api` starts the API with `AUTH_MODE=none`, so the dev database is decided as none the
+first time and nothing asks you to sign in. To try the first-run page, start the API and
+print its link with the same database and port, as a pair:
+
+    make api FIRST_RUN=1     # this checkout's dev database and API port; the mode is left to the database
+    make dev-setup-link      # the one-use link for that database, on that port
+
+Open the link in a browser. Both targets derive the database and port from this checkout, so
+a linked worktree gets its own pair. `make api` without `FIRST_RUN=1` decides the database as
+none, and `make dev-setup-link` then says the install already chose. `make setup-link` is for
+the compose install and needs `make compose-up`.
+
 To exercise the account path, `make auth-enable` writes `ROOT_KEYS`, sets
 `AUTH_MODE=accounts`, records the switch in PostgreSQL and prints a one-use call
 that claims the administrator account. It is one way: the same database refuses

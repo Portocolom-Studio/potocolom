@@ -19,8 +19,24 @@ services:
     ports:
       - "8080:8080"
     environment:
-      AUTH_MODE: ${AUTH_MODE:-none}
+      # Unset, the API follows the auth mode its database records. Set, it is
+      # an override that must agree with the database (docs/self-hosting.md).
+      AUTH_MODE: ${AUTH_MODE:-}
       ROOT_KEYS: ${ROOT_KEYS:-}
+      # Sign-in providers and mail. Empty by default: a provider is offered only
+      # with its credentials, and mail stays off until EMAIL_BACKEND names a backend.
+      OAUTH_PROVIDERS: ${OAUTH_PROVIDERS:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-none}
+      MAIL_FROM: ${MAIL_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       DATABASE_URL: postgresql://potocolom:${POSTGRES_PASSWORD}@postgres/potocolom
       STORAGE_BACKEND: local
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}

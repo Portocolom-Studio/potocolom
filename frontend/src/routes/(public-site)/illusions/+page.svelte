@@ -12,7 +12,7 @@
 		ILLUSION_PAPER_URL,
 		ILLUSION_SHOWCASE
 	} from '$lib/illusion-public-facts';
-	import '../../landing-tokens.css';
+	import '../../../landing-tokens.css';
 
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 

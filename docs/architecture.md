@@ -481,7 +481,8 @@ Issues #5 and #9 shipped the foundations. Remaining account UI is issue #10.
 
 ```mermaid
 flowchart TB
-    M{"AUTH_MODE"}
+    M{"installation_auth_state"}
+    M -->|"unclaimed: setup link not spent"| U["503 setup_required on every API route<br>except config, health, ready, setup, fleet"]
     M -->|"none"| N["Auto-login as one implicit local administrator<br>account UI hidden"]
     M -->|"accounts"| A["Email and password forms<br>provider buttons where configured<br>DB-backed session cookie"]
 ```
@@ -904,7 +905,7 @@ erDiagram
     }
     installation_auth_state {
         smallint id PK "always 1, one row per installation"
-        text auth_mode
+        text auth_mode "unclaimed, none or accounts"
         smallint root_key_version
         timestamptz enabled_at
     }

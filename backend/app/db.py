@@ -33,9 +33,10 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app import auth_mode
 from app.keyring import KeyRingError, get_key_ring
 from app.settings import get_settings
-from app.tables import InstallationAuthState, User
+from app.tables import AuthIdentity, InstallationAuthState, User
 
 logger = logging.getLogger("potocolom.db")
 
@@ -176,9 +177,10 @@ async def connect(serving: bool = True) -> bool:
         engine, class_=OwnedSession, expire_on_commit=False
     )
     if serving:
-        await validate_startup_auth_mode(settings.auth_mode)
+        mode = await decide_startup_auth_mode(settings.auth_mode)
         await validate_startup_key_ring()
-        local_user_id = await _ensure_local_user(session_factory)
+        local_user_id = await _ensure_local_user(session_factory, mode)
+        auth_mode.load(mode)
     return True
 
 
@@ -189,31 +191,38 @@ async def dispose() -> None:
     engine = None
     session_factory = None
     local_user_id = None
+    auth_mode.clear()
 
 
-async def _ensure_local_user(factory: async_sessionmaker[AsyncSession]) -> uuid.UUID | None:
+async def _ensure_local_user(
+    factory: async_sessionmaker[AsyncSession], mode: str,
+) -> uuid.UUID | None:
     """AUTH_MODE=none maps every request to one local user (docs/blueprint.md).
 
-    In accounts mode this only looks. The first administrator adopts this row
-    and renames it, so recreating it by address would stand up a second
-    administrator nobody claimed, and forcing the role back would re-promote a
-    row an operator had demoted.
+    It also exists while the install is unclaimed, because the setup claim
+    adopts it. Once an account holds an identity this only looks: the first
+    administrator adopts this row and renames it, so recreating it by address
+    would stand up a second administrator nobody claimed, and forcing the role
+    back would re-promote a row an operator had demoted.
     """
-    accounts = get_settings().auth_mode != "none"
     async with factory() as session:
         user = (
             await session.execute(select(User).where(User.email == LOCAL_USER_EMAIL))
         ).scalar_one_or_none()
         if user is None:
-            if accounts:
+            if mode == auth_mode.ACCOUNTS and await _claimed(session):
                 return None
             user = User(email=LOCAL_USER_EMAIL, role="admin")
             session.add(user)
             await session.commit()
-        elif user.role != "admin" and not accounts:
+        elif user.role != "admin" and mode != auth_mode.ACCOUNTS:
             user.role = "admin"
             await session.commit()
         return user.id
+
+
+async def _claimed(session: AsyncSession) -> bool:
+    return (await session.execute(select(AuthIdentity.id).limit(1))).first() is not None
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -236,18 +245,31 @@ async def read_installation_auth_mode() -> str | None:
         return state.auth_mode if state is not None else None
 
 
+async def record_mode(session: AsyncSession, mode: str) -> None:
+    """Writes the installation's decision inside the caller's transaction.
+
+    Accounts also records the root key version it writes with, so it needs a
+    ring. Writing the mode the row already holds changes nothing.
+    """
+    version = get_key_ring().active_version if mode == auth_mode.ACCOUNTS else None
+    await session.execute(
+        text(
+            "INSERT INTO installation_auth_state (id, auth_mode, root_key_version) "
+            "VALUES (1, :mode, :version) ON CONFLICT (id) DO UPDATE SET "
+            "auth_mode = EXCLUDED.auth_mode, root_key_version = EXCLUDED.root_key_version, "
+            "enabled_at = now() WHERE installation_auth_state.auth_mode <> EXCLUDED.auth_mode"
+        ),
+        {"mode": mode, "version": version},
+    )
+
+
 async def enable_accounts_mode(
     factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Moves an unclaimed or none install to accounts. Accounts stays accounts."""
     async with factory() as session:
         async with session.begin():
-            await session.execute(
-                text(
-                    "INSERT INTO installation_auth_state (id, auth_mode, root_key_version) "
-                    "VALUES (1, 'accounts', :version) ON CONFLICT (id) DO NOTHING"
-                ),
-                {"version": get_key_ring().active_version},
-            )
+            await record_mode(session, auth_mode.ACCOUNTS)
 
 
 async def read_installation_root_key_version() -> int | None:
@@ -276,12 +298,30 @@ async def validate_startup_key_ring() -> None:
         raise RuntimeError(f"root key version {recorded} is missing from the key ring")
 
 
-async def validate_startup_auth_mode(configured: str) -> None:
+async def decide_startup_auth_mode(override: str | None) -> str:
+    """The mode this process serves, from AUTH_MODE and what PostgreSQL recorded.
+
+    An install with no decision yet takes the override as its decision, so a
+    scripted install or CI never shows setup. A decided install must agree with
+    an override that is set, and an accounts installation never starts in none
+    mode, because falling back would answer every request as the administrator.
+    """
     persisted = await read_installation_auth_mode()
-    if configured == "accounts" and persisted != "accounts":
-        raise RuntimeError("accounts mode requires explicit installation enable")
-    if configured == "none" and persisted == "accounts":
-        raise RuntimeError("accounts installation cannot start in none mode")
+    if persisted is None or persisted == auth_mode.UNCLAIMED:
+        if override is None:
+            return auth_mode.UNCLAIMED
+        assert session_factory is not None
+        async with session_factory() as session:
+            async with session.begin():
+                await record_mode(session, override)
+        return override
+    if override is None or override == persisted:
+        return persisted
+    if persisted == auth_mode.ACCOUNTS:
+        raise RuntimeError("accounts installation cannot start in none mode; "
+                           "remove AUTH_MODE=none from the environment")
+    raise RuntimeError("AUTH_MODE=accounts requires explicit installation enable; this "
+                       "installation runs in none mode, so run make auth-enable first")
 
 
 _lock_guard = threading.Lock()

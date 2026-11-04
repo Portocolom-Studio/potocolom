@@ -13,14 +13,20 @@ from typing import Literal
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import audit, db, sessions
+from app import audit, auth_mode, db, sessions
 from app.settings import get_settings
 from app.tables import User
 
 
 async def require_accounts_mode() -> None:
     """An install that never enabled accounts does not answer account routes."""
-    if get_settings().auth_mode != "accounts":
+    if auth_mode.current() != auth_mode.ACCOUNTS:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+async def require_none_mode() -> None:
+    """Turning accounts on is offered only while the install runs without them."""
+    if auth_mode.current() != auth_mode.NONE:
         raise HTTPException(status_code=404, detail="Not Found")
 
 
@@ -39,18 +45,25 @@ def _allowed_origins() -> set[str]:
     return allowed
 
 
-def _check_csrf(request: Request, csrf_cookie: str | None) -> None:
-    """Only for cookies: a cookie rides along on any request a page can cause.
+def check_origin(request: Request) -> None:
+    """An unsafe request must come from an allowed origin.
 
-    A bearer is presented deliberately, so it needs neither check. An absent
-    Origin is refused rather than waved through, because browsers send one on
-    every unsafe request and only a non-browser caller can omit it.
+    An absent Origin is refused rather than waved through, because browsers send
+    one on every unsafe request and only a non-browser caller can omit it.
     """
-    if request.method in SAFE_METHODS:
-        return
     origin = request.headers.get("origin")
     if origin is None or origin.rstrip("/") not in _allowed_origins():
         raise HTTPException(status_code=403, detail="origin not allowed")
+
+
+def _check_csrf(request: Request, csrf_cookie: str | None) -> None:
+    """Only for cookies: a cookie rides along on any request a page can cause.
+
+    A bearer is presented deliberately, so it needs neither check.
+    """
+    if request.method in SAFE_METHODS:
+        return
+    check_origin(request)
     sent = request.headers.get("x-csrf-token")
     # Compared as bytes: compare_digest refuses non-ASCII strings, and headers
     # and cookies decode as latin-1, so a planted value would raise here and
@@ -94,7 +107,7 @@ async def current_user(
     request: Request,
     session: AsyncSession = Depends(db.get_session),
 ) -> User:
-    if get_settings().auth_mode != "none":
+    if auth_mode.current() != auth_mode.NONE:
         principal = await current_principal(request)
         if principal.user.state == "suspended" and request.method not in SAFE_METHODS:
             # A pause, not a deletion: they may read their own work and settle

@@ -25,7 +25,7 @@
 	stack-up stack-down stack-restart cleanup-failed generate \
 	benchmark benchmark-publish \
 	auth-enable auth-recover auth-reclaim auth-rotate-keys auth-configure auth-collapse \
-	auth-clear-factor \
+	auth-clear-factor setup-link dev-setup-link \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
 	site-build site-preview site-deploy worker-deploy
@@ -49,6 +49,18 @@ auth-recover: ## print a one-use 10-minute recovery link for an administrator (E
 
 auth-enable: ## turn on accounts and print the one-use first-admin setup link
 	@bash "$(CURDIR)/scripts/auth-enable.sh"
+
+setup-link: ## print a one-use setup link for the compose install (start it with make compose-up)
+	@running="$$(docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" ps --status running -q api)" \
+		|| { echo 'error: docker could not report the api service; no link was made' >&2; exit 1; }; \
+	if [ -z "$$running" ]; then \
+		echo 'error: the compose api is not running; start the install with make compose-up, then run make setup-link again' >&2; \
+		exit 1; \
+	fi; \
+	docker compose -f "$(COMPOSE_FILE)" --profile "$(PROFILE)" exec -T api python -m app.operator setup-link
+
+dev-setup-link: ## print a one-use setup link for the native dev stack (host venv and dev database)
+	@cd "$(CURDIR)/backend" && PUBLIC_URL="$${PUBLIC_URL:-http://localhost:$(API_PORT)}" .venv/bin/python -m app.operator setup-link
 
 auth-reclaim: ## get back into a locked-out install (CLAIM=1, or EMAIL=someone@example.com)
 	@test -n "$(CLAIM)$(EMAIL)" || { echo 'usage: make auth-reclaim CLAIM=1' >&2; \
@@ -242,8 +254,8 @@ verify-worker-inference:
 
 verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test \
-		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing \
-		&& PUBLIC_SITE_MODE= npm run build && npm run test:footer && npm run test:canvas && npm run test:signin && npm run test:views && npm run test:owner-focus
+		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing && npm run test:footer \
+		&& PUBLIC_SITE_MODE= npm run build && npm run test:self-hosted && npm run test:studio-shell && npm run test:canvas && npm run test:signin && npm run test:views && npm run test:owner-focus
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 
@@ -343,6 +355,9 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-install-host-profiles.sh
 	@bash scripts/test-install-resilience.sh
 	@bash scripts/test-auth-enable-locking.sh
+	@bash scripts/test-ensure-env-root-keys.sh
+	@bash scripts/test-install-setup-link.sh
+	@bash scripts/test-setup-link.sh
 	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)
@@ -410,7 +425,7 @@ ifeq (,$(DEV_DB_SUPPLIED))
 # row sat in the other database (issue #450).
 api dev-start dev-restart cleanup-failed \
 auth-recover auth-enable auth-reclaim auth-rotate-keys auth-clear-factor \
-auth-configure auth-collapse: export DATABASE_URL := \
+auth-configure auth-collapse dev-setup-link: export DATABASE_URL := \
 	postgresql://potocolom:potocolom@localhost:5432/potocolom$(DB_SUFFIX)
 endif
 # Empty by default so scripts/dev-stack.sh detects the GPU this machine has.
@@ -425,7 +440,7 @@ api: dev-db ## API server on the configured port; assets under ./data (make deps
 		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
 		PUBLIC_URL=http://localhost:$(API_PORT) \
 		FLEET_TOKEN_KEY="$${FLEET_TOKEN_KEY:-$$FLEET_SECRET}" \
-		BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT) --ws-max-size 2097152
+		AUTH_MODE=$(if $(FIRST_RUN),,"$${AUTH_MODE:-none}") BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT) --ws-max-size 2097152
 
 worker-rocm: ## inference worker on the AMD GPU (make setup-rocm once)
 	@set -a; \
