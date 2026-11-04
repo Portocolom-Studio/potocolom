@@ -321,7 +321,7 @@
 	async function recoverFocus(focused: HTMLElement | null, workerId?: string, modelId?: string) {
 		await tick();
 		if (!focused) return;
-		if (focused.isConnected && !focused.matches(':disabled, [aria-disabled="true"]')) {
+		if (focused.isConnected && !focused.matches(':disabled')) {
 			if (document.activeElement === document.body) focused.focus();
 		} else if (document.activeElement === document.body || document.activeElement === focused) {
 			const worker = [...root.querySelectorAll<HTMLElement>('[data-worker]')].find(

@@ -49,14 +49,17 @@
 	const canInstall = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
 
 	$effect(() => {
-		if (!studio.modelsLoaded || studio.models.length !== 0) return;
+		if (!canInstall || !studio.modelsLoaded || studio.models.length !== 0) return;
 		let active = true;
 		workerConnected = null;
-		void fetch('/api/v1/studio/worker-presence')
+		void fetch('/api/v1/studio/gpu')
 			.then(async (response) => {
-				if (!response.ok) return;
-				const presence: { connected?: unknown } = await response.json();
-				if (active && typeof presence.connected === 'boolean') workerConnected = presence.connected;
+				if (response.ok) {
+					if (active) workerConnected = true;
+				} else if (response.status === 503) {
+					const error: { detail?: unknown } = await response.json();
+					if (active && error.detail === 'no worker connected') workerConnected = false;
+				}
 			})
 			.catch(() => {});
 		return () => {
@@ -202,7 +205,7 @@
 			<div
 				class="bg-card border-border text-muted-foreground rounded-[10px] border p-6 text-[13px]"
 			>
-				{#if workerConnected === false}
+				{#if canInstall && workerConnected === false}
 					{t('app.models.empty')}
 				{:else if canInstall}
 					<p>{t('app.models.empty_installed')}</p>

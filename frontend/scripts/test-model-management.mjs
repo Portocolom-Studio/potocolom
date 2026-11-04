@@ -84,8 +84,12 @@ test('model management selection, disk margin, progress, cancel and removal', as
 						};
 			else if (path === '/api/v1/config')
 				body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
-			else if (path === '/api/v1/studio/worker-presence') body = { connected: !workerGone };
-			else if (path === '/api/v1/admin/models') {
+			else if (path === '/api/v1/studio/gpu' && workerGone) {
+				res
+					.writeHead(503, { 'Content-Type': 'application/json' })
+					.end(JSON.stringify({ detail: 'no worker connected' }));
+				return;
+			} else if (path === '/api/v1/admin/models') {
 				if (failInventory) {
 					failInventory = false;
 					res.writeHead(500).end();
@@ -269,6 +273,15 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		if (regression === 'panel-viewer') role = 'viewer';
 		if (regression === 'panel-offline' || regression === 'panel-viewer-offline') workerGone = true;
 		if (regression === 'panel-viewer-offline') role = 'viewer';
+		if (regression === 'gated-button')
+			worker.models[1].download = {
+				kind: 'install',
+				state: 'downloading',
+				bytes_done: 0,
+				bytes_total: gib,
+				error: null,
+				op_id: op(0)
+			};
 		if (regression === 'footer-focus') {
 			worker.models.unshift(...Array.from({ length: 12 }, (_, i) => model(`preceding-${i}`)));
 		}
@@ -338,15 +351,16 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					document.body.textContent.includes('No models installed yet.') ||
 					document.body.textContent.includes('Start a worker')
 			);
-			if (regression === 'panel-offline' || regression === 'panel-viewer-offline') {
+			if (regression === 'panel-offline') {
 				await page.waitForFunction(() => document.body.textContent.includes('Start a worker'));
 				assert.equal(await page.$('::-p-text(Install models)'), null);
-			} else if (regression === 'panel-viewer') {
+			} else if (regression === 'panel-viewer' || regression === 'panel-viewer-offline') {
 				assert.match(
 					await page.evaluate(() => document.body.textContent),
 					/No models installed yet. Ask an administrator to install one./
 				);
 				assert.equal(await page.$('::-p-text(Install models)'), null);
+				assert.equal(calls.filter((c) => c === 'GET /api/v1/studio/gpu').length, 0);
 			} else {
 				const button = await page.waitForSelector('::-p-text(Install models)', { timeout: 2000 });
 				await button.click();
@@ -622,6 +636,10 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			assert.equal(details.disabled, 'true');
 			assert.match(details.described ?? '', /Hugging Face/);
 			assert.ok(Number(details.opacity) < 1);
+			await page.focus(button);
+			await page.waitForResponse((response) => response.url().endsWith('/api/v1/admin/models'));
+			await new Promise((done) => setTimeout(done, 100));
+			assert.equal(await page.$eval(button, (el) => document.activeElement === el), true);
 			const before = calls.filter((c) => c.endsWith('/install')).length;
 			await page.click(button);
 			assert.equal(calls.filter((c) => c.endsWith('/install')).length, before);
