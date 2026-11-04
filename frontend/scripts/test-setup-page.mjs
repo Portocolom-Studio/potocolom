@@ -274,18 +274,23 @@ async function testPasswordControlsAndLength(browser, server) {
 	try {
 		await clickButton(page, 'Create an admin account');
 		await page.type('#setup-email', 'ana@example.com');
-		await page.type('#setup-password', 'Pepepepe123-*');
-		await page.type('#setup-confirm', 'Pepepepe123-*');
+		await page.type('#setup-password', 'Pepepepe1');
+		await page.type('#setup-confirm', 'Pepepepe1');
 		await page.focus('#setup-password');
 		await page.click('button[aria-controls="setup-password"]');
 		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'text');
-		assert.equal(await page.$eval('#setup-password', (input) => input.value), 'Pepepepe123-*');
+		assert.equal(await page.$eval('#setup-password', (input) => input.value), 'Pepepepe1');
 		assert.equal(await page.evaluate(() => document.activeElement?.id), 'setup-password');
 		await page.click('button[aria-controls="setup-password"]');
 		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'password');
 		await clickButton(page, 'Create admin account');
-		await waitForText(page, 'This password has 13 characters. Use at least 15.');
+		await waitForText(page, 'This password has 9 characters. Use at least 10.');
 		assert.equal(postsTo('/api/v1/auth/setup').length, 0);
+		await page.type('#setup-password', '2');
+		await page.type('#setup-confirm', '2');
+		await clickButton(page, 'Create admin account');
+		await waitForText(page, 'Models are next');
+		assert.equal(postsTo('/api/v1/auth/setup').length, 1);
 		assert.deepEqual(errors, []);
 	} finally {
 		await page.close();

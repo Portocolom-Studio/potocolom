@@ -216,7 +216,7 @@ account on the installation.
 Sign-in is here: address and password, an optional second factor, and Google or
 GitHub when they are configured. After the administrator account is claimed, open
 `/login` in the studio (or call `POST /api/v1/auth/login`) and invite everybody else.
-Accepting an invitation is `/join#{token}`. The password policy is fifteen to one
+Accepting an invitation is `/join#{token}`. The password policy is ten to one
 hundred and twenty-eight characters against a bundled blocklist.
 
 ## Mail, and doing without it

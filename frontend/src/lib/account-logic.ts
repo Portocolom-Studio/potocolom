@@ -2,7 +2,7 @@ import { resolve } from '$app/paths';
 import type en from './i18n/en.json';
 
 // Mirrors MIN_LENGTH and MAX_LENGTH in backend/app/passwords.py.
-export const MIN_PASSWORD_LENGTH = 15;
+export const MIN_PASSWORD_LENGTH = 10;
 export const MAX_PASSWORD_LENGTH = 128;
 
 export function passwordLengthError(

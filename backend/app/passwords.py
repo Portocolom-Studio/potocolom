@@ -16,7 +16,7 @@ from pathlib import Path
 
 from argon2 import PasswordHasher
 
-MIN_LENGTH = 15
+MIN_LENGTH = 10
 MAX_LENGTH = 128
 
 _BLOCKLIST_FILE = Path(__file__).with_name("password_blocklist.txt")
