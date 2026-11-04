@@ -842,6 +842,7 @@
 									<PasswordInput
 										id="account-current-password"
 										autocomplete="current-password"
+										toggleLabel="auth.password.show_current"
 										disabled={!detail.recent_auth || savingPassword}
 										bind:value={currentPassword}
 									/>
@@ -851,6 +852,8 @@
 									<PasswordInput
 										id="account-new-password"
 										autocomplete="new-password"
+										toggleLabel="auth.password.show_new"
+										hint
 										disabled={!detail.recent_auth || savingPassword}
 										bind:value={newPassword}
 									/>

@@ -277,6 +277,27 @@ async function testPasswordControlsAndLength(browser, server) {
 		await page.type('#setup-password', 'Pepepepe1');
 		await page.type('#setup-confirm', 'Pepepepe1');
 		await page.focus('#setup-password');
+		await page.keyboard.press('Tab');
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+			'Show password'
+		);
+		await page.keyboard.press('Space');
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-pressed')),
+			'true'
+		);
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+			'Show password'
+		);
+		await page.keyboard.press('Enter');
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-pressed')),
+			'false'
+		);
+		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'password');
+		await page.focus('#setup-password');
 		await page.click('button[aria-controls="setup-password"]');
 		assert.equal(await page.$eval('#setup-password', (input) => input.type), 'text');
 		assert.equal(await page.$eval('#setup-password', (input) => input.value), 'Pepepepe1');

@@ -8,7 +8,16 @@ export const MAX_PASSWORD_LENGTH = 128;
 export function passwordLengthError(
 	password: string
 ): { count: number; limit: number; kind: 'short' | 'long' } | null {
-	const count = [...password.trim()].length;
+	const rawCount = [...password].length;
+	if (rawCount > MAX_PASSWORD_LENGTH)
+		return { count: rawCount, limit: MAX_PASSWORD_LENGTH, kind: 'long' };
+	// Python str.strip() whitespace, matching backend/app/passwords.py.
+	const count = [
+		...password.replace(
+			/^[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/g,
+			''
+		)
+	].length;
 	if (count < MIN_PASSWORD_LENGTH) return { count, limit: MIN_PASSWORD_LENGTH, kind: 'short' };
 	if (count > MAX_PASSWORD_LENGTH) return { count, limit: MAX_PASSWORD_LENGTH, kind: 'long' };
 	return null;

@@ -213,5 +213,16 @@ test('password length follows the backend trimmed Unicode code point policy', ()
 		kind: 'short'
 	});
 	assert.equal(passwordLengthError('😀'.repeat(10)), null);
+	assert.deepEqual(passwordLengthError(' ' + 'b'.repeat(128)), {
+		count: 129,
+		limit: 128,
+		kind: 'long'
+	});
+	assert.deepEqual(passwordLengthError('\u0085' + 'b'.repeat(9)), {
+		count: 9,
+		limit: 10,
+		kind: 'short'
+	});
+	assert.equal(passwordLengthError('\ufeff' + 'b'.repeat(9)), null);
 	assert.deepEqual(passwordLengthError('a'.repeat(129)), { count: 129, limit: 128, kind: 'long' });
 });

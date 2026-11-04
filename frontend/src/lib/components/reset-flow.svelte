@@ -183,6 +183,7 @@
 						id="reset-password"
 						name="password"
 						autocomplete="new-password"
+						hint
 						required
 						bind:value={password}
 					/>
@@ -193,6 +194,7 @@
 						id="reset-confirm"
 						name="confirm"
 						autocomplete="new-password"
+						toggleLabel="auth.password.show_confirmation"
 						required
 						bind:value={confirmPassword}
 					/>

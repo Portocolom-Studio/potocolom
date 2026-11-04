@@ -90,6 +90,7 @@
 								id="turn-on-password"
 								name="password"
 								autocomplete="new-password"
+								hint
 								required
 								bind:value={password}
 							/>

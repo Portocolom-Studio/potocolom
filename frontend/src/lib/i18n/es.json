@@ -1,5 +1,8 @@
 {
 	"auth.password.show": "Mostrar contraseña",
+	"auth.password.show_confirmation": "Mostrar confirmación",
+	"auth.password.show_current": "Mostrar contraseña actual",
+	"auth.password.show_new": "Mostrar contraseña nueva",
 	"auth.password.hide": "Ocultar contraseña",
 	"auth.password.hint": "Usa entre {min} y {max} caracteres. No se aceptan contraseñas muy comunes.",
 	"auth.password.too_short": "Esta contraseña tiene {count} caracteres. Usa al menos {limit}.",
