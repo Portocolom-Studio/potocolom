@@ -84,7 +84,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 						};
 			else if (path === '/api/v1/config')
 				body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
-			else if (path === '/api/v1/studio/gpu' && workerGone) {
+			else if (path === '/api/v1/studio/gpu' && (workerGone || regression === 'panel-protocol6')) {
 				res
 					.writeHead(503, { 'Content-Type': 'application/json' })
 					.end(JSON.stringify({ detail: 'no worker connected' }));
@@ -273,6 +273,8 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		if (regression === 'panel-viewer') role = 'viewer';
 		if (regression === 'panel-offline' || regression === 'panel-viewer-offline') workerGone = true;
 		if (regression === 'panel-viewer-offline') role = 'viewer';
+		if (regression === 'panel-protocol6')
+			worker.models.forEach((entry) => (entry.installed = false));
 		if (regression === 'gated-button')
 			worker.models[1].download = {
 				kind: 'install',
@@ -339,6 +341,14 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		if (regression === 'spanish' || regression === 'spanish-labels' || regression === 'locale-size')
 			await page.evaluateOnNewDocument(() => localStorage.setItem('locale', 'es'));
 		await page.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
+		const panelResponse =
+			regression === 'panel-protocol6'
+				? page
+						.waitForResponse((response) => response.url().endsWith('/api/v1/admin/models'), {
+							timeout: 0
+						})
+						.catch(() => null)
+				: null;
 		await page.goto(
 			`http://127.0.0.1:${server.address().port}/app?view=${regression?.startsWith('panel-') ? 'models' : 'admin&tab=models'}`,
 			{
@@ -346,6 +356,20 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			}
 		);
 		if (regression?.startsWith('panel-')) {
+			if (panelResponse) {
+				await Promise.race([
+					panelResponse,
+					page
+						.waitForFunction(() => document.body.textContent.includes('Start a worker'), {
+							timeout: 0
+						})
+						.catch(() => null)
+				]);
+				assert.ok(
+					await page.$('::-p-text(Install models)'),
+					'connected worker offers installation'
+				);
+			}
 			await page.waitForFunction(
 				() =>
 					document.body.textContent.includes('No models installed yet.') ||

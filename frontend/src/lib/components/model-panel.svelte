@@ -10,6 +10,7 @@
 	import TypeIcon from '@lucide/svelte/icons/type';
 	import ZapIcon from '@lucide/svelte/icons/zap';
 	import { account } from '$lib/account.svelte';
+	import { apiFetch } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
@@ -52,14 +53,11 @@
 		if (!canInstall || !studio.modelsLoaded || studio.models.length !== 0) return;
 		let active = true;
 		workerConnected = null;
-		void fetch('/api/v1/studio/gpu')
+		void apiFetch('/api/v1/admin/models')
 			.then(async (response) => {
-				if (response.ok) {
-					if (active) workerConnected = true;
-				} else if (response.status === 503) {
-					const error: { detail?: unknown } = await response.json();
-					if (active && error.detail === 'no worker connected') workerConnected = false;
-				}
+				if (!response.ok) return;
+				const workers: unknown = await response.json();
+				if (active && Array.isArray(workers)) workerConnected = workers.length > 0;
 			})
 			.catch(() => {});
 		return () => {
