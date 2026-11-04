@@ -437,6 +437,16 @@ password sign-in and optional Google or GitHub. `AUTH_MODE=none` remains the sin
 default on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
 are still issue #10.
 
+## Models you already have
+
+The worker finds complete models already in its Hugging Face cache at the pinned
+revision, including downloads from older potocolom installs, the `hf` CLI, and
+other apps using the standard cache. A different revision of the same model is
+not reused. To share another app's cache, set `HF_HOME` to that cache when
+running natively, or replace the `hf-cache` volume in `deploy/compose/compose.yml`
+with the host cache mount shown in the file. If another app removes files, the
+model shows as not installed and can be installed again.
+
 ## Gated models
 
 `sd35-medium` (Stable Diffusion 3.5 Medium) is a gated Hugging Face

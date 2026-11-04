@@ -8,7 +8,7 @@ every planned file is on disk at its planned size, and it records the files and
 the fingerprint of the pins they came from. A download in progress leaves an
 "installing" marker, so a partial download is never installed. A cache filled
 before markers existed is adopted when the exact hub plan matches the local
-files; without the hub metadata nothing is adopted.
+files; bundled metadata makes pinned plans available offline.
 
 The worker process runs one queue of operations, in the order they were asked
 for, and one task drains it. Only one operation (an install or a removal) runs
@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from functools import lru_cache
 import os
 import re
 import shutil
@@ -344,8 +345,7 @@ def _any_local_copy(manifest: Manifest, models_dir: str) -> bool:
 
 def adopt_legacy(manifest: Manifest, models_dir: str, device: str = "cuda") -> bool | None:
     """Adopt a cache filled before markers existed, once, when the exact hub plan an install
-    would use is complete on disk. Without the hub metadata nothing is adopted: the model
-    shows as not installed, and an install then completes from the cache. Never adopts over
+    would use is complete on disk. If metadata is unavailable nothing is adopted. Never adopts over
     a marker of any kind, since an interrupted download leaves one. Returns False for a
     definitively incomplete plan, and None when adoption might be possible later."""
     if _read_marker(manifest.id) is not None or not _any_local_copy(manifest, models_dir):
@@ -500,24 +500,39 @@ def _dedupe(items: list[Item]) -> list[Item]:
     return list(unique.values())
 
 
+@lru_cache(maxsize=1)
+def bundled_hub_metadata() -> dict:
+    return json.loads(Path(__file__).with_name("hub_lock.json").read_text())
+
+
 def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tuple[list[Item], bool]:
     """Every file a full install of the manifest produces, and whether a token is needed."""
     if "upscale" in manifest.capabilities:
         cache = _upscale_dir(manifest, models_dir)
-        weights = [Item(path=path, size=url_size(url), url=url, root=cache)
+        weights = [Item(path=path, size=(bundled_hub_metadata()["urls"][url]
+                                if url in bundled_hub_metadata()["urls"] else url_size(url)),
+                        url=url, root=cache)
                    for url, path in upscale_targets(manifest, models_dir)]
         return _dedupe(weights), False
     gated = False
     items: list[Item] = []
     for ref in repo_refs(manifest, device):
-        files, ref_gated, blob_keys = hub_listing(ref.repo, ref.revision)
+        locked = bundled_hub_metadata()["repos"].get(f"{ref.repo}@{ref.revision}")
+        if locked is None:
+            files, ref_gated, blob_keys = hub_listing(ref.repo, ref.revision)
+        else:
+            files, ref_gated, blob_keys = locked["files"], locked["gated"], locked["blobs"]
         gated = gated or ref_gated
         if ref.kind == "adapter":
             chosen = [(name, size) for name, size in files if name == ref.filename]
             if not chosen:
                 raise ModelStoreError("unavailable")
         elif ref.kind == "pipeline":
-            index = json.loads(hub_file_text(ref.repo, ref.revision, "model_index.json"))
+            index_text = (hub_file_text(ref.repo, ref.revision, "model_index.json")
+                          if locked is None else locked.get("model_index"))
+            if index_text is None:
+                raise ModelStoreError("unavailable")
+            index = json.loads(index_text)
             chosen = select_pipeline_plan(files, index, ref.variant)
         else:
             chosen = select_plan(files, ref.variant)
@@ -920,12 +935,28 @@ class ModelStore:
         found: dict[str, Manifest] = {}
         for manifest in self.bundled.values():
             try:
-                if (is_installed(manifest, self._models_dir, self._device)
-                        or adopt_legacy(manifest, self._models_dir, self._device)):
+                valid = is_installed(manifest, self._models_dir, self._device)
+                marker = _read_marker(manifest.id)
+                if not valid and marker is not None and marker.get("state") == "installed":
+                    _remove_marker(manifest.id)
+                if valid or adopt_legacy(manifest, self._models_dir, self._device):
                     found[manifest.id] = manifest
             except OSError:
                 logger.warning("cannot scan model %s: cache is inaccessible", manifest.id)
         return found
+
+    async def verify_for_load(self, model_id: str) -> bool:
+        manifest = self.installed.get(model_id)
+        if manifest is None:
+            return False
+        if await asyncio.to_thread(is_installed, manifest, self._models_dir, self._device):
+            return True
+        _remove_marker(model_id)
+        self.installed.pop(model_id, None)
+        self._incomplete_adoptions.discard(model_id)
+        await self._announce()
+        await self.send_inventory()
+        return False
 
     def catalog(self) -> list[dict]:
         rows = []

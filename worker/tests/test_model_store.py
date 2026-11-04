@@ -48,6 +48,7 @@ def settled(manifest, models_dir=""):
 
 REAL_URL_SIZE = model_store.url_size
 REAL_PLAN_ITEMS = model_store.plan_items
+REAL_BUNDLED_METADATA = model_store.bundled_hub_metadata
 # What the fake hub holds: (repo, revision, file, size). put_snapshot_file adds to it, and
 # remote() adds a file the hub has that a test does not write locally.
 REGISTRY: list[tuple[str, str, str, int]] = []
@@ -89,6 +90,7 @@ def offline_hub(tmp_path, monkeypatch):
     hub = tmp_path / "hub"
     hub.mkdir()
     monkeypatch.setattr(model_store, "hub_cache_root", lambda: hub)
+    monkeypatch.setattr(model_store, "bundled_hub_metadata", lambda: {"repos": {}, "urls": {}})
     monkeypatch.setattr(model_store, "hub_listing", _offline)
     monkeypatch.setattr(model_store, "url_size", _offline)
     monkeypatch.setattr(model_store, "plan_items", registry_plan)
@@ -2990,3 +2992,111 @@ def test_real_adoption_retries_when_metadata_recovers(monkeypatch, tmp_path):
         finally:
             await store.shutdown()
     asyncio.run(scenario())
+
+
+def test_bundled_lock_covers_manifests():
+    from worker.manifests import load_manifests
+
+    lock = REAL_BUNDLED_METADATA()
+    manifests = load_manifests(str(Path(__file__).parents[1] / 'models'))
+    for manifest in manifests:
+        for device in ('cuda', 'rocm', 'cpu', 'mps'):
+            for ref in model_store.repo_refs(manifest, device):
+                entry = lock['repos'][f'{ref.repo}@{ref.revision}']
+                assert entry['files'] and 'gated' in entry and 'blobs' in entry
+                if ref.kind == 'pipeline':
+                    assert 'model_index' in entry
+                    if entry['model_index'] is None:
+                        assert 'model_index.json' not in dict(entry['files'])
+        if 'upscale' in manifest.capabilities:
+            for url, _ in model_store.upscale_targets(manifest, '/tmp'):
+                assert lock['urls'][url] > 0
+
+
+def test_offline_bundled_cache_adoption(tmp_path, monkeypatch):
+    from worker.manifests import load_manifests
+
+    manifest = next(m for m in load_manifests(str(Path(__file__).parents[1] / 'models'))
+                    if m.source == 'segmind/SSD-1B')
+    monkeypatch.setattr(model_store, 'plan_items', REAL_PLAN_ITEMS)
+    monkeypatch.setattr(model_store, 'bundled_hub_metadata', REAL_BUNDLED_METADATA)
+    monkeypatch.setattr(model_store, 'hub_file_text', _offline)
+    items, _ = model_store.plan_items(manifest, str(tmp_path), 'cpu')
+    assert items
+    for item in items:
+        item.path.parent.mkdir(parents=True, exist_ok=True)
+        with item.path.open('wb') as output:
+            output.truncate(item.size)
+    missing = items[0].path
+    missing.unlink()
+    assert model_store.adopt_legacy(manifest, str(tmp_path), 'cpu') is False
+    with missing.open('wb') as output:
+        output.truncate(items[0].size + 1)
+    assert model_store.adopt_legacy(manifest, str(tmp_path), 'cpu') is False
+    with missing.open('wb') as output:
+        output.truncate(items[0].size)
+    assert model_store.adopt_legacy(manifest, str(tmp_path), 'cpu') is True
+
+
+def test_missing_marker_file_dropped_at_start_and_before_load(tmp_path):
+    async def check():
+        manifest = pipeline_manifest()
+        path = tmp_path / 'weight'
+        path.write_bytes(b'123')
+        model_store._write_marker(manifest.id, {
+            'state': 'installed', 'fingerprint': model_store._fingerprint(manifest),
+            'files': [{'path': str(path), 'size': 3}],
+        })
+        store = ModelStore([manifest], SimulatedEngine(0.01), str(tmp_path))
+        await store.scan()
+        assert manifest.id in store.installed
+        path.unlink()
+        sent = []
+        async def send(message):
+            sent.append(message)
+        store.attach(send, lambda _: False)
+        assert not await store.verify_for_load(manifest.id)
+        assert manifest.id not in store.installed
+        assert model_store._read_marker(manifest.id) is None
+        assert any(m['type'] == 'models_changed' for m in sent)
+        await store.close()
+        model_store._write_marker(manifest.id, {
+            'state': 'installed', 'fingerprint': model_store._fingerprint(manifest),
+            'files': [{'path': str(path), 'size': 3}],
+        })
+        await store.scan()
+        assert manifest.id not in store.installed
+        assert model_store._read_marker(manifest.id) is None
+    asyncio.run(check())
+
+
+def test_load_command_refuses_deleted_shared_file(tmp_path):
+    manifest = pipeline_manifest()
+    file = tmp_path / 'weight'
+    file.write_bytes(b'abc')
+    model_store._write_marker(manifest.id, {
+        'state': 'installed', 'fingerprint': model_store._fingerprint(manifest),
+        'files': [{'path': str(file), 'size': 3}],
+    })
+    engine = FakeEngine()
+    store = ModelStore([manifest], engine, str(tmp_path))
+
+    def load_command(_index):
+        file.unlink()
+        return {'type': 'load_model', 'model_id': manifest.id, 'request_id': 'load-1'}
+
+    fleet = ScriptedFleet('w-load', [(0, load_command)], protocol_version=5,
+                          settle_on=lambda raw: '"gpu_error"' in raw)
+
+    async def check():
+        await store.scan()
+        await serve_connection(fleet, Settings(worker_id='w-load', models_dir=str(tmp_path)),
+                               [manifest], engine, store)
+
+    asyncio.run(check())
+    replies = [json.loads(item) for item in fleet.sent]
+    error = next(item for item in replies if item['type'] == 'gpu_error')
+    assert error['reason'] == f'{manifest.id} is not installed'
+    assert manifest.id not in store.installed
+    assert model_store._read_marker(manifest.id) is None
+    assert any(item['type'] == 'models_changed' and not item['models'] for item in replies)

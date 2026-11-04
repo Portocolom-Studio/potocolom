@@ -72,6 +72,8 @@ services:
     volumes:
       - models:/models
       # Downloaded model weights survive container recreation.
+      # Replace the named volume with your host cache to share existing models:
+      # - /path/to/huggingface:/root/.cache/huggingface
       - hf-cache:/root/.cache/huggingface
     deploy:
       resources:
@@ -106,6 +108,8 @@ services:
       HIP_VISIBLE_DEVICES:
     volumes:
       - models:/models
+      # Replace the named volume with your host cache to share existing models:
+      # - /path/to/huggingface:/root/.cache/huggingface
       - hf-cache:/root/.cache/huggingface
     devices:
       - /dev/kfd

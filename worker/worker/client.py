@@ -1187,6 +1187,9 @@ async def _serve_protocol5(
                     sessions.submit(session_id, revision, message[FRAME_HEADER_BYTES:])
                 else:
                     control = json.loads(message)
+                    if (store is not None and control.get("type") in
+                            {"dispatch_job", "open_session", "load_model"}):
+                        await store.verify_for_load(control.get("model_id", ""))
                     refusal = unavailable_model_report(control, by_id)
                     if refusal is not None:
                         await ws.send(json.dumps(refusal))
@@ -1220,7 +1223,12 @@ async def _serve_protocol5(
                             "gpu": gpu,
                         }))
                     elif control["type"] == "load_model":
-                        await _gpu_load(ws, engine, by_id, control)
+                        if control["model_id"] not in by_id:
+                            await ws.send(json.dumps({"type": "gpu_error",
+                                                      "request_id": control["request_id"],
+                                                      "reason": f"{control['model_id']} is not installed"}))
+                        else:
+                            await _gpu_load(ws, engine, by_id, control)
                     elif control["type"] == "unload_model":
                         await _gpu_unload(ws, engine, control)
                     elif control["type"] in STORE_COMMANDS and store is not None:
@@ -1317,6 +1325,8 @@ async def _serve_protocol6(
 
     async def apply_command(command: dict[str, Any]) -> tuple[str, str | None]:
         kind = command["type"]
+        if store is not None and kind in {"open_session", "dispatch_job"}:
+            await store.verify_for_load(command.get("model_id", ""))
         if kind == "open_session":
             identity = _command_identity(command)
             refusal = unavailable_model_report(command, by_id)

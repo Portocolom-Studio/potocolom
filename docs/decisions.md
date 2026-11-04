@@ -2294,3 +2294,7 @@ in the build, while this route does not.
 ## Model store rollout and legacy caches
 
 Upgrade the API before workers. Legacy caches are adopted only after Hub metadata verifies the exact download plan; a permanently offline cache cannot be adopted. A loose directory walk was rejected because a partial cache could be marked installed. A legacy hello for unsignalled APIs was rejected because hello precedes the API signal.
+
+## Bundled Hub metadata lets the worker adopt models offline
+
+The worker ships the pinned Hub listings, pipeline indexes and upscaler sizes needed to reproduce its installation plans without a network connection. This supersedes only the statement in “Model store rollout and legacy caches” that a permanently offline cache cannot be adopted. Exact file names and sizes remain required. Scanning extra cache folders and importing them was rejected in favor of sharing through `HF_HOME`; a loose directory walk remains rejected. Hashing every file at startup was rejected because tens of gigabytes can take minutes; the existing exact plan and size checks remain the bar.
