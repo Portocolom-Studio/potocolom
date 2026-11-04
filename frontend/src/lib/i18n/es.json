@@ -1246,5 +1246,17 @@
 	"app.model_management.action_install": "Instalar",
 	"app.model_management.dismiss": "Descartar",
 	"app.model_management.hardware": "{gpu} - {vram} VRAM",
-	"app.model_management.announce_not_running": "{model}: No hay ninguna descarga en curso"
+	"app.model_management.announce_not_running": "{model}: No hay ninguna descarga en curso",
+	"app.model_management.disk_usage": "Disco del worker",
+	"app.model_management.used": "Usado",
+	"app.model_management.free": "Libre",
+	"app.model_management.preview": "Vista previa de instalación",
+	"app.model_management.download_size": "Descarga",
+	"app.model_management.vram": "VRAM necesaria",
+	"app.model_management.installed": "Instalado",
+	"app.model_management.not_installed": "No instalado",
+	"app.model_management.access_badge": "Necesita acceso a Hugging Face",
+	"app.model_management.access_help": "Acepta la licencia en la página del modelo y configura HF_TOKEN para el worker. Después, inténtalo de nuevo.",
+	"app.model_management.queued": "En cola",
+	"app.model_management.downloading": "Descargando"
 }

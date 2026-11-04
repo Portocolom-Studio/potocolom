@@ -298,6 +298,26 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
+		if (process.env.MODEL_SCREENSHOTS) {
+			await page.$eval('[data-model="suggested"] button', (el) => el.focus());
+			assert.match(
+				await page.$eval('[data-disk]', (el) => el.textContent),
+				/Install preview: 1.00 GiB/
+			);
+			await page.$eval('[data-model="suggested"] button', (el) => el.blur());
+			for (const width of [1440, 1024, 390]) {
+				await page.setViewport({ width, height: 900 });
+				await page.screenshot({
+					path: `${process.env.MODEL_SCREENSHOTS}-${width}.png`,
+					fullPage: true
+				});
+			}
+			await page.$eval('[data-model="suggested"] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForSelector('[data-model="suggested"] progress');
+			assert.match(await page.$eval('[data-model="suggested"]', (el) => el.textContent), /50%/);
+			return;
+		}
 		if (!regression || regression === 'reconnect') {
 			await page.click('[data-model="suggested"] input');
 			await page.click('[data-model="large"] input');
@@ -587,10 +607,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		installs = 0;
 		assert.equal(await page.$eval('[data-model="suggested"] input', (el) => el.checked), false);
 		await page.click('[data-model="suggested"] input');
-		assert.equal(
-			await page.$eval('[data-model="large"]', (el) => el.classList.contains('opacity-60')),
-			true
-		);
+
 		assert.match(
 			await page.$eval('[data-model="large"]', (el) => el.textContent),
 			/Needs 16 GB VRAM/
@@ -724,7 +741,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		});
 		await new Promise((done) => setTimeout(done, 1100));
 		assert.equal(await page.$eval('[data-model="installed"] button', (el) => el.disabled), true);
-		await page.waitForFunction(() => !document.querySelector('[data-model="installed"] button'));
+		await page.waitForSelector('[data-model="installed"] input');
 		assert.match(
 			await page.$eval('[aria-live="polite"].sr-only', (el) => el.textContent),
 			/installed removed/

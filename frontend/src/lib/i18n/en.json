@@ -1246,5 +1246,17 @@
 	"app.model_management.action_install": "Install",
 	"app.model_management.dismiss": "Dismiss",
 	"app.model_management.hardware": "{gpu} - {vram} VRAM",
-	"app.model_management.announce_not_running": "{model}: No download running"
+	"app.model_management.announce_not_running": "{model}: No download running",
+	"app.model_management.disk_usage": "Worker disk",
+	"app.model_management.used": "Used",
+	"app.model_management.free": "Free",
+	"app.model_management.preview": "Install preview",
+	"app.model_management.download_size": "Download",
+	"app.model_management.vram": "VRAM needed",
+	"app.model_management.installed": "Installed",
+	"app.model_management.not_installed": "Not installed",
+	"app.model_management.access_badge": "Needs Hugging Face access",
+	"app.model_management.access_help": "Accept the licence on the model page and set HF_TOKEN for the worker. Then retry.",
+	"app.model_management.queued": "Queued",
+	"app.model_management.downloading": "Downloading"
 }

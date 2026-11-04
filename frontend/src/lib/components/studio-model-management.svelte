@@ -11,6 +11,7 @@
 		initialSelection
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
+	import { HardDrive, MemoryStick } from '@lucide/svelte';
 
 	type Download = {
 		kind: 'install' | 'remove' | 'cancel';
@@ -61,6 +62,7 @@
 	let pending = $state<Record<string, Pending>>({});
 	let actionErrors = $state<Record<string, string>>({});
 	let announcement = $state('');
+	let preview = $state<{ worker: string; model: string } | null>(null);
 	let refreshVersion = 0;
 	let root: HTMLDivElement;
 	const key = (worker: string, model: string) => `${worker}\u0000${model}`;
@@ -249,10 +251,10 @@
 		if (action === 'install')
 			announcement = t('app.model_management.announce_started').replace('{model}', model.name);
 	}
-	async function install(worker: Worker) {
+	async function install(worker: Worker, only?: Model) {
 		const models = worker.models.filter(
 			(m) =>
-				(selected[worker.worker_id] ?? []).includes(m.id) &&
+				(only ? m.id === only.id : (selected[worker.worker_id] ?? []).includes(m.id)) &&
 				!m.installed &&
 				!m.needs_token &&
 				!m.download?.state?.match(/^(queued|downloading)$/) &&
@@ -277,7 +279,9 @@
 				);
 			}
 		} catch (cause) {
-			const model = models.find((m) => (selected[worker.worker_id] ?? []).includes(m.id));
+			const model = models.find((m) =>
+				only ? m.id === only.id : (selected[worker.worker_id] ?? []).includes(m.id)
+			);
 			if (model)
 				actionErrors[actionKey(worker.worker_id, model.id, 'install')] =
 					cause instanceof Error ? cause.message : String(cause);
@@ -348,22 +352,61 @@
 									: formatSize(worker.hardware.vram_total_bytes)
 							)}
 					</p>
-					<label
-						>{t('app.model_management.disk')}: {formatSize(free)} / {formatSize(
-							worker.hardware.disk_total_bytes
-						)}<progress
-							class="block w-full"
-							value={free}
-							max={worker.hardware.disk_total_bytes || 1}
-						></progress></label
-					>
+					{@const total = worker.hardware.disk_total_bytes}
+					{@const previewModel =
+						preview?.worker === worker.worker_id
+							? worker.models.find((m) => m.id === preview?.model)
+							: undefined}
+					{@const amount = previewModel?.download_bytes ?? 0}
+					{@const previewAllowed =
+						previewModel &&
+						selectionSpace(free, [previewModel.download_bytes], reserved(worker)).allowed}
+					<div class="space-y-2 rounded-lg border bg-card p-4" data-disk>
+						<div class="flex justify-between gap-3 text-sm">
+							<strong>{t('app.model_management.disk_usage')}</strong><span>{formatSize(total)}</span
+							>
+						</div>
+						<div class="flex h-3 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+							<div
+								class="bg-foreground/60"
+								style:width={`${(Math.max(0, total - free) / (total || 1)) * 100}%`}
+							></div>
+							{#if previewModel && previewModel.download_bytes != null}<div
+									class:bg-primary={previewAllowed}
+									class:bg-destructive={!previewAllowed}
+									style:width={`${(Math.min(free, amount) / (total || 1)) * 100}%`}
+								></div>{/if}
+						</div>
+						<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
+							<span
+								><span class="mr-1 inline-block size-2 rounded-full bg-foreground/60"></span>{t(
+									'app.model_management.used'
+								)}: {formatSize(Math.max(0, total - free))}</span
+							>
+							<span
+								><span class="mr-1 inline-block size-2 rounded-full bg-muted"></span>{t(
+									'app.model_management.free'
+								)}: {formatSize(free)}</span
+							>
+							{#if previewModel}<span class:text-destructive={!previewAllowed}
+									>{t('app.model_management.preview')}: {previewModel.download_bytes == null
+										? t('app.model_management.unknown')
+										: formatSize(amount)}{!previewAllowed
+										? ` · ${t('app.model_management.margin')}`
+										: ''}</span
+								>{/if}
+						</div>
+					</div>
 				{/if}
-				<div class="space-y-3">
+				<div class="model-grid">
 					{#each worker.models as model (model.id)}
 						{@const operation = pending[key(worker.worker_id, model.id)]}
 						{@const active =
 							model.download?.state === 'queued' || model.download?.state === 'downloading'}
-						<div class="rounded-md border p-4" class:opacity-60={!model.fits} data-model={model.id}>
+						<div
+							class="flex min-w-0 flex-col gap-3 rounded-lg border bg-card p-4"
+							data-model={model.id}
+						>
 							<div class="flex flex-wrap items-center gap-2">
 								{#if !model.installed && !active && !pending[key(worker.worker_id, model.id)]}<input
 										type="checkbox"
@@ -376,26 +419,52 @@
 								{#if model.suggested}<span>{t('app.model_management.suggested')}</span>{/if}
 							</div>
 							<p class="text-muted-foreground text-sm">
-								{model.capabilities.join(', ')} - {model.tier} - {model.license_id ||
-									t('app.model_management.unknown')} - {model.download_bytes == null
-									? t('app.model_management.unknown')
-									: formatSize(model.download_bytes)}
+								{model.capabilities.map((capability) => capability.replaceAll('_', ' ')).join(', ')} ·
+								{model.tier} · {model.license_id || t('app.model_management.unknown')}
 							</p>
+							<div class="grid grid-cols-2 gap-3 text-sm">
+								<div>
+									<span class="text-muted-foreground flex items-center gap-1"
+										><HardDrive size={15} aria-hidden="true" />
+										{t('app.model_management.download_size')}</span
+									><strong
+										>{model.download_bytes == null
+											? t('app.model_management.unknown')
+											: formatSize(model.download_bytes)}</strong
+									>
+								</div>
+								<div>
+									<span class="text-muted-foreground flex items-center gap-1"
+										><MemoryStick size={15} aria-hidden="true" />
+										{t('app.model_management.vram')}</span
+									><strong>{model.min_vram_gb} GB</strong>
+								</div>
+							</div>
+							{#if model.installed}<p class="text-sm font-medium">
+									{t('app.model_management.installed')}
+								</p>{:else if !active && !operation && model.download?.state !== 'failed'}<p
+									class="text-muted-foreground text-sm"
+								>
+									{t('app.model_management.not_installed')}
+								</p>{/if}
 							{#if !model.fits}<p>
 									{t('app.model_management.needs_vram').replace(
 										'{vram}',
 										String(model.min_vram_gb)
 									)}
 								</p>{/if}
-							{#if model.needs_token}<p>
-									{t('app.model_management.token')}
+							{#if model.needs_token || model.download?.error === 'needs_token'}<div
+									class="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+								>
+									<strong>{t('app.model_management.access_badge')}</strong>
+									<p class="mt-1">{t('app.model_management.access_help')}</p>
 									<a
 										class="underline"
 										href="https://huggingface.co/docs/hub/security-tokens"
 										target="_blank"
 										rel="noreferrer">{t('app.model_management.docs')}</a
 									>
-								</p>{/if}
+								</div>{/if}
 							{#if (operation && (operation.action === 'remove' || !active || !answers(model.download, operation))) || (active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}
 								<p role="status">{t('app.model_management.waiting')}</p>
 								{#if operation?.action === 'install' && !(active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}<Button
@@ -406,7 +475,14 @@
 									>{/if}
 							{/if}
 							{#if active && model.download?.kind === 'install' && (!operation || (operation.action !== 'remove' && answers(model.download, operation)))}<label
-									>{formatSize(model.download.bytes_done)} / {formatSize(
+									>{model.download.state === 'queued'
+										? t('app.model_management.queued')
+										: t('app.model_management.downloading')} · {model.download.bytes_total
+										? Math.min(
+												100,
+												Math.round((model.download.bytes_done / model.download.bytes_total) * 100)
+											)
+										: 0}% · {formatSize(model.download.bytes_done)} / {formatSize(
 										model.download.bytes_total
 									)}<progress
 										class="block w-full"
@@ -455,6 +531,30 @@
 										>
 									</p>{/if}
 							{/each}
+							{#if !model.installed && !active && !operation && !(model.download?.kind === 'remove' && model.download.state === 'failed' && model.download.error === 'remove_failed')}
+								{@const free = worker.disk_free_bytes ?? worker.hardware?.disk_free_bytes}
+								{@const allowed =
+									free != null &&
+									!model.needs_token &&
+									selectionSpace(free, [model.download_bytes], reserved(worker)).allowed}
+								<Button
+									variant="outline"
+									class="mt-auto aria-disabled:opacity-60"
+									aria-disabled={!allowed || busy}
+									onclick={() => {
+										if (allowed && !busy) void install(worker, model);
+									}}
+									onmouseenter={() => (preview = { worker: worker.worker_id, model: model.id })}
+									onmouseleave={() => (preview = null)}
+									onfocus={() => (preview = { worker: worker.worker_id, model: model.id })}
+									onblur={() => (preview = null)}
+									>{model.download?.state === 'failed' &&
+									model.download.error !== 'cancelled' &&
+									model.download.error !== 'not_running'
+										? t('app.model_management.retry')
+										: t('app.model_management.action_install')}</Button
+								>
+							{/if}
 							{#if model.installed || (model.download?.kind === 'remove' && model.download.state === 'failed' && model.download.error === 'remove_failed')}<Button
 									variant="outline"
 									disabled={busy || !!pending[key(worker.worker_id, model.id)]}
@@ -500,3 +600,11 @@
 		</section>
 	{/each}
 </div>
+
+<style>
+	.model-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+		gap: 1rem;
+	}
+</style>
