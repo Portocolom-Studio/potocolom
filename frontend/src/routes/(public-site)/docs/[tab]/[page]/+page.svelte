@@ -850,6 +850,9 @@
 	.prose :global(pre code.language-text) {
 		white-space: pre;
 	}
+	.prose :global(.codeblock:has(code.language-text) .codeblock-bar > span::after) {
+		content: ': scroll to read';
+	}
 
 	/* Callouts */
 	.prose :global(.callout) {

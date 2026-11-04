@@ -363,6 +363,7 @@ def test_higher_same_worker_command_waits_behind_a_held_journal_head(monkeypatch
         ("attempt_id", str(uuid.uuid4())),
         ("control_generation", 99),
     ],
+    ids=("wrong-session", "wrong-attempt", "wrong-control-generation"),
 )
 def test_wrong_realtime_subject_ack_is_ignored(accounts, field, replacement):
     worker_id = f"s1-ack-session-{uuid.uuid4()}"
