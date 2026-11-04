@@ -4,13 +4,34 @@ export function formatSize(bytes: number, locale: string): string {
 	return `${new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(bytes / GIB)} GiB`;
 }
 
-export function selectionSpace(free: number, sizes: (number | null)[], reserved = 0) {
-	const total = sizes.reduce<number>((sum, size) => sum + (size ?? 0), 0);
-	const freeAfter = free - reserved - total;
+export function knownSize(value: number | null | undefined): number | null {
+	return value != null && value > 0 ? value : null;
+}
+export function remainingReservation(
+	total: number | null,
+	fallback: number | null,
+	done: number
+): number | null {
+	const size = knownSize(total) ?? knownSize(fallback);
+	return size === null ? null : Math.max(0, size - done);
+}
+export function sumKnown(values: (number | null)[]): number | null {
+	return values.some((value) => value === null)
+		? null
+		: values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+}
+export function selectionSpace(
+	free: number | null,
+	sizes: (number | null)[],
+	reserved: number | null = 0
+) {
+	const total = sumKnown(sizes.map(knownSize));
+	const freeAfter =
+		free === null || reserved === null || total === null ? null : free - reserved - total;
 	return {
 		total,
 		freeAfter,
-		allowed: sizes.length > 0 && sizes.every((size) => size !== null) && freeAfter >= 5 * GIB
+		allowed: sizes.length > 0 && freeAfter !== null && freeAfter >= 5 * GIB
 	};
 }
 

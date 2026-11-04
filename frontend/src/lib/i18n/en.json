@@ -1261,5 +1261,9 @@
 	"app.model_management.access_badge": "Needs Hugging Face access",
 	"app.model_management.access_help": "Accept the licence on the model page and set HF_TOKEN for the worker. Then retry.",
 	"app.model_management.queued": "Queued",
-	"app.model_management.downloading": "Downloading"
+	"app.model_management.downloading": "Downloading",
+	"app.model_management.tier_draft": "Draft",
+	"app.model_management.tier_standard": "Standard",
+	"app.model_management.tier_premium": "Premium",
+	"app.model_management.unknown_reservation": "A queued or active download has an unknown size. Wait until its size is known."
 }

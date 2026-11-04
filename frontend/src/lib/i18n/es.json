@@ -1261,5 +1261,9 @@
 	"app.model_management.access_badge": "Necesita acceso a Hugging Face",
 	"app.model_management.access_help": "Acepta la licencia en la página del modelo y configura HF_TOKEN para el worker. Después, inténtalo de nuevo.",
 	"app.model_management.queued": "En cola",
-	"app.model_management.downloading": "Descargando"
+	"app.model_management.downloading": "Descargando",
+	"app.model_management.tier_draft": "Borrador",
+	"app.model_management.tier_standard": "Estándar",
+	"app.model_management.tier_premium": "Premium",
+	"app.model_management.unknown_reservation": "Una descarga en cola o activa tiene un tamaño desconocido. Espera a que se conozca su tamaño."
 }

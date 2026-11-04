@@ -293,11 +293,24 @@ test('model management selection, disk margin, progress, cancel and removal', as
 				op_id: op(0)
 			};
 		}
+		if (regression === 'spanish-labels')
+			worker.models[0].capabilities = ['text_to_image', 'image_to_image', 'upscale', 'realtime'];
+		if (regression === 'unknown-reservation') {
+			worker.models[1].download_bytes = null;
+			worker.models[1].download = {
+				kind: 'install',
+				state: 'queued',
+				bytes_done: 0,
+				bytes_total: 0,
+				error: null,
+				op_id: op(0)
+			};
+		}
 		if (regression === 'unknown-space') {
 			worker.disk_free_bytes = null;
 			worker.hardware.disk_free_bytes = null;
 		}
-		if (regression === 'spanish' || regression === 'locale-size')
+		if (regression === 'spanish' || regression === 'spanish-labels' || regression === 'locale-size')
 			await page.evaluateOnNewDocument(() => localStorage.setItem('locale', 'es'));
 		await page.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
 		await page.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
@@ -314,6 +327,59 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
+		if (regression === 'unknown-reservation') {
+			await page.click('[data-model="suggested"] input');
+			assert.match(
+				await page.$eval('[data-selection-footer]', (el) => el.textContent),
+				/Free after download: Unknown/
+			);
+			assert.match(
+				await page.$eval('[data-selection-footer]', (el) => el.textContent),
+				/queued or active download has an unknown size/
+			);
+			assert.equal(await page.$eval('[data-selection-footer] button', (el) => el.disabled), true);
+			assert.equal(
+				await page.$eval('[data-model="suggested"] button', (el) =>
+					el.getAttribute('aria-disabled')
+				),
+				'true'
+			);
+			assert.match(await page.$eval('[data-model="large"]', (el) => el.textContent), /Unknown/);
+			return;
+		}
+		if (regression === 'spanish-labels') {
+			const text = await page.$eval('[data-model-list]', (el) => el.textContent);
+			assert.match(text, /Texto a imagen/);
+			assert.match(text, /Imagen a imagen/);
+			assert.match(text, /Ampliar/);
+			assert.match(text, /Tiempo real/);
+			assert.match(text, /Estándar/);
+			assert.doesNotMatch(
+				text,
+				/Text to image|text to image|standard|Download selected|Not installed|Suggested|Install|Remove|Worker disk/
+			);
+			return;
+		}
+		if (regression === 'dismiss-focus') {
+			failNextInstall = true;
+			await page.$eval('[data-model="suggested"] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForFunction(() =>
+				document.querySelector('[data-model="suggested"] [role="alert"] button')
+			);
+			await page.$eval('[data-model="suggested"] [role="alert"] button', (el) => el.focus());
+			await page.keyboard.press('Enter');
+			await page.waitForFunction(
+				() => !document.querySelector('[data-model="suggested"] [role="alert"] button')
+			);
+			assert.equal(
+				await page.evaluate(() =>
+					document.activeElement.matches('[data-model="suggested"] [data-heading]')
+				),
+				true
+			);
+			return;
+		}
 		if (regression === 'locale-size') {
 			assert.match(await page.$eval('[data-model="large"]', (el) => el.textContent), /2,00 GiB/);
 			assert.match(await page.$eval('[data-disk]', (el) => el.textContent), /7,00 GiB/);
@@ -411,8 +477,33 @@ test('model management selection, disk margin, progress, cancel and removal', as
 				{ width: 1024, height: 768 }
 			]) {
 				await page.setViewport(viewport);
-				if (!(await page.$('[data-selection-footer]')))
+				if (await page.$('[data-selection-footer]'))
 					await page.click('[data-model="suggested"] input');
+				await page.$eval('[data-model="suggested"] input', (el) => {
+					el.focus();
+					const scroller = el.closest('[data-model-scroller]');
+					const bounds = scroller.getBoundingClientRect();
+					scroller.scrollBy(0, el.getBoundingClientRect().bottom - bounds.bottom + 10);
+				});
+				await page.keyboard.press('Space');
+				await page.waitForSelector('[data-selection-footer]');
+				await new Promise((resolve) => setTimeout(resolve, 150));
+				assert.equal(
+					await page.evaluate(() => {
+						const focus = document.activeElement.getBoundingClientRect();
+						const footer = document
+							.querySelector('[data-selection-footer]')
+							.getBoundingClientRect();
+						return (
+							focus.bottom <= footer.top ||
+							focus.top >= footer.bottom ||
+							focus.right <= footer.left ||
+							focus.left >= footer.right
+						);
+					}),
+					true,
+					`first selection stays visible at ${viewport.width}px`
+				);
 				const count = await page.evaluate(() => {
 					const controls = [
 						...document.querySelectorAll(

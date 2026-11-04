@@ -9,7 +9,10 @@
 		shouldPoll,
 		pollInterval,
 		initialSelection,
-		diskPreview
+		diskPreview,
+		knownSize,
+		remainingReservation,
+		sumKnown
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
 	import { HardDrive, MemoryStick, Check, Download, AlertTriangle } from '@lucide/svelte';
@@ -76,27 +79,55 @@
 		download?.op_id != null && download.op_id >= operation.opId;
 	const active = (model: Model) => shouldPoll([model.download?.state ?? '']);
 	function reserved(worker: Worker) {
-		return worker.models.reduce((sum, model) => {
-			if (
-				!(active(model) && model.download?.kind === 'install') &&
-				pending[key(worker.worker_id, model.id)]?.action !== 'install'
-			)
-				return sum;
-			return (
-				sum +
-				Math.max(
-					0,
-					active(model) &&
-						model.download?.kind === 'install' &&
-						(!pending[key(worker.worker_id, model.id)] ||
-							answers(model.download, pending[key(worker.worker_id, model.id)]))
-						? (model.download?.bytes_total || model.download_bytes || 0) -
-								(model.download?.bytes_done ?? 0)
-						: (model.download_bytes ?? 0)
-				)
-			);
-		}, 0);
+		return sumKnown(
+			worker.models.flatMap((model) => {
+				const operation = pending[key(worker.worker_id, model.id)];
+				const current = active(model) && model.download?.kind === 'install';
+				if (!current && operation?.action !== 'install') return [];
+				if (current && model.download && (!operation || answers(model.download, operation)))
+					return [
+						remainingReservation(
+							model.download.bytes_total,
+							model.download_bytes,
+							model.download.bytes_done
+						)
+					];
+				return [knownSize(model.download_bytes)];
+			})
+		);
 	}
+	function capabilityLabel(capability: string) {
+		switch (capability) {
+			case 'text_to_image':
+				return t('app.models.cap_text_to_image');
+			case 'image_to_image':
+				return t('app.models.cap_image_to_image');
+			case 'upscale':
+				return t('app.models.cap_upscale');
+			case 'realtime':
+				return t('app.models.cap_realtime');
+			default:
+				return capability;
+		}
+	}
+	function tierLabel(tier: string) {
+		switch (tier) {
+			case 'draft':
+				return t('app.model_management.tier_draft');
+			case 'standard':
+				return t('app.model_management.tier_standard');
+			case 'premium':
+				return t('app.model_management.tier_premium');
+			default:
+				return tier;
+		}
+	}
+	async function retryRefresh() {
+		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		await refresh();
+		await recoverFocus(focused);
+	}
+
 	function schedule() {
 		clearTimeout(timer);
 		const interval = pollInterval(
@@ -117,9 +148,9 @@
 			if (!alive || version !== refreshVersion) return;
 			const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 			const row = focused?.closest<HTMLElement>('[data-model]');
-			const workerId = row?.closest<HTMLElement>('[data-worker]')?.dataset.worker;
+			const workerId = focused?.closest<HTMLElement>('[data-worker]')?.dataset.worker;
 			const modelId = row?.dataset.model;
-			const focusedHere = !!row && root.contains(row);
+			const focusedHere = !!focused && root.contains(focused);
 			const oldWorkers = workers;
 			workers = data;
 			const present = new Set<string>();
@@ -214,19 +245,7 @@
 			error = false;
 			await tick();
 			if (!alive || version !== refreshVersion) return;
-			if (
-				focused &&
-				focusedHere &&
-				!focused.isConnected &&
-				document.activeElement === document.body
-			) {
-				const target = [...root.querySelectorAll<HTMLElement>('[data-worker]')]
-					.find((el) => el.dataset.worker === workerId)
-					?.querySelector<HTMLElement>(
-						`[data-model="${CSS.escape(modelId ?? '')}"] [data-heading]`
-					);
-				(target ?? root)?.focus();
-			}
+			if (focusedHere) await recoverFocus(focused, workerId, modelId);
 		} catch {
 			if (alive && version === refreshVersion) error = true;
 		} finally {
@@ -247,6 +266,7 @@
 					(el) => el.offsetHeight
 				)
 			);
+			if (document.activeElement instanceof HTMLElement) revealFocus(document.activeElement);
 			scroller.style.scrollPaddingBottom = `${height + 8}px`;
 		};
 		const observer = new ResizeObserver(update);
@@ -258,8 +278,7 @@
 			}
 		};
 	}
-	function revealFocus(event: FocusEvent) {
-		const target = event.target;
+	function revealFocus(target: EventTarget | null) {
 		if (!(target instanceof HTMLElement)) return;
 		const footer = target
 			.closest('[data-worker]')
@@ -299,18 +318,30 @@
 		if (action === 'install')
 			announcement = t('app.model_management.announce_started').replace('{model}', model.name);
 	}
-	async function recoverActionFocus(focused: HTMLElement | null, worker: Worker, model: Model) {
+	async function recoverFocus(focused: HTMLElement | null, workerId?: string, modelId?: string) {
 		await tick();
-		if (!focused || document.activeElement !== document.body) return;
+		if (!focused) return;
 		if (focused.isConnected && !focused.matches(':disabled, [aria-disabled="true"]')) {
-			focused.focus();
-		} else {
-			root
-				.querySelector<HTMLElement>(
-					`[data-worker="${CSS.escape(worker.worker_id)}"] [data-model="${CSS.escape(model.id)}"] [data-heading]`
-				)
-				?.focus();
+			if (document.activeElement === document.body) focused.focus();
+		} else if (document.activeElement === document.body || document.activeElement === focused) {
+			const worker = [...root.querySelectorAll<HTMLElement>('[data-worker]')].find(
+				(el) => el.dataset.worker === workerId
+			);
+			const model = [...(worker?.querySelectorAll<HTMLElement>('[data-model]') ?? [])].find(
+				(el) => el.dataset.model === modelId
+			);
+			(
+				model?.querySelector<HTMLElement>('[data-heading]') ??
+				worker?.querySelector<HTMLElement>('h2') ??
+				root
+			).focus();
 		}
+		if (document.activeElement instanceof HTMLElement) revealFocus(document.activeElement);
+	}
+	async function dismiss(worker: Worker, model: Model, action: string) {
+		const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+		delete actionErrors[actionKey(worker.worker_id, model.id, action)];
+		await recoverFocus(focused, worker.worker_id, model.id);
 	}
 	async function install(worker: Worker, only?: Model) {
 		const models = worker.models.filter(
@@ -352,7 +383,7 @@
 			busy = false;
 			clearTimeout(timer);
 			await refresh();
-			if (models[0]) await recoverActionFocus(focused, worker, models[0]);
+			if (models[0]) await recoverFocus(focused, worker.worker_id, models[0].id);
 		}
 	}
 	async function change(worker: Worker, model: Model, action: 'cancel' | 'remove') {
@@ -373,7 +404,7 @@
 			busy = false;
 			clearTimeout(timer);
 			await refresh();
-			await recoverActionFocus(focused, worker, model);
+			await recoverFocus(focused, worker.worker_id, model.id);
 		}
 	}
 	onMount(() => {
@@ -388,14 +419,20 @@
 
 {#if loading}<p role="status">{t('app.model_management.loading')}</p>{/if}
 {#if error}<p role="alert">{t('app.model_management.error')}</p>
-	<Button variant="outline" onclick={() => refresh()}>{t('app.model_management.retry')}</Button
+	<Button variant="outline" onclick={() => retryRefresh()}>{t('app.model_management.retry')}</Button
 	>{/if}
 {#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
 <p class="sr-only" aria-live="polite">{announcement}</p>
-<div bind:this={root} class="space-y-8" data-model-list tabindex="-1" onfocusin={revealFocus}>
+<div
+	bind:this={root}
+	class="space-y-8"
+	data-model-list
+	tabindex="-1"
+	onfocusin={(event) => revealFocus(event.target)}
+>
 	{#each workers as worker (worker.worker_id)}
 		<section class="space-y-4" aria-label={worker.worker_id} data-worker={worker.worker_id}>
-			<h2 class="text-lg font-semibold">{worker.worker_id}</h2>
+			<h2 tabindex="-1" class="text-lg font-semibold">{worker.worker_id}</h2>
 			{#if !worker.manageable}<p>{t('app.model_management.update')}</p>
 			{:else}
 				{@const picks = worker.models.filter(
@@ -423,84 +460,99 @@
 							.replace('{gpu}', worker.hardware.gpu_name)
 							.replace(
 								'{vram}',
-								worker.hardware.vram_total_bytes == null
+								!knownSize(worker.hardware.vram_total_bytes)
 									? t('app.model_management.unknown')
-									: formatSize(worker.hardware.vram_total_bytes)
+									: formatSize(worker.hardware?.vram_total_bytes ?? 0)
 							)}
 					</p>
 					{@const total = worker.hardware.disk_total_bytes}
-					{@const previewModel =
-						preview?.worker === worker.worker_id
-							? worker.models.find(
-									(m) =>
-										m.id === preview?.model &&
-										!m.installed &&
-										!active(m) &&
-										!pending[key(worker.worker_id, m.id)]
-								)
-							: undefined}
-					{@const previewSizes = previewModel
-						? [previewModel.download_bytes]
-						: picks.map((m) => m.download_bytes)}
-					{@const previewSpace = previewSizes.length
-						? selectionSpace(free, previewSizes, reserved(worker))
-						: null}
-					{@const known = previewSizes.every((size) => size != null)}
-					{@const segments = diskPreview(total, free, reserved(worker), previewSpace?.total ?? 0)}
-					{@const used = segments.used}
-					{@const percent = total > 0 ? Math.round((used / total) * 100) : 0}
-					<div class="space-y-3 rounded-lg border bg-card p-4" data-disk>
-						<div class="flex justify-between gap-3 text-sm">
-							<strong>{t('app.model_management.disk_usage')}</strong><span
-								>{percent}% · {formatSize(total)}</span
+					{#if free != null && total > 0}
+						{@const previewModel =
+							preview?.worker === worker.worker_id
+								? worker.models.find(
+										(m) =>
+											m.id === preview?.model &&
+											!m.installed &&
+											!active(m) &&
+											!pending[key(worker.worker_id, m.id)]
+									)
+								: undefined}
+						{@const previewSizes = previewModel
+							? [previewModel.download_bytes]
+							: picks.map((m) => m.download_bytes)}
+						{@const previewSpace = previewSizes.length
+							? selectionSpace(free, previewSizes, reserved(worker))
+							: null}
+						{@const known = previewSizes.every((size) => knownSize(size) != null)}
+						{@const segments = diskPreview(
+							total,
+							free,
+							reserved(worker) ?? 0,
+							previewSpace?.total ?? 0
+						)}
+						{@const used = segments.used}
+						{@const percent = total > 0 ? Math.round((used / total) * 100) : 0}
+						<div class="space-y-3 rounded-lg border bg-card p-4" data-disk>
+							<div class="flex justify-between gap-3 text-sm">
+								<strong>{t('app.model_management.disk_usage')}</strong><span
+									>{new Intl.NumberFormat(getLocale()).format(percent)}% · {formatSize(total)}</span
+								>
+							</div>
+							<div
+								class="disk-track"
+								role="meter"
+								aria-label={t('app.model_management.disk_usage')}
+								aria-valuemin="0"
+								aria-valuenow={used}
+								aria-valuemax={total || 1}
+								aria-valuetext={`${new Intl.NumberFormat(getLocale()).format(percent)}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
 							>
+								<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
+								{#if segments.reserved > 0}<div
+										class="disk-reserved"
+										data-reserved
+										style:width={`${(segments.reserved / (total || 1)) * 100}%`}
+									></div>{/if}
+								{#if previewSpace && known && reserved(worker) !== null}<div
+										class="disk-preview"
+										class:over={!previewSpace.allowed}
+										style:width={`${(segments.selected / (total || 1)) * 100}%`}
+									></div>{/if}
+							</div>
+							<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
+								<span
+									><span class="disk-swatch disk-used"></span>{t('app.model_management.used')}: {formatSize(
+										used
+									)}</span
+								>
+								<span
+									><span class="disk-swatch disk-free"></span>{t('app.model_management.free')}: {formatSize(
+										free
+									)}</span
+								>
+								{#if reserved(worker) !== 0}<span
+										><span class="disk-swatch disk-reserved"></span>{t(
+											'app.model_management.reserved'
+										)}: {reserved(worker) === null
+											? t('app.model_management.unknown')
+											: formatSize(reserved(worker) ?? 0)}</span
+									>{/if}
+								{#if previewSpace}<span class:text-destructive={!previewSpace.allowed}
+										><span class="disk-swatch disk-preview" class:over={!previewSpace.allowed}
+										></span>{t('app.model_management.after_install').replace(
+											'{free}',
+											known && previewSpace.freeAfter !== null
+												? formatSize(previewSpace.freeAfter)
+												: t('app.model_management.unknown')
+										)}{!previewSpace.allowed
+											? ` · ${t(reserved(worker) === null ? 'app.model_management.unknown_reservation' : 'app.model_management.margin')}`
+											: ''}</span
+									>{/if}
+							</div>
 						</div>
-						<div
-							class="disk-track"
-							role="meter"
-							aria-label={t('app.model_management.disk_usage')}
-							aria-valuemin="0"
-							aria-valuenow={used}
-							aria-valuemax={total || 1}
-							aria-valuetext={`${percent}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
-						>
-							<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
-							{#if segments.reserved > 0}<div
-									class="disk-reserved"
-									data-reserved
-									style:width={`${(segments.reserved / (total || 1)) * 100}%`}
-								></div>{/if}
-							{#if previewSpace && known}<div
-									class="disk-preview"
-									class:over={!previewSpace.allowed}
-									style:width={`${(segments.selected / (total || 1)) * 100}%`}
-								></div>{/if}
-						</div>
-						<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
-							<span
-								><span class="disk-swatch disk-used"></span>{t('app.model_management.used')}: {formatSize(
-									used
-								)}</span
-							>
-							<span
-								><span class="disk-swatch disk-free"></span>{t('app.model_management.free')}: {formatSize(
-									free
-								)}</span
-							>
-							{#if reserved(worker) > 0}<span
-									><span class="disk-swatch disk-reserved"></span>{t(
-										'app.model_management.reserved'
-									)}: {formatSize(reserved(worker))}</span
-								>{/if}
-							{#if previewSpace}<span class:text-destructive={!previewSpace.allowed}
-									><span class="disk-swatch disk-preview" class:over={!previewSpace.allowed}
-									></span>{t('app.model_management.after_install').replace(
-										'{free}',
-										known ? formatSize(previewSpace.freeAfter) : t('app.model_management.unknown')
-									)}{!previewSpace.allowed ? ` · ${t('app.model_management.margin')}` : ''}</span
-								>{/if}
-						</div>
-					</div>
+					{:else}<p>
+							{t('app.model_management.disk_usage')}: {t('app.model_management.unknown')}
+						</p>{/if}
 				{/if}
 				<div class="model-grid">
 					{#each worker.models as model (model.id)}
@@ -527,7 +579,7 @@
 									>{/if}
 							</div>
 							<div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-								{#each [...model.capabilities.map( (capability) => capability.replaceAll('_', ' ') ), model.tier, model.license_id || t('app.model_management.unknown')] as chip}<span
+								{#each [...model.capabilities.map( (capability) => capabilityLabel(capability) ), tierLabel(model.tier), model.license_id || t('app.model_management.unknown')] as chip}<span
 										class="rounded-md border px-2 py-0.5">{chip}</span
 									>{/each}
 							</div>
@@ -537,16 +589,20 @@
 										><HardDrive size={15} aria-hidden="true" />
 										{t('app.model_management.download_size')}</span
 									><strong
-										>{model.download_bytes == null
+										>{knownSize(model.download_bytes) == null
 											? t('app.model_management.unknown')
-											: formatSize(model.download_bytes)}</strong
+											: formatSize(model.download_bytes ?? 0)}</strong
 									>
 								</div>
 								<div>
 									<span class="text-muted-foreground flex items-center gap-1"
 										><MemoryStick size={15} aria-hidden="true" />
 										{t('app.model_management.vram')}</span
-									><strong>{formatSize(model.min_vram_gb * GIB)}</strong>
+									><strong
+										>{knownSize(model.min_vram_gb) === null
+											? t('app.model_management.unknown')
+											: formatSize(model.min_vram_gb * GIB)}</strong
+									>
 								</div>
 							</div>
 							{#if model.installed}<Badge variant="outline" class="status-success"
@@ -570,16 +626,21 @@
 							{#if !model.fits}<div class="warning-callout">
 									<AlertTriangle size={16} class="shrink-0" aria-hidden="true" /><span
 										>{t(
-											worker.hardware?.vram_total_bytes == null
+											!knownSize(worker.hardware?.vram_total_bytes)
 												? 'app.model_management.needs_vram_unknown'
 												: 'app.model_management.needs_vram'
 										)
-											.replace('{vram}', formatSize(model.min_vram_gb * GIB))
+											.replace(
+												'{vram}',
+												knownSize(model.min_vram_gb) === null
+													? t('app.model_management.unknown')
+													: formatSize(model.min_vram_gb * GIB)
+											)
 											.replace(
 												'{gpu_vram}',
-												worker.hardware?.vram_total_bytes == null
+												!knownSize(worker.hardware?.vram_total_bytes)
 													? t('app.model_management.unknown')
-													: formatSize(worker.hardware.vram_total_bytes)
+													: formatSize(worker.hardware?.vram_total_bytes ?? 0)
 											)}</span
 									>
 								</div>{/if}
@@ -607,19 +668,20 @@
 							{/if}
 							{#if active && model.download?.kind === 'install' && (!operation || (operation.action !== 'remove' && answers(model.download, operation)))}<label
 									>{model.download.bytes_total
-										? Math.min(
-												100,
-												Math.round((model.download.bytes_done / model.download.bytes_total) * 100)
-											)
-										: 0}% · {formatSize(model.download.bytes_done)} / {formatSize(
-										model.download.bytes_total
-									)}<progress
+										? new Intl.NumberFormat(getLocale(), {
+												style: 'percent',
+												maximumFractionDigits: 0
+											}).format(Math.min(1, model.download.bytes_done / model.download.bytes_total))
+										: t('app.model_management.unknown')} · {formatSize(model.download.bytes_done)} / {model
+										.download.bytes_total
+										? formatSize(model.download.bytes_total)
+										: t('app.model_management.unknown')}<progress
 										class="block w-full"
 										aria-label={t('app.model_management.progress_label').replace(
 											'{model}',
 											model.name
 										)}
-										value={model.download.bytes_done}
+										value={model.download.bytes_total ? model.download.bytes_done : undefined}
 										max={model.download.bytes_total || 1}
 									></progress></label
 								><Button
@@ -653,9 +715,7 @@
 													? 'app.model_management.cancel'
 													: 'app.model_management.remove'
 										)}: {message}
-										<button
-											onclick={() =>
-												delete actionErrors[actionKey(worker.worker_id, model.id, action)]}
+										<button onclick={() => dismiss(worker, model, action)}
 											>{t('app.model_management.dismiss')}</button
 										>
 									</p>{/if}
@@ -670,7 +730,11 @@
 										id={`margin-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`}
 										class="text-sm text-muted-foreground"
 									>
-										{t('app.model_management.margin')}
+										{t(
+											reserved(worker) === null
+												? 'app.model_management.unknown_reservation'
+												: 'app.model_management.margin'
+										)}
 									</p>{/if}
 								<Button
 									variant="outline"
@@ -706,7 +770,9 @@
 					<div class="selection-footer" data-selection-footer use:footerSpace>
 						<div class="text-sm">
 							<strong
-								>{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
+								>{t('app.model_management.selected')}: {picks.some(
+									(m) => knownSize(m.download_bytes) == null
+								)
 									? t('app.model_management.unknown')
 									: formatSize(
 											picks.reduce((total, model) => total + (model.download_bytes ?? 0), 0)
@@ -714,12 +780,18 @@
 							>
 							<span class="text-muted-foreground">
 								· {t('app.model_management.free_after')}: {space == null ||
-								picks.some((m) => m.download_bytes == null)
+								picks.some((m) => knownSize(m.download_bytes) == null)
 									? t('app.model_management.unknown')
-									: formatSize(space.freeAfter)}</span
+									: space.freeAfter === null
+										? t('app.model_management.unknown')
+										: formatSize(space.freeAfter)}</span
 							>
 							{#if !space?.allowed}<p role="status" class="text-destructive">
-									{t('app.model_management.margin')}
+									{t(
+										reserved(worker) === null
+											? 'app.model_management.unknown_reservation'
+											: 'app.model_management.margin'
+									)}
 								</p>{/if}
 						</div>
 						<Button disabled={busy || !space?.allowed} onclick={() => install(worker)}
