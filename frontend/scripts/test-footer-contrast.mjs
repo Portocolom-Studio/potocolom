@@ -214,20 +214,6 @@ try {
 	);
 	await brokenHome.close();
 
-	const studio = await browser.newPage();
-	await studio.setViewport({ width: 1280, height: 900 });
-	await studio.goto(`${baseUrl}/app`, { waitUntil: 'networkidle0' });
-	await studio.waitForSelector('[data-slot="sidebar-container"]', { visible: true });
-	const studioHeight = await studio.$eval(
-		'[data-studio-shell] > div',
-		(shell) => shell.getBoundingClientRect().height
-	);
-	assert.equal(studioHeight, 900, 'studio shell fills the initial viewport');
-	assert.equal(await studio.$$('footer.horizon').then((items) => items.length), 0);
-	const documentHeight = await studio.evaluate(() => document.documentElement.scrollHeight);
-	assert.equal(documentHeight, 900, 'studio does not scroll the page');
-	await studio.close();
-
 	// The band is a particle sea drawn on a canvas over a CSS glow and fade.
 	// Check the live sea first: screenshot the copyright line with its text
 	// hidden, and compare the text colour with the lightest background behind

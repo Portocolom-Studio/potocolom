@@ -21,6 +21,8 @@
 		"test:views": "node scripts/test-studio-view-state.mjs",
 		"test:owner-focus": "node scripts/test-owner-focus.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",
+		"test:self-hosted": "node scripts/test-self-hosted-build.mjs",
+		"test:studio-shell": "node scripts/test-studio-shell.mjs",
 		"format": "prettier --write .",
 		"generate:hero-preview": "node scripts/generate-hero-preview.mjs",
 		"generate:gallery-images": "node scripts/generate-gallery-images.mjs",

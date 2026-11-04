@@ -26,7 +26,7 @@ function startServer({ port, strictPort = true }) {
 		{
 			cwd: root,
 			stdio: 'inherit',
-			env: { ...process.env, FORCE_COLOR: '1' }
+			env: { ...process.env, FORCE_COLOR: '1', PUBLIC_SITE_MODE: 'landing' }
 		}
 	);
 	children.push(child);
