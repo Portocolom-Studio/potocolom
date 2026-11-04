@@ -254,7 +254,7 @@
 	}
 </script>
 
-{#if stripItems.length > 0}
+{#if stripItems.length > 0 || studio.historyHasMore || studio.historyExtended}
 	<div class="flex min-w-0 w-full items-stretch gap-2">
 		{#if studio.historyExtended}
 			<button

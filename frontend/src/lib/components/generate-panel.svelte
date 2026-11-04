@@ -573,7 +573,6 @@
 	const SETUP_GUIDE_URL =
 		'https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md';
 
-	// A result frame with nothing in it is only the hint sentence, not a stage.
 	const resultEmpty = $derived(shown === null && studio.historyLoaded);
 	const resultFrameClass = $derived(
 		resultEmpty
@@ -1019,7 +1018,7 @@
 								<span class="opacity-75">{totalEstimateLabel}</span>
 							{/if}
 							<kbd
-								class="ms-1 rounded border border-white/30 px-1 font-sans text-xs leading-[15px] text-[#dfe6ff]"
+								class="ms-1 hidden rounded border border-white/30 px-1 font-sans text-xs leading-[15px] text-[#dfe6ff] sm:inline-block pointer-coarse:hidden"
 								>{shortcutLabel(['mod', 'enter'])}</kbd
 							>
 						</Button>
@@ -1389,7 +1388,7 @@
 				</div>
 			{/if}
 		</div>
-		{#if !studio.historyLoaded || hasHistoryItems}
+		{#if !studio.historyLoaded || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
 			<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
 				<HistoryStrip />
 			</div>

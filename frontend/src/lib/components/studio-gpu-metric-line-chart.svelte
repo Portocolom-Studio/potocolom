@@ -4,6 +4,7 @@
 	import { scaleTime } from 'd3-scale';
 	import { curveMonotoneX } from 'd3-shape';
 	import {
+		CHART_MARGINS,
 		formatMetricValue,
 		formatTimeTick,
 		latestPoint,
@@ -99,7 +100,7 @@
 {/snippet}
 
 <div class="flex flex-col gap-2">
-	<div class="flex h-7 items-center justify-between gap-2">
+	<div class="flex h-7 items-center gap-3">
 		<span class="text-muted-foreground flex items-center gap-1.5 text-xs font-medium">
 			{#if live}
 				<span class="relative flex size-1.5" aria-hidden="true">
@@ -133,7 +134,7 @@
 				yDomain={unit === '%' ? [0, 100] : undefined}
 				{series}
 				rule={false}
-				padding={{ top: 8, right: 24, bottom: 32, left: 40 }}
+				padding={CHART_MARGINS}
 				props={{
 					area: {
 						curve: curveMonotoneX,

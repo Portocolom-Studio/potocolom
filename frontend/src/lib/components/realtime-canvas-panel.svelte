@@ -1622,7 +1622,7 @@
 					rows="3"
 					bind:value={prompt}
 					placeholder={t('app.realtime_canvas.prompt_placeholder')}
-					aria-describedby="realtime-prompt-hint"
+					aria-describedby={selectedModel || busy ? 'realtime-prompt-hint' : undefined}
 					class="bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 min-h-[76px] w-full resize-none rounded-md border px-2.5 py-2 text-sm leading-normal outline-none focus-visible:ring-2"
 					onkeydown={onPromptKeydown}></textarea>
 				<div class="mt-2 flex items-center gap-2">
@@ -1633,9 +1633,13 @@
 						<kbd class="kbd">{shortcutLabel(['mod', 'enter'])}</kbd>
 					</Button>
 				</div>
-				<p id="realtime-prompt-hint" class="text-dim mt-1.5 text-xs">
-					{busy ? t('app.realtime_canvas.prompt_locked') : t('app.realtime_canvas.prompt_required')}
-				</p>
+				{#if selectedModel || busy}
+					<p id="realtime-prompt-hint" class="text-dim mt-1.5 text-xs">
+						{busy
+							? t('app.realtime_canvas.prompt_locked')
+							: t('app.realtime_canvas.prompt_required')}
+					</p>
+				{/if}
 			</div>
 			{#if selectedModel}
 				<div class="section">

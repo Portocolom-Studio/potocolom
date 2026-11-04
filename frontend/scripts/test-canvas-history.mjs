@@ -9700,6 +9700,39 @@ test('expired lineage roots stay visible beside their descendants and the root g
 	}
 });
 
+test('Generate can load older images after a full page of failed jobs', async () => {
+	const failed = Array.from({ length: 50 }, (_, index) => ({
+		...STRIP_HISTORY[0],
+		id: `failed-recent-${index}`,
+		state: 'failed',
+		assets: [],
+		failure_reason: 'Fixture failure'
+	}));
+	const harness = await launchStudio('en', undefined, {
+		...stripFixtures(),
+		'/api/v1/generations?limit=50': {
+			body: (url) => (url.searchParams.has('cursor') ? [STRIP_HISTORY[0]] : failed)
+		}
+	});
+	try {
+		const { page } = harness;
+		await page.waitForFunction(() => document.body.textContent.includes('Your image appears here'));
+		const older = await page.$('button[title="Older"]');
+		assert.notEqual(older, null, 'older images remain reachable when every recent job failed');
+		await older.click();
+		await waitForStrip(page, 1);
+		await page.click('button[data-strip-thumb]');
+		await page.waitForSelector('img.img-reveal[data-loaded]');
+		await page.click('button[title="Recent"]');
+		await page.waitForFunction(
+			() => document.querySelectorAll('button[data-strip-thumb]').length === 0
+		);
+		assert.notEqual(await page.$('button[title="Older"]'), null);
+	} finally {
+		await harness.close();
+	}
+});
+
 test('Generate keeps the selected image and its metadata reachable on phones', async () => {
 	const harness = await openStudio(stripFixtures());
 	try {

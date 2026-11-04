@@ -36,20 +36,27 @@
 
 	const metricLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'metric'));
 	const modelLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'model'));
+	const visibleMetricLanes = $derived(
+		metricLanes.filter(
+			(lane) =>
+				lane.id !== 'vram' ||
+				vramAvailable ||
+				(lane.points?.length ?? 0) > 0 ||
+				(lane.bands?.length ?? 0) > 0
+		)
+	);
+	const vramHidden = $derived(visibleMetricLanes.length < metricLanes.length);
 
-	const swimWidth = 720;
+	let swimWidth = $state(720);
 	const swimMargin = CHART_MARGINS;
-	const labelW = 108;
-	const plotLeft = swimMargin.left + labelW;
-	const plotWidth = swimWidth - swimMargin.left - swimMargin.right - labelW;
-	const rowH = 36;
-	const swimPlotTop = 12;
+	const plotLeft = swimMargin.left;
+	const plotWidth = $derived(Math.max(1, swimWidth - swimMargin.left - swimMargin.right));
+	const rowH = 64;
+	const swimPlotTop = 8;
 	const swimHeight = $derived(
 		modelLanes.length > 0 ? swimPlotTop + modelLanes.length * rowH + swimMargin.bottom + 8 : 0
 	);
-	// Four evenly spaced ticks; the viewBox is never narrower than swimWidth, so
-	// the 12px labels keep their size and the scroll region takes the overflow.
-	const xTicks = $derived(timeTicks(timeline.windowStartMs, timeline.windowEndMs, 4));
+	const xTicks = $derived(timeTicks(timeline.windowStartMs, timeline.windowEndMs, 3));
 	const rangeCaption = $derived(
 		formatRangeCaption(timeline.windowStartMs, timeline.windowEndMs, range)
 	);
@@ -76,6 +83,9 @@
 					<Card.Description class="text-sm tabular-nums">
 						{rangeCaption}
 					</Card.Description>
+					{#if vramHidden}
+						<p class="text-muted-foreground mt-1 text-xs">{t('app.metrics.vram_unavailable')}</p>
+					{/if}
 				</div>
 				<div class="flex flex-wrap items-center gap-2">
 					<StudioMetricsRangePicker bind:value={range} />
@@ -87,21 +97,25 @@
 				</div>
 			</div>
 		</Card.Header>
-		<Card.Content class="grid gap-5 p-5 lg:grid-cols-2">
-			{#each metricLanes as lane (lane.id)}
-				<StudioGpuMetricLineChart
-					title={lane.label}
-					seriesColor={lane.color}
-					points={(lane.points ?? []) as ChartPoint[]}
-					bands={lane.bands ?? []}
-					windowStartMs={timeline.windowStartMs}
-					windowEndMs={timeline.windowEndMs}
-					{range}
-					{live}
-					emptyHint={metricEmptyHint ??
-						(lane.id === 'vram' && !vramAvailable ? t('app.metrics.vram_unavailable') : undefined)}
-				/>
-			{/each}
+		<Card.Content class="overflow-x-auto p-5">
+			<div class="grid min-w-[28rem] gap-5">
+				{#each visibleMetricLanes as lane (lane.id)}
+					<StudioGpuMetricLineChart
+						title={lane.label}
+						seriesColor={lane.color}
+						points={(lane.points ?? []) as ChartPoint[]}
+						bands={lane.bands ?? []}
+						windowStartMs={timeline.windowStartMs}
+						windowEndMs={timeline.windowEndMs}
+						{range}
+						{live}
+						emptyHint={metricEmptyHint ??
+							(lane.id === 'vram' && !vramAvailable
+								? t('app.metrics.vram_unavailable')
+								: undefined)}
+					/>
+				{/each}
+			</div>
 		</Card.Content>
 	</Card.Root>
 
@@ -111,66 +125,58 @@
 				<Card.Title class="text-base">{t('app.metrics.model_activity')}</Card.Title>
 				<Card.Description class="text-sm">{t('app.metrics.model_activity_desc')}</Card.Description>
 			</Card.Header>
-			<Card.Content class="overflow-x-auto p-4">
-				<svg
-					viewBox="0 0 {swimWidth} {swimHeight}"
-					class="h-auto w-full min-w-[45rem]"
-					role="img"
-					aria-label={t('app.metrics.model_activity')}
-				>
-					{#each modelLanes as lane, index (lane.id)}
-						{@const y = laneY(index)}
-						<rect
-							x={plotLeft}
-							{y}
-							width={plotWidth}
-							height={rowH - 4}
-							rx="6"
-							class={index % 2 === 0 ? 'fill-muted/25' : 'fill-muted/10'}
-						/>
-						<text
-							x={swimMargin.left}
-							y={y + rowH / 2 + 1}
-							class="fill-muted-foreground font-sans text-xs"
-						>
-							{lane.label.length > 14 ? `${lane.label.slice(0, 11)}...` : lane.label}
-						</text>
-						<circle
-							cx={swimMargin.left + labelW - 14}
-							cy={y + rowH / 2 - 1}
-							r="4"
-							fill={lane.color}
-						/>
-						{#each lane.blocks ?? [] as block (block.id)}
+			<Card.Content class="overflow-x-auto p-5">
+				<div class="w-full min-w-[28rem]" bind:clientWidth={swimWidth}>
+					<svg
+						viewBox="0 0 {swimWidth} {swimHeight}"
+						class="h-auto w-full"
+						role="img"
+						aria-label={t('app.metrics.model_activity')}
+					>
+						{#each modelLanes as lane, index (lane.id)}
+							{@const y = laneY(index)}
 							<rect
-								x={xScale(
-									block.startMs,
-									timeline.windowStartMs,
-									timeline.windowEndMs,
-									plotLeft,
-									plotWidth
-								)}
-								y={y + 7}
-								width={blockWidth(block.startMs, block.endMs)}
-								height={rowH - 18}
-								rx="4"
-								fill={lane.color}
-								opacity="0.88"
+								x={plotLeft}
+								y={y + 24}
+								width={plotWidth}
+								height="24"
+								rx="6"
+								class={index % 2 === 0 ? 'fill-muted/25' : 'fill-muted/10'}
 							/>
+							<text x="0" y={y + 12} class="fill-muted-foreground font-sans text-xs">
+								{lane.label.length > 14 ? `${lane.label.slice(0, 11)}...` : lane.label}
+							</text>
+							{#each lane.blocks ?? [] as block (block.id)}
+								<rect
+									x={xScale(
+										block.startMs,
+										timeline.windowStartMs,
+										timeline.windowEndMs,
+										plotLeft,
+										plotWidth
+									)}
+									y={y + 31}
+									width={blockWidth(block.startMs, block.endMs)}
+									height="10"
+									rx="4"
+									fill={lane.color}
+									opacity="0.88"
+								/>
+							{/each}
 						{/each}
-					{/each}
 
-					{#each xTicks as tick, index (index)}
-						<text
-							x={xScale(tick, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)}
-							y={swimHeight - 6}
-							text-anchor="middle"
-							class="fill-muted-foreground font-sans text-xs tabular-nums"
-						>
-							{formatTimeTick(tick, range)}
-						</text>
-					{/each}
-				</svg>
+						{#each xTicks as tick, index (index)}
+							<text
+								x={xScale(tick, timeline.windowStartMs, timeline.windowEndMs, plotLeft, plotWidth)}
+								y={swimHeight - 6}
+								text-anchor={index === 0 ? 'start' : index === xTicks.length - 1 ? 'end' : 'middle'}
+								class="fill-muted-foreground font-sans text-xs tabular-nums"
+							>
+								{formatTimeTick(tick, range)}
+							</text>
+						{/each}
+					</svg>
+				</div>
 
 				{#if modelLanes.length > 1}
 					<div class="mt-3 flex flex-wrap gap-3">

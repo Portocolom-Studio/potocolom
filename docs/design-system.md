@@ -156,11 +156,12 @@ them rather than hand-rolled markup.
 - **Metrics charts** (`studio-job-status-chart.svelte`, `studio-gpu-*-chart.svelte`):
   the job queue card has content height. Its legend stacks under the donut when
   the card is narrow (a container query at 384px). Area charts use three evenly
-  spaced time ticks with edge-aligned end labels, and the model activity strip
-  uses four, all at 12px. Metric headers have equal height. A single model lane
-  does not repeat its label in a legend or repeat the range caption. The model
-  SVG is never narrower than 720px, so its labels are never scaled down; on
-  phones its scroll region takes the overflow.
+  spaced time ticks with edge-aligned end labels. Metrics and model activity
+  use the same plot edges and three ticks, all at 12px. Metric values sit beside
+  their labels. An unavailable VRAM lane becomes a short header note. A single
+  model lane does not repeat its label in a legend or repeat the range caption.
+  Charts are at least 448px wide; on phones their scroll regions take the
+  overflow. The model SVG uses its measured width so labels keep their size.
 - **Images search**: in the top bar from 640px wide; below the filters on
   narrower screens so both Grid and Lineage controls remain visible.
 - **Parameter panel** (`generate-panel.svelte`): the mode title and subtitle show
@@ -170,7 +171,8 @@ them rather than hand-rolled markup.
   result frame fills the row, with a metadata column of 220px (260px from 1400px)
   that aligns to the top so a long prompt stays reachable. A short fade marks
   the form's scroll edge above the footer. An empty result shows a muted image
-  hint in a square frame, with no action bar or history strip.
+  hint in a square frame, with no action bar. The history strip stays visible
+  when items or paging controls exist, including a recent page of failed jobs.
 - **Slider** (`param-slider-field`): label and value on one line, track,
   min and max underneath.
 - **Tag** (`.tag` classes): status and capability labels.
