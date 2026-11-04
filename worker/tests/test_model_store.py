@@ -3040,7 +3040,7 @@ def test_offline_bundled_cache_adoption(tmp_path, monkeypatch):
     assert model_store.adopt_legacy(manifest, str(tmp_path), 'cpu') is True
 
 
-def test_missing_marker_file_dropped_at_start_and_before_load(tmp_path):
+def test_missing_marker_file_dropped_at_start_and_before_load(tmp_path, monkeypatch):
     async def check():
         manifest = pipeline_manifest()
         path = tmp_path / 'weight'
@@ -3056,11 +3056,19 @@ def test_missing_marker_file_dropped_at_start_and_before_load(tmp_path):
         sent = []
         async def send(message):
             sent.append(message)
+        monkeypatch.setattr(model_store, 'probe_model', lambda *_: (3, False))
         store.attach(send, lambda _: False)
+        await store._probe_task
+        _PROBES[manifest.id] = (0, False)
+        sent.clear()
         assert not await store.verify_for_load(manifest.id)
         assert manifest.id not in store.installed
         assert model_store._read_marker(manifest.id) is None
         assert any(m['type'] == 'models_changed' for m in sent)
+        inventory = next(m for m in sent if m['type'] == 'store_inventory')
+        assert inventory['catalog'][0]['download_bytes'] is None
+        await store._probe_task
+        assert store.catalog()[0]['download_bytes'] == 3
         await store.close()
         model_store._write_marker(manifest.id, {
             'state': 'installed', 'fingerprint': model_store._fingerprint(manifest),

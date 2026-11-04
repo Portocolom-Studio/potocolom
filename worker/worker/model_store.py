@@ -987,6 +987,8 @@ class ModelStore:
             _remove_marker(model_id)
         except OSError:
             logger.warning("cannot remove invalid marker for model %s", model_id)
+        self._invalidate_probes(model_id)
+        self._schedule_refresh()
         await self._announce()
         await self.send_inventory()
         return False
