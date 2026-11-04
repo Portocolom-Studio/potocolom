@@ -563,10 +563,18 @@ test('model management selection, disk margin, progress, cancel and removal', as
 				{ width: 1024, height: 768 }
 			]) {
 				await page.setViewport(viewport);
-				if (await page.$('[data-selection-footer]'))
+				if (await page.$('[data-selection-footer]')) {
 					await page.click('[data-model="suggested"] input');
+					await page.waitForFunction(() => !document.querySelector('[data-selection-footer]'));
+				}
+				// Set up the overlap after responsive layout and font metrics have settled.
+				await page.evaluate(async () => {
+					await new Promise(requestAnimationFrame);
+					await document.fonts.ready;
+					await new Promise(requestAnimationFrame);
+				});
 				await page.$eval('[data-model="suggested"] input', (el) => {
-					el.focus();
+					el.focus({ preventScroll: true });
 					const scroller = el.closest('[data-model-scroller]');
 					const bounds = scroller.getBoundingClientRect();
 					scroller.scrollBy(0, el.getBoundingClientRect().bottom - bounds.bottom + 10);
