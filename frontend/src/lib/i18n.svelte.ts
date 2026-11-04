@@ -1,3 +1,4 @@
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH, passwordLengthError } from './account-logic';
 // Hand-rolled i18n: two flat dictionaries behind a tiny reactive store
 // (docs/decisions.md, "Frontend foundation"). Every user-facing string goes
 // through t() from the first component onward.
@@ -47,4 +48,18 @@ export function formatDateTime(value: string | null): string {
 	return new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(
 		date
 	);
+}
+
+export function passwordHint(): string {
+	return t('auth.password.hint')
+		.replace('{min}', String(MIN_PASSWORD_LENGTH))
+		.replace('{max}', String(MAX_PASSWORD_LENGTH));
+}
+
+export function passwordLengthMessage(password: string): string {
+	const issue = passwordLengthError(password);
+	if (!issue) return '';
+	return t(issue.kind === 'short' ? 'auth.password.too_short' : 'auth.password.too_long')
+		.replace('{count}', String(issue.count))
+		.replace('{limit}', String(issue.limit));
 }

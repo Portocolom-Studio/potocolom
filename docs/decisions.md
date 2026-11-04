@@ -2308,3 +2308,9 @@ Accepted: a request that was authorized as the implicit administrator before the
 OAuth configuration is judged whatever the mode. A none install can switch to accounts while it runs, and a provider offered over plain HTTP is unsafe from the moment it can be offered.
 
 Rejected alternatives: first visitor wins a web form, which lets anybody on the LAN claim an install before its operator returns; a fourth guest role for an anonymous session, which adds a tier to the role model to serve one install mode; usernames instead of email, which add a second identifier to every sign-in path for no gain on a single-operator install; keeping the mode in `.env` alone, which makes every choice an edit and a restart; prompting for the choice in the installer, which breaks unattended installs; and leaving `AUTH_MODE` as the decision with a runtime toggle, which lets two processes disagree about who must sign in.
+
+## Passwords are ten to 128 characters
+
+The owner chose a ten-character minimum after fifteen refused ordinary passwords at first-run setup without explaining why. The maximum remains 128. The bundled blocklist was extended down to ten characters in the same change. This supersedes any earlier decision setting the minimum to fifteen.
+
+Rejected alternatives: fifteen, the NIST SP 800-63B-4 minimum for a password used as the only factor, because it refused passwords people use and the install offers TOTP as a second factor; and eight, the NIST floor for a password used with a second factor, because this install does not require one.

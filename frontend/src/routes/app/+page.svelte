@@ -5,6 +5,7 @@
 	import { updated } from '$app/stores';
 	import { onDestroy, onMount } from 'svelte';
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
+	import { apiFetch } from '$lib/api';
 	import { account, type Account } from '$lib/account.svelte';
 	import { openViewFor } from '$lib/account-display';
 	import { probeAccount, type AccountProbeResult } from '$lib/account-probe';
@@ -20,6 +21,7 @@
 	import StatusBanner from '$lib/components/status-banner.svelte';
 	import StudioAccount from '$lib/components/studio-account.svelte';
 	import StudioPreview from '$lib/components/studio-preview.svelte';
+	import StudioTurnOnAccounts from '$lib/components/studio-turn-on-accounts.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Toaster } from '$lib/components/ui/sonner';
@@ -37,6 +39,7 @@
 		studio
 	} from '$lib/studio.svelte';
 	import { readStudioView } from '$lib/studio-view';
+	import { setupRequiredFrom } from '$lib/setup-flow';
 	import { t } from '$lib/i18n.svelte';
 	import { detectPlatform } from '$lib/platform.svelte';
 	import { revalidationDue } from '$lib/swr-cache';
@@ -61,7 +64,12 @@
 	$effect.pre(() => {
 		viewOwnerEpoch();
 		const { view, tab } = readStudioView(page.url);
-		studio.shellView = openViewFor(view, tab, account.current?.role ?? null);
+		studio.shellView = openViewFor(
+			view,
+			tab,
+			account.current?.role ?? null,
+			account.localModeConfirmed
+		);
 		// Only the active tabbed view applies its URL tab, and only when it was
 		// not refused, so other views keep their last tab open.
 		if (
@@ -118,6 +126,12 @@
 		const result = await probeAccount(controller.signal);
 		if (startupProbeController === controller) startupProbeController = null;
 		if (cancelled) return;
+		// An install nobody has decided yet answers every private route with 503,
+		// so only a failed probe asks config whether setup is the place to go.
+		if (result.kind === 'failed' && (await setupStillRequired())) {
+			if (!cancelled) await goto(resolve('/setup'), { replaceState: true });
+			return;
+		}
 		applyAccountProbeResult(result);
 		if (result.kind === 'signed_out' && accountCheckForcesLogin(401)) {
 			// replaceState so Back from the sign-in page does not bounce here.
@@ -128,6 +142,17 @@
 		lastFocusRefresh = Date.now();
 		if (result.kind === 'failed' || result.kind === 'account' || result.kind === 'local') {
 			preloadStudioOwner(viewOwnerEpoch());
+		}
+	}
+
+	// A failed or slow config read is not a reason to send anyone to setup, so
+	// it answers false and the probe still decides what opens.
+	async function setupStillRequired(): Promise<boolean> {
+		try {
+			const response = await apiFetch('/api/v1/config', { signal: AbortSignal.timeout(5_000) });
+			return response.ok && setupRequiredFrom(await response.json());
+		} catch {
+			return false;
 		}
 	}
 
@@ -347,7 +372,11 @@
 								<p class="text-muted-foreground p-6 text-sm">{t('app.admin.load_failed')}</p>
 							{/await}
 						{:else if studio.shellView === 'account'}
-							<StudioAccount />
+							{#if account.localModeConfirmed}
+								<StudioTurnOnAccounts />
+							{:else}
+								<StudioAccount />
+							{/if}
 						{:else if studio.shellView === 'models'}
 							<ModelPanel />
 						{:else if studio.shellView === 'images'}

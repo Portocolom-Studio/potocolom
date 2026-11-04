@@ -255,7 +255,7 @@ verify-worker-inference:
 verify-frontend:
 	cd frontend && npm run lint && npm run check && npm test \
 		&& PUBLIC_SITE_MODE=landing npm run build && npm run test:landing && npm run test:footer \
-		&& PUBLIC_SITE_MODE= npm run build && npm run test:self-hosted && npm run test:studio-shell && npm run test:canvas && npm run test:signin && npm run test:views && npm run test:owner-focus
+		&& PUBLIC_SITE_MODE= npm run build && npm run test:self-hosted && npm run test:studio-shell && npm run test:setup && npm run test:canvas && npm run test:signin && npm run test:views && npm run test:owner-focus
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 

@@ -222,6 +222,9 @@ def test_an_unclaimed_install_answers_setup_required_outside_the_setup_surface(d
 def test_the_setup_link_can_choose_an_administrator_account(decision):
     with TestClient(app, base_url=ORIGIN) as client:
         token = client.portal.call(enable.mint_setup_token)
+        auth_mode.load(auth_mode.ACCOUNTS)
+        assert "setup_claimed" not in client.get("/api/v1/config?setup=true").json()
+        auth_mode.load(auth_mode.UNCLAIMED)
         response = _choose(client, token, mode="accounts", email=EMAIL, password=PASSWORD)
         assert response.status_code == 204
         assert any(header.startswith("potocolom_session=")
@@ -229,8 +232,36 @@ def test_the_setup_link_can_choose_an_administrator_account(decision):
         assert auth_mode.current() == "accounts"
         assert client.portal.call(_row) == "accounts"
         assert client.get("/api/v1/config").json()["auth_methods"] == ["password"]
+        assert "setup_claimed" not in client.get("/api/v1/config?setup=true").json()
         client.cookies.clear()
         assert client.get("/api/v1/models").status_code == 401
+
+
+@pytest.mark.db
+def test_setup_status_requires_a_live_link_and_does_not_spend_it(decision):
+    async def age(token):
+        async with db.session_factory() as session:
+            await session.execute(text("UPDATE auth_tokens SET expires_at = now() - interval '1 minute' WHERE token_hash = :hash"), {"hash": enable._token_hash(token)})
+            await session.commit()
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        token = client.portal.call(enable.mint_setup_token)
+        def status(value):
+            return client.post("/api/v1/auth/setup/status", json={"token": value})
+        assert status(token).json() == {"claimed": False}
+        wrong = status("not-a-real-link")
+        assert wrong.status_code == 403
+        client.portal.call(age, token)
+        expired = status(token)
+        assert expired.status_code == 403 and expired.json() == wrong.json()
+        token = client.portal.call(enable.mint_setup_token)
+        other = "another-live-link"
+        client.portal.call(_plant_link, other)
+        assert status(token).json() == {"claimed": False}
+        assert _choose(client, token, mode="accounts", email=EMAIL, password=PASSWORD).status_code == 204
+        spent = status(token)
+        assert spent.status_code == 403 and spent.json() == wrong.json()
+        assert status(other).json() == {"claimed": True}
 
 
 @pytest.mark.db

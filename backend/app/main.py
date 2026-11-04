@@ -260,16 +260,17 @@ async def ready() -> Response:
     return Response(status_code=200)
 
 
-@app.get("/api/v1/config")
+@app.get("/api/v1/config", response_model=None)
 async def config() -> dict:
     settings = get_settings()
-    return {
+    result = {
         "auth_methods": auth_mode.sign_in_methods(settings),
         "setup_required": auth_mode.setup_required(),
         "billing_enabled": settings.billing_enabled,
         "languages": ["en", "es"],
         "banner": await current_banner(),
     }
+    return result
 
 
 class SPAStaticFiles(StaticFiles):
