@@ -389,7 +389,7 @@ def test_final_cross_loop_startup_lock_exit_closes_on_owner_loop(monkeypatch):
 
 
 @pytest.mark.db
-def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
+def test_a_supplied_database_is_read_but_never_emptied(monkeypatch, portal_runner):
     """conftest promises an exported DATABASE_URL is left alone.
 
     That held for the drop and not for the truncate, so a developer who pointed
@@ -398,6 +398,12 @@ def test_a_supplied_database_is_read_but_never_emptied(monkeypatch):
     import asyncpg
 
     import conftest
+    from app import db
+
+    # The autouse cleanup reads the suite database at teardown, and this test
+    # never opens it otherwise, so migrate it first.
+    assert portal_runner(db.connect()) is True
+    portal_runner(db.dispose())
 
     # Named per run like every other database here: a fixed name inside the
     # fix for shared names would let two runs of this test drop each other's

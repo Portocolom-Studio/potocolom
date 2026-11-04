@@ -176,6 +176,19 @@ async function checkPhoneDrawer(browser, baseUrl) {
 		'page scroll is restored'
 	);
 
+	await page.keyboard.down('Meta');
+	await page.keyboard.press('k');
+	await page.keyboard.up('Meta');
+	assert.equal(
+		await happens(page, () => document.activeElement?.name === 'search'),
+		true,
+		'Meta+K on the closed phone drawer focuses the search field'
+	);
+	assert.equal(await drawerOpen(page), true, 'Meta+K opens the phone drawer');
+	await page.keyboard.press('Escape');
+	assert.equal(await drawerIs(page, false), true, 'Escape closes the drawer after Meta+K');
+	assert.equal(await focusOnMenu(page), true, 'Escape after Meta+K returns focus to Menu');
+
 	// The visible Close menu button and the backdrop both close it and return focus to Menu.
 	await page.click('.menu-btn');
 	assert.equal(await drawerIs(page, true), true, 'Menu opens the drawer');

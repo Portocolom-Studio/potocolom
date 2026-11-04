@@ -25,11 +25,6 @@ def accounts(portal_runner, monkeypatch):
     get_settings.cache_clear()
     keyring.get_key_ring.cache_clear()
     assert portal_runner(db.connect()) is True
-    portal_runner(db.enable_accounts_mode(db.session_factory))
-    portal_runner(db.dispose())
-    monkeypatch.setenv("AUTH_MODE", "accounts")
-    get_settings.cache_clear()
-    assert portal_runner(db.connect()) is True
     original = db.local_user_id
 
     async def clear() -> None:
@@ -44,6 +39,16 @@ def accounts(portal_runner, monkeypatch):
                      "WHERE id = :id"),
                 {"local": db.LOCAL_USER_EMAIL, "id": original})
             await session.commit()
+
+    # Earlier files leave accounts behind (test_jobs creates users and never removes
+    # them), and only this fixture's teardown clears them. Clear before enabling so
+    # every test starts from the state a finished test leaves.
+    portal_runner(clear())
+    portal_runner(db.enable_accounts_mode(db.session_factory))
+    portal_runner(db.dispose())
+    monkeypatch.setenv("AUTH_MODE", "accounts")
+    get_settings.cache_clear()
+    assert portal_runner(db.connect()) is True
 
     try:
         yield portal_runner
