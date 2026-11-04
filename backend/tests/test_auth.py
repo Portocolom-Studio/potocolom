@@ -82,7 +82,7 @@ def test_existing_implicit_local_user_is_promoted_to_admin():
         assert db.session_factory is not None
         assert db.local_user_id is not None
         client.portal.call(_set_local_role, "user")
-        user_id = client.portal.call(db._ensure_local_user, db.session_factory)
+        user_id = client.portal.call(db._ensure_local_user, db.session_factory, "none")
         assert user_id == db.local_user_id
 
         async def read_role() -> str:

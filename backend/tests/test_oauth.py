@@ -107,14 +107,13 @@ async def _identities(user_id: uuid.UUID) -> list[AuthIdentity]:
 
 def test_a_provider_without_credentials_is_never_offered():
     """A button that cannot complete is worse than no button."""
-    named = Settings(auth_mode="accounts", oauth_providers="google,github")
-    assert named.auth_methods == ["password"]
-    half = Settings(auth_mode="accounts", oauth_providers="google",
-                    google_client_id="id")
-    assert half.auth_methods == ["password"]
-    ready = Settings(auth_mode="accounts", oauth_providers="google",
+    named = Settings(oauth_providers="google,github")
+    assert named.oauth_offered == []
+    half = Settings(oauth_providers="google", google_client_id="id")
+    assert half.oauth_offered == []
+    ready = Settings(oauth_providers="google",
                      google_client_id="id", google_client_secret="secret")
-    assert ready.auth_methods == ["password", "google"]
+    assert ready.oauth_offered == ["google"]
 
 
 def test_studio_search_rebuilds_only_a_same_origin_app_query():

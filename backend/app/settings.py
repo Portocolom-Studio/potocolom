@@ -1,6 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 # The full configuration surface is specified in docs/blueprint.md. Settings are
@@ -8,7 +9,12 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    auth_mode: Literal["none", "accounts"] = "none"
+    # Unset, the installation follows the auth mode its database records
+    # (docs/decisions.md, "First run is decided in the browser"). none or
+    # accounts overrides it: it decides an unclaimed install at startup and
+    # must agree with a decided one. The mode this process serves is held in
+    # app/auth_mode.py, never read from here.
+    auth_mode: Literal["none", "accounts"] | None = None
     # Comma separated, and only a provider whose credentials are present is
     # ever offered: a button that cannot complete is worse than no button.
     oauth_providers: str = ""
@@ -75,20 +81,24 @@ class Settings(BaseSettings):
     # Requeue or fail running jobs with no dispatch/progress for this long (issue #61).
     job_stall_seconds: float = 600.0
 
+    @field_validator("auth_mode", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        # Compose passes AUTH_MODE through as an empty string when it is unset.
+        return None if value == "" else value
+
     @property
     def worker_url(self) -> str:
         return (self.internal_url or self.public_url).rstrip("/")
 
     @property
-    def auth_methods(self) -> list[str]:
-        if self.auth_mode == "none":
-            return []
-        methods = ["password"]
-        methods += [
+    def oauth_offered(self) -> list[str]:
+        # Whatever the auth mode: an install can turn accounts on at runtime,
+        # so OAuth configuration is judged as if accounts were on.
+        return [
             provider for provider in (part.strip() for part in self.oauth_providers.split(","))
             if provider in {"google", "github"} and self.oauth_configured(provider)
         ]
-        return methods
 
     def oauth_configured(self, provider: str) -> bool:
         return bool(getattr(self, f"{provider}_client_id", "")

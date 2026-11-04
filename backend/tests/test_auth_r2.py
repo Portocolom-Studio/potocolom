@@ -12,6 +12,8 @@ from app import auth
 from app import db
 from app.keyring import KeyRing
 import app.main as main_module
+from app import auth_mode
+from app.auth_mode import sign_in_methods
 from app.main import app
 from app.settings import Settings
 from app.tables import Asset
@@ -21,14 +23,16 @@ def test_accounts_mode_exposes_password_and_configured_providers():
     """Naming a provider is not the same as being able to use one. The
     frontend renders a button per method, and a button that cannot complete
     is worse than no button."""
-    assert Settings(auth_mode="accounts").auth_methods == ["password"]
-    assert Settings(auth_mode="accounts", oauth_providers="google, github, ").auth_methods == [
-        "password"
-    ]
-    ready = Settings(auth_mode="accounts", oauth_providers="google, github, ",
-                     google_client_id="g", google_client_secret="gs",
-                     github_client_id="h", github_client_secret="hs")
-    assert ready.auth_methods == ["password", "google", "github"]
+    auth_mode.load(auth_mode.ACCOUNTS)
+    try:
+        assert sign_in_methods(Settings(oauth_providers="")) == ["password"]
+        assert sign_in_methods(Settings(oauth_providers="google, github, ")) == ["password"]
+        ready = Settings(oauth_providers="google, github, ",
+                         google_client_id="g", google_client_secret="gs",
+                         github_client_id="h", github_client_secret="hs")
+        assert sign_in_methods(ready) == ["password", "google", "github"]
+    finally:
+        auth_mode.clear()
 
 
 def test_health_and_readiness_when_connect_fails(monkeypatch):
@@ -167,7 +171,7 @@ def test_accounts_enable_persists_mode_and_existing_ownership(portal_runner, mon
         portal_runner(create_asset())
         existing_asset_owner = portal_runner(ownership())
         with pytest.raises(RuntimeError, match="explicit"):
-            portal_runner(db.validate_startup_auth_mode("accounts"))
+            portal_runner(db.decide_startup_auth_mode("accounts"))
         async def enable_twice():
             await asyncio.gather(
                 db.enable_accounts_mode(db.session_factory),
@@ -180,7 +184,7 @@ def test_accounts_enable_persists_mode_and_existing_ownership(portal_runner, mon
         assert portal_runner(ownership()) == existing_asset_owner
         assert db.local_user_id == user_id
         with pytest.raises(RuntimeError, match="accounts"):
-            portal_runner(db.validate_startup_auth_mode("none"))
+            portal_runner(db.decide_startup_auth_mode("none"))
     finally:
         if enabled:
             async def remove_auth_state():

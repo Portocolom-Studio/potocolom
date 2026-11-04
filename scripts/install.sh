@@ -7,6 +7,32 @@ set -euo pipefail
 
 # Piped from curl, bash runs lines as they arrive: wrapping everything in main
 # means a cut-off download defines a function and runs nothing.
+# Opens the setup link in a desktop browser. The token never goes on a command
+# line: it is written into a page that only this user can read, and xdg-open is
+# given that page's path. The page is removed after the browser has read it
+# (POTOCOLOM_SETUP_PAGE_SECONDS, default 30). Without a desktop session or
+# xdg-open, the link printed above is the only copy.
+open_setup_link() {
+	local link="$1" dir page safe
+	command -v xdg-open >/dev/null 2>&1 || return 0
+	[[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] || return 0
+	# mktemp -d makes a directory only this user can enter.
+	dir="$(mktemp -d 2>/dev/null)" || return 0
+	page="$dir/setup.html"
+	safe="${link//&/&amp;}"
+	safe="${safe//\"/&quot;}"
+	# The umask is set before the file exists, so it is never world-readable.
+	if ! (
+		umask 077
+		printf '<!doctype html>\n<meta charset="utf-8">\n<meta http-equiv="refresh" content="0; url=%s">\n<title>potocolom setup</title>\n<a href="%s">Continue to setup</a>\n' "$safe" "$safe" >"$page"
+	); then
+		rm -rf -- "$dir"
+		return 0
+	fi
+	xdg-open "$page" >/dev/null 2>&1 || true
+	( sleep "${POTOCOLOM_SETUP_PAGE_SECONDS:-30}"; rm -rf -- "$dir" ) >/dev/null 2>&1 &
+}
+
 main() {
 	# Nothing below may read the piped script as its input.
 	exec </dev/null
@@ -282,10 +308,35 @@ main() {
 			echo 'HTTPS needs a reverse proxy; see docs/self-hosting.md.'
 		fi
 	fi
+	# The one-use link decides how this install works: whoever spends it chooses
+	# an administrator account or no accounts. The API container mints it with
+	# the project and files resolved above, so nothing ambient can retarget it.
+	# Exit status 3 means the install already chose: a note, not a failure.
+	# Anything else is shown, with the command that retries it.
+	setup_err="$(mktemp)"
+	setup_status=0
+	setup_link="$("${compose[@]}" exec -T api python -m app.operator setup-link 2>"$setup_err")" \
+		|| setup_status=$?
+	if [[ "$setup_status" -eq 0 && "$setup_link" == http*/setup#* ]]; then
+		echo
+		echo "Finish setup in a browser within one hour. The link works once:"
+		echo "  $setup_link"
+		open_setup_link "$setup_link"
+	elif [[ "$setup_status" -eq 3 ]]; then
+		echo "This install already chose how it works, so there is no setup link to show."
+	else
+		setup_reason="$(head -n 1 "$setup_err" 2>/dev/null || true)"
+		echo "warning: no setup link was made: ${setup_reason:-the API did not answer}" >&2
+		echo "  Retry with: env -u COMPOSE_PROJECT_NAME docker compose --env-file \"$ENV_FILE\" -f \"$DIR/deploy/compose/compose.yml\" exec -T api python -m app.operator setup-link" >&2
+	fi
+	rm -f -- "$setup_err"
 	echo "Secrets are in $ENV_FILE."
-	echo "bash \"$DIR/scripts/auth-enable.sh\" turns on accounts."
+	echo "Lost the link? docs/self-hosting.md explains how to mint another one."
 	echo "Running the install.sh of a newer release upgrades this install in place."
 	echo "Stop: docker compose -f \"$DIR/deploy/compose/compose.yml\" --profile $profile down"
 }
 
-main "$@"
+# Sourced, the functions are available to a test; run, the installer starts.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+	main "$@"
+fi

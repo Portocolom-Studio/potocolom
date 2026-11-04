@@ -35,7 +35,7 @@ from app.manifests import (
     validate_params,
 )
 from app.settings import get_settings
-from app import audit, db
+from app import audit, auth_mode, db
 
 logger = logging.getLogger("potocolom.realtime")
 
@@ -1854,7 +1854,7 @@ async def fleet(ws: WebSocket) -> None:
                 # admitted only to speak the protocol this API has always
                 # spoken, and only if it offered to.
                 compatible = hello["compatible_versions"]
-                if (get_settings().auth_mode != "none" or not isinstance(compatible, list)
+                if (auth_mode.current() == auth_mode.ACCOUNTS or not isinstance(compatible, list)
                         or 5 not in compatible):
                     await ws.send_json({"type": "rejected", "reason": "recovery_unavailable",
                                         "min_supported_version": 5})
@@ -2357,7 +2357,7 @@ async def _handshake_principal(ws: WebSocket) -> Handshake | None:
     which cannot select an identity. Revocation is explicit and closes the
     socket, rather than being noticed on some later frame.
     """
-    if get_settings().auth_mode == "none":
+    if auth_mode.current() == auth_mode.NONE:
         # The implicit local user, which is None while the database is down.
         # That is not an authentication failure; it is the mode working.
         return Handshake(user_id=db.local_user_id)
@@ -2384,7 +2384,10 @@ async def _handshake_principal(ws: WebSocket) -> Handshake | None:
 
 async def _still_live(handshake: Handshake) -> bool:
     if handshake.auth_session_id is None:
-        return True
+        # A socket with no session is the none-mode binding. It stays live only
+        # while the install still runs without accounts. This runs after the
+        # registration, so a switch either closes the socket or refuses it here.
+        return auth_mode.current() == auth_mode.NONE
     from app import sessions as account_sessions
 
     try:
@@ -2690,14 +2693,28 @@ async def close_revoked(user_id: uuid.UUID, auth_session_id: uuid.UUID | None = 
     revocation on its own. This is what makes logout, disable, deletion and a
     role change actually reach a canvas that is already drawing.
     """
-    doomed = [
+    await _close_sessions([
         session for session in list(sessions.values())
         if session.user_id == user_id
         and (auth_session_id is None or session.auth_session_id == auth_session_id)
         # A credential change spares the session making it, so the canvas in
         # front of the person changing their password stays up.
         and (keep is None or session.auth_session_id != keep)
-    ]
+    ])
+
+
+async def close_none_mode_sockets() -> None:
+    """Close the sockets opened while the install ran without accounts.
+
+    They bind the implicit administrator with no session, so no revocation would
+    ever reach them. Turning accounts on is the moment they stop being allowed.
+    """
+    await _close_sessions([
+        session for session in list(sessions.values()) if session.auth_session_id is None
+    ])
+
+
+async def _close_sessions(doomed: list[Session]) -> None:
     # The server side goes first and unconditionally: the slot is released even
     # if a browser never reads, because a revocation must not hang on the
     # socket it is taking away. Posting only sets the mailbox, so one close
@@ -2725,7 +2742,7 @@ async def close_dead_sessions() -> None:
     "Realtime authorization: bind once, invalidate explicitly". Nothing is
     checked on the hot path: this is one bulk query on a timer.
     """
-    # auth_mode "none" binds no account session, so there is nothing to ask about.
+    # none mode binds no account session, so there is nothing to ask about.
     held = {
         session.auth_session_id: session.user_id
         for session in list(sessions.values())
