@@ -355,6 +355,8 @@
 				aria-hidden="true"
 				style:--arrow="{position.arrow}px"
 			></span>{/if}
+		<!-- A scrolling region must take focus so a keyboard can scroll it (WCAG 2.1.1). -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div
 			bind:this={body}
 			aria-live="polite"
