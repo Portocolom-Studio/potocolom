@@ -258,6 +258,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
 		const page = await browser.newPage();
+		await page.setViewport({ width: 1440, height: 900 });
 		if (regression === 'retry' || regression === 'failure') {
 			holdInstalls = true;
 			worker.models[0].download = {
@@ -298,13 +299,41 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			await page.reload({ waitUntil: 'domcontentloaded' });
 		}
 		await page.waitForSelector('[data-model="suggested"] input');
+		if (!regression) {
+			const meter = await page.$eval('[role="meter"]', (el) => ({
+				now: el.getAttribute('aria-valuenow'),
+				max: el.getAttribute('aria-valuemax'),
+				text: el.getAttribute('aria-valuetext')
+			}));
+			assert.equal(Number(meter.now), 13 * gib);
+			assert.equal(Number(meter.max), 20 * gib);
+			assert.match(meter.text, /65%.*Used.*Free/);
+			assert.match(
+				await page.$eval('[data-model="suggested"]', (el) => el.textContent),
+				/Suggested.*Not installed/s
+			);
+			assert.match(
+				await page.$eval('[data-model="installed"] [data-slot="badge"]', (el) => el.textContent),
+				/Installed/
+			);
+			assert.equal(await page.$('[data-selection-footer]'), null);
+			await page.$eval('[data-model="suggested"] input', (el) => el.click());
+			assert.ok(await page.$('[data-selection-footer]'));
+			assert.match(
+				await page.$eval('[data-disk]', (el) => el.textContent),
+				/After install: 6.00 GiB free/
+			);
+			await page.$eval('[data-model="suggested"] input', (el) => el.click());
+			assert.equal(await page.$('[data-selection-footer]'), null);
+		}
 		if (process.env.MODEL_SCREENSHOTS) {
 			await page.$eval('[data-model="suggested"] button', (el) => el.focus());
 			assert.match(
 				await page.$eval('[data-disk]', (el) => el.textContent),
-				/Install preview: 1.00 GiB/
+				/After install: 6.00 GiB free/
 			);
 			await page.$eval('[data-model="suggested"] button', (el) => el.blur());
+			await page.click('[data-model="suggested"] input');
 			for (const width of [1440, 1024, 390]) {
 				await page.setViewport({ width, height: 900 });
 				await page.screenshot({
@@ -312,6 +341,42 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					fullPage: true
 				});
 			}
+			await page.setViewport({ width: 1440, height: 900 });
+			await page.evaluate(() => {
+				const tokens = {
+					background: '#ffffff',
+					foreground: '#171717',
+					card: '#ffffff',
+					primary: '#171717',
+					'primary-foreground': '#ffffff',
+					secondary: '#eeeeee',
+					'secondary-foreground': '#171717',
+					muted: '#eeeeee',
+					'muted-foreground': '#595959',
+					accent: '#e9e9e9',
+					'accent-foreground': '#171717',
+					destructive: '#b42318',
+					border: '#bdbdbd',
+					input: '#888888',
+					'status-success': '#146c2e',
+					'status-running': '#175cd3',
+					'status-warning': '#946200'
+				};
+				for (const [name, value] of Object.entries(tokens)) {
+					for (const element of [
+						document.documentElement,
+						document.querySelector('[data-studio-shell]')
+					]) {
+						element.style.setProperty(`--${name}`, value);
+						element.style.setProperty(`--color-${name}`, value);
+					}
+				}
+			});
+			await page.screenshot({
+				path: `${process.env.MODEL_SCREENSHOTS}-light-1440.png`,
+				fullPage: true
+			});
+			await page.click('[data-model="suggested"] input');
 			await page.$eval('[data-model="suggested"] button', (el) => el.focus());
 			await page.keyboard.press('Enter');
 			await page.waitForSelector('[data-model="suggested"] progress');
@@ -610,7 +675,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 
 		assert.match(
 			await page.$eval('[data-model="large"]', (el) => el.textContent),
-			/Needs 16 GB VRAM/
+			/Needs 16.00 GiB VRAM/
 		);
 		assert.equal(await page.$eval('[data-model="gated"] input', (el) => el.disabled), true);
 		await page.click('[data-model="large"] input');

@@ -11,7 +11,9 @@
 		initialSelection
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
-	import { HardDrive, MemoryStick } from '@lucide/svelte';
+	import { HardDrive, MemoryStick, Check, Download, AlertTriangle } from '@lucide/svelte';
+	import { Badge } from '$lib/components/ui/badge';
+	import { GIB } from '$lib/model-management';
 
 	type Download = {
 		kind: 'install' | 'remove' | 'cancel';
@@ -340,6 +342,24 @@
 			<h2 class="text-lg font-semibold">{worker.worker_id}</h2>
 			{#if !worker.manageable}<p>{t('app.model_management.update')}</p>
 			{:else}
+				{@const picks = worker.models.filter(
+					(m) =>
+						(selected[worker.worker_id] ?? []).includes(m.id) &&
+						!m.installed &&
+						!m.needs_token &&
+						m.download?.state !== 'queued' &&
+						m.download?.state !== 'downloading' &&
+						!pending[key(worker.worker_id, m.id)]
+				)}
+				{@const free = worker.disk_free_bytes ?? worker.hardware?.disk_free_bytes}
+				{@const space =
+					free == null
+						? null
+						: selectionSpace(
+								free,
+								picks.map((m) => m.download_bytes),
+								reserved(worker)
+							)}
 				{#if worker.hardware}
 					{@const free = worker.disk_free_bytes ?? worker.hardware.disk_free_bytes}
 					<p>
@@ -357,43 +377,54 @@
 						preview?.worker === worker.worker_id
 							? worker.models.find((m) => m.id === preview?.model)
 							: undefined}
-					{@const amount = previewModel?.download_bytes ?? 0}
-					{@const previewAllowed =
-						previewModel &&
-						selectionSpace(free, [previewModel.download_bytes], reserved(worker)).allowed}
-					<div class="space-y-2 rounded-lg border bg-card p-4" data-disk>
+					{@const previewSizes = previewModel
+						? [previewModel.download_bytes]
+						: picks.map((m) => m.download_bytes)}
+					{@const previewSpace = previewSizes.length
+						? selectionSpace(free, previewSizes, reserved(worker))
+						: null}
+					{@const known = previewSizes.every((size) => size != null)}
+					{@const used = Math.max(0, Math.min(total, total - free))}
+					{@const percent = total > 0 ? Math.round((used / total) * 100) : 0}
+					<div class="space-y-3 rounded-lg border bg-card p-4" data-disk>
 						<div class="flex justify-between gap-3 text-sm">
-							<strong>{t('app.model_management.disk_usage')}</strong><span>{formatSize(total)}</span
+							<strong>{t('app.model_management.disk_usage')}</strong><span
+								>{percent}% · {formatSize(total)}</span
 							>
 						</div>
-						<div class="flex h-3 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-							<div
-								class="bg-foreground/60"
-								style:width={`${(Math.max(0, total - free) / (total || 1)) * 100}%`}
-							></div>
-							{#if previewModel && previewModel.download_bytes != null}<div
-									class:bg-primary={previewAllowed}
-									class:bg-destructive={!previewAllowed}
-									style:width={`${(Math.min(free, amount) / (total || 1)) * 100}%`}
+						<div
+							class="disk-track"
+							role="meter"
+							aria-label={t('app.model_management.disk_usage')}
+							aria-valuemin="0"
+							aria-valuenow={used}
+							aria-valuemax={total || 1}
+							aria-valuetext={`${percent}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
+						>
+							<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
+							{#if previewSpace && known}<div
+									class="disk-preview"
+									class:over={!previewSpace.allowed}
+									style:width={`${(Math.min(Math.max(0, free), previewSpace.total) / (total || 1)) * 100}%`}
 								></div>{/if}
 						</div>
 						<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
 							<span
-								><span class="mr-1 inline-block size-2 rounded-full bg-foreground/60"></span>{t(
-									'app.model_management.used'
-								)}: {formatSize(Math.max(0, total - free))}</span
+								><span class="disk-swatch disk-used"></span>{t('app.model_management.used')}: {formatSize(
+									used
+								)}</span
 							>
 							<span
-								><span class="mr-1 inline-block size-2 rounded-full bg-muted"></span>{t(
-									'app.model_management.free'
-								)}: {formatSize(free)}</span
+								><span class="disk-swatch disk-free"></span>{t('app.model_management.free')}: {formatSize(
+									free
+								)}</span
 							>
-							{#if previewModel}<span class:text-destructive={!previewAllowed}
-									>{t('app.model_management.preview')}: {previewModel.download_bytes == null
-										? t('app.model_management.unknown')
-										: formatSize(amount)}{!previewAllowed
-										? ` · ${t('app.model_management.margin')}`
-										: ''}</span
+							{#if previewSpace}<span class:text-destructive={!previewSpace.allowed}
+									><span class="disk-swatch disk-preview" class:over={!previewSpace.allowed}
+									></span>{t('app.model_management.after_install').replace(
+										'{free}',
+										known ? formatSize(previewSpace.freeAfter) : t('app.model_management.unknown')
+									)}{!previewSpace.allowed ? ` · ${t('app.model_management.margin')}` : ''}</span
 								>{/if}
 						</div>
 					</div>
@@ -415,13 +446,18 @@
 										disabled={model.needs_token || busy}
 										onchange={() => toggle(worker.worker_id, model.id)}
 									/>{/if}
-								<strong data-heading tabindex="-1">{model.name}</strong>
-								{#if model.suggested}<span>{t('app.model_management.suggested')}</span>{/if}
+								<strong class="text-base font-semibold" data-heading tabindex="-1"
+									>{model.name}</strong
+								>
+								{#if model.suggested}<Badge variant="secondary" class="suggested-badge"
+										>{t('app.model_management.suggested')}</Badge
+									>{/if}
 							</div>
-							<p class="text-muted-foreground text-sm">
-								{model.capabilities.map((capability) => capability.replaceAll('_', ' ')).join(', ')} ·
-								{model.tier} · {model.license_id || t('app.model_management.unknown')}
-							</p>
+							<div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
+								{#each [...model.capabilities.map( (capability) => capability.replaceAll('_', ' ') ), model.tier, model.license_id || t('app.model_management.unknown')] as chip}<span
+										class="rounded-md border px-2 py-0.5">{chip}</span
+									>{/each}
+							</div>
 							<div class="grid grid-cols-2 gap-3 text-sm">
 								<div>
 									<span class="text-muted-foreground flex items-center gap-1"
@@ -437,22 +473,43 @@
 									<span class="text-muted-foreground flex items-center gap-1"
 										><MemoryStick size={15} aria-hidden="true" />
 										{t('app.model_management.vram')}</span
-									><strong>{model.min_vram_gb} GB</strong>
+									><strong>{formatSize(model.min_vram_gb * GIB)}</strong>
 								</div>
 							</div>
-							{#if model.installed}<p class="text-sm font-medium">
-									{t('app.model_management.installed')}
-								</p>{:else if !active && !operation && model.download?.state !== 'failed'}<p
-									class="text-muted-foreground text-sm"
+							{#if model.installed}<Badge variant="outline" class="status-success"
+									><Check aria-hidden="true" />{t('app.model_management.installed')}</Badge
 								>
-									{t('app.model_management.not_installed')}
-								</p>{/if}
-							{#if !model.fits}<p>
-									{t('app.model_management.needs_vram').replace(
-										'{vram}',
-										String(model.min_vram_gb)
-									)}
-								</p>{/if}
+							{:else if active}<Badge variant="outline" class="status-info"
+									><Download aria-hidden="true" />{t(
+										model.download?.state === 'queued'
+											? 'app.model_management.queued'
+											: 'app.model_management.downloading'
+									)}</Badge
+								>
+							{:else if model.download?.state === 'failed' && model.download.error !== 'cancelled' && model.download.error !== 'not_running'}<Badge
+									variant="outline"
+									class="status-error"
+									><AlertTriangle aria-hidden="true" />{t('app.model_management.failed')}</Badge
+								>
+							{:else if !operation}<Badge variant="outline" class="text-muted-foreground"
+									>{t('app.model_management.not_installed')}</Badge
+								>{/if}
+							{#if !model.fits}<div class="warning-callout">
+									<AlertTriangle size={16} class="shrink-0" aria-hidden="true" /><span
+										>{t(
+											worker.hardware?.vram_total_bytes == null
+												? 'app.model_management.needs_vram_unknown'
+												: 'app.model_management.needs_vram'
+										)
+											.replace('{vram}', formatSize(model.min_vram_gb * GIB))
+											.replace(
+												'{gpu_vram}',
+												worker.hardware?.vram_total_bytes == null
+													? t('app.model_management.unknown')
+													: formatSize(worker.hardware.vram_total_bytes)
+											)}</span
+									>
+								</div>{/if}
 							{#if model.needs_token || model.download?.error === 'needs_token'}<div
 									class="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
 								>
@@ -475,9 +532,7 @@
 									>{/if}
 							{/if}
 							{#if active && model.download?.kind === 'install' && (!operation || (operation.action !== 'remove' && answers(model.download, operation)))}<label
-									>{model.download.state === 'queued'
-										? t('app.model_management.queued')
-										: t('app.model_management.downloading')} · {model.download.bytes_total
+									>{model.download.bytes_total
 										? Math.min(
 												100,
 												Math.round((model.download.bytes_done / model.download.bytes_total) * 100)
@@ -539,7 +594,7 @@
 									selectionSpace(free, [model.download_bytes], reserved(worker)).allowed}
 								<Button
 									variant="outline"
-									class="mt-auto aria-disabled:opacity-60"
+									class="mt-auto"
 									aria-disabled={!allowed || busy}
 									onclick={() => {
 										if (allowed && !busy) void install(worker, model);
@@ -564,44 +619,110 @@
 						</div>
 					{/each}
 				</div>
-				{@const picks = worker.models.filter(
-					(m) =>
-						(selected[worker.worker_id] ?? []).includes(m.id) &&
-						!m.installed &&
-						!m.needs_token &&
-						m.download?.state !== 'queued' &&
-						m.download?.state !== 'downloading' &&
-						!pending[key(worker.worker_id, m.id)]
-				)}
-				{@const free = worker.disk_free_bytes ?? worker.hardware?.disk_free_bytes}
-				{@const space =
-					free == null
-						? null
-						: selectionSpace(
-								free,
-								picks.map((m) => m.download_bytes),
-								reserved(worker)
-							)}
-				<p>
-					{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
-						? t('app.model_management.unknown')
-						: formatSize(space?.total ?? 0)}. {t('app.model_management.free_after')}: {space ==
-						null || picks.some((m) => m.download_bytes == null)
-						? t('app.model_management.unknown')
-						: formatSize(space.freeAfter)}
-				</p>
-				{#if picks.length && !space?.allowed}<p role="status">
-						{t('app.model_management.margin')}
-					</p>{/if}
-				<Button disabled={busy || !space?.allowed} onclick={() => install(worker)}
-					>{t('app.model_management.install')}</Button
-				>
+				{#if picks.length}
+					<div class="selection-footer" data-selection-footer>
+						<div class="text-sm">
+							<strong
+								>{t('app.model_management.selected')}: {picks.some((m) => m.download_bytes == null)
+									? t('app.model_management.unknown')
+									: formatSize(space?.total ?? 0)}</strong
+							>
+							<span class="text-muted-foreground">
+								· {t('app.model_management.free_after')}: {space == null ||
+								picks.some((m) => m.download_bytes == null)
+									? t('app.model_management.unknown')
+									: formatSize(space.freeAfter)}</span
+							>
+							{#if !space?.allowed}<p role="status" class="text-destructive">
+									{t('app.model_management.margin')}
+								</p>{/if}
+						</div>
+						<Button disabled={busy || !space?.allowed} onclick={() => install(worker)}
+							>{t('app.model_management.install')}</Button
+						>
+					</div>
+				{/if}
 			{/if}
 		</section>
 	{/each}
 </div>
 
 <style>
+	.disk-track {
+		display: flex;
+		height: 12px;
+		overflow: hidden;
+		border-radius: 999px;
+		background: var(--muted);
+		border: 1px solid var(--muted-foreground);
+	}
+	.disk-used {
+		background: var(--primary);
+	}
+	.disk-free {
+		background: var(--muted);
+		border: 1px solid var(--muted-foreground);
+	}
+	.disk-preview {
+		background: repeating-linear-gradient(
+			135deg,
+			var(--muted-foreground) 0 3px,
+			var(--muted) 3px 6px
+		);
+	}
+	.disk-preview.over {
+		background: var(--destructive);
+	}
+	.disk-swatch {
+		display: inline-block;
+		width: 10px;
+		height: 10px;
+		margin-right: 6px;
+		border-radius: 2px;
+	}
+	.selection-footer {
+		position: sticky;
+		bottom: 0;
+		z-index: 1;
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+		padding: 12px 16px;
+		border: 1px solid var(--muted-foreground);
+		border-radius: 6px;
+		background: var(--card);
+	}
+	.warning-callout {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+		border: 1px solid var(--status-warning);
+		border-radius: 6px;
+		padding: 12px;
+		background: color-mix(in srgb, var(--status-warning) 10%, var(--card));
+		color: var(--foreground);
+		font-size: var(--text-sm);
+	}
+	:global([data-slot='badge'].suggested-badge) {
+		background: var(--accent);
+		color: var(--accent-foreground);
+		border-color: var(--muted-foreground);
+	}
+	:global([data-slot='badge'].status-success) {
+		color: var(--status-success);
+		border-color: currentColor;
+	}
+	:global([data-slot='badge'].status-info) {
+		color: var(--status-running);
+		border-color: currentColor;
+	}
+	:global([data-slot='badge'].status-error) {
+		color: var(--destructive);
+		border-color: currentColor;
+	}
+
 	.model-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
