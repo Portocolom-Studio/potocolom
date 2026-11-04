@@ -283,7 +283,10 @@ def _remove_marker(model_id: str) -> None:
 
 
 def _size_ok(path: Path, size: int) -> bool:
-    return path.is_file() and path.stat().st_size == size
+    try:
+        return path.is_file() and path.stat().st_size == size
+    except OSError:
+        return False
 
 
 def _blob_ready(item: Item) -> bool:
@@ -951,9 +954,12 @@ class ModelStore:
             return False
         if await asyncio.to_thread(is_installed, manifest, self._models_dir, self._device):
             return True
-        _remove_marker(model_id)
         self.installed.pop(model_id, None)
         self._incomplete_adoptions.discard(model_id)
+        try:
+            _remove_marker(model_id)
+        except OSError:
+            logger.warning("cannot remove invalid marker for model %s", model_id)
         await self._announce()
         await self.send_inventory()
         return False

@@ -3100,3 +3100,47 @@ def test_load_command_refuses_deleted_shared_file(tmp_path):
     assert manifest.id not in store.installed
     assert model_store._read_marker(manifest.id) is None
     assert any(item['type'] == 'models_changed' and not item['models'] for item in replies)
+
+
+def test_load_refuses_when_shared_file_vanishes_during_stat_and_marker_cleanup_fails(tmp_path, monkeypatch):
+    manifest = pipeline_manifest()
+    file = tmp_path / 'weight'
+    file.write_bytes(b'abc')
+    model_store._write_marker(manifest.id, {
+        'state': 'installed', 'fingerprint': model_store._fingerprint(manifest),
+        'files': [{'path': str(file), 'size': 3}],
+    })
+    engine = FakeEngine()
+    store = ModelStore([manifest], engine, str(tmp_path))
+    original_stat = Path.stat
+    original_is_file = Path.is_file
+
+    def is_file(path):
+        if path == file:
+            return True
+        return original_is_file(path)
+
+    def stat(path, *args, **kwargs):
+        if path == file:
+            raise FileNotFoundError(str(path))
+        return original_stat(path, *args, **kwargs)
+
+    def load_command(_index):
+        monkeypatch.setattr(Path, 'is_file', is_file)
+        monkeypatch.setattr(Path, 'stat', stat)
+        monkeypatch.setattr(model_store, '_remove_marker', lambda _: (_ for _ in ()).throw(PermissionError()))
+        return {'type': 'load_model', 'model_id': manifest.id, 'request_id': 'load-1'}
+
+    fleet = ScriptedFleet('w-load', [(0, load_command)], protocol_version=5,
+                          settle_on=lambda raw: '"gpu_error"' in raw)
+
+    async def check():
+        await store.scan()
+        await serve_connection(fleet, Settings(worker_id='w-load', models_dir=str(tmp_path)),
+                               [manifest], engine, store)
+
+    asyncio.run(check())
+    replies = [json.loads(item) for item in fleet.sent]
+    error = next(item for item in replies if item['type'] == 'gpu_error')
+    assert error['reason'] == f'{manifest.id} is not installed'
+    assert manifest.id not in store.installed
