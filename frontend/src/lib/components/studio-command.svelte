@@ -259,6 +259,7 @@
 	}
 
 	function onWindowKeydown(event: KeyboardEvent): void {
+		if (studio.tourOpen) return;
 		if (event.key.toLowerCase() !== 'k' || !(event.metaKey || event.ctrlKey)) return;
 		if (event.altKey || event.shiftKey) return;
 		event.preventDefault();

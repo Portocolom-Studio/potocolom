@@ -87,6 +87,10 @@ test('the studio has no page footer', async () => {
 	assert.doesNotMatch(await built('app'), /<footer class="horizon\b/);
 });
 
+test('the landing preview has no Show tour launcher', async () => {
+	assert.doesNotMatch(await built('app'), /Show tour/);
+});
+
 test('headers lead to sign in or the waitlist, and login has no kicker', async () => {
 	for (const name of ['index', 'whitepaper']) {
 		const html = await built(name);

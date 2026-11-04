@@ -176,6 +176,7 @@
 			<Sidebar.MenuButton
 				class={itemClass}
 				tooltipContent={t('app.images.title')}
+				data-tour="images"
 				isActive={studio.shellView === 'images' && !studio.imagesStarredOnly}
 				onclick={() => navigate(() => openImages(false))}
 			>
@@ -251,6 +252,7 @@
 		<Sidebar.MenuItem>
 			<Sidebar.MenuButton
 				class={itemClass}
+				data-tour="install-model"
 				tooltipContent={t('app.models.title')}
 				isActive={studio.shellView === 'models'}
 				onclick={() => navigate(() => openService('models'))}

@@ -14,6 +14,7 @@
 		ref = $bindable(null),
 		open = $bindable(true),
 		onOpenChange = () => {},
+		shortcutDisabled = false,
 		class: className,
 		style,
 		children,
@@ -21,10 +22,12 @@
 	}: WithElementRef<HTMLAttributes<HTMLDivElement>> & {
 		open?: boolean;
 		onOpenChange?: (open: boolean) => void;
+		shortcutDisabled?: boolean;
 	} = $props();
 
 	const sidebar = setSidebar({
 		open: () => open,
+		shortcutDisabled: () => shortcutDisabled,
 		setOpen: (value: boolean) => {
 			open = value;
 			onOpenChange(value);

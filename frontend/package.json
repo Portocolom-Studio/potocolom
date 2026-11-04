@@ -20,6 +20,7 @@
 		"test:signin": "node scripts/test-signin-cookie.mjs",
 		"test:setup": "node scripts/test-setup-page.mjs && node scripts/test-setup-handoff.mjs",
 		"test:views": "node scripts/test-studio-view-state.mjs",
+		"test:tour": "node scripts/test-studio-tour.mjs",
 		"test:owner-focus": "node scripts/test-owner-focus.mjs",
 		"test:landing": "node scripts/test-landing-build.mjs",
 		"test:self-hosted": "node scripts/test-self-hosted-build.mjs",
