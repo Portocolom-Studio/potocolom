@@ -20,3 +20,11 @@ frontend/src/lib/hero-images.json:generic-api-key:117
 # hero-images.json line 189 today: a hero image file name, not a
 # credential.
 frontend/src/lib/hero-images.json:generic-api-key:189
+# setup-flow.test.ts and test-setup-page.mjs in this commit and today: made-up
+# setup link tokens used as test fixtures, not credentials.
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/src/lib/setup-flow.test.ts:generic-api-key:6
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:13
+a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:14
+frontend/scripts/test-setup-page.mjs:generic-api-key:13
+frontend/scripts/test-setup-page.mjs:generic-api-key:14
+frontend/src/lib/setup-flow.test.ts:generic-api-key:6
