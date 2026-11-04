@@ -1093,6 +1093,7 @@
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
 	<section
 		class="flex min-h-0 min-w-0 flex-1 flex-col"
+		class:tour-canvas={studio.tourOpen}
 		aria-label={t('app.gen.result')}
 		data-tour="canvas"
 		tabindex="-1"
@@ -1345,3 +1346,11 @@
 		</div>
 	</section>
 </div>
+
+<style>
+	@media (max-width: 1023px) {
+		.tour-canvas {
+			min-height: 360px;
+		}
+	}
+</style>

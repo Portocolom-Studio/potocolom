@@ -21,6 +21,8 @@
 	let hasNext = $state(false);
 	let nextButton = $state<HTMLElement | null>(null);
 	let card = $state<HTMLElement | null>(null);
+	let body = $state<HTMLElement | null>(null);
+	let bodyOverflows = $state(false);
 	let rect = $state({ left: 0, top: 0, width: 0, height: 0 });
 	let position = $state({ left: 16, top: 16, side: 'inside', arrow: 20 });
 	let visibleSteps = $state<number[]>([]);
@@ -41,6 +43,7 @@
 	async function place(): Promise<void> {
 		await tick();
 		if (!anchor || !card || step === -1) return;
+		bodyOverflows = !!body && body.scrollHeight > body.clientHeight;
 		const r = anchor.getBoundingClientRect();
 		const left = Math.max(0, r.left),
 			top = Math.max(0, r.top);
@@ -84,7 +87,9 @@
 			finish();
 		}
 		if (event.key === 'Tab' && card) {
-			const buttons = [...card.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+			const buttons = [
+				...card.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"]')
+			];
 			const index = buttons.indexOf(
 				document.activeElement instanceof HTMLElement ? document.activeElement : buttons[0]
 			);
@@ -122,7 +127,10 @@
 		anchor = target(STUDIO_TOUR_STEPS[index].anchor);
 		// A control in a scrolled column can sit below the fold. Bring it into view
 		// first, so the card is placed against where the control really is.
-		anchor?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+		void tick().then(() => {
+			anchor?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			void place();
+		});
 		refreshNav(index);
 		void place();
 		void tick().then(() => nextButton?.focus());
@@ -198,6 +206,11 @@
 			return;
 		}
 		if (!studio.modelsLoaded) return;
+		if (
+			studio.tourRequest === 'automatic' &&
+			document.querySelector('[role="dialog"][data-state="open"]')
+		)
+			return;
 		if (awaitingGenerate) {
 			if (studio.shellView !== 'generate') return;
 			awaitingGenerate = false;
@@ -254,7 +267,12 @@
 				else settle();
 			});
 		});
-		observer.observe(document.body, { childList: true, subtree: true });
+		observer.observe(document.body, {
+			childList: true,
+			subtree: true,
+			attributes: true,
+			attributeFilter: ['data-state', 'role']
+		});
 		return () => {
 			observer.disconnect();
 			if (frame !== 0) cancelAnimationFrame(frame);
@@ -270,6 +288,8 @@
 		if (step === -1 || !anchor) return;
 		const observer = new ResizeObserver(() => void place());
 		observer.observe(anchor);
+		if (card) observer.observe(card);
+		if (body) observer.observe(body);
 		const reposition = () => void place();
 		document.addEventListener('scroll', reposition, true);
 		document.addEventListener('transitionend', reposition, true);
@@ -320,7 +340,14 @@
 				aria-hidden="true"
 				style:--arrow="{position.arrow}px"
 			></span>{/if}
-		<div aria-live="polite" class="tour-body">
+		<div
+			bind:this={body}
+			aria-live="polite"
+			class="tour-body"
+			role={bodyOverflows ? 'region' : undefined}
+			aria-labelledby={bodyOverflows ? 'studio-tour-title' : undefined}
+			tabindex={bodyOverflows ? 0 : undefined}
+		>
 			<p class="tour-counter">
 				{t('app.tour.counter')
 					.replace('{step}', String(visibleSteps.indexOf(step) + 1))

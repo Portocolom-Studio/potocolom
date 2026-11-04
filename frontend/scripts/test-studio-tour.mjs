@@ -247,6 +247,109 @@ async function main() {
 			args: ['--no-sandbox', '--disable-dev-shm-usage']
 		});
 
+		for (const regression of process.env.R3
+			? [process.env.R3]
+			: ['modal', 'sheet', 'keyboard', 'keyboard-es', 'phone']) {
+			const context = await browser.createBrowserContext();
+			if (regression === 'modal' || regression === 'sheet') {
+				releaseModels = () => {};
+				modelsWaiting = false;
+			}
+			const run = await openStudio(context, server, {
+				viewport:
+					regression === 'phone' || regression === 'sheet'
+						? phone
+						: regression.startsWith('keyboard')
+							? { width: 1024, height: 500 }
+							: { width: 1280, height: 900 },
+				locale: regression === 'keyboard-es' ? 'es' : 'en'
+			});
+			if (regression === 'modal' || regression === 'sheet') {
+				await waitFor(() => modelsWaiting, 'delayed models');
+				if (regression === 'modal') {
+					await run.page.keyboard.down('Control');
+					await run.page.keyboard.press('k');
+					await run.page.keyboard.up('Control');
+					await run.page.waitForSelector('[role="dialog"][data-state="open"] input');
+					await run.page.keyboard.type('test');
+				} else {
+					await clickButton(run.page, 'button', 'Toggle sidebar');
+					await run.page.waitForSelector('[role="dialog"][data-state="open"]');
+				}
+				releaseModels();
+				releaseModels = null;
+				await pause(500);
+				assert.equal(await tourOpen(run.page), false, 'automatic tour waits for open dialog');
+				if (regression === 'modal') {
+					await run.page.keyboard.type('ing');
+					assert.equal(
+						await run.page.$eval('[role="dialog"] input', (input) => input.value),
+						'testing'
+					);
+				}
+				await run.page.keyboard.press('Tab');
+				assert.equal(
+					await run.page.evaluate(() => !!document.activeElement.closest('[role="dialog"]')),
+					true
+				);
+				if (regression === 'sheet') {
+					await run.page.keyboard.down('Control');
+					await run.page.keyboard.press('b');
+					await run.page.keyboard.up('Control');
+				} else await run.page.keyboard.press('Escape');
+				await run.page.waitForSelector('[data-studio-tour]');
+			} else {
+				await run.page.waitForSelector('[data-studio-tour] h2');
+				if (regression.startsWith('keyboard')) {
+					assert.equal(
+						await run.page.$eval('.tour-body', (el) => el.hasAttribute('tabindex')),
+						false
+					);
+					await run.page.addStyleTag({ content: 'html { font-size: 32px !important; }' });
+					await pause(300);
+					await run.page.keyboard.press('Tab');
+					assert.equal(
+						await run.page.evaluate(() =>
+							document.activeElement.matches('.tour-body[tabindex="0"][aria-labelledby]')
+						),
+						true,
+						'overflowing body joins focus loop'
+					);
+					await run.page.keyboard.press('ArrowDown');
+					await pause(200);
+					assert.ok(
+						await run.page.$eval('.tour-body', (el) => el.scrollTop > 0),
+						'keyboard scrolls body'
+					);
+					await run.page.keyboard.down('Shift');
+					await run.page.keyboard.press('Tab');
+					await run.page.keyboard.up('Shift');
+					assert.equal(
+						await run.page.evaluate(() => document.activeElement.textContent.trim()),
+						regression === 'keyboard-es' ? 'Siguiente' : 'Next'
+					);
+				} else {
+					await pause(300);
+					const geometry = await run.page.evaluate(() => {
+						const ring = document.querySelector('[data-tour-ring]').getBoundingClientRect();
+						const card = document.querySelector('[data-studio-tour]').getBoundingClientRect();
+						return {
+							height: ring.height,
+							overlap: Math.max(
+								0,
+								Math.min(ring.bottom, card.bottom) - Math.max(ring.top, card.top)
+							)
+						};
+					});
+					assert.ok(geometry.height >= 200, `phone canvas visible height: ${geometry.height}`);
+					assert.ok(geometry.overlap > 100, `card overlaps visible canvas: ${geometry.overlap}`);
+				}
+			}
+			assert.deepEqual(run.errors, []);
+			await context.close();
+		}
+		if (process.env.R3) return;
+
 		for (const finding of process.env.TOUR_REGRESSION
 			? [process.env.TOUR_REGRESSION]
 			: ['2', '3', '4', '4es', '5']) {
@@ -345,12 +448,11 @@ async function main() {
 					})
 				);
 				assert.equal(inside, true, 'all tour buttons remain in the viewport with enlarged text');
-				const scrolled = await run.page.evaluate(() => {
-					const body = document.querySelector('[data-studio-tour] [aria-live]');
-					body.scrollTop = body.scrollHeight;
-					return body.scrollTop > 0;
-				});
-				assert.equal(scrolled, true, 'long tour text can scroll');
+				assert.equal(
+					await run.page.$eval('.tour-body', (body) => body.scrollHeight > body.clientHeight),
+					true,
+					'long tour text overflows'
+				);
 				const shots =
 					'/tmp/claude-1000/-home-leon-Nextcloud-ETSIIT-ETSHIT-Github-potocolom/c7eba735-0ba3-4fd0-ba50-94f893f5f5e0/scratchpad/tour-shots';
 				await mkdir(shots, { recursive: true });
@@ -601,7 +703,7 @@ async function main() {
 						/Open the menu to find Images/
 					);
 				await run.page.screenshot({
-					path: `${shots}/r2-${viewport.width}x${viewport.height}-step${i + 1}.png`
+					path: `${shots}/${i === 0 ? 'r3' : 'r2'}-${viewport.width}x${viewport.height}-step${i + 1}.png`
 				});
 				if (i < titles.length - 1) await clickButton(run.page, '[data-studio-tour] button', 'Next');
 			}
