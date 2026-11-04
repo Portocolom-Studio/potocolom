@@ -1050,7 +1050,9 @@
 								/>
 							{/if}
 							<p class="text-muted-foreground min-w-0 flex-1 truncate text-sm">
-								{shownPrompt !== '' ? shownPrompt : t('app.gen.result')}
+								{upscaleSourceAsset?.id === shown?.assets[0]?.id && shownPrompt !== ''
+									? shownPrompt
+									: t('app.gen.result')}
 							</p>
 						</div>
 					</div>
@@ -1207,7 +1209,7 @@
 							variant="outline"
 							size="sm"
 							class="h-12 min-w-0 flex-[1.4] px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
-							aria-pressed={sourceAssetId !== null && mode === 'image_to_image'}
+							aria-pressed={mode === 'image_to_image' && sourceAssetId === shown.assets[0]?.id}
 							disabled={!canEdit}
 							onclick={editShown}
 						>

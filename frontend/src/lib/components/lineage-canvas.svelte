@@ -2551,21 +2551,25 @@
 	</label>
 {/snippet}
 
+{#snippet imageSearchControls()}
+	{@render imageSearchField()}
+	{#if imagesMode === 'lineage'}
+		<Button
+			variant="outline"
+			size="sm"
+			class="hidden lg:inline-flex"
+			disabled={searchMatchIds === null || searchMatchIds.size === 0}
+			onclick={goToNextSearchMatch}
+		>
+			{t('app.images.next_match')}
+		</Button>
+	{/if}
+{/snippet}
+
 {#snippet imagesHeader()}
 	<div bind:this={imagesHeaderEl} class="contents" data-images-header>
-		<div class="hidden items-center gap-1.5 sm:flex" data-lineage-search>
-			{@render imageSearchField()}
-			{#if imagesMode === 'lineage'}
-				<Button
-					variant="outline"
-					size="sm"
-					class="hidden lg:inline-flex"
-					disabled={searchMatchIds === null || searchMatchIds.size === 0}
-					onclick={goToNextSearchMatch}
-				>
-					{t('app.images.next_match')}
-				</Button>
-			{/if}
+		<div class="hidden items-center gap-1.5 xl:flex" data-lineage-search>
+			{@render imageSearchControls()}
 		</div>
 		<div
 			class="bg-field border-line-strong flex gap-0.5 rounded-lg border p-0.5"
@@ -2641,8 +2645,8 @@
 				{/each}
 			{/if}
 		</div>
-		<div class="w-full sm:hidden" data-lineage-search>
-			{@render imageSearchField()}
+		<div class="flex w-full items-center gap-1.5 xl:hidden" data-lineage-search>
+			{@render imageSearchControls()}
 		</div>
 		<ImageFilterControls
 			filters={imageFilters}

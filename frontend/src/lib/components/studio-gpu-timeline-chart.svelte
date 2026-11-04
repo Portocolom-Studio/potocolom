@@ -178,13 +178,15 @@
 					</svg>
 				</div>
 
-				{#if modelLanes.length > 1}
+				{#if modelLanes.length > 1 || modelLanes.some((lane) => lane.label.length > 14)}
 					<div class="mt-3 flex flex-wrap gap-3">
 						{#each modelLanes as lane (lane.id)}
-							<span class="text-muted-foreground flex items-center gap-1.5 text-xs">
+							<span
+								class="text-muted-foreground flex max-w-full min-w-0 items-center gap-1.5 text-xs"
+							>
 								<span class="inline-block size-2.5 rounded-sm" style={`background: ${lane.color}`}
 								></span>
-								<span>{lane.label}</span>
+								<span class="min-w-0 break-all">{lane.label}</span>
 							</span>
 						{/each}
 					</div>

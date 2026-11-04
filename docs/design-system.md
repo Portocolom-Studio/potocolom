@@ -159,10 +159,11 @@ them rather than hand-rolled markup.
   spaced time ticks with edge-aligned end labels. Metrics and model activity
   use the same plot edges and three ticks, all at 12px. Metric values sit beside
   their labels. An unavailable VRAM lane becomes a short header note. A single
-  model lane does not repeat its label in a legend or repeat the range caption.
+  short model name does not repeat in a legend. A truncated lane label keeps
+  its full name in the legend. Model activity does not repeat the range caption.
   Charts are at least 448px wide; on phones their scroll regions take the
   overflow. The model SVG uses its measured width so labels keep their size.
-- **Images search**: in the top bar from 640px wide; below the filters on
+- **Images search**: in the top bar from 1280px wide; below the filters on
   narrower screens so both Grid and Lineage controls remain visible.
 - **Parameter panel** (`generate-panel.svelte`): the mode title and subtitle show
   from `lg`; on phones the top bar names the screen. Below `lg` the page scrolls
