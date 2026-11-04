@@ -267,6 +267,30 @@ def _missing_root_keys() -> JSONResponse:
     })
 
 
+class SetupStatusRequest(BaseModel):
+    token: StorableStr
+
+
+@router.post("/api/v1/auth/setup/status")
+async def setup_status(request: SetupStatusRequest) -> dict[str, bool]:
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        async with session.begin():
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": SETUP_LOCK})
+            valid = (await session.execute(select(AuthToken.id).where(
+                AuthToken.token_hash == _token_hash(request.token),
+                AuthToken.purpose == SETUP_PURPOSE,
+                AuthToken.consumed_at.is_(None),
+                AuthToken.expires_at > func.now(),
+            ))).first()
+            if valid is None:
+                raise HTTPException(status_code=403, detail=INVALID_LINK)
+            claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
+            return {"claimed": claimed is not None}
+
+
 class SetupRequest(BaseModel):
     token: StorableStr
     # none records the choice and returns no session: there is nobody to sign in.
@@ -408,7 +432,7 @@ def main() -> None:
     print("    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"token\": \"{token}\",")
     print("         \"email\": \"you@example.com\",")
-    print("         \"password\": \"a password of fifteen characters or more\"}'")
+    print("         \"password\": \"a password of ten characters or more\"}'")
     print()
     print("A password typed on a command line reaches your shell history.")
     print()
