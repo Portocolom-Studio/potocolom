@@ -12,6 +12,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { t } from '$lib/i18n.svelte';
+	import { account } from '$lib/account.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Collapsible from '$lib/components/ui/collapsible';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
@@ -666,9 +667,18 @@
 			</div>
 		{:else if mode !== 'upscale'}
 			{#if diffusionModels.length === 0}
-				<p class="text-muted-foreground p-4 text-[13px] leading-relaxed">
-					{compatibleModelsRegistered ? t('app.models.none_available') : t('app.gen.no_models')}
-				</p>
+				<div class="text-muted-foreground p-4 text-[13px] leading-relaxed">
+					{#if compatibleModelsRegistered}
+						{t('app.models.none_available')}
+					{:else if account.current?.role === 'user' || account.current?.role === 'viewer'}
+						{t('app.gen.no_models_viewer')}
+					{:else}
+						<p>{t('app.gen.no_models')}</p>
+						<Button variant="outline" size="sm" class="mt-3" onclick={() => openService('models')}
+							>{t('app.gen.open_models')}</Button
+						>
+					{/if}
+				</div>
 			{:else}
 				<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
 					<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">

@@ -12,7 +12,7 @@ import {
 	TOUR_DONE_KEY
 } from './studio-tour.ts';
 
-// Steps by index: 0 canvas, 1 prompt, 2 model, 3 generate, 4 images.
+// Steps by index: 0 canvas, 1 prompt, 2 model, 3 generate, 4 install, 5 images.
 const everyControlShown = () => true;
 
 function onlyShown(...anchors: string[]): (anchor: string) => boolean {
@@ -39,7 +39,7 @@ test('next and back walk the steps in order and end at either edge', () => {
 		-1,
 		'no step before the first'
 	);
-	assert.equal(stepFrom(STUDIO_TOUR_STEPS, 4, 1, everyControlShown), -1, 'no step after the last');
+	assert.equal(stepFrom(STUDIO_TOUR_STEPS, 5, 1, everyControlShown), -1, 'no step after the last');
 });
 
 test('a step whose control is not on screen is skipped in both directions', () => {
@@ -97,7 +97,7 @@ test('a step whose control is still on screen stays put when the layout changes'
 });
 
 test('a step whose control left the screen moves to the next one that is on screen', () => {
-	assert.equal(settleStep(STUDIO_TOUR_STEPS, 3, onlyShown('canvas', 'prompt', 'images')), 4);
+	assert.equal(settleStep(STUDIO_TOUR_STEPS, 3, onlyShown('canvas', 'prompt', 'images')), 5);
 });
 
 test('a step whose control and every later control left the screen ends the tour', () => {

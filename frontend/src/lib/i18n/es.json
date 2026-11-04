@@ -506,7 +506,7 @@
 	"app.gen.untitled": "Generación sin título",
 	"app.gen.count": "Cantidad",
 	"app.gen.working_suffix": "en cola o renderizando; los resultados aparecen al terminar",
-	"app.gen.no_models": "No hay modelos registrados. Arranca un worker y recarga: anuncia sus modelos a la API al conectarse.",
+	"app.gen.no_models": "Aún no hay modelos instalados. Abre Modelos para instalar uno.",
 	"app.gen.result": "Imagen generada",
 	"app.gen.result_hint": "Tu imagen aparece aquí",
 	"app.gen.open_full": "Abrir a tamaño completo",
@@ -1225,5 +1225,12 @@
 	"bench.method_settings": "Los modelos usan distintos tamaños, pasos y modos de memoria. Estos gráficos describen esta ejecución; no son una clasificación controlada de velocidad o calidad.",
 	"bench.methodology": "Cómo leer esta ejecución",
 	"bench.results_link": "Descargar resultados",
-	"bench.method_skips": "La GPU también controla la pantalla. Los casos detenidos o no iniciados para dejar {reserve} GiB libres aparecen como omitidos y no tienen tiempos."
+	"bench.method_skips": "La GPU también controla la pantalla. Los casos detenidos o no iniciados para dejar {reserve} GiB libres aparecen como omitidos y no tienen tiempos.",
+	"app.gen.no_models_viewer": "Aún no hay modelos instalados. Pide a un administrador que instale uno.",
+	"app.gen.open_models": "Abrir Modelos",
+	"app.tour.install_title": "Instala primero un modelo",
+	"app.tour.install_body": "Instala primero un modelo. Modelos muestra qué puedes descargar y cuánto disco y VRAM necesita cada uno.",
+	"app.tour.images_mobile": "Abre el menú para encontrar Imágenes.",
+	"app.tour.install_mobile": "Abre el menú para encontrar Modelos. Instala uno primero; Modelos muestra cuánto disco y VRAM necesita.",
+	"app.tour.counter": "Paso {step} de {total}"
 }

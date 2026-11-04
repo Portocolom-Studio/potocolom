@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { onDestroy, untrack } from 'svelte';
-	import { Popover } from 'bits-ui';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { account } from '$lib/account.svelte';
 	import { openViewFor } from '$lib/account-display';
@@ -21,6 +20,83 @@
 	let hasBack = $state(false);
 	let hasNext = $state(false);
 	let nextButton = $state<HTMLElement | null>(null);
+	let card = $state<HTMLElement | null>(null);
+	let rect = $state({ left: 0, top: 0, width: 0, height: 0 });
+	let position = $state({ left: 16, top: 16, side: 'inside', arrow: 20 });
+	let visibleSteps = $state<number[]>([]);
+
+	function target(name: string): HTMLElement | null {
+		if (name === 'install-model' && studio.models.length !== 0) return null;
+		const element = document.querySelector<HTMLElement>(`[data-tour="${name}"]`);
+		if (element && element.getClientRects().length > 0) return element;
+		if (name === 'images' || name === 'install-model') {
+			const trigger = [...document.querySelectorAll<HTMLElement>('[data-sidebar="trigger"]')].find(
+				(element) => element.getClientRects().length > 0
+			);
+			if (trigger) return trigger;
+		}
+		return null;
+	}
+
+	async function place(): Promise<void> {
+		await tick();
+		if (!anchor || !card || step === -1) return;
+		const r = anchor.getBoundingClientRect();
+		const left = Math.max(0, r.left),
+			top = Math.max(0, r.top);
+		const right = Math.min(innerWidth, r.right),
+			bottom = Math.min(innerHeight, r.bottom);
+		rect = { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+		const w = card.offsetWidth,
+			h = card.offsetHeight,
+			gap = 16,
+			pad = 16;
+		let x = left + (right - left - w) / 2,
+			y = top + (bottom - top - h) / 2;
+		let side = 'inside';
+		if (STUDIO_TOUR_STEPS[step].anchor === 'canvas') {
+			// The canvas is the destination, so keep its card within it.
+		} else if (right + gap + w <= innerWidth - pad) {
+			x = right + gap;
+			side = 'right';
+		} else if (left - gap - w >= pad) {
+			x = left - gap - w;
+			side = 'left';
+		} else if (bottom + gap + h <= innerHeight - pad) {
+			y = bottom + gap;
+			side = 'bottom';
+		} else if (top - gap - h >= pad) {
+			y = top - gap - h;
+			side = 'top';
+		}
+		x = Math.max(pad, Math.min(x, innerWidth - w - pad));
+		y = Math.max(pad, Math.min(y, innerHeight - h - pad));
+		const horizontal = side === 'top' || side === 'bottom';
+		const offset = horizontal ? (left + right) / 2 - x : (top + bottom) / 2 - y;
+		const size = horizontal ? w : h;
+		position = { left: x, top: y, side, arrow: Math.max(16, Math.min(offset, size - 16)) - 6 };
+	}
+
+	function keydown(event: KeyboardEvent): void {
+		if (step === -1) return;
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			finish();
+		}
+		if (event.key === 'Tab' && card) {
+			const buttons = [...card.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+			const index = buttons.indexOf(
+				document.activeElement instanceof HTMLElement ? document.activeElement : buttons[0]
+			);
+			if (event.shiftKey && index <= 0) {
+				event.preventDefault();
+				buttons.at(-1)?.focus();
+			} else if (!event.shiftKey && index === buttons.length - 1) {
+				event.preventDefault();
+				buttons[0]?.focus();
+			}
+		}
+	}
 	const current = $derived(step === -1 ? null : STUDIO_TOUR_STEPS[step]);
 	// True while Generate opens for a tour that began elsewhere. Plain on purpose:
 	// the checks that read it run again when the view and the models change.
@@ -32,8 +108,7 @@
 	// A control is a step only when it is rendered and laid out. A control the
 	// role cannot use, or a sidebar closed on a phone, is passed over.
 	function isShown(name: string): boolean {
-		const element = document.querySelector(`[data-tour="${name}"]`);
-		return element !== null && element.getClientRects().length > 0;
+		return target(name) !== null;
 	}
 
 	function anchorStillShown(): boolean {
@@ -42,17 +117,20 @@
 
 	function showStep(index: number): void {
 		step = index;
-		anchor = document.querySelector<HTMLElement>(
-			`[data-tour="${STUDIO_TOUR_STEPS[index].anchor}"]`
-		);
+		anchor = target(STUDIO_TOUR_STEPS[index].anchor);
 		// A control in a scrolled column can sit below the fold. Bring it into view
 		// first, so the card is placed against where the control really is.
 		anchor?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 		refreshNav(index);
+		void place();
+		void tick().then(() => nextButton?.focus());
 	}
 
 	// Back and Next depend on what is on screen right now.
 	function refreshNav(index: number): void {
+		visibleSteps = STUDIO_TOUR_STEPS.map((_, i) => i).filter((i) =>
+			isShown(STUDIO_TOUR_STEPS[i].anchor)
+		);
 		hasBack = stepFrom(STUDIO_TOUR_STEPS, index, -1, isShown) !== -1;
 		hasNext = stepFrom(STUDIO_TOUR_STEPS, index, 1, isShown) !== -1;
 	}
@@ -63,7 +141,10 @@
 	function finish(): void {
 		if (step === -1) return;
 		markTourDone(() => localStorage);
+		const focused = document.activeElement;
+		const shouldRestore = focused === document.body || card?.contains(focused);
 		step = -1;
+		if (shouldRestore) void tick().then(returnFocus);
 		awaitingGenerate = false;
 		studio.tourRequest = null;
 	}
@@ -86,8 +167,11 @@
 	// to the next step on screen, or the tour ends.
 	function settle(): void {
 		if (step === -1) return;
+		const updated = target(STUDIO_TOUR_STEPS[step].anchor);
+		if (updated && updated !== anchor) anchor = updated;
 		if (anchorStillShown()) {
 			refreshNav(step);
+			void place();
 			return;
 		}
 		const settled = settleStep(STUDIO_TOUR_STEPS, step, isShown);
@@ -184,64 +268,138 @@
 	});
 </script>
 
-<svelte:window onresize={settle} />
+<svelte:window onresize={settle} onscroll={place} onkeydown={keydown} onpagehide={finish} />
 
-<!-- Non-modal: a click outside the card does not mark the tour as done. -->
-<Popover.Root
-	open={studio.tourRequest !== null && current !== null}
-	onOpenChange={(open) => {
-		if (!open) finish();
-	}}
->
-	<Popover.Content
+{#if current}
+	<div class="tour-blocker" aria-hidden="true"></div>
+	<div
+		data-tour-ring
+		class="tour-ring"
+		aria-hidden="true"
+		style:left="{rect.left}px"
+		style:top="{rect.top}px"
+		style:width="{rect.width}px"
+		style:height="{rect.height}px"
+	></div>
+	<div
+		bind:this={card}
+		data-studio-tour
 		role="dialog"
-		trapFocus={false}
-		customAnchor={anchor}
-		side="bottom"
-		align="center"
-		sideOffset={12}
-		collisionPadding={16}
-		onOpenAutoFocus={(event) => {
-			event.preventDefault();
-			nextButton?.focus();
-		}}
-		onCloseAutoFocus={(event) => {
-			event.preventDefault();
-			const focused = document.activeElement;
-			if (
-				focused === document.body ||
-				document.querySelector('[data-studio-tour]')?.contains(focused)
-			) {
-				returnFocus();
-			}
-		}}
-		onInteractOutside={(event) => event.preventDefault()}
+		aria-modal="true"
 		aria-labelledby="studio-tour-title"
 		aria-describedby="studio-tour-body"
-		data-studio-tour
-		class="bg-popover text-popover-foreground ring-foreground/10 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-2xl p-4 shadow-2xl ring-1 outline-none"
+		class="tour-card bg-popover text-popover-foreground"
+		style:left="{position.left}px"
+		style:top="{position.top}px"
+		data-side={position.side}
 	>
-		{#if current}
-			<!-- The live region holds the step text, so each step change is announced. -->
-			<div aria-live="polite">
-				<h2 id="studio-tour-title" class="text-foreground text-sm font-semibold">
-					{t(current.titleKey)}
-				</h2>
-				<p id="studio-tour-body" class="text-muted-foreground mt-1.5 text-[13px] leading-relaxed">
-					{t(current.bodyKey)}
-				</p>
+		{#if position.side !== 'inside'}<span
+				class="tour-arrow"
+				aria-hidden="true"
+				style:--arrow="{position.arrow}px"
+			></span>{/if}
+		<div aria-live="polite">
+			<p class="tour-counter">
+				{t('app.tour.counter')
+					.replace('{step}', String(visibleSteps.indexOf(step) + 1))
+					.replace('{total}', String(visibleSteps.length))}
+			</p>
+			<h2 id="studio-tour-title" class="text-foreground mt-2 text-base font-semibold">
+				{t(current.titleKey)}
+			</h2>
+			<p id="studio-tour-body" class="text-muted-foreground mt-2 text-sm leading-relaxed">
+				{current.anchor === 'images' && anchor?.dataset.sidebar === 'trigger'
+					? t('app.tour.images_mobile')
+					: current.anchor === 'install-model' && anchor?.dataset.sidebar === 'trigger'
+						? t('app.tour.install_mobile')
+						: t(current.bodyKey)}
+			</p>
+		</div>
+		<div class="mt-5 flex items-center justify-between gap-2">
+			<Button variant="ghost" size="sm" onclick={finish}>{t('app.tour.skip')}</Button>
+			<div class="flex items-center gap-2">
+				<Button variant="outline" size="sm" disabled={!hasBack} onclick={back}
+					>{t('app.tour.back')}</Button
+				>
+				<Button variant="brand" size="sm" bind:ref={nextButton} onclick={next}
+					>{hasNext ? t('app.tour.next') : t('app.tour.done')}</Button
+				>
 			</div>
-			<div class="mt-4 flex items-center justify-between gap-2">
-				<Button variant="ghost" size="sm" onclick={finish}>{t('app.tour.skip')}</Button>
-				<div class="flex items-center gap-2">
-					<Button variant="outline" size="sm" disabled={!hasBack} onclick={back}>
-						{t('app.tour.back')}
-					</Button>
-					<Button variant="brand" size="sm" bind:ref={nextButton} onclick={next}>
-						{hasNext ? t('app.tour.next') : t('app.tour.done')}
-					</Button>
-				</div>
-			</div>
-		{/if}
-	</Popover.Content>
-</Popover.Root>
+		</div>
+	</div>
+{/if}
+
+<style>
+	.tour-blocker {
+		position: fixed;
+		inset: 0;
+		z-index: 90;
+	}
+	.tour-ring {
+		position: fixed;
+		z-index: 91;
+		pointer-events: none;
+		border: 3px solid #6685ff;
+		border-radius: 10px;
+		box-shadow:
+			0 0 0 9999px rgb(0 0 0 / 0.7),
+			0 0 20px rgb(93 126 255 / 0.5);
+	}
+	.tour-card {
+		position: fixed;
+		z-index: 92;
+		width: min(360px, calc(100vw - 32px));
+		border: 1px solid #6685ff;
+		border-radius: 16px;
+		padding: 20px;
+		box-shadow: 0 20px 60px rgb(0 0 0 / 0.55);
+		animation: tour-enter 160ms ease-out;
+	}
+	.tour-counter {
+		color: #819aff;
+		font-size: 12px;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+	}
+	.tour-arrow {
+		position: absolute;
+		width: 12px;
+		height: 12px;
+		background: inherit;
+		border: solid #6685ff;
+		transform: rotate(45deg);
+	}
+	[data-side='right'] .tour-arrow {
+		left: -7px;
+		top: var(--arrow);
+		border-width: 0 0 1px 1px;
+	}
+	[data-side='left'] .tour-arrow {
+		right: -7px;
+		top: var(--arrow);
+		border-width: 1px 1px 0 0;
+	}
+	[data-side='bottom'] .tour-arrow {
+		top: -7px;
+		left: var(--arrow);
+		border-width: 1px 0 0 1px;
+	}
+	[data-side='top'] .tour-arrow {
+		bottom: -7px;
+		left: var(--arrow);
+		border-width: 0 1px 1px 0;
+	}
+	@keyframes tour-enter {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.tour-card {
+			animation: none;
+		}
+	}
+</style>

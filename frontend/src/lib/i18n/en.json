@@ -506,7 +506,7 @@
 	"app.gen.generate": "Generate",
 	"app.gen.count": "Count",
 	"app.gen.working_suffix": "in the queue or rendering; results appear as they finish",
-	"app.gen.no_models": "No models registered. Start a worker and reload: it announces its models to the API when it connects.",
+	"app.gen.no_models": "No models installed yet. Open Models to install one.",
 	"app.gen.result": "Generated image",
 	"app.gen.result_hint": "Your image appears here",
 	"app.gen.open_full": "Open full size",
@@ -1225,5 +1225,12 @@
 	"bench.method_settings": "Models use different sizes, steps and memory modes. These charts describe this run; they are not a controlled speed or quality ranking.",
 	"bench.methodology": "How to read this run",
 	"bench.results_link": "Download results",
-	"bench.method_skips": "The GPU also drives the display. Cases stopped or not run to keep {reserve} GiB free are marked skipped and have no timings."
+	"bench.method_skips": "The GPU also drives the display. Cases stopped or not run to keep {reserve} GiB free are marked skipped and have no timings.",
+	"app.gen.no_models_viewer": "No models installed yet. Ask an administrator to install one.",
+	"app.gen.open_models": "Open Models",
+	"app.tour.install_title": "Install a model first",
+	"app.tour.install_body": "Install a model first. Models lists what you can download and how much disk and VRAM each one needs.",
+	"app.tour.images_mobile": "Open the menu to find Images.",
+	"app.tour.install_mobile": "Open the menu to find Models. Install a model first; Models shows its disk and VRAM needs.",
+	"app.tour.counter": "Step {step} of {total}"
 }

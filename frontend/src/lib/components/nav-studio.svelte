@@ -252,6 +252,7 @@
 		<Sidebar.MenuItem>
 			<Sidebar.MenuButton
 				class={itemClass}
+				data-tour="install-model"
 				tooltipContent={t('app.models.title')}
 				isActive={studio.shellView === 'models'}
 				onclick={() => navigate(() => openService('models'))}

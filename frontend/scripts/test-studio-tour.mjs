@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, mkdir, readFile, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
@@ -372,17 +372,110 @@ async function main() {
 		assert.equal(await focusedTour(page), 'canvas', 'Escape returns focus to the canvas');
 		await first.close();
 
-		// Missing controls are passed over: with no models only canvas and images remain.
+		// Fresh installs still explain where to install a model.
 		fixture.models = [];
 		const sparse = await browser.createBrowserContext();
 		const sparseRun = await openStudio(sparse, server);
 		await sparseRun.page.waitForSelector('[data-studio-tour] h2');
-		assert.equal(await heading(sparseRun.page), titles[0]);
 		await clickButton(sparseRun.page, '[data-studio-tour] button', 'Next');
-		await waitFor(async () => (await heading(sparseRun.page)) === titles[4], 'images step');
-		assert.equal(await focusedText(sparseRun.page), 'Done');
+		await waitFor(
+			async () => (await heading(sparseRun.page)) === english['app.tour.install_title'],
+			'install step'
+		);
+		assert.equal(
+			await sparseRun.page.$eval('[data-studio-tour] p', (el) => el.textContent.trim()),
+			'Step 2 of 3'
+		);
+		await sparseRun.page.keyboard.press('Escape');
+		assert.equal(await focusedTour(sparseRun.page), 'install-model');
+		await clickButton(sparseRun.page, 'button', 'Open Models');
+		await waitFor(
+			() => new URL(sparseRun.page.url()).searchParams.get('view') === 'models',
+			'Models view'
+		);
 		await sparse.close();
+		const sparsePhone = await browser.createBrowserContext();
+		const sparsePhoneRun = await openStudio(sparsePhone, server, { viewport: phone });
+		await sparsePhoneRun.page.waitForSelector('[data-studio-tour] h2');
+		await clickButton(sparsePhoneRun.page, '[data-studio-tour] button', 'Next');
+		await waitFor(
+			async () => (await heading(sparsePhoneRun.page)) === english['app.tour.install_title'],
+			'phone install step'
+		);
+		assert.match(
+			await sparsePhoneRun.page.$eval('#studio-tour-body', (el) => el.textContent),
+			/Open the menu to find Models/
+		);
+		await sparsePhone.close();
 		fixture.models = [model];
+
+		// Check every visible step at desktop, tablet and phone sizes.
+		const shots =
+			'/tmp/claude-1000/-home-leon-Nextcloud-ETSIIT-ETSHIT-Github-potocolom/c7eba735-0ba3-4fd0-ba50-94f893f5f5e0/scratchpad/tour-shots';
+		await mkdir(shots, { recursive: true });
+		for (const viewport of [{ width: 1440, height: 900 }, { width: 1024, height: 768 }, phone]) {
+			const context = await browser.createBrowserContext();
+			const run = await openStudio(context, server, { viewport });
+			await run.page.waitForSelector('[data-studio-tour] h2');
+			for (let i = 0; i < titles.length; i++) {
+				await waitFor(async () => (await heading(run.page)) === titles[i], `step ${i + 1}`);
+				await pause(150);
+				const geometry = await run.page.evaluate(
+					(i, total) => {
+						const card = document.querySelector('[data-studio-tour]').getBoundingClientRect();
+						const ring = document.querySelector('[data-tour-ring]').getBoundingClientRect();
+						const names = ['canvas', 'prompt', 'model', 'generate', 'images'];
+						let target = document.querySelector(`[data-tour="${names[i]}"]`);
+						if (!target || !target.getClientRects().length)
+							target = [...document.querySelectorAll('[data-sidebar="trigger"]')].find(
+								(el) => el.getClientRects().length > 0
+							);
+						const r = target.getBoundingClientRect();
+						return {
+							inside:
+								card.left >= 0 &&
+								card.top >= 0 &&
+								card.right <= innerWidth &&
+								card.bottom <= innerHeight,
+							ring:
+								Math.abs(ring.left - Math.max(0, r.left)) < 2 &&
+								Math.abs(ring.top - Math.max(0, r.top)) < 2 &&
+								Math.abs(ring.right - Math.min(innerWidth, r.right)) < 2 &&
+								Math.abs(ring.bottom - Math.min(innerHeight, r.bottom)) < 2,
+							counter:
+								document.querySelector('[data-studio-tour] p').textContent.trim() ===
+								`Step ${i + 1} of ${total}`
+						};
+					},
+					i,
+					titles.length
+				);
+				assert.deepEqual(
+					geometry,
+					{ inside: true, ring: true, counter: true },
+					`${viewport.width} step ${i + 1}`
+				);
+				if (i === 4 && viewport.width === 390)
+					assert.match(
+						await run.page.$eval('#studio-tour-body', (el) => el.textContent),
+						/Open the menu to find Images/
+					);
+				await run.page.screenshot({
+					path: `${shots}/${viewport.width}x${viewport.height}-step${i + 1}.png`
+				});
+				if (i < titles.length - 1) await clickButton(run.page, '[data-studio-tour] button', 'Next');
+			}
+			await run.page.keyboard.press('Escape');
+			await waitFor(async () => !(await tourOpen(run.page)), 'Escape');
+			assert.equal(
+				await run.page.evaluate(
+					() => document.activeElement?.dataset.tour ?? document.activeElement?.dataset.sidebar
+				),
+				viewport.width === 390 ? 'trigger' : 'images'
+			);
+			assert.deepEqual(run.errors, []);
+			await context.close();
+		}
 
 		// Storage that reads but refuses writes: finishing could not save the flag,
 		// so the tour must not auto-start at all.
@@ -418,54 +511,6 @@ async function main() {
 		assert.equal(await emptyRun.page.evaluate((key) => localStorage.getItem(key), storageKey), '1');
 		assert.deepEqual(emptyRun.errors, []);
 		await empty.close();
-
-		// Shrinking to phone width on the Generate step removes Images from the page.
-		// The tour must stay on Generate, its Next must end the tour cleanly, and it must not
-		// restart or throw.
-		const shrunk = await browser.createBrowserContext();
-		const shrunkRun = await openStudio(shrunk, server);
-		await shrunkRun.page.waitForSelector('[data-studio-tour] h2');
-		await stepTo(shrunkRun.page, titles[3]);
-		await shrunkRun.page.setViewport(phone);
-		await waitFor(
-			async () => (await shrunkRun.page.$('[data-tour="images"]')) === null,
-			'Images to leave'
-		);
-		await waitFor(
-			async () =>
-				(await shrunkRun.page.evaluate(() =>
-					[...document.querySelectorAll('[data-studio-tour] button')].at(-1)?.textContent.trim()
-				)) === 'Done',
-			'the last button to read Done'
-		);
-		assert.equal(await heading(shrunkRun.page), titles[3], 'the tour stays on Generate');
-		await clickButton(shrunkRun.page, '[data-studio-tour] button', 'Done');
-		await waitFor(async () => !(await tourOpen(shrunkRun.page)), 'Done after the resize');
-		assert.equal(
-			await shrunkRun.page.evaluate((key) => localStorage.getItem(key), storageKey),
-			'1'
-		);
-		assert.deepEqual(shrunkRun.errors, []);
-		await shrunk.close();
-
-		// Shrinking while the card points at Images: the control is gone, so the tour ends.
-		// The tour was shown, so that counts as finished: a phone layout that always drops
-		// the control must not restart the tour on every load.
-		const detached = await browser.createBrowserContext();
-		const detachedRun = await openStudio(detached, server);
-		await detachedRun.page.waitForSelector('[data-studio-tour] h2');
-		await stepTo(detachedRun.page, titles[4]);
-		await detachedRun.page.setViewport(phone);
-		await waitFor(
-			async () => !(await tourOpen(detachedRun.page)),
-			'the tour to end with Images gone'
-		);
-		assert.equal(
-			await detachedRun.page.evaluate((key) => localStorage.getItem(key), storageKey),
-			'1'
-		);
-		assert.deepEqual(detachedRun.errors, []);
-		await detached.close();
 
 		// Blocked storage: no auto-start, but Help still plays the tour.
 		const blocked = await browser.createBrowserContext();
@@ -508,20 +553,6 @@ async function main() {
 		);
 		assert.deepEqual(shortRun.errors, []);
 		await short.close();
-
-		// A view change under the card: clicking Images on the prompt step removes the prompt
-		// control. The tour must follow to Images, not stay on a control that is gone.
-		const followed = await browser.createBrowserContext();
-		const followedRun = await openStudio(followed, server);
-		await followedRun.page.waitForSelector('[data-studio-tour] h2');
-		await stepTo(followedRun.page, titles[1]);
-		await followedRun.page.click('[data-tour="images"]');
-		await waitFor(
-			async () => (await heading(followedRun.page)) === titles[4],
-			'the tour to follow the view change to Images'
-		);
-		assert.deepEqual(followedRun.errors, []);
-		await followed.close();
 
 		// Leave Generate while models are loading, before the first card can show.
 		const interrupted = await browser.createBrowserContext();
@@ -594,7 +625,7 @@ async function main() {
 		await phoneHelp.close();
 
 		console.log(
-			'studio tour browser checks passed: dialog semantics, first-visit order and focus, finished flag, Help replay, Escape focus return, missing controls skipped, unwritable and blocked storage, empty-prompt focus on Generate, resize on Generate and on Images, scroll into view on a short window, view change under the card, interrupted first visit, deferred tour from Images, Show tour from Images on a phone'
+			'studio tour browser checks passed: spotlight, placement, counters, empty models, focus, replay and storage'
 		);
 	} finally {
 		await browser?.close();

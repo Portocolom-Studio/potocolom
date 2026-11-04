@@ -15,6 +15,7 @@ export const STUDIO_TOUR_STEPS: readonly TourStep[] = [
 	{ anchor: 'prompt', titleKey: 'app.tour.prompt_title', bodyKey: 'app.tour.prompt_body' },
 	{ anchor: 'model', titleKey: 'app.tour.model_title', bodyKey: 'app.tour.model_body' },
 	{ anchor: 'generate', titleKey: 'app.tour.generate_title', bodyKey: 'app.tour.generate_body' },
+	{ anchor: 'install-model', titleKey: 'app.tour.install_title', bodyKey: 'app.tour.install_body' },
 	{ anchor: 'images', titleKey: 'app.tour.images_title', bodyKey: 'app.tour.images_body' }
 ];
 
