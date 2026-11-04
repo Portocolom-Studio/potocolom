@@ -38,7 +38,7 @@
 		viewOwnerEpoch,
 		studio
 	} from '$lib/studio.svelte';
-	import { readStudioView } from '$lib/studio-view';
+	import { readStudioView, studioViewSearch } from '$lib/studio-view';
 	import { setupRequiredFrom } from '$lib/setup-flow';
 	import { t } from '$lib/i18n.svelte';
 	import { detectPlatform } from '$lib/platform.svelte';
@@ -64,12 +64,21 @@
 	$effect.pre(() => {
 		viewOwnerEpoch();
 		const { view, tab } = readStudioView(page.url);
-		studio.shellView = openViewFor(
-			view,
-			tab,
-			account.current?.role ?? null,
-			account.localModeConfirmed
-		);
+		// AUTH_MODE=none has one administrator and no accounts: its admin area is
+		// Fleet and Models only, and its account view is the turn-on card.
+		const localAdmin = account.localModeConfirmed && view === 'admin';
+		const allowedTab = tab === 'fleet' || tab === 'models' ? tab : 'models';
+		studio.shellView = localAdmin
+			? 'admin'
+			: openViewFor(view, tab, account.current?.role ?? null, account.localModeConfirmed);
+		if (localAdmin && tab !== allowedTab) {
+			const search = studioViewSearch(page.url.search, 'admin', allowedTab);
+			void goto(`${page.url.pathname}${search}`, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true
+			});
+		}
 		// Only the active tabbed view applies its URL tab, and only when it was
 		// not refused, so other views keep their last tab open.
 		if (
@@ -84,9 +93,10 @@
 				tab === 'audit' ||
 				tab === 'fleet' ||
 				tab === 'banner' ||
-				tab === 'invitations')
+				tab === 'invitations' ||
+				tab === 'models')
 		) {
-			studio.adminTab = tab;
+			studio.adminTab = account.localModeConfirmed ? allowedTab : tab;
 		}
 	});
 	let updateDismissed = $state(false);

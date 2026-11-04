@@ -73,7 +73,7 @@
 	const metricsEntryTab = $derived(
 		mineNeeds === null && usageNeeds !== null ? 'mine' : studio.metricsTab
 	);
-	const adminNeeds = $derived(sectionNeeds('admin', role));
+	const adminNeeds = $derived(account.localModeConfirmed ? null : sectionNeeds('admin', role));
 
 	function lockReason(needs: 'user' | 'admin'): string {
 		return needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only');
@@ -297,7 +297,8 @@
 					isActive={studio.shellView === 'admin'}
 					onpointerenter={() => prefetchView('admin')}
 					onfocus={() => prefetchView('admin')}
-					onclick={() => navigate(() => openAdmin(studio.adminTab))}
+					onclick={() =>
+						navigate(() => openAdmin(account.localModeConfirmed ? 'models' : studio.adminTab))}
 				>
 					<UsersIcon />
 					<span>{t('app.admin.title')}</span>
