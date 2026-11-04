@@ -25,6 +25,11 @@ def main():
             names = {name for name, _ in repos[key]['files']}
             repos[key]['model_index'] = (hub_file_text(repo, revision, 'model_index.json')
                                          if 'model_index.json' in names else None)
+        if kind == 'modular_pipeline':
+            names = {name for name, _ in repos[key]['files']}
+            repos[key]['modular_model_index'] = (
+                hub_file_text(repo, revision, 'modular_model_index.json')
+                if 'modular_model_index.json' in names else None)
         print(key, flush=True)
     urls = sorted({url for manifest in manifests if 'upscale' in manifest.capabilities
                    for url, _ in upscale_targets(manifest, '/tmp')})

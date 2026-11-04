@@ -193,7 +193,8 @@ def repo_refs(manifest: Manifest, device: str = "cuda") -> list[RepoRef]:
     # the companion repositories load their default files.
     _dtype, variant = weight_config(manifest.dtype, device)
     if is_hub_source(manifest.source):
-        kind = "component" if manifest.pipeline in PLAIN_REPO_PIPELINES else "pipeline"
+        kind = ("component" if manifest.pipeline in PLAIN_REPO_PIPELINES else
+                "modular_pipeline" if manifest.pipeline == "Flux3Distilled" else "pipeline")
         refs.append(RepoRef(manifest.source, manifest.source_revision, kind, variant))
     if manifest.vae:
         refs.append(RepoRef(manifest.vae, manifest.vae_revision, "component"))
@@ -530,6 +531,28 @@ def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tup
             chosen = [(name, size) for name, size in files if name == ref.filename]
             if not chosen:
                 raise ModelStoreError("unavailable")
+        elif ref.kind == "modular_pipeline":
+            index_text = (hub_file_text(ref.repo, ref.revision, "modular_model_index.json")
+                          if locked is None else locked.get("modular_model_index"))
+            if index_text is None:
+                raise ModelStoreError("unavailable")
+            index = json.loads(index_text)
+            chosen = [(name, size) for name, size in files if name == "modular_model_index.json"]
+            if not chosen:
+                raise ModelStoreError("unavailable")
+            for component in ("text_encoder", "tokenizer", "transformer", "vae"):
+                try:
+                    spec = index[component][2]
+                    folder = spec["subfolder"]
+                    if spec["pretrained_model_name_or_path"] != ref.repo or not folder:
+                        raise ValueError
+                    component_files = [(name, size) for name, size in files
+                                       if name.startswith(folder + "/")]
+                    if not component_files:
+                        raise ValueError
+                    chosen.extend(select_plan(component_files, spec.get("variant") or ""))
+                except (KeyError, IndexError, TypeError, ValueError) as error:
+                    raise ModelStoreError("unavailable") from error
         elif ref.kind == "pipeline":
             index_text = (hub_file_text(ref.repo, ref.revision, "model_index.json")
                           if locked is None else locked.get("model_index"))
@@ -952,7 +975,11 @@ class ModelStore:
         manifest = self.installed.get(model_id)
         if manifest is None:
             return False
-        if await asyncio.to_thread(is_installed, manifest, self._models_dir, self._device):
+        try:
+            valid = await asyncio.to_thread(is_installed, manifest, self._models_dir, self._device)
+        except OSError:
+            valid = False
+        if valid:
             return True
         self.installed.pop(model_id, None)
         self._incomplete_adoptions.discard(model_id)

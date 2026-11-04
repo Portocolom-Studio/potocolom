@@ -3008,6 +3008,8 @@ def test_bundled_lock_covers_manifests():
                     assert 'model_index' in entry
                     if entry['model_index'] is None:
                         assert 'model_index.json' not in dict(entry['files'])
+                if ref.kind == 'modular_pipeline':
+                    assert entry['modular_model_index']
         if 'upscale' in manifest.capabilities:
             for url, _ in model_store.upscale_targets(manifest, '/tmp'):
                 assert lock['urls'][url] > 0
@@ -3144,3 +3146,36 @@ def test_load_refuses_when_shared_file_vanishes_during_stat_and_marker_cleanup_f
     error = next(item for item in replies if item['type'] == 'gpu_error')
     assert error['reason'] == f'{manifest.id} is not installed'
     assert manifest.id not in store.installed
+
+
+@pytest.mark.parametrize('device', ['cuda', 'rocm', 'cpu', 'mps'])
+def test_flux3_modular_plan_covers_loader_components_offline(device, tmp_path, monkeypatch):
+    from worker.manifests import load_manifests
+
+    manifest = next(m for m in load_manifests(str(Path(__file__).parents[1] / 'models'))
+                    if m.id == 'flux3-klein')
+    monkeypatch.setattr(model_store, 'plan_items', REAL_PLAN_ITEMS)
+    monkeypatch.setattr(model_store, 'bundled_hub_metadata', REAL_BUNDLED_METADATA)
+    monkeypatch.setattr(model_store, 'hub_file_text', _offline)
+    items, gated = model_store.plan_items(manifest, str(tmp_path), device)
+    names = {item.name for item in items if item.repo == manifest.source}
+    entry = REAL_BUNDLED_METADATA()['repos'][f'{manifest.source}@{manifest.source_revision}']
+    index = json.loads(entry['modular_model_index'])
+    components = ('text_encoder', 'tokenizer', 'transformer', 'vae')
+    folders = {index[name][2]['subfolder'] for name in components}
+    assert folders == {'text_encoder', 'transformer', 'vae'}
+    expected = {'modular_model_index.json'}
+    for folder in folders:
+        expected.update(name for name, _ in model_store.select_plan(
+            [(name, size) for name, size in entry['files'] if name.startswith(folder + '/')], ''))
+    assert names == expected
+    assert {'text_encoder/model-00001-of-00002.safetensors',
+            'text_encoder/model-00002-of-00002.safetensors',
+            'text_encoder/model.safetensors.index.json',
+            'transformer/diffusion_pytorch_model-00001-of-00002.safetensors',
+            'transformer/diffusion_pytorch_model-00002-of-00002.safetensors',
+            'transformer/diffusion_pytorch_model.safetensors.index.json',
+            'transformer/config.json', 'vae/config.json', 'text_encoder/config.json',
+            'vae/diffusion_pytorch_model.safetensors', 'text_encoder/tokenizer.json',
+            'text_encoder/preprocessor_config.json'} <= names
+    assert gated
