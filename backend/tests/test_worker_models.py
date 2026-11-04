@@ -1,6 +1,8 @@
 """Models installed on worker hardware (issue #793): suggestions, report parsing,
 the admin routes and the worker gate on the fleet socket."""
 
+import time
+
 import pytest
 from app import realtime, worker_models
 from app.manifests import parse_manifests
@@ -220,6 +222,19 @@ def inventory_for(catalog) -> dict:
     }
 
 
+def _wait_until_manageable(client, worker_id: str) -> dict:
+    """The inventory travels over the socket, so the HTTP view sees it a moment later."""
+    deadline = time.monotonic() + 5
+    while True:
+        listing = client.get("/api/v1/admin/models").json()
+        (row,) = [r for r in listing if r["worker_id"] == worker_id]
+        if row["manageable"] or time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    assert row["manageable"] is True
+    return row
+
+
 @pytest.mark.db
 def test_a_capable_worker_registers_empty_and_its_commands_and_reports_land(accounts):
     worker_id = "w-models-capable"
@@ -231,17 +246,7 @@ def test_a_capable_worker_registers_empty_and_its_commands_and_reports_land(acco
             assert registered["type"] == "registered"
             assert registered["model_store"] is True
             ws.send_json(inventory_for([manifest_row(installed=False)]))
-
-            import time
-
-            deadline = time.monotonic() + 5
-            while True:
-                listing = client.get("/api/v1/admin/models").json()
-                (row,) = [r for r in listing if r["worker_id"] == worker_id]
-                if row["manageable"] or time.monotonic() >= deadline:
-                    break
-                time.sleep(0.01)
-            assert row["manageable"] is True
+            row = _wait_until_manageable(client, worker_id)
             assert row["models"][0]["installed"] is False
             assert row["models"][0]["suggested"] is True
 
@@ -305,6 +310,7 @@ def test_a_gated_model_is_refused_before_it_reaches_the_worker(accounts):
             ws.send_json(hello_for(worker_id, capabilities=["model_store"]))
             assert ws.receive_json()["type"] == "registered"
             ws.send_json(inventory_for([gated]))
+            _wait_until_manageable(client, worker_id)
             response = client.post(
                 f"/api/v1/admin/workers/{worker_id}/models/gated-test/install",
                 headers=_csrf(client))
