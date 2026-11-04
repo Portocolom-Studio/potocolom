@@ -352,6 +352,9 @@ GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu
                                         vram_total_bytes, temperature_c, power_w, available}}
                                         loaded_models lists the model ids currently resident
                                         on the connected worker's GPU; [] when it has none
+                                        gpu is null and loaded_models is [] when workers are
+                                        connected but none can answer GPU commands; 503 when
+                                        no worker is connected
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
