@@ -213,6 +213,7 @@ export const studio = $state({
 	historyLoaded: false,
 	// The guided tour is open. Help sets it to play the tour again.
 	tourRequest: null as 'automatic' | 'explicit' | null,
+	tourOpen: false,
 	modelId: '',
 	imageToImageModelId: '',
 	upscaleModelId: '',

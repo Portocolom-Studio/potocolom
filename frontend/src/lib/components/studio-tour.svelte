@@ -103,6 +103,7 @@
 	let awaitingGenerate = false;
 	onDestroy(() => {
 		studio.tourRequest = null;
+		studio.tourOpen = false;
 	});
 
 	// A control is a step only when it is rendered and laid out. A control the
@@ -117,6 +118,7 @@
 
 	function showStep(index: number): void {
 		step = index;
+		studio.tourOpen = true;
 		anchor = target(STUDIO_TOUR_STEPS[index].anchor);
 		// A control in a scrolled column can sit below the fold. Bring it into view
 		// first, so the card is placed against where the control really is.
@@ -144,6 +146,7 @@
 		const focused = document.activeElement;
 		const shouldRestore = focused === document.body || card?.contains(focused);
 		step = -1;
+		studio.tourOpen = false;
 		if (shouldRestore) void tick().then(returnFocus);
 		awaitingGenerate = false;
 		studio.tourRequest = null;
@@ -168,7 +171,7 @@
 	function settle(): void {
 		if (step === -1) return;
 		const updated = target(STUDIO_TOUR_STEPS[step].anchor);
-		if (updated && updated !== anchor) anchor = updated;
+		anchor = updated;
 		if (anchorStillShown()) {
 			refreshNav(step);
 			void place();
@@ -258,6 +261,25 @@
 		};
 	});
 
+	$effect(() => {
+		void studio.models.length;
+		if (step !== -1) untrack(settle);
+	});
+
+	$effect(() => {
+		if (step === -1 || !anchor) return;
+		const observer = new ResizeObserver(() => void place());
+		observer.observe(anchor);
+		const reposition = () => void place();
+		document.addEventListener('scroll', reposition, true);
+		document.addEventListener('transitionend', reposition, true);
+		return () => {
+			observer.disconnect();
+			document.removeEventListener('scroll', reposition, true);
+			document.removeEventListener('transitionend', reposition, true);
+		};
+	});
+
 	// First visit to Generate: wait until the models have answered, so the prompt,
 	// model and generate controls are rendered for the tour to point at.
 	let firstVisitChecked = false;
@@ -298,7 +320,7 @@
 				aria-hidden="true"
 				style:--arrow="{position.arrow}px"
 			></span>{/if}
-		<div aria-live="polite">
+		<div aria-live="polite" class="tour-body">
 			<p class="tour-counter">
 				{t('app.tour.counter')
 					.replace('{step}', String(visibleSteps.indexOf(step) + 1))
@@ -315,9 +337,9 @@
 						: t(current.bodyKey)}
 			</p>
 		</div>
-		<div class="mt-5 flex items-center justify-between gap-2">
+		<div class="mt-5 flex flex-wrap items-center justify-between gap-2">
 			<Button variant="ghost" size="sm" onclick={finish}>{t('app.tour.skip')}</Button>
-			<div class="flex items-center gap-2">
+			<div class="flex flex-wrap items-center gap-2">
 				<Button variant="outline" size="sm" disabled={!hasBack} onclick={back}
 					>{t('app.tour.back')}</Button
 				>
@@ -349,11 +371,18 @@
 		position: fixed;
 		z-index: 92;
 		width: min(360px, calc(100vw - 32px));
+		max-height: calc(100dvh - 32px);
+		display: flex;
+		flex-direction: column;
 		border: 1px solid #6685ff;
 		border-radius: 16px;
 		padding: 20px;
 		box-shadow: 0 20px 60px rgb(0 0 0 / 0.55);
 		animation: tour-enter 160ms ease-out;
+	}
+	.tour-body {
+		min-height: 0;
+		overflow-y: auto;
 	}
 	.tour-counter {
 		color: #819aff;

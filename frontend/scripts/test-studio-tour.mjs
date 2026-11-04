@@ -146,7 +146,8 @@ async function openStudio(
 		refuseWrites = false,
 		tourDone = false,
 		path = '/app',
-		viewport = { width: 1280, height: 900 }
+		viewport = { width: 1280, height: 900 },
+		locale = 'en'
 	} = {}
 ) {
 	const page = await context.newPage();
@@ -155,7 +156,8 @@ async function openStudio(
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.message));
 	await page.evaluateOnNewDocument(
-		(blocked, refused, done, key) => {
+		(blocked, refused, done, key, locale) => {
+			if (locale !== 'en') localStorage.setItem('locale', locale);
 			// The studio opens streams it never reads here; the tour does not use them.
 			window.EventSource = class {
 				addEventListener() {}
@@ -188,7 +190,8 @@ async function openStudio(
 		blockStorage,
 		refuseWrites,
 		tourDone,
-		storageKey
+		storageKey,
+		locale
 	);
 	await page.goto(`http://127.0.0.1:${server.address().port}${path}`, {
 		waitUntil: 'domcontentloaded'
@@ -243,6 +246,143 @@ async function main() {
 			executablePath: await chromeExecutable(),
 			args: ['--no-sandbox', '--disable-dev-shm-usage']
 		});
+
+		for (const finding of process.env.TOUR_REGRESSION
+			? [process.env.TOUR_REGRESSION]
+			: ['2', '3', '4', '4es', '5']) {
+			if (finding === '5') fixture.models = [];
+			const context = await browser.createBrowserContext();
+			const run = await openStudio(context, server, {
+				viewport:
+					finding === '2'
+						? phone
+						: finding.startsWith('4')
+							? { width: 1024, height: 500 }
+							: { width: 1280, height: 900 },
+				locale: finding === '4es' ? 'es' : 'en'
+			});
+			await run.page.waitForSelector('[data-studio-tour] h2');
+			if (finding === '2') {
+				await run.page.keyboard.down('Control');
+				await run.page.keyboard.press('k');
+				await run.page.keyboard.press('b');
+				await run.page.keyboard.up('Control');
+				await run.page.keyboard.down('Meta');
+				await run.page.keyboard.press('k');
+				await run.page.keyboard.press('b');
+				await run.page.keyboard.up('Meta');
+				await pause(300);
+				assert.equal(
+					await run.page.$$eval('[role="dialog"]', (els) => els.length),
+					1,
+					'shortcuts must not open another dialog'
+				);
+				await run.page.keyboard.press('Tab');
+				await run.page.keyboard.down('Shift');
+				await run.page.keyboard.press('Tab');
+				await run.page.keyboard.up('Shift');
+				assert.equal(
+					await run.page.evaluate(() =>
+						document.querySelector('[data-studio-tour]').contains(document.activeElement)
+					),
+					true
+				);
+				await run.page.keyboard.press('Escape');
+				assert.equal(await tourOpen(run.page), false);
+			} else if (finding === '3') {
+				await stepTo(run.page, titles[4]);
+				await run.page.evaluate(() =>
+					[...document.querySelectorAll('button')]
+						.find((button) => button.getAttribute('aria-keyshortcuts') === 'Meta+B Control+B')
+						.click()
+				);
+				await pause(500);
+				const delta = await run.page.evaluate(() => {
+					const target = document.querySelector('[data-tour="images"]').getBoundingClientRect();
+					const ring = document.querySelector('[data-tour-ring]').getBoundingClientRect();
+					return Math.abs(target.left - ring.left) + Math.abs(target.width - ring.width);
+				});
+				assert.ok(delta < 3, `ring follows sidebar transition: ${delta}`);
+				await run.page.evaluate(() => {
+					const target = document.querySelector('[data-tour="images"]');
+					const wrapper = document.createElement('div');
+					wrapper.style.cssText = 'height: 32px; overflow: auto';
+					target.parentNode.insertBefore(wrapper, target);
+					wrapper.append(target);
+					const spacer = document.createElement('div');
+					spacer.style.height = '100px';
+					wrapper.prepend(spacer);
+				});
+				await pause(150);
+				await run.page.evaluate(() => {
+					document.querySelector('[data-tour="images"]').parentElement.scrollTop = 80;
+				});
+				await pause(150);
+				const scrollDelta = await run.page.evaluate(() => {
+					const target = document.querySelector('[data-tour="images"]').getBoundingClientRect();
+					const ring = document.querySelector('[data-tour-ring]').getBoundingClientRect();
+					return Math.abs(target.top - ring.top);
+				});
+				assert.ok(scrollDelta < 3, `ring follows nested scroll: ${scrollDelta}`);
+				await run.page.evaluate(() => {
+					document.querySelector('[data-tour="images"]').style.height = '50px';
+				});
+				await pause(150);
+				const sizeDelta = await run.page.evaluate(() =>
+					Math.abs(
+						document.querySelector('[data-tour="images"]').getBoundingClientRect().height -
+							document.querySelector('[data-tour-ring]').getBoundingClientRect().height
+					)
+				);
+				assert.ok(sizeDelta < 3, `ring follows target resize: ${sizeDelta}`);
+			} else if (finding.startsWith('4')) {
+				await run.page.addStyleTag({ content: 'html { font-size: 32px !important; }' });
+				await pause(300);
+				const inside = await run.page.evaluate(() =>
+					[...document.querySelectorAll('[data-studio-tour] button')].every((button) => {
+						const r = button.getBoundingClientRect();
+						return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth;
+					})
+				);
+				assert.equal(inside, true, 'all tour buttons remain in the viewport with enlarged text');
+				const scrolled = await run.page.evaluate(() => {
+					const body = document.querySelector('[data-studio-tour] [aria-live]');
+					body.scrollTop = body.scrollHeight;
+					return body.scrollTop > 0;
+				});
+				assert.equal(scrolled, true, 'long tour text can scroll');
+				const shots =
+					'/tmp/claude-1000/-home-leon-Nextcloud-ETSIIT-ETSHIT-Github-potocolom/c7eba735-0ba3-4fd0-ba50-94f893f5f5e0/scratchpad/tour-shots';
+				await mkdir(shots, { recursive: true });
+				await run.page.screenshot({ path: `${shots}/r2-1024x500-${finding}.png` });
+			} else if (finding === '5') {
+				await clickButton(run.page, '[data-studio-tour] button', 'Next');
+				await waitFor(
+					async () => (await heading(run.page)) === english['app.tour.install_title'],
+					'install step'
+				);
+				fixture.models = [model];
+				await run.page.evaluate(() => {
+					const original = Date.now;
+					Date.now = () => original() + 3600000;
+					document.dispatchEvent(new Event('visibilitychange'));
+				});
+				await run.page.waitForSelector('[data-tour="prompt"]');
+				await pause(300);
+				assert.notEqual(
+					await heading(run.page),
+					english['app.tour.install_title'],
+					'install step becomes ineligible when models arrive'
+				);
+				assert.doesNotMatch(
+					await run.page.$eval('[data-studio-tour] p', (el) => el.textContent),
+					/Step 0/
+				);
+			}
+			await context.close();
+			fixture.models = [model];
+		}
+		if (process.env.TOUR_REGRESSION) return;
 
 		// Viewers cannot generate, so neither the automatic tour nor its entry is available.
 		accountMode = 'viewer';
@@ -461,7 +601,7 @@ async function main() {
 						/Open the menu to find Images/
 					);
 				await run.page.screenshot({
-					path: `${shots}/${viewport.width}x${viewport.height}-step${i + 1}.png`
+					path: `${shots}/r2-${viewport.width}x${viewport.height}-step${i + 1}.png`
 				});
 				if (i < titles.length - 1) await clickButton(run.page, '[data-studio-tour] button', 'Next');
 			}

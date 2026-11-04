@@ -292,6 +292,7 @@
 		     indicator; the safe area insets keep the shell's edges, the top bar,
 		     the history strip and the canvas's floating bars, clear of them. -->
 		<Sidebar.Provider
+			shortcutDisabled={studio.tourOpen}
 			class="isolate h-svh overflow-hidden pt-[env(safe-area-inset-top)] pe-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] ps-[env(safe-area-inset-left)]"
 			style="--sidebar-width: 240px; --sidebar-width-icon: 56px;"
 		>
