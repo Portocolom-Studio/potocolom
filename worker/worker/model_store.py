@@ -342,13 +342,14 @@ def _any_local_copy(manifest: Manifest, models_dir: str) -> bool:
             and snapshot_dir(manifest.source, manifest.source_revision).is_dir())
 
 
-def adopt_legacy(manifest: Manifest, models_dir: str, device: str = "cuda") -> bool:
+def adopt_legacy(manifest: Manifest, models_dir: str, device: str = "cuda") -> bool | None:
     """Adopt a cache filled before markers existed, once, when the exact hub plan an install
     would use is complete on disk. Without the hub metadata nothing is adopted: the model
     shows as not installed, and an install then completes from the cache. Never adopts over
-    a marker of any kind, since an interrupted download leaves one."""
+    a marker of any kind, since an interrupted download leaves one. Returns False for a
+    definitively incomplete plan, and None when adoption might be possible later."""
     if _read_marker(manifest.id) is not None or not _any_local_copy(manifest, models_dir):
-        return False
+        return None
     try:
         items, _gated = plan_items(manifest, models_dir, device)
         if not all(_size_ok(item.path, item.size) for item in items):
@@ -361,9 +362,9 @@ def adopt_legacy(manifest: Manifest, models_dir: str, device: str = "cuda") -> b
         })
     except OSError:
         logger.warning("cannot adopt model %s: cache is inaccessible", manifest.id)
-        return False
+        return None
     except (ModelStoreError, ValueError):
-        return False
+        return None
     return True
 
 
@@ -1190,10 +1191,12 @@ class ModelStore:
 
     async def _retry_adoption(self) -> None:
         delay = ADOPTION_RETRY_SECONDS
+        incomplete: set[str] = set()
         while self._send is not None:
             pending = False
             for manifest in self.bundled.values():
-                if manifest.id in self.installed or _read_marker(manifest.id) is not None:
+                if (manifest.id in incomplete or manifest.id in self.installed
+                        or _read_marker(manifest.id) is not None):
                     continue
                 pending = True
                 try:
@@ -1203,6 +1206,8 @@ class ModelStore:
                             continue
                         adopted = await asyncio.to_thread(
                             adopt_legacy, manifest, self._models_dir, self._device)
+                        if adopted is False:
+                            incomplete.add(manifest.id)
                         if adopted and not self._removal_pending(manifest.id):
                             self.installed[manifest.id] = manifest
                             await self._announce()

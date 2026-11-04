@@ -2602,7 +2602,7 @@ def test_adoption_retries_after_failed_attempt_and_successful_probe(monkeypatch)
     monkeypatch.setattr(model_store, 'ADOPTION_RETRY_SECONDS', 0.02)
     def adopt(*_args):
         attempts.append(1)
-        return len(attempts) > 1
+        return True if len(attempts) > 1 else None
     monkeypatch.setattr(model_store, 'adopt_legacy', adopt)
     monkeypatch.setattr(model_store, 'probe_model', lambda *_: (1, False))
     async def scenario():
@@ -2834,3 +2834,50 @@ def test_close_detaches_from_blocked_adoption(monkeypatch):
             release.set()
             await store.shutdown()
     asyncio.run(scenario())
+
+
+def test_adoption_stops_probing_incomplete_cache_after_cancel(monkeypatch, tmp_path):
+    cancelled = pipeline_manifest("cancelled", vae="")
+    shared = pipeline_manifest("shared", vae="")
+    entries = ((cancelled.source, REV, "first", 4),
+               (cancelled.source, REV, "second", 4))
+    plan = fake_plan(*entries)
+    monkeypatch.setattr(model_store, "plan_items", plan)
+    monkeypatch.setattr(model_store, "_check_volumes", lambda _: None)
+    stop = threading.Event()
+
+    def fetch(item, on_bytes):
+        put_snapshot_file(item.repo, item.revision, item.name, item.size)
+        stop.set()
+        on_bytes(item.size)
+
+    monkeypatch.setattr(model_store, "_fetch_hub", fetch)
+    with pytest.raises(ModelStoreError, match="cancelled"):
+        model_store.install_blocking(cancelled, str(tmp_path), cancel=stop)
+
+    calls = []
+    def counted_plan(*args):
+        calls.append(args[0].id)
+        return plan(*args)
+
+    monkeypatch.setattr(model_store, "plan_items", counted_plan)
+    monkeypatch.setattr(model_store, "probe_model", lambda *_: (1, False))
+    monkeypatch.setattr(model_store, "ADOPTION_RETRY_SECONDS", 0.01)
+
+    async def scenario():
+        store = ModelStore([cancelled, shared], FakeEngine(), str(tmp_path))
+        store.attach(lambda _: _noop(), lambda _: False)
+        try:
+            await asyncio.wait_for(store._adoption_task, 1)
+            await asyncio.sleep(0.05)
+            assert calls == [shared.id]
+            assert shared.id not in store.installed
+        finally:
+            await store.shutdown()
+
+    asyncio.run(scenario())
+    fetched = []
+    monkeypatch.setattr(model_store, "_fetch_hub", write_fetch(fetched))
+    model_store.install_blocking(shared, str(tmp_path))
+    assert fetched == ["second"]
+    assert model_store.is_installed(shared, str(tmp_path))
