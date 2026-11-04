@@ -1,0 +1,95 @@
+{
+  "capturedAt": "2026-11-04T11:40:38.918Z",
+  "source": "Actual studio components, local read-only API fixtures. Public repository images; no live account or GPU changes.",
+  "base": "85f5e9d93dc882adb7d96e4d95819b008813c8f3",
+  "implementationHead": "05c42682794f128464d3e4c0506551a93f34e83f",
+  "diffSha256": "4a46aac07eea6f45da5e16d11091979214c9fca81168b7dfa52f92e65c98be38",
+  "screens": [
+    {
+      "name": "desktop-generate",
+      "file": "desktop-generate.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "0292373ae2a35471429f2a3f094b26296e18946d5e295b9d7198cdea28b24412"
+    },
+    {
+      "name": "desktop-images",
+      "file": "desktop-images.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "d340d384024a258c1a3b44b3f46818f8fd28be3af61c54a21bebcb907bc884dc"
+    },
+    {
+      "name": "desktop-models",
+      "file": "desktop-models.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "03de0862e84f9757849fa61cb0bc20e1226de694bce013e72e524925b3061e42"
+    },
+    {
+      "name": "desktop-metrics",
+      "file": "desktop-metrics.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "936272639682b25b006325a96431302ff57db6a5a222f8eb204e30566f1a6e2f"
+    },
+    {
+      "name": "desktop-canvas",
+      "file": "desktop-canvas.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "44a105a0f36d9115053482b379559f4e4cf0a4de2378de6c7b9018cfb3e109a4"
+    },
+    {
+      "name": "laptop-generate",
+      "file": "laptop-generate.png",
+      "width": 1280,
+      "height": 800,
+      "sha256": "0b53d7448c24752f318407a58a4dad77a2974be307e5eba16749e1c31eae581c"
+    },
+    {
+      "name": "phone-generate",
+      "file": "phone-generate.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "4606dd1bff3371a2df0a6601e5481089b384aa1788ec99e8c55738b568462119"
+    },
+    {
+      "name": "phone-result",
+      "file": "phone-result.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "7930aed25e09ed3663bc1cb88e0d47212230543068005270472cf5264242c8b4"
+    },
+    {
+      "name": "phone-images",
+      "file": "phone-images.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "524b6b154dc9c647bee49aedfc3fa28f9f3e38938182cddc435a795b46f8f86c"
+    },
+    {
+      "name": "phone-models",
+      "file": "phone-models.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "b2ee2934bd6444b36b90bb87a5163445966ef822fe850d1b2fe910973772ef29"
+    },
+    {
+      "name": "phone-sidebar",
+      "file": "phone-sidebar.png",
+      "width": 390,
+      "height": 844,
+      "sha256": "d5e74c1d7b5f70622596cf8b1e3222f951d59e780a20681c5eb5042dae10fc3b"
+    },
+    {
+      "name": "desktop-empty",
+      "file": "desktop-empty.png",
+      "width": 1440,
+      "height": 900,
+      "sha256": "84bc83135124d2ffa4a70965b31d4340ac100e3dda9ff31686debf50093b6d39"
+    }
+  ],
+  "reviewRound": 4,
+  "implementationCommit": "05c42682794f128464d3e4c0506551a93f34e83f"
+}
