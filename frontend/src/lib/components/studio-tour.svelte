@@ -123,6 +123,7 @@
 
 	function showStep(index: number): void {
 		step = index;
+		if (body) body.scrollTop = 0;
 		studio.tourOpen = true;
 		anchor = target(STUDIO_TOUR_STEPS[index].anchor);
 		// A control in a scrolled column can sit below the fold. Bring it into view
@@ -196,6 +197,21 @@
 		return openViewFor('generate', 'usage', account.current?.role ?? null) === 'generate';
 	}
 
+	function focusIsOccupied(): boolean {
+		const active = document.activeElement;
+		if (
+			active instanceof HTMLElement &&
+			(active.isContentEditable ||
+				active.matches(
+					'textarea, input:not([type]), input[type="text"], input[type="search"], input[type="email"], input[type="url"], input[type="tel"], input[type="password"], input[type="number"]'
+				))
+		)
+			return true;
+		return !!document.querySelector(
+			'[data-state="open"][role="dialog"], [data-state="open"][role="menu"], [data-state="open"][role="listbox"], [data-bits-floating-content-wrapper] [data-state="open"]'
+		);
+	}
+
 	// Shows the first step on screen once the models have answered, so the controls
 	// exist. Closes the request when no step is on screen at all.
 	function start(): void {
@@ -206,11 +222,7 @@
 			return;
 		}
 		if (!studio.modelsLoaded) return;
-		if (
-			studio.tourRequest === 'automatic' &&
-			document.querySelector('[role="dialog"][data-state="open"]')
-		)
-			return;
+		if (studio.tourRequest === 'automatic' && focusIsOccupied()) return;
 		if (awaitingGenerate) {
 			if (studio.shellView !== 'generate') return;
 			awaitingGenerate = false;
@@ -259,14 +271,16 @@
 	$effect(() => {
 		if (!studio.tourRequest) return;
 		let frame = 0;
-		const observer = new MutationObserver(() => {
+		const schedule = () => {
 			if (frame !== 0) return;
 			frame = requestAnimationFrame(() => {
 				frame = 0;
 				if (step === -1) start();
 				else settle();
 			});
-		});
+		};
+		const observer = new MutationObserver(schedule);
+		document.addEventListener('focusout', schedule);
 		observer.observe(document.body, {
 			childList: true,
 			subtree: true,
@@ -275,6 +289,7 @@
 		});
 		return () => {
 			observer.disconnect();
+			document.removeEventListener('focusout', schedule);
 			if (frame !== 0) cancelAnimationFrame(frame);
 		};
 	});

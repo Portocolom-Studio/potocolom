@@ -249,9 +249,18 @@ async function main() {
 
 		for (const regression of process.env.R3
 			? [process.env.R3]
-			: ['modal', 'sheet', 'keyboard', 'keyboard-es', 'phone']) {
+			: [
+					'modal',
+					'sheet',
+					'dropdown',
+					'dropdown-tab',
+					'typing',
+					'keyboard',
+					'keyboard-es',
+					'phone'
+				]) {
 			const context = await browser.createBrowserContext();
-			if (regression === 'modal' || regression === 'sheet') {
+			if (['modal', 'sheet', 'dropdown', 'dropdown-tab', 'typing'].includes(regression)) {
 				releaseModels = () => {};
 				modelsWaiting = false;
 			}
@@ -264,13 +273,37 @@ async function main() {
 							: { width: 1280, height: 900 },
 				locale: regression === 'keyboard-es' ? 'es' : 'en'
 			});
-			if (regression === 'modal' || regression === 'sheet') {
+			if (['modal', 'sheet', 'dropdown', 'dropdown-tab', 'typing'].includes(regression)) {
 				await waitFor(() => modelsWaiting, 'delayed models');
 				if (regression === 'modal') {
 					await run.page.keyboard.down('Control');
 					await run.page.keyboard.press('k');
 					await run.page.keyboard.up('Control');
 					await run.page.waitForSelector('[role="dialog"][data-state="open"] input');
+					await run.page.keyboard.type('test');
+				} else if (regression.startsWith('dropdown')) {
+					await waitFor(
+						() =>
+							run.page.evaluate(() =>
+								[...document.querySelectorAll('button')].some((el) =>
+									el.textContent.includes('tour@example.com')
+								)
+							),
+						'account trigger'
+					);
+					await run.page.evaluate(() =>
+						[...document.querySelectorAll('button')]
+							.find((el) => el.textContent.includes('tour@example.com'))
+							.click()
+					);
+					await run.page.waitForSelector('[role=menu][data-state=open]');
+				} else if (regression === 'typing') {
+					await run.page.evaluate(() => {
+						const input = document.createElement('textarea');
+						input.id = 'typing-test';
+						document.body.append(input);
+						input.focus();
+					});
 					await run.page.keyboard.type('test');
 				} else {
 					await clickButton(run.page, 'button', 'Toggle sidebar');
@@ -279,7 +312,11 @@ async function main() {
 				releaseModels();
 				releaseModels = null;
 				await pause(500);
-				assert.equal(await tourOpen(run.page), false, 'automatic tour waits for open dialog');
+				assert.equal(
+					await tourOpen(run.page),
+					false,
+					'automatic tour waits for the active focus scope'
+				);
 				if (regression === 'modal') {
 					await run.page.keyboard.type('ing');
 					assert.equal(
@@ -287,17 +324,42 @@ async function main() {
 						'testing'
 					);
 				}
-				await run.page.keyboard.press('Tab');
-				assert.equal(
-					await run.page.evaluate(() => !!document.activeElement.closest('[role="dialog"]')),
-					true
-				);
+				if (regression === 'typing') {
+					await run.page.keyboard.type('ing');
+					assert.equal(await run.page.$eval('#typing-test', (el) => el.value), 'testing');
+				} else {
+					const scope = regression.startsWith('dropdown') ? '[role=menu]' : '[role=dialog]';
+					assert.equal(
+						await run.page.evaluate((s) => !!document.activeElement.closest(s), scope),
+						true
+					);
+					if (regression !== 'dropdown') {
+						await run.page.keyboard.press('Tab');
+						await pause(150);
+						if (regression !== 'dropdown-tab')
+							assert.equal(
+								await run.page.evaluate((s) => !!document.activeElement.closest(s), scope),
+								true
+							);
+					}
+				}
 				if (regression === 'sheet') {
 					await run.page.keyboard.down('Control');
 					await run.page.keyboard.press('b');
 					await run.page.keyboard.up('Control');
-				} else await run.page.keyboard.press('Escape');
+				} else if (regression === 'typing') await run.page.$eval('#typing-test', (el) => el.blur());
+				else if (regression !== 'dropdown-tab') await run.page.keyboard.press('Escape');
 				await run.page.waitForSelector('[data-studio-tour]');
+				assert.equal(await focusedText(run.page), 'Next');
+				if (regression.startsWith('dropdown')) {
+					await run.page.keyboard.press('Tab');
+					assert.equal(
+						await run.page.evaluate(() => !!document.activeElement.closest('[data-studio-tour]')),
+						true
+					);
+					await run.page.keyboard.press('Escape');
+					await waitFor(async () => !(await tourOpen(run.page)), 'Escape closes tour');
+				}
 			} else {
 				await run.page.waitForSelector('[data-studio-tour] h2');
 				if (regression.startsWith('keyboard')) {
@@ -327,6 +389,35 @@ async function main() {
 					assert.equal(
 						await run.page.evaluate(() => document.activeElement.textContent.trim()),
 						regression === 'keyboard-es' ? 'Siguiente' : 'Next'
+					);
+					await run.page.keyboard.press('Enter');
+					await pause(200);
+					assert.equal(
+						await run.page.$eval('.tour-body', (el) => el.scrollTop),
+						0,
+						'next step starts at the top'
+					);
+					await run.page.addStyleTag({
+						content:
+							'.tour-body { font-size: 48px !important; } .tour-body * { font-size: inherit !important; }'
+					});
+					await run.page.$eval('.tour-body', (el) => {
+						el.scrollTop = el.scrollHeight;
+					});
+					assert.ok(
+						await run.page.$eval('.tour-body', (el) => el.scrollTop > 0),
+						'second step scrolls'
+					);
+					await clickButton(
+						run.page,
+						'[data-studio-tour] button',
+						regression === 'keyboard-es' ? 'Atrás' : 'Back'
+					);
+					await pause(200);
+					assert.equal(
+						await run.page.$eval('.tour-body', (el) => el.scrollTop),
+						0,
+						'previous step starts at the top'
 					);
 				} else {
 					await pause(300);
