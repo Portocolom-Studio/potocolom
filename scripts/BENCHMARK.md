@@ -233,6 +233,68 @@ make benchmark-publish
 # default source: data/benchmark/full-run
 ```
 
+## results.json fields
+
+`scripts/benchmark.py` writes `results.json` after the run completes. Its rows are also appended to `results.jsonl` as each cell finishes. The tables list the keys that script writes. They were checked against `data/benchmark/20261002-151109/results.json`, a three-prompt quick run made before the `skipped` counter existed, so that file has no `skipped` keys.
+
+Top level:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `created_at` | string | UTC time the summary was built, ISO 8601. |
+| `api` | string | API base URL the run used. Operational: dropped by publishing. |
+| `target_vram_gb` | number or null | `target_vram_gb` from the matrix file. |
+| `out_dir` | string | Output directory of the run. Operational: dropped by publishing. |
+| `prompt_count` | integer | Prompts run, after `--ids` filtering. |
+| `models` | list of strings | Model ids run, in matrix order. |
+| `variants_per_prompt` | integer | Variant count of the first model in the run. |
+| `total_jobs` | integer | Prompts times the sum of every model's variants. Planned cells, not finished ones. |
+| `succeeded`, `failed`, `skipped` | integer | Totals over `model_stats`. This script never writes a `skipped` row, so its `skipped` total is always 0. |
+| `model_stats` | list | One object per model with rows, sorted by `model_id`. |
+| `results` | list | One object per attempted cell, in run order. |
+| `prompts` | list | One object per prompt: `id`, `title`, `category`, and `runs`, the `results` rows for that prompt. |
+
+`model_stats` objects:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `model_id` | string | Model id. |
+| `succeeded`, `failed`, `skipped` | integer | Row counts by `state`. |
+| `load_ms` | integer or null | `model_load_ms` of the first succeeded row. |
+| `avg_gpu_ms`, `median_gpu_ms` | number or null | Over succeeded rows that have `gpu_ms`. |
+| `avg_wall_s` | number | Mean `wall_s` over succeeded rows; 0.0 when there are none. |
+
+`results` objects:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `prompt_id`, `title`, `category` | integer, string, string | From the prompt catalog. |
+| `model_id`, `variant`, `cell_key` | string | `cell_key` is `<model_id>__<variant>`. |
+| `params` | object | Variant parameters sent to the API, for example `width`, `height`, `steps`, `guidance`, `seed`. |
+| `model_load_ms` | integer or null | Load time of the model. Null when the load failed. |
+| `state` | string | `succeeded` or `failed`. |
+| `phase` | string | Only on failed-load rows: `load`. |
+| `error` | string | Only on failed rows: the failure message. |
+| `wall_s` | number | Client-side seconds for the request. Present on failed generation rows, not on failed-load rows. |
+| `job_id` | string | API job id. Succeeded rows only. |
+| `file` | string | `images/<prompt dir>/<file>`, relative to the run directory. Succeeded rows only. |
+| `width`, `height` | integer | Image size the API returned. Succeeded rows only. |
+| `gpu_ms` | integer | Engine time the API reported. Succeeded rows only. Not a GPU kernel timer; see the note under the current suite. |
+
+The published file, `frontend/static/benchmark/results.json`, is a sanitized copy of a larger report. `scripts/publish-benchmark.py` keeps only the keys in its `PUBLIC_FIELDS` list, drops `api`, `out_dir`, `job_id`, `cell_key` and `error`, and drops any `file` that is not under `/benchmark/`. That larger report has keys this script never writes, and `BENCHMARK.md` above says the controller that produced it is not bundled here:
+
+| Field | Meaning |
+| --- | --- |
+| `run_context` | `code_revision`, `packages` (library versions), `catalog_revision`, and free-text notes (`note`, `catalog_change`, `resume_note`, `catalog_note`). |
+| `conditions` | GPU, `display_reserve_bytes`, `torch_compile`, the memory mode of baselines and of other models, and `timing_note`. |
+| `samples` | Six representative images for the public page: `model_id`, `prompt_id`, `title`, `file` (under `/benchmark/images/`), `width`, `height`. |
+| `complete`, `completed_cells` | Whether every planned cell finished, and how many did. |
+| `manifests` | The worker manifest of each model used. |
+| `model_revisions`, `auxiliary_revisions` | Pinned Hugging Face revisions of each model and of auxiliary encoders. |
+| `publication` | `methodology_url` and `results_url`. |
+
+Result rows in that file also carry `memory_mode`.
+
 ## Quick runs
 
 Full explicit matrix: 36 prompts x 12 models x 5 variants = **2,160 planned images**.

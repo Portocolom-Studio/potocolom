@@ -10,6 +10,7 @@ import asyncpg
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
 from app import db
@@ -18,7 +19,7 @@ from conftest import _VERSIONS
 
 @pytest.mark.db
 @pytest.mark.parametrize("origin", ["0023", "0028"])
-def test_populated_released_schema_upgrades_through_0035(origin, portal_runner):
+def test_populated_released_schema_upgrades_to_current_head(origin, portal_runner):
     assert portal_runner(db.connect(serving=False)) is True
     admin_url = make_url(os.environ["DATABASE_URL"]).set(database="postgres")
     database = f"s1mh_{secrets.token_hex(8)}"
@@ -79,8 +80,8 @@ def test_populated_released_schema_upgrades_through_0035(origin, portal_runner):
     async def inspect_upgrade() -> None:
         connection = await asyncpg.connect(url)
         try:
-            assert await connection.fetchval("SELECT version_num FROM alembic_version") == "0035"
-            # It holds people and work, so 0035 decides it rather than showing setup.
+            assert await connection.fetchval("SELECT version_num FROM alembic_version") == head
+            # It holds people and work, so migration 0035 decides it rather than showing setup.
             assert await connection.fetchval(
                 "SELECT auth_mode FROM installation_auth_state WHERE id=1"
             ) == "none"
@@ -148,6 +149,7 @@ def test_populated_released_schema_upgrades_through_0035(origin, portal_runner):
     config.set_main_option(
         "sqlalchemy.url", test_url.render_as_string(hide_password=False).replace("%", "%%")
     )
+    head = ScriptDirectory.from_config(config).get_current_head()
     try:
         asyncio.run(create_database())
         command.upgrade(config, origin)
