@@ -28,7 +28,7 @@
 	auth-clear-factor setup-link dev-setup-link \
 	ci-runner-install ci-runner-service-install ci-runner-start ci-runner-stop \
 	ci-runner-restart ci-runner-status \
-	site-build site-preview site-deploy worker-deploy worktree
+	site-build site-preview site-deploy worker-deploy worktree lint
 
 # Interpreter used only to create backend/.venv and worker/.venv. A system
 # python3 of 3.10 creates a venv that sends pip backtracking against
@@ -261,10 +261,22 @@ verify-worker-inference:
 # before it, because vite build rewrites frontend/build and npm run check rewrites
 # .svelte-kit, so no static step or build may overlap a browser check. make -j3
 # runs at most three leaves at once; plain make runs the same leaves one at a time
-# in the order listed here.
-FE_LANDING_CHECKS := fe-test-landing fe-test-docs fe-test-footer
-FE_PRODUCT_CHECKS := fe-test-canvas fe-test-models fe-test-self-hosted fe-test-studio-shell \
-	fe-test-setup fe-test-signin fe-test-views fe-test-owner-focus fe-test-tour
+# in the order listed here. One check per line, sorted, so branches that each add
+# a check touch different lines and merge without a conflict.
+FE_LANDING_CHECKS :=
+FE_LANDING_CHECKS += fe-test-docs
+FE_LANDING_CHECKS += fe-test-footer
+FE_LANDING_CHECKS += fe-test-landing
+FE_PRODUCT_CHECKS :=
+FE_PRODUCT_CHECKS += fe-test-canvas
+FE_PRODUCT_CHECKS += fe-test-models
+FE_PRODUCT_CHECKS += fe-test-owner-focus
+FE_PRODUCT_CHECKS += fe-test-self-hosted
+FE_PRODUCT_CHECKS += fe-test-setup
+FE_PRODUCT_CHECKS += fe-test-signin
+FE_PRODUCT_CHECKS += fe-test-studio-shell
+FE_PRODUCT_CHECKS += fe-test-tour
+FE_PRODUCT_CHECKS += fe-test-views
 
 .PHONY: fe-static fe-build-landing fe-build-product $(FE_LANDING_CHECKS) $(FE_PRODUCT_CHECKS)
 
@@ -284,6 +296,11 @@ fe-build-product: $(FE_LANDING_CHECKS)
 
 $(FE_PRODUCT_CHECKS): fe-build-product
 	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
+
+lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint
+	cd backend && .venv/bin/ruff check . ../scripts
+	cd worker && .venv/bin/ruff check .
+	cd frontend && npm run lint
 
 verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
 
