@@ -2113,6 +2113,25 @@ make labels harder to read; retain the wide Models table on phones, which
 hides its main controls; and give the studio a new palette, which would break
 the existing visual system without fixing the layout problems.
 
+## Studio surfaces say each thing once and name why an action is unavailable
+
+The studio removes repeated chrome and gives every unavailable or unusual state
+one plain cause and one action. The top bar names Create views and Metrics, so
+their visible panel titles, shared subtitle and the Create mode switch are gone;
+the sidebar is the one place to switch view. Only the navigation scrolls, and
+the help links moved into the user menu. Unreleased views have no navigation
+entry. A shared worker poll lets an administrator see "No worker is connected"
+apart from "No model is installed" for the task; other roles are told to ask an
+administrator. A queued or running job owns the result stage, and a failed job
+shows its reason with Try again instead of leaving the last image in place.
+Users see model names, category words and session labels, never internal ids.
+
+Rejected alternatives: keeping the titles and the mode switch, which named the
+same view up to four times and pushed form controls under the sticky action;
+leaving disabled "Soon" entries in the navigation; a worker poll per view, which
+multiplied requests; and a separate failure page or toast only, which leaves the
+stage showing an older image as if it were the result.
+
 ## Images size filters use common longest-side groups
 
 Images groups each saved master by its longest side. The repeatable `size`

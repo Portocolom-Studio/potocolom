@@ -82,7 +82,7 @@ must never equal a status colour, so a series is never read as a state.
 | Role                     | Font                                        | Size and weight                                                      |
 | ------------------------ | ------------------------------------------- | -------------------------------------------------------------------- |
 | Studio UI                | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions                            |
-| Page title (`h1`)        | Geist                                       | 24px for Models and Metrics, 18px for the Generate panel; weight 600 |
+| Page title (`h1`)        | Geist                                       | 24px for Models, weight 600; Create views and Metrics keep an sr-only `h1` because the top bar names them |
 | KPI value                | Geist                                       | 22 to 24px, tabular figures                                          |
 | Code, IDs, seeds, hashes | Geist Mono                                  | 0.92em of the surrounding text                                       |
 | Wordmark                 | Lato 900                                    | 17px in the studio; separate sizes on the landing and footer         |
@@ -115,7 +115,11 @@ Spacing follows a 4px grid. Common values: 8px between related controls,
   on phones (swipe to dismiss).
 - Sidebar header and top bar: 60px. Navigation rows and search: 36px. Breadcrumb on the left; the view's tabs, toggles and actions
   register through `useStudioHeader()` in `src/lib/studio-chrome.svelte.ts`.
-- Worker status card and the user menu sit at the bottom of the sidebar.
+- Worker status card and the user menu sit at the bottom of the sidebar and
+  never scroll; only the navigation list scrolls. Show tour, Documentation and
+  Support live in the user menu (a Help menu when there is no account).
+- Nothing unavailable sits in the navigation: unreleased views have no entry
+  in the sidebar or the command palette.
 
 ### Page templates
 
@@ -148,7 +152,8 @@ them rather than hand-rolled markup.
 - **Benchmark charts**: static reports paint their final bars and paths without
   replaying a draw animation when a tab mounts. Keep tooltips, axes and legends.
 - **Segmented control** (`ui/toggle-group`): two to five mutually exclusive
-  options (Size, Generate / Image to image / Upscale, Workbench / Focus).
+  options (Size, Workbench / Focus). Views are not switched with one; the
+  sidebar does that.
 - **Models** (`model-panel.svelte`): a table from `md` up, with 56px rows and 12px
   model IDs. Below `md` each model is a stacked card, and its picker switch sits
   beside the name. Capability filters wrap as separate pills on phones, and the
@@ -164,16 +169,25 @@ them rather than hand-rolled markup.
   Charts are at least 448px wide; on phones their scroll regions take the
   overflow. The model SVG uses its measured width so labels keep their size.
 - **Images search**: in the top bar from 1280px wide; below the filters on
-  narrower screens so both Grid and Lineage controls remain visible.
-- **Parameter panel** (`generate-panel.svelte`): the mode title and subtitle show
-  from `lg`; on phones the top bar names the screen. Below `lg` the page scrolls
-  as one column, the result takes its content height, and the Generate or
-  Upscale footer sticks to the bottom while the fields scroll. From `lg` the
-  result frame fills the row, with a metadata column of 220px (260px from 1400px)
-  that aligns to the top so a long prompt stays reachable. A short fade marks
-  the form's scroll edge above the footer. An empty result shows a muted image
-  hint in a square frame, with no action bar. The history strip stays visible
-  when items or paging controls exist, including a recent page of failed jobs.
+  narrower screens so both Grid and Lineage controls remain visible. Next match
+  shows only with a query.
+- **Lineage** (`lineage-canvas.svelte`): a fresh view starts at the newest tree's
+  top-left corner, scaled so the first screen of cards clears the zoom toolbar,
+  which floats in the bottom corner and hides on an empty canvas. Images stay
+  hidden on a neutral surface until they load and never show a broken glyph.
+- **Parameter panel** (`generate-panel.svelte`): the top bar names the screen;
+  the panel keeps only an sr-only heading and there is no mode switch. Below
+  `lg` the page scrolls as one column, the result takes its content height, and
+  the Generate or Upscale footer sticks to the bottom while the fields scroll.
+  The form keeps bottom clearance and a thin scrollbar so its last control never
+  sits under the footer, with no fade over controls. The status line under the
+  action has a fixed height. From `lg` the image and a quiet metadata column sit
+  on the stage without an inner frame; Derivatives shows only when there are
+  some. A queued or running job of the view owns the stage with its status
+  (In queue, Rendering and percent); a failed one shows a single panel with the
+  reason in plain words and Try again, which resubmits the same request. The
+  history strip shows failed jobs as muted tiles. On phones the result
+  identity and its icon actions share one row.
 - **Slider** (`param-slider-field`): label and value on one line, track,
   min and max underneath.
 - **Tag** (`.tag` classes): status and capability labels.
@@ -194,11 +208,14 @@ them rather than hand-rolled markup.
   in `model-panel.svelte` (`CAPABILITY_ICONS`): text to image Type, image to
   image Layers, upscale Maximize2, realtime Zap. Add new capabilities there.
 - **Empty states**: one muted sentence that says what will appear and how to
-  make it appear, plus the action if there is one. For an administrator or a
-  local install, Generate's no-model state adds a short heading (`Set up your
-worker`), an Open Models action, and a text link to the setup guide. Users and
-  viewers get the notice without an install action. Realtime shows its no-model
-  sentence once, in the picker.
+  make it appear, plus the action if there is one.
+- **Unavailable states**: name the real cause once, with one action. The worker
+  poll is shared (`src/lib/studio-worker.svelte.ts`, admins only). An
+  administrator sees "No worker is connected" with Start a worker, or "No
+  <task> model is installed" with Open Models; anyone else sees that no model
+  is available and to ask an administrator. Generate and Administration >
+  Models show it as a centred neutral icon tile, title and action; the canvas
+  puts the reason directly beside a disabled outline Connect.
 
 ## Adding a studio view
 
@@ -274,7 +291,9 @@ worker`), an Open Models action, and a text link to the setup guide. Users and
   waitlist is a tab on `/login` (`WaitlistForm.svelte`), shown only when
   `PUBLIC_WAITLIST_URL` is set. The landing and document header buttons open
   this tab when it is configured; otherwise they open sign-in. The login
-  field omits the open-source kicker.
+  field omits the open-source kicker. Join, reset and recover use the same
+  layout and heading as sign-in. Setup commands sit in their own blocks and
+  wrap at spaces.
 - **Install command**: the landing uses
   `curl -fsSL https://potocolom.leonfuller.com/install.sh | bash`. The marketing
   site's static redirect sends this URL to the latest published GitHub
