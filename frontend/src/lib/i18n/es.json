@@ -1339,7 +1339,7 @@
 	"app.availability.worker_offline": "No hay un worker conectado",
 	"app.availability.start_worker": "Iniciar un worker",
 	"app.availability.ask_admin": "Consulta con un administrador",
-	"app.availability.open_admin_models": "Abrir Modelos",
+	"app.availability.open_admin_models": "Instalar un modelo",
 	"app.gen.no_model_installed": "No hay modelos de texto a imagen instalados",
 	"app.gen.no_model_available": "No hay modelos de texto a imagen disponibles",
 	"app.image_to_image.no_model_installed": "No hay modelos de imagen a imagen instalados",

@@ -214,7 +214,8 @@ them rather than hand-rolled markup.
 - **Unavailable states**: name the real cause once, with one action. The worker
   poll is shared (`src/lib/studio-worker.svelte.ts`, admins only). An
   administrator sees "No worker is connected" with Start a worker, or "No
-  <task> model is installed" with Open Models; anyone else sees that no model
+  <task> model is installed" with Install a model, which opens Administration >
+  Models; anyone else sees that no model
   is available and to ask an administrator. Generate and Administration >
   Models show it as a centred neutral icon tile, title and action; the canvas
   puts the reason directly beside a disabled outline Connect.

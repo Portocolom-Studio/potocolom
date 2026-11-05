@@ -743,11 +743,12 @@ async function main() {
 		);
 		await sparseRun.page.keyboard.press('Escape');
 		assert.equal(await focusedTour(sparseRun.page), 'install-model');
-		await clickButton(sparseRun.page, 'button', 'Open Models');
-		await waitFor(
-			() => new URL(sparseRun.page.url()).searchParams.get('view') === 'models',
-			'Models view'
-		);
+		// With no model at all, Generate sends an administrator to where models are installed.
+		await clickButton(sparseRun.page, 'button', 'Install a model');
+		await waitFor(() => {
+			const params = new URL(sparseRun.page.url()).searchParams;
+			return params.get('view') === 'admin' && params.get('tab') === 'models';
+		}, 'Administration > Models');
 		await sparse.close();
 		const sparsePhone = await browser.createBrowserContext();
 		const sparsePhoneRun = await openStudio(sparsePhone, server, { viewport: phone });

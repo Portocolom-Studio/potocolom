@@ -1339,7 +1339,7 @@
 	"app.availability.worker_offline": "No worker is connected",
 	"app.availability.start_worker": "Start a worker",
 	"app.availability.ask_admin": "Ask an administrator",
-	"app.availability.open_admin_models": "Open Models",
+	"app.availability.open_admin_models": "Install a model",
 	"app.gen.no_model_installed": "No text-to-image model is installed",
 	"app.gen.no_model_available": "No text-to-image model is available",
 	"app.image_to_image.no_model_installed": "No image-to-image model is installed",
