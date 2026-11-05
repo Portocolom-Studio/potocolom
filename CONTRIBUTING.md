@@ -24,6 +24,7 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 
 - No emojis or decorative characters in code, comments, commits, issues or PRs.
 - Match the existing style of the file you are editing.
+- Reviewers apply [CODING_STANDARDS.md](CODING_STANDARDS.md) to every diff.
 - Run `make verify` locally before opening or updating a PR; it runs exactly what CI runs.
 - Merge only when every required check is green; update stale tests or CI steps in the same PR, and never skip, disable or loosen a check to get green.
 - Apply the [security and recovery checks](docs/security-checklist.md) to each affected path and record the evidence in the PR.
