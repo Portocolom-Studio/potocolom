@@ -602,7 +602,7 @@
 								>
 							</div>
 							<div class="grid grid-cols-2 gap-3 text-sm">
-								{#if model.download_bytes !== 0}
+								{#if model.download_bytes === null || model.download_bytes >= 5 * 1024 ** 2}
 									<div>
 										<span class="text-muted-foreground flex items-center gap-1"
 											><HardDrive size={15} aria-hidden="true" />

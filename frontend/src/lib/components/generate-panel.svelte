@@ -3,7 +3,9 @@
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import BoxIcon from '@lucide/svelte/icons/box';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import ServerOffIcon from '@lucide/svelte/icons/server-off';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import ImageIcon from '@lucide/svelte/icons/image';
 	import LayersIcon from '@lucide/svelte/icons/layers';
@@ -646,8 +648,18 @@
 				<Skeleton class="mt-2 h-9 rounded-md" aria-hidden="true" />
 			</div>
 		{:else if worker.online === false || availableModels.length === 0}
-			<div class="flex flex-col gap-2 p-4 lg:p-5">
-				<p class="text-muted-foreground text-sm leading-relaxed">
+			<div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+				<div
+					class="bg-raised border-border grid size-10 place-items-center rounded-lg border"
+					aria-hidden="true"
+				>
+					{#if worker.online === false}
+						<ServerOffIcon class="text-muted-foreground size-4.5" />
+					{:else}
+						<BoxIcon class="text-muted-foreground size-4.5" />
+					{/if}
+				</div>
+				<p class="text-foreground max-w-64 text-sm font-medium text-balance">
 					{worker.online === false
 						? t('app.availability.worker_offline')
 						: canManageModels && compatibleModelsRegistered
@@ -657,25 +669,28 @@
 								)}
 				</p>
 				{#if worker.online === false}
-					<a
+					<Button
+						variant="outline"
+						size="sm"
 						href={SETUP_GUIDE_URL}
 						target="_blank"
 						rel="noopener noreferrer"
-						class="text-foreground decoration-line-strong hover:decoration-foreground inline-flex w-fit items-center gap-1.5 rounded-sm text-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						{t('app.availability.start_worker')}
-						<ExternalLinkIcon class="size-3.5" aria-hidden="true" />
-					</a>
+						<ExternalLinkIcon aria-hidden="true" />
+					</Button>
 				{:else if canManageModels && compatibleModelsRegistered}
-					<Button variant="outline" size="sm" class="w-fit" onclick={() => openService('models')}
+					<Button variant="outline" size="sm" onclick={() => openService('models')}
 						>{t('app.gen.open_models')}</Button
 					>
 				{:else if canManageModels}
-					<Button variant="outline" size="sm" class="w-fit" onclick={() => openAdmin('models')}
+					<Button variant="outline" size="sm" onclick={() => openAdmin('models')}
 						>{t('app.availability.open_admin_models')}</Button
 					>
 				{:else}
-					<p class="text-muted-foreground text-sm">{t('app.availability.ask_admin')}</p>
+					<p class="text-muted-foreground max-w-64 text-sm text-balance">
+						{t('app.availability.ask_admin')}
+					</p>
 				{/if}
 			</div>
 		{:else if mode !== 'upscale'}
@@ -850,7 +865,7 @@
 									aria-label={`${option} x ${option}`}
 									class={segmentItemClass}
 								>
-									{option}<sup>2</sup>
+									<span>{option}<sup>2</sup></span>
 								</ToggleGroup.Item>
 							{/each}
 						</ToggleGroup.Root>

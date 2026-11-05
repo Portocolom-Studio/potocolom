@@ -2789,9 +2789,11 @@
 			tabindex="0"
 		>
 			{#if persistedRoots.length > 0}
-				<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
+				<div
+					class="bg-popover border-border absolute end-3 bottom-3 z-30 flex items-center gap-0.5 rounded-lg border p-0.5 shadow-lg"
+				>
 					<Button
-						variant="secondary"
+						variant="ghost"
 						size="icon-sm"
 						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
 						disabled={!hasTreeOffsets}
@@ -2802,7 +2804,7 @@
 						<RotateCcwIcon />
 					</Button>
 					<Button
-						variant="secondary"
+						variant="ghost"
 						size="icon-sm"
 						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
 						title={t('app.images.zoom_out')}
@@ -2812,7 +2814,7 @@
 						<MinusIcon />
 					</Button>
 					<Button
-						variant="secondary"
+						variant="ghost"
 						size="icon-sm"
 						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
 						title={t('app.images.zoom_in')}
@@ -2822,7 +2824,7 @@
 						<PlusIcon />
 					</Button>
 					<Button
-						variant="secondary"
+						variant="ghost"
 						size="icon-sm"
 						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
 						title={t('app.images.recenter')}

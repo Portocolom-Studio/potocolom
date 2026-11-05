@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import {
 		CHART_MARGINS,
 		formatRangeCaption,
@@ -35,7 +36,15 @@
 	} = $props();
 
 	const metricLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'metric'));
-	const modelLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'model'));
+	// Lanes are keyed by model id; label them with the name people pick from.
+	const modelLanes = $derived(
+		timeline.lanes
+			.filter((lane) => lane.kind === 'model')
+			.map((lane) => ({
+				...lane,
+				label: studio.models.find((model) => model.id === lane.label)?.name ?? lane.label
+			}))
+	);
 	const visibleMetricLanes = $derived(
 		metricLanes.filter(
 			(lane) =>
