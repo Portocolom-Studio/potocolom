@@ -86,6 +86,31 @@ async function serveBuild() {
 	return server;
 }
 
+// Chrome aborts in-flight requests with ERR_NETWORK_CHANGED when the host's
+// network changes, loopback included: another CI job starting Docker Compose on
+// the same host is enough. A page that lost its stylesheet that way renders
+// unstyled, so load it again. Any other failed request is left to the checks.
+async function load(page, navigate) {
+	for (let attempt = 1; ; attempt++) {
+		const lost = [];
+		const onFailed = (request) => {
+			if (request.failure()?.errorText === 'net::ERR_NETWORK_CHANGED') lost.push(request.url());
+		};
+		page.on('requestfailed', onFailed);
+		try {
+			await navigate();
+		} catch (error) {
+			if (!String(error).includes('ERR_NETWORK_CHANGED')) throw error;
+			lost.push(page.url());
+		} finally {
+			page.off('requestfailed', onFailed);
+		}
+		if (lost.length === 0) return;
+		assert.ok(attempt < 3, `the network changed during ${attempt} loads: ${lost.join(', ')}`);
+		console.log(`network changed during a load, loading again: ${lost.join(', ')}`);
+	}
+}
+
 function contrastRatio(foreground, background) {
 	const luminance = (color) => {
 		const channels = color
@@ -171,7 +196,9 @@ try {
 	const homeNode = nodeIds.at(-1);
 	const brokenHome = await browser.newPage();
 	await brokenHome.setCacheEnabled(false);
-	await brokenHome.goto(`${baseUrl}/privacy`, { waitUntil: 'networkidle0' });
+	await load(brokenHome, () =>
+		brokenHome.goto(`${baseUrl}/privacy`, { waitUntil: 'networkidle0' })
+	);
 	let homeFaults = 0;
 	await brokenHome.setRequestInterception(true);
 	const interceptHome = (request) => {
@@ -204,7 +231,7 @@ try {
 	);
 	brokenHome.off('request', interceptHome);
 	await brokenHome.setRequestInterception(false);
-	await brokenHome.reload({ waitUntil: 'networkidle0' });
+	await load(brokenHome, () => brokenHome.reload({ waitUntil: 'networkidle0' }));
 	await brokenHome.waitForSelector('header.landing-content');
 	await brokenHome.waitForSelector('footer.horizon');
 	assert.equal(
@@ -248,7 +275,7 @@ try {
 		};
 	});
 	await livePage.bringToFront();
-	await livePage.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await load(livePage, () => livePage.goto(baseUrl, { waitUntil: 'networkidle0' }));
 	await livePage.waitForFunction(() => {
 		const header = document.querySelector('header.landing-content');
 		return header && !header.hasAttribute('inert') && !document.querySelector('.landing-loader');
@@ -338,7 +365,7 @@ try {
 	});
 
 	await page.setViewport({ width: 1280, height: 900 });
-	await page.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await load(page, () => page.goto(baseUrl, { waitUntil: 'networkidle0' }));
 	await page.waitForFunction(() => {
 		const header = document.querySelector('header.landing-content');
 		return header && !header.hasAttribute('inert') && !document.querySelector('.landing-loader');
@@ -396,7 +423,7 @@ try {
 	const parity = await browser.newPage();
 	await parity.setViewport({ width: 390, height: 844 });
 	async function footerStyles(path) {
-		await parity.goto(`${baseUrl}${path}`, { waitUntil: 'networkidle0' });
+		await load(parity, () => parity.goto(`${baseUrl}${path}`, { waitUntil: 'networkidle0' }));
 		await parity.waitForSelector('footer.horizon');
 		return parity.evaluate(() => {
 			const footers = document.querySelectorAll('footer.horizon');
@@ -438,7 +465,7 @@ try {
 			hydrationErrors.push(message.text());
 	});
 	await navigation.setViewport({ width: 390, height: 844 });
-	await navigation.goto(baseUrl, { waitUntil: 'networkidle0' });
+	await load(navigation, () => navigation.goto(baseUrl, { waitUntil: 'networkidle0' }));
 	await navigation.waitForFunction(() => {
 		const header = document.querySelector('header.landing-content');
 		return header && !header.hasAttribute('inert');
@@ -480,7 +507,7 @@ try {
 		'true',
 		'clicking the selected language keeps it selected'
 	);
-	await navigation.reload({ waitUntil: 'networkidle0' });
+	await load(navigation, () => navigation.reload({ waitUntil: 'networkidle0' }));
 	await navigation.waitForFunction(() => document.documentElement.lang === 'es');
 	assert.equal(
 		await navigation.$eval('[aria-label="Espa\u00f1ol"]', (button) =>
@@ -498,7 +525,9 @@ try {
 		expectedHeader
 	);
 	await checkFooter();
-	await navigation.goto(`${baseUrl}/missing-page`, { waitUntil: 'networkidle0' });
+	await load(navigation, () =>
+		navigation.goto(`${baseUrl}/missing-page`, { waitUntil: 'networkidle0' })
+	);
 	await navigation.waitForSelector('footer.horizon');
 	await checkFooter();
 	assert.deepEqual(hydrationErrors, [], 'navigation must hydrate without errors');

@@ -171,17 +171,24 @@ async function open(browser, server, path) {
 	return { page, errors };
 }
 
+// A background tab is hidden and gets no animation frames, so waitForFunction
+// checks once and never again. Bring the tab to the front, as a user would.
+async function waitOn(page, predicate, arg) {
+	await page.bringToFront();
+	await page.waitForFunction(predicate, {}, arg);
+}
+
 async function waitForText(page, text) {
-	await page.waitForFunction((needle) => document.body.innerText.includes(needle), {}, text);
+	await waitOn(page, (needle) => document.body.innerText.includes(needle), text);
 }
 
 async function clickButton(page, label) {
-	await page.waitForFunction(
+	await waitOn(
+		page,
 		(selectedLabel) =>
 			[...document.querySelectorAll('button')].some(
 				(item) => item.textContent?.trim() === selectedLabel && !item.disabled
 			),
-		{},
 		label
 	);
 	await page.evaluate((selectedLabel) => {
@@ -197,12 +204,12 @@ function postsTo(path) {
 }
 
 async function waitForButton(page, label) {
-	await page.waitForFunction(
+	await waitOn(
+		page,
 		(selectedLabel) =>
 			[...document.querySelectorAll('button')].some(
 				(item) => item.textContent?.trim() === selectedLabel
 			),
-		{},
 		label
 	);
 }
@@ -443,6 +450,9 @@ async function testStaleTabAfterNoneChoice(browser, server) {
 		await waitForButton(first.page, 'Use without accounts');
 		await waitForButton(second.page, 'Use without accounts');
 		await clickButton(first.page, 'Use without accounts');
+		// Answer the first tab late, so its wait starts before the result shows
+		// while the second tab, opened last, is still in front.
+		queues['/api/v1/auth/setup'].push({ status: 204, delayMs: 500 });
 		await clickButton(first.page, 'Continue without accounts');
 		await waitForText(first.page, 'Models are next');
 		fixture.config = { status: 200, body: noneConfig };
