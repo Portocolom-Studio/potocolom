@@ -700,6 +700,9 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					el.click();
 				});
 			} else {
+				// Hold the inventory refresh that follows the install, so focus must
+				// already be back on the row while that request is still open.
+				delayNext = true;
 				await page.$eval('[data-model="suggested"] button', (el) => el.focus());
 				await page.keyboard.press('Enter');
 			}
@@ -713,6 +716,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					),
 					true
 				);
+				releaseDelayed();
 				return;
 			}
 			assert.doesNotMatch(
