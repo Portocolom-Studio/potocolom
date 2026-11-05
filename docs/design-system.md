@@ -113,7 +113,8 @@ Spacing follows a 4px grid. Common values: 8px between related controls,
 
 - Sidebar: 240px wide; collapses to a 56px icon rail with Cmd/Ctrl+B; a sheet
   on phones (swipe to dismiss).
-- Sidebar header and top bar: 60px. Navigation rows and search: 36px. Breadcrumb on the left; the view's tabs, toggles and actions
+- Sidebar header and top bar: 60px. The breadcrumb names the sidebar group and
+  the view; Account, outside the groups, has one crumb. Navigation rows and search: 36px. Breadcrumb on the left; the view's tabs, toggles and actions
   register through `useStudioHeader()` in `src/lib/studio-chrome.svelte.ts`.
 - Worker status card and the user menu sit at the bottom of the sidebar and
   never scroll; only the navigation list scrolls. Show tour, Documentation and
@@ -187,7 +188,8 @@ them rather than hand-rolled markup.
   (In queue, Rendering and percent); a failed one shows a single panel with the
   reason in plain words and Try again, which resubmits the same request. The
   history strip shows failed jobs as muted tiles. On phones the result
-  identity and its icon actions share one row.
+  identity and its icon actions share one row, and a job started on the page
+  that finishes or fails is brought into view once.
 - **Slider** (`param-slider-field`): label and value on one line, track,
   min and max underneath.
 - **Tag** (`.tag` classes): status and capability labels.
