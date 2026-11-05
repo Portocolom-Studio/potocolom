@@ -382,6 +382,9 @@
 		} finally {
 			busy = false;
 			clearTimeout(timer);
+			// The started install removes the focused button. Move focus now, not
+			// after the refresh request, so focus never rests on the page body.
+			if (models[0]) await recoverFocus(focused, worker.worker_id, models[0].id);
 			await refresh();
 			if (models[0]) await recoverFocus(focused, worker.worker_id, models[0].id);
 		}
