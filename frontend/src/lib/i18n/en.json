@@ -486,7 +486,7 @@
 	"app.realtime_canvas.file_invalid": "This drawing file is invalid or too large.",
 	"app.realtime_canvas.save_failed": "The drawing could not be saved. Your drawing is still open.",
 	"app.models.title": "Models",
-	"app.models.sub": "Review every registered model and choose which ones appear in service pickers on this browser.",
+	"app.models.sub": "Choose which models appear in your pickers on this browser.",
 	"app.models.empty": "No models registered. Start a worker and reload.",
 	"app.models.empty_installed": "No models installed yet.",
 	"app.models.empty_viewer": "No models installed yet. Ask an administrator to install one.",

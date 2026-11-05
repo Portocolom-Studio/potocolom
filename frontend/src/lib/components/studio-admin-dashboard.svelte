@@ -48,7 +48,7 @@
 <div class="flex h-full min-h-0 flex-col">
 	<h1 class="sr-only">{title}</h1>
 	<nav
-		class="flex gap-1 overflow-x-auto border-b border-border px-4 py-3 md:hidden"
+		class="no-scrollbar flex gap-1 overflow-x-auto border-b border-border px-4 py-3 [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] after:shrink-0 after:basis-4 after:content-[''] md:hidden"
 		aria-label={t('app.admin.title')}
 	>
 		{#each tabs as tab (tab.value)}

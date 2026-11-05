@@ -9842,7 +9842,7 @@ test('Upscale does not pair its source thumbnail with another image prompt', asy
 	try {
 		const { page } = harness;
 		await page.evaluate(() =>
-			[...document.querySelectorAll('header button')]
+			[...document.querySelectorAll('[data-sidebar="menu-button"]')]
 				.find((button) => button.textContent.trim() === 'Upscale')
 				.click()
 		);
@@ -9912,17 +9912,20 @@ test('Generate can load older images after a full page of failed jobs', async ()
 	});
 	try {
 		const { page } = harness;
-		await page.waitForFunction(() => document.body.textContent.includes('Your image appears here'));
+		await page.waitForFunction(() => document.body.textContent.includes('This image was not made'));
+		assert.match(
+			await page.$eval('button[data-strip-thumb="0"]', (tile) => tile.getAttribute('aria-label')),
+			/Fixture failure/,
+			'a failed job is a tile that names its reason'
+		);
 		const older = await page.$('button[title="Older"]');
 		assert.notEqual(older, null, 'older images remain reachable when every recent job failed');
 		await older.click();
-		await waitForStrip(page, 1);
-		await page.click('button[data-strip-thumb]');
+		await waitForStrip(page, failed.length + 1);
+		await page.click('button[data-strip-thumb]:has(img)');
 		await page.waitForSelector('img.img-reveal[data-loaded]');
 		await page.click('button[title="Recent"]');
-		await page.waitForFunction(
-			() => document.querySelectorAll('button[data-strip-thumb]').length === 0
-		);
+		await waitForStrip(page, failed.length);
 		assert.notEqual(await page.$('button[title="Older"]'), null);
 	} finally {
 		await harness.close();

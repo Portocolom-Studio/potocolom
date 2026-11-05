@@ -232,7 +232,9 @@
 				<div class="flex flex-col gap-2">
 					<p>{t('setup.release_command')}</p>
 					<pre
-						class="bg-muted overflow-x-auto rounded px-3 py-2 font-mono text-xs whitespace-pre-wrap">{releaseCommand}</pre>
+						class="bg-muted overflow-x-auto rounded px-3 py-2 font-mono text-xs whitespace-pre-wrap">{#each releaseCommand.split(' ') as word, index (index)}{#if index > 0}{' '}{/if}<span
+								class="whitespace-nowrap">{word}</span
+							>{/each}</pre>
 				</div>
 			</Card.Content>
 		</Card.Root>

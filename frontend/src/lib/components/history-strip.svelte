@@ -291,8 +291,10 @@
 						.replace('{reason}', failureReason(item.generation.failure_reason))}
 					<button
 						type="button"
-						class={'bg-panel text-muted-foreground ring-line-strong relative grid size-[72px] shrink-0 place-items-center rounded-md ring-1 outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring ' +
-							(shownId === item.generation.id ? 'ring-2 ring-offset-1 ring-offset-background' : '')}
+						class={'bg-panel text-muted-foreground relative grid size-[72px] shrink-0 place-items-center rounded-md outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring ' +
+							(shownId === item.generation.id
+								? 'ring-brand ring-2 ring-offset-1 ring-offset-background'
+								: 'ring-line-strong ring-1')}
 						title={label}
 						aria-label={label}
 						tabindex={item.thumbIndex === tabStop ? 0 : -1}

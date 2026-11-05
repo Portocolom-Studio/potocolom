@@ -1,12 +1,20 @@
 <script lang="ts">
 	import { BarChart } from 'layerchart';
-	import { formatMs, type ModelStats } from '$lib/benchmark';
+	import {
+		benchmarkModelName,
+		formatMs,
+		type BenchmarkReport,
+		type ModelStats
+	} from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
 	import * as Card from '$lib/components/ui/card';
 	import * as Chart from '$lib/components/ui/chart';
 
-	let { stats }: { stats: ModelStats[] } = $props();
+	let {
+		stats,
+		report = null
+	}: { stats: ModelStats[]; report?: Pick<BenchmarkReport, 'manifests'> | null } = $props();
 
 	type Row = { model: string; gpuMs: number; wallMs: number };
 
@@ -14,7 +22,7 @@
 		stats
 			.filter((stat) => stat.avg_gpu_ms != null && stat.avg_wall_s != null)
 			.map((stat) => ({
-				model: studio.models.find((model) => model.id === stat.model_id)?.name ?? stat.model_id,
+				model: benchmarkModelName(stat.model_id, report, studio.models),
 				gpuMs: stat.avg_gpu_ms as number,
 				wallMs: (stat.avg_wall_s as number) * 1000
 			}))
@@ -58,7 +66,7 @@
 				orientation="horizontal"
 				y={(d: Row) => d.model}
 				bandPadding={0.3}
-				padding={{ left: 124, bottom: 24 }}
+				padding={{ left: 184, bottom: 24 }}
 				rule={false}
 				seriesLayout="group"
 				series={[
@@ -77,7 +85,7 @@
 					bars: { motion: 'none', 'stroke-width': 0 },
 					xAxis: { format: (v: number) => formatMs(v) },
 					yAxis: {
-						format: (label: string) => (label.length > 14 ? `${label.slice(0, 13)}…` : label)
+						format: (label: string) => (label.length > 28 ? `${label.slice(0, 27)}...` : label)
 					},
 					grid: { class: 'stroke-border/50' }
 				}}

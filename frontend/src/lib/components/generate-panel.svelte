@@ -186,8 +186,11 @@
 			);
 		});
 		if (finishedIds.length === 0) return;
+		// A failure is an outcome too: on a phone it must come into view like a result.
 		const revealResult =
-			shown !== null && shown.state === 'succeeded' && finishedIds.includes(shown.id);
+			shown !== null &&
+			(shown.state === 'succeeded' || shown.state === 'failed') &&
+			finishedIds.includes(shown.id);
 		pendingResultIds = new Set([...pendingResultIds].filter((id) => !finishedIds.includes(id)));
 		if (!revealResult || stageEl === null || !window.matchMedia('(max-width: 1023px)').matches)
 			return;

@@ -484,7 +484,7 @@
 	"app.realtime_canvas.file_invalid": "Este archivo de dibujo no es válido o es demasiado grande.",
 	"app.realtime_canvas.save_failed": "No se pudo guardar el dibujo. El dibujo sigue abierto.",
 	"app.models.title": "Modelos",
-	"app.models.sub": "Revisa todos los modelos registrados y elige cuáles aparecen en los selectores de este navegador.",
+	"app.models.sub": "Elige qué modelos aparecen en tus selectores en este navegador.",
 	"app.models.empty": "No hay modelos registrados. Arranca un worker y recarga.",
 	"app.models.empty_installed": "Aún no hay modelos instalados.",
 	"app.models.empty_viewer": "Aún no hay modelos instalados. Pide a un administrador que instale uno.",

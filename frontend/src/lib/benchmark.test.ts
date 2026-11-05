@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+	benchmarkModelName,
 	categoryLineSeries,
 	leaderboardRows,
 	mayReadSessions,
@@ -88,4 +89,12 @@ test('accounts mode signed in as a non-admin does not ask', () => {
 
 test('a failed config probe does not ask', () => {
 	assert.equal(mayReadSessions({ authMethods: null, hasCsrf: false, role: null }), false);
+});
+
+test('benchmarkModelName prefers the report manifest, then live models, then the id', () => {
+	const report = { manifests: [{ id: 'kromoss', name: 'Kromoss' }] };
+	const models = [{ id: 'ssd-1b', name: 'SSD-1B' }];
+	assert.equal(benchmarkModelName('kromoss', report, models), 'Kromoss');
+	assert.equal(benchmarkModelName('ssd-1b', report, models), 'SSD-1B');
+	assert.equal(benchmarkModelName('sd-sim', null, models), 'sd-sim');
 });
