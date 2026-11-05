@@ -4,7 +4,7 @@ subtitle: Conventions, versions and what the API covers.
 tab: api
 group: Start here
 order: 1
-source: docs/api.md "Conventions"
+source: docs/api.md "Conventions"; docs/blueprint.md "The mode seam"
 ---
 
 The potocolom API is one HTTP surface and two WebSocket endpoints. The studio in the browser calls it. So do the benchmark script and the worker connection. This page lists the rules that every route follows. The [authentication page](/docs/api/authentication) explains how a request names its user, and the [endpoints page](/docs/api/endpoints) lists every route that ships.
@@ -25,7 +25,8 @@ The potocolom API is one HTTP surface and two WebSocket endpoints. The studio in
 
 ## Authentication in one line
 
-- **Modes:** with `AUTH_MODE=none` every request is the one implicit local admin. With `AUTH_MODE=accounts` a request must present a session cookie or an `Authorization: Bearer` token. See the [authentication page](/docs/api/authentication) for the details.
+- **Modes:** a new install is unclaimed until someone spends its setup link, and that link chooses the mode. In `none` mode every request is the one implicit local admin. In `accounts` mode a request must present a session cookie or an `Authorization: Bearer` token. See the [authentication page](/docs/api/authentication) for the details.
+- **Unclaimed installs:** until the setup link is spent, every route answers `503` with `{"detail": "setup_required"}`. The exceptions are the config, health and readiness routes, the two setup routes and the worker socket. A browser WebSocket is closed before it is accepted, so its handshake fails instead.
 
 ## Roles in one line
 
@@ -43,6 +44,12 @@ A body that is too large gets this answer before the route runs:
 
 ```json
 { "detail": "request body too large" }
+```
+
+Until the install is claimed, most routes answer this instead:
+
+```json
+{ "detail": "setup_required" }
 ```
 
 ## Where to go next

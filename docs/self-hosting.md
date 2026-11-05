@@ -280,7 +280,8 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
 ```
 
 - Preflight writes `deploy/compose/.env` when that file is missing, with
-  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`. A missing
+  `openssl rand -hex 32` for `POSTGRES_PASSWORD` and `FLEET_SECRET`, and fills an
+  empty `ROOT_KEYS` once with a new key (`scripts/ensure-env.sh`). A missing
   database password is filled only when no database volume exists; otherwise
   restore the saved password. A non-empty value is left alone. The
   example's `change-me` database password is rotated only when Docker answers
@@ -290,11 +291,10 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
   that value to a worker on another machine. Non-empty keys in an existing
   `.env` are left alone, including `AUTH_MODE`. Installs from a release before
   the setup link may still carry `AUTH_MODE=none` from the old template.
-- The first generation per model downloads its weights from Hugging Face
-  (2-7 GB for the SD and SDXL class models; `sd35-medium` is much larger, see
-  "Gated models" below); watch progress with
-  `docker compose -f deploy/compose/compose.yml logs -f worker`.
-  Until the download finishes, jobs on that model sit in the queue.
+- A new install has no models: install them from the studio's Models screen
+  ("Installing models" below). Downloads are 2-7 GB for the SD and SDXL class
+  models; `sd35-medium` is much larger, see "Gated models" below. A generation
+  never downloads weights.
 - Open http://localhost:8080; the studio is served by the API container.
 - The fleet WebSocket (`/api/v1/fleet`) accepts the shared `FLEET_SECRET` from
   the compose environment. The API receives it as `FLEET_TOKEN_KEY` and the
@@ -379,8 +379,9 @@ account. It works on an install that is unclaimed or runs without accounts.
 An administrator of an install that runs without accounts can also turn them on with
 `POST /api/v1/auth/enable`, with an email and a password and no restart. The account they
 name takes over the implicit local user, as the setup claim does. The next request needs a
-session, and every browser canvas that was open without one is closed. The studio's
-settings page will use this route. The route refuses while `AUTH_MODE=none` is set in
+session, and every browser canvas that was open without one is closed. In the studio,
+the Account view of an install without accounts is a Turn on accounts form that calls
+this route. The route refuses while `AUTH_MODE=none` is set in
 `deploy/compose/.env`, because the next start would refuse the accounts it records: remove
 every top-level `AUTH_MODE` line from `deploy/compose/.env`, restart the API, and then turn
 accounts on. This includes duplicate assignments with any value. A request already running as the
@@ -504,6 +505,17 @@ Multi-user accounts mode has shipped: `AUTH_MODE=accounts` via `make auth-enable
 password sign-in and optional Google or GitHub. Running without accounts remains the
 single-operator choice on a trusted network. Settings, first-admin UI, export, deletion, restore and purge
 are still issue #10.
+
+## Installing models
+
+A new install has no models. An administrator installs them in the studio: open
+Administration, then Models (`/app?view=admin&tab=models`). An empty model list in the
+Generate panel links there too. Each worker shows its free disk space and a card per
+model with its download size, whether it fits the worker's VRAM, and a Suggested badge
+on the pick for that GPU. Select models and download them; the worker refuses a download
+that would leave less than 5 GiB free, shows progress, and lets you cancel, retry or
+remove. A generation never downloads weights: a model that is not installed is not
+offered. Gated models also need a token, see [Gated models](#gated-models).
 
 ## Models you already have
 

@@ -47,6 +47,7 @@ const PAGE_ICONS: Record<string, IconName> = {
 	'guide/quickstart': 'rocket',
 	'guide/hardware-requirements': 'cpu',
 	'self-hosting/installing-a-release': 'download',
+	'self-hosting/first-run': 'settings',
 	'self-hosting/checking-a-machine': 'shield',
 	'self-hosting/gpu-passthrough': 'cpu',
 	'self-hosting/reaching-the-studio': 'globe',

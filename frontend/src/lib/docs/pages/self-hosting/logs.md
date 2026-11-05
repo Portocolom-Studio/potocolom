@@ -3,7 +3,7 @@ title: Logs
 subtitle: Read the container logs and find the useful lines.
 tab: self-hosting
 group: Run it
-order: 11
+order: 12
 source: docs/self-hosting.md "Logs"
 ---
 

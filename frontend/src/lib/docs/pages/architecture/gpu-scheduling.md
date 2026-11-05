@@ -4,7 +4,7 @@ subtitle: How jobs and live sessions share GPU workers today.
 tab: architecture
 group: System
 order: 3
-source: docs/architecture.md "GPU scheduling", "One pool, real time first", "Model routing", "Low VRAM operation: the memory ladder", "When the pool is full", "Idle sessions" and their "Shipped status" notes; docs/decisions.md "GPU pool: shared between jobs and realtime, realtime first", "Queues: sorted sets with Lua pops, PostgreSQL as truth", "Model placement: hot set plus on-demand loading", "Realtime sessions per account are capped at two", "The realtime queue counts against the account cap"
+source: docs/architecture.md "GPU scheduling", "One pool, real time first", "Model routing", "Low VRAM operation: the memory ladder", "When the pool is full", "Idle sessions" and their "Shipped status" notes; docs/connection-handling.md "Model store"; docs/decisions.md "GPU pool: shared between jobs and realtime, realtime first", "Queues: sorted sets with Lua pops, PostgreSQL as truth", "Model placement: hot set plus on-demand loading", "Realtime sessions per account are capped at two", "The realtime queue counts against the account cap"
 ---
 
 GPU time is the scarce and expensive resource. Generation jobs and live drawing sessions both run on the same workers. This page describes what the API and the workers do today, then the parts that are planned.
@@ -16,7 +16,7 @@ GPU time is the scarce and expensive resource. Generation jobs and live drawing 
 Generation jobs wait in a heap inside the API process. The heap is `InProcessQueues` in `backend/app/jobs.py`. On start, the API rebuilds the heap from PostgreSQL.
 
 - A worker can hold up to two queued jobs at once, set by `JOB_DISPATCH_DEPTH` in `backend/app/jobs.py`. The second job lets the worker encode and upload one result while it denoises the next.
-- A job that does not name a `model_id` is routed by the API. The API picks the cheapest registered model whose `tier` (`draft`, `standard` or `premium`), capabilities and parameter schema match the request. Routing uses `backend/app/jobs.py` and `backend/app/manifests.py`.
+- A job that does not name a `model_id` is routed by the API. The API picks the cheapest registered model whose `tier` (`draft`, `standard` or `premium`), capabilities and parameter schema match the request. Routing uses `backend/app/jobs.py` and `backend/app/manifests.py`. A worker's `hello` lists only the models it has installed, and a model installed while a connection is open is not routed to that connection until it reconnects.
 - A job is retried once, and only after the worker holding it dies.
 
 ### Realtime slots

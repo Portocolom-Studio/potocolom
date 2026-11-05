@@ -12,6 +12,8 @@ Re-examined against a Go port and reaffirmed. FastAPI's native plumbing (uvloop 
 
 ## Frontend: SvelteKit as a static SPA
 
+> **Partly superseded** by "Prerendering: every known route is rendered at build time" below: the `ssr = false` client-rendered shell no longer holds. No server rendering at request time and one static build stand.
+
 The application is a login gated interactive tool (canvas drawing, live previews, tool views), so server side rendering adds nothing. SvelteKit with the static adapter produces a static artifact that the API server can serve when self-hosted and a CDN can serve in the cloud. Product runtime configuration (auth methods, billing) comes from the API. The marketing site uses a second build, `PUBLIC_SITE_MODE=landing`.
 
 Rejected alternative: React with Vite. Larger ecosystem, but SvelteKit was preferred for this project.
@@ -164,13 +166,16 @@ Rejected alternatives: CloudWatch alone (exception debugging becomes log group a
 
 ## Telemetry: none from self-hosted installs
 
+> **Superseded** by "Telemetry: opt-out anonymous aggregates from self-hosted installs" below, when usage analytics became a product requirement.
+
 A self-hosted install makes zero calls to project infrastructure, not even an update check. Cleanest possible position for a GPL self-hosting audience; the cost is not knowing install counts or versions in the wild.
 
 Rejected alternatives: a startup update check (mild, but still a phone-home to explain); opt-in anonymous stats (even opt-in draws suspicion in self-host communities).
 
-Superseded by "Telemetry: opt-out anonymous aggregates from self-hosted installs" below, when usage analytics became a product requirement.
 
 ## Worker testing without GPUs: tiny model on CPU in CI
+
+> **Partly superseded** by "CI runs on the self-hosted runner, and the fork approval gate is the control" below: the rejection of a self-hosted GPU runner no longer holds.
 
 CI runs the worker's real code path (manifest loading, scheduling, frame streaming, safety checker) against a deliberately tiny diffusion model on CPU: slow, ugly output, real execution. Unit tests mock the pipeline interface; a real GPU smoke test runs manually before releases.
 
@@ -351,7 +356,7 @@ Rejected alternatives: YAML (nicer to hand-edit, but a pyyaml dependency and JSO
 
 ## Drawing surface: bitmap canvas
 
-<!-- corrected 2026-07-30: issue #54's operation-journal direction supersedes the earlier snapshot-stack undo choice; the live bitmap choice stands -->
+> **Partly superseded** by issue #54's operation-journal direction: the snapshot-stack undo choice no longer holds. The live bitmap choice stands.
 
 Use one 512 by 512 bitmap canvas for live interaction and encode complete WebP frames with native `canvas.toBlob()` for the realtime wire. The browser records the same canonical pointer samples as ordered, stable-ID operations and stores compressed raster checkpoints to bound replay time. Undo replays operations after the nearest checkpoint, and refine rerasterizes the journal at the requested target resolution. Vector paths are reserved for selections, masks, text, shapes, and authored objects that need later transforms; model-generated output remains raster.
 
@@ -403,11 +408,11 @@ Rejected alternatives: first tag after M3 drawing (a better first impression, bu
 
 ## Frontend foundation: CSS custom properties and a hand-rolled i18n store
 
+> **Partly superseded** by "Frontend components: shadcn-svelte on Tailwind" below: the Tailwind and component-library rejections no longer hold, after the first hand-rolled version was judged against a real deployment. The i18n and Vitest choices stand.
+
 The theme system (issue #1) is built on hand-rolled design tokens as CSS custom properties, with dark and light driven by `prefers-color-scheme` plus a `data-theme` override; components are plain Svelte. Internationalization is two JSON dictionaries behind a tiny store, roughly thirty lines. Unit tests run under Vitest; a browser end-to-end rig arrives with the drawing issue, when there are real flows worth driving.
 
 Rejected alternatives: Tailwind (fast iteration, but the theme system, which is the entire point of issue #1, becomes Tailwind's); a component library (fastest to decent, hardest to make not look templated); Paraglide or svelte-i18n (typed messages and ICU plurals for what is today two flat dictionaries of static strings, adopt one the day plural-heavy content appears).
-
-The Tailwind and component-library rejections are superseded by "Frontend components: shadcn-svelte on Tailwind" below, after the first hand-rolled version was judged against a real deployment. The i18n and Vitest choices stand.
 
 ## Low VRAM operation: the diffusers offloading ladder, not airLLM
 
@@ -488,7 +493,7 @@ Rejected alternative: SIMD image libraries (pillow-simd, libvips) before a profi
 
 ## Job placement: offloaded workers first, micro-batching deferred
 
-<!-- corrected 2026-07-30: the single-region rejection is superseded by "Realtime fleet: regional, pool-partitioned, and warm" below; the offloaded-worker preference and scheduler-level micro-batching deferral stand -->
+> **Partly superseded** by "Realtime fleet: regional, pool-partitioned, and warm" below: the single-region rejection and the later-stage timing for regional and split pools no longer hold. The offloaded-worker preference and the scheduler-level micro-batching deferral stand.
 
 When several workers can take a queued job, the scheduler prefers workers serving the model on a lower memory ladder rung, keeping fully resident workers free for realtime admission, which only they can serve. One comparator in worker selection. Micro-batching same-model queued jobs is deliberately deferred until a real cloud fleet exists: it raises throughput but complicates slot accounting and preemption, and at a one or two GPU scale there is nothing to batch.
 
@@ -593,7 +598,7 @@ Rejected alternatives: failing open on reserve (an outage becomes a free GPU fau
 
 ## Realtime relay: planned extraction into a Go gateway at scale
 
-<!-- corrected 2026-07-30: superseded by "Realtime relay: Go gateway required for the 1000-active-session target" below; kept for the record because its ownership split and Go rationale still stand -->
+> **Partly superseded** by "Realtime relay: Go gateway required for the 1000-active-session target" below: only the conditional timing no longer holds. The ownership split, the FrameBus seam, the no-stickiness design and the choice of Go stand.
 
 The Redis pub/sub relay between API replicas stands, and no gateway code exists today. This entry records the exit plan for the day profiling shows relay frame pacing threatening the 2 to 4 fps bar or relay work crowding API replicas: a stateless gateway service terminates the browser realtime socket and the worker fleet socket, relays binary frames in memory when both legs land on the same instance (affinity by session id) and over Redis pub/sub otherwise, and forwards JSON control traffic to the API, which keeps the scheduler and all authority. Browsers authenticate to it with short-lived tickets minted by the API; workers keep their fleet tokens. The ALB already routes by path, so `/api/v1/realtime` and `/api/v1/fleet` move to the gateway's target group without touching anything else; the FrameBus seam and the no-stickiness design are what make the split configuration plus one new service rather than a redesign. The gateway is written in Go: many sockets, small messages, no model code, a static binary, exactly the shape Go serves best. The API stays Python per its own decision; within this repository the gateway is the only planned Go component. The private repository's services choose their own stack behind the HTTP contracts.
 
@@ -619,7 +624,7 @@ Rejected alternatives: storing flagged prompts for human review (creates exactly
 
 ## GPU session density: calibrated slots now, worker-internal batching later
 
-<!-- corrected 2026-07-30: the density-research deferral is superseded by "GPU session density: capacity-critical at 1000 active sessions" below; calibration and the scheduler slot abstraction stand -->
+> **Partly superseded** by "GPU session density: capacity-critical at 1000 active sessions" below (the research deferral) and by "Realtime concurrency comes from one GPU serving several sessions, by decode first and batching second" below (the start trigger). The calibration method and the scheduler-facing slot abstraction stand.
 
 Realtime slots per worker stop being a configured guess: at model warmup the worker times single frames on the resident realtime model and advertises the largest session count whose serialized inter-frame time still meets the 2 fps floor (floor of the 500 ms budget over single-frame p95), capped by the configured REALTIME_SLOTS. Sessions serialize on the worker GPU lock; a batch-size sweep waits on the deferred cross-session batching ladder below. This lands with the real inference issue and replaces the most expensive guess in the system with a measurement. The density ladder beyond that is designed and deliberately deferred: cross-session frame batching inside the worker (frames from concurrent same-model sessions collected in a ~30-50 ms window and run as one batch - invisible to the scheduler, because it lives below the slot abstraction, which is why this does not reopen the deferred scheduler-level micro-batching decision), then StreamDiffusion-class pipeline work (batched denoising steps across consecutive frames, dropping classifier-free guidance on turbo models, tiny-autoencoder decode for the live preview with full VAE on refine). Trigger: when fleet spend makes density the cheapest capacity, which is measurable from the machine-hour accounting.
 
@@ -656,6 +661,8 @@ Supersedes the Tailwind and component-library rejections in "Frontend foundation
 Rejected alternatives: keeping everything hand-rolled (every new surface repays the same styling tax, and the first attempt demonstrated the failure mode); a styled component library like Skeleton or Flowbite (themes owned by the library, harder to leave); headless bits-ui directly without the shadcn layer (saves nothing - shadcn is that layer, pre-written).
 
 ## Stability Community License models in the product
+
+> **Partly superseded** by "Realtime picker: sdxl-turbo returns, for the realtime capability only" below, for the `realtime` capability of `sdxl-turbo`, and later by "Remove SDXL Turbo from the bundled catalog" below, which removes `sdxl-turbo` from the catalog.
 
 Updated 2026-07-25: the operator holds Stability AI Community License registration, but `sd-turbo` and `sdxl-turbo` both ship with `benchmark_only: true`. Quality at the shipped resolutions is not good enough for the studio picker; they remain loadable as benchmark speed anchors (issue #60). Revisit only if a higher default resolution (e.g. 1024 for SDXL Turbo) is measured and accepted.
 
@@ -800,6 +807,8 @@ Queues and FrameBus have in-process and Redis-backed implementations selected on
 Rejected alternatives: requiring Redis in every deployment, which adds an unnecessary service to ordinary self-hosting; allowing more than one socket-owning process without Redis, which would silently partition queues, routes, and invalidation; weaker in-process ordering, fairness, or backpressure semantics, which would make deployment mode change user-visible behavior and leave the simple profile unable to exercise the distributed contract.
 
 ## GPU session density: capacity-critical at 1000 active sessions
+
+> **Partly superseded** by "Realtime concurrency comes from one GPU serving several sessions, by decode first and batching second" below: only the start trigger no longer holds.
 
 Supersedes only the research deferral in "GPU session density: calibrated slots now, worker-internal batching later" above. Its calibration method and scheduler-facing slot abstraction remain in force.
 
@@ -950,6 +959,8 @@ The threshold reads the darkest of a pixel's three channels rather than its lumi
 Rejected alternatives: keeping img2img with a tuned strength, which the sweep above shows has no setting that both paints a scene and follows the drawing; a full SDXL ControlNet as the default, whose per-step control network misses the realtime bar above two steps for fidelity the sparse-stroke comparison did not justify; ControlNet lineart, which expects dense detector-style contours rather than a canvas that begins with two or three strokes; moving the realtime base to an SD1.5 LCM such as `dreamshaper-lcm`, whose measured four-step latency already misses the bar before any conditioning is added and which would give up the accepted Vega base; a learned preprocessor such as HED or PidiNet, unnecessary because the canvas is already clean line art and a deterministic invert and threshold suffices; reusing `strength` as the conditioning scale, which would give one parameter two unrelated meanings in a manifest that still advertises `image_to_image`; and region-based or vector transport as the fix for frame-to-frame instability, which addresses bandwidth rather than the cause.
 
 ## Realtime picker: sdxl-turbo returns, for the realtime capability only
+
+> **Superseded** by "Remove SDXL Turbo from the bundled catalog" below (2026-10-27).
 
 Supersedes "Stability Community License models in the product" for the `realtime` capability of `sdxl-turbo`, and only that. The earlier entry held both turbo manifests at `benchmark_only` because prompt-only quality at the shipped 512 resolution was not good enough for the studio picker, and named a measured higher default resolution as the reopening condition. That condition is not what changed. The conditioned realtime path asks a different question of the base: the drawing supplies composition and the prompt supplies subject, so what is left to the base is rendering the scene it is handed. sdxl-turbo does that well at 512 where its unconditioned text-to-image at the same resolution did not convince, which is why the earlier rejection does not transfer to this path.
 
@@ -1681,6 +1692,8 @@ Rejected alternatives: leaving the 16 MiB default (a browser can pin 16 MiB per 
 
 ## Worker Pillow floor is 12.3
 
+> **Superseded** by "Worker images use the patched Pillow 13 line" below, from v0.1.3.
+
 The range was `>=12,<13`, which already admits 12.3. A local venv can still sit on 12.2. The floor is 12.3 so resolve cannot pick 12.0 through 12.2.
 
 Rejected alternatives: leaving `>=12,<13` (a stale venv stays on 12.2); raising only the Docker image (the worker extra is what `make setup` installs).
@@ -2062,7 +2075,7 @@ readiness; replacing an unknown database password with a new random value.
 
 ## The studio, landing and auth pages follow one written design system
 
-The compact studio sizes below are superseded by "Studio polish uses readable type and responsive layouts".
+> **Partly superseded** by "Studio polish uses readable type and responsive layouts" below: the compact studio sizes no longer hold.
 
 PR #774 redesigns the studio shell and views, the landing footer and the
 sign-in and join pages, and records the result in
@@ -2337,6 +2350,8 @@ The owner chose a ten-character minimum after fifteen refused ordinary passwords
 Rejected alternatives: fifteen, the NIST SP 800-63B-4 minimum for a password used as the only factor, because it refused passwords people use and the install offers TOTP as a second factor; and eight, the NIST floor for a password used with a second factor, because this install does not require one.
 
 ## Model store rollout and legacy caches
+
+> **Partly superseded** by "Bundled Hub metadata lets the worker adopt models offline" below: a permanently offline cache can now be adopted.
 
 Upgrade the API before workers. Legacy caches are adopted only after Hub metadata verifies the exact download plan; a permanently offline cache cannot be adopted. A loose directory walk was rejected because a partial cache could be marked installed. A legacy hello for unsignalled APIs was rejected because hello precedes the API signal.
 

@@ -1,5 +1,6 @@
 # Mermaid diagrams are rendered locally but otherwise unchecked in CI, so this
-# workflow catches invalid diagrams before they merge (issue #183).
+# workflow catches invalid diagrams before they merge (issue #183). It also keeps
+# the public docs at /docs in step with the repository docs they mirror.
 name: docs
 
 on:
@@ -8,6 +9,10 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "README.md"
+      - "CONTRIBUTING.md"
+      - "frontend/src/lib/docs/pages/**"
+      - "scripts/check-docs-site.sh"
       - "scripts/verify-mermaid.py"
       - "Makefile"
       - ".github/workflows/docs.yml"
@@ -22,6 +27,10 @@ jobs:
     with:
       paths: |
         docs/**
+        README.md
+        CONTRIBUTING.md
+        frontend/src/lib/docs/pages/**
+        scripts/check-docs-site.sh
         scripts/verify-mermaid.py
         Makefile
         .github/workflows/docs.yml
@@ -32,9 +41,19 @@ jobs:
     runs-on: [self-hosted, Linux, X64, potocolom]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
       # The Makefile target is the single definition of what the job checks.
       # Bounded because it drives headless Chrome, and a hung browser would
       # hold the single self-hosted runner against every other job. The real
       # run takes about 25 seconds for 35 diagrams.
       - run: make verify-mermaid
         timeout-minutes: 5
+      # Every repository doc that a /docs page mirrors changes with that page.
+      - name: Docs site follows the repository docs
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/check-docs-site.sh "$BASE_SHA" "$HEAD_SHA"
+        timeout-minutes: 2

@@ -49,6 +49,7 @@ Two doors. Do not mix them on the same ports.
 make init            # checks Python 3.11+, Node 24+, Docker Compose v2, and the GPU driver; stops on a blocking problem
 make dev             # API + studio + worker; make dev-status if the studio is blank
 make verify          # optional; the same lint/test/build CI runs
+make lint            # only the lint steps of verify, each from the right directory
 ```
 
 `make init` first checks Python 3.11+, Node 24+, Docker with Compose v2, and the GPU driver, and stops on a blocking problem.
@@ -217,8 +218,9 @@ Model weights download into the Hugging Face hub cache, `$HF_HOME/hub` (or `HF_H
 
 ## Trying accounts mode locally
 
-`AUTH_MODE` defaults to `none` and the dev loop wants it that way: every request
-resolves to one implicit local administrator, so nothing asks you to sign in.
+The native dev API (`make api`) runs with `AUTH_MODE=none` unless you set it: every
+request resolves to one implicit local administrator, so nothing asks you to sign in.
+(Unset elsewhere, `AUTH_MODE` leaves the mode to the database, see docs/self-hosting.md.)
 
 `make api` starts the API with `AUTH_MODE=none`, so the dev database is decided as none the
 first time and nothing asks you to sign in. To try the first-run page, start the API and

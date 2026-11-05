@@ -3,7 +3,7 @@ title: Gated models
 subtitle: Use models that need an accepted license and an access token.
 tab: self-hosting
 group: Run it
-order: 8
+order: 9
 source: docs/self-hosting.md "Gated models"
 ---
 

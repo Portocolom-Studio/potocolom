@@ -3,8 +3,8 @@ title: What persists where
 subtitle: Which data lives in the database, which lives in files, and which is temporary.
 tab: self-hosting
 group: Run it
-order: 10
-source: docs/self-hosting.md "What persists where"
+order: 11
+source: docs/self-hosting.md "What persists where", "Models you already have"
 ---
 
 The install keeps its data in four named Docker volumes, in PostgreSQL, and in container logs. The table shows where each kind of data lives and what happens to it on an upgrade.
@@ -29,6 +29,12 @@ Back up `pgdata` and `assets` together. Jobs and asset rows refer to files by st
 Models are JSON manifests in the `models` volume. The worker seeds that volume from `worker/models/` on first boot. To add or edit a manifest, change it in the volume, or rebuild the image, and then restart the worker. Licensing notes for each model are in [third-party-models.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/third-party-models.md).
 
 To remove an old SDXL Turbo manifest from an existing install, remove `/models/sdxl-turbo.json` from that worker's model volume and restart the worker. Saved images and cached weights do not need removal.
+
+## Models you already have
+
+The worker finds complete models already in its Hugging Face cache at the pinned revision. This includes downloads from older potocolom installs, the `hf` CLI, and other apps that use the standard cache. A different revision of the same model is not reused.
+
+To share another app's cache, set `HF_HOME` to that cache when you run natively. In a container, replace the `hf-cache` volume in `deploy/compose/compose.yml` with the host cache mount shown in the file. If another app removes files, the model shows as not installed, and you can install it again. Legacy caches need one Hub check before the worker adopts them, as described in [Updating](/docs/self-hosting/updating).
 
 ## Separate installs keep separate data
 

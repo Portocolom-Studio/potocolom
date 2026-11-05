@@ -3,7 +3,7 @@ title: Backup and restore
 subtitle: Back up the database and the image files, and restore them.
 tab: self-hosting
 group: Run it
-order: 9
+order: 10
 source: docs/self-hosting.md "Backup and restore", "What persists where"
 ---
 

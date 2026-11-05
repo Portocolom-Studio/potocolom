@@ -8,7 +8,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
-- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
+- While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. A browser WebSocket is closed before it is accepted, so its handshake fails instead of answering `503`. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
   `admin` covers everything including install configuration, `user` creates and mutates
   its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
@@ -358,7 +358,8 @@ GET /api/v1/studio/gpu                 admin only; {"loaded_models": [...], "gpu
                                         on the connected worker's GPU; [] when it has none
                                         gpu is null and loaded_models is [] when workers are
                                         connected but none can answer GPU commands; 503 when
-                                        no worker is connected
+                                        no worker is connected, or when the worker answers
+                                        without GPU metrics
 GET /api/v1/metrics/gpu/history        admin only; ?from&to&rollup - GPU samples over a range; the endpoint
                                         auto-picks raw samples (48h retention) or 5-minute rollups
                                         (30d retention) for the requested window. See metrics.md.
@@ -549,7 +550,7 @@ DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refuse
 - Each model carries its catalog fields, `installed`, `download_bytes`, `needs_token`, `fits` (its `min_vram_gb` is at most the worker's VRAM), `suggested`, and `download`: the last `store_status` entry for it (`kind`, `state`, `bytes_done`, `bytes_total`, `error`, `op_id`), or null. The `kind` is `install`, `remove` or `cancel` and identifies the reported operation.
 - Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
 - A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.
-- Every route is audited by the administrator role check, as the other admin routes are.
+- The `POST` and `DELETE` routes are audited by the administrator role check, as other unsafe admin routes are. `GET /api/v1/admin/models` is a read and is not audited.
 
 ## Account states
 
