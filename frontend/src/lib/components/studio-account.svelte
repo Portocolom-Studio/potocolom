@@ -785,7 +785,7 @@
 													{#if session.current}
 														{t('app.account.this_device')}
 													{:else}
-														<span class="font-mono text-xs break-all">{session.id}</span>
+														{t('app.account.other_session')}
 													{/if}
 												</p>
 												<p class="text-muted-foreground flex flex-wrap gap-x-3 text-xs">

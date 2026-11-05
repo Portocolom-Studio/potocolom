@@ -1,7 +1,6 @@
 <script lang="ts">
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
 	import { studioChrome } from '$lib/studio-chrome.svelte';
@@ -19,7 +18,7 @@
 			case 'admin':
 				return t('app.shell.platform');
 			case 'account':
-				return account.current?.email ?? t('app.title');
+				return t('app.service.account');
 			default:
 				return t('app.shell.create');
 		}

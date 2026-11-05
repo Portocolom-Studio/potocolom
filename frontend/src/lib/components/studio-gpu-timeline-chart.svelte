@@ -57,7 +57,7 @@
 	const vramHidden = $derived(visibleMetricLanes.length < metricLanes.length);
 
 	let swimWidth = $state(720);
-	const swimMargin = CHART_MARGINS;
+	const swimMargin = { ...CHART_MARGINS, left: 160 };
 	const plotLeft = swimMargin.left;
 	const plotWidth = $derived(Math.max(1, swimWidth - swimMargin.left - swimMargin.right));
 	const rowH = 64;
@@ -152,9 +152,11 @@
 								rx="6"
 								class={index % 2 === 0 ? 'fill-muted/25' : 'fill-muted/10'}
 							/>
-							<text x="0" y={y + 12} class="fill-muted-foreground font-sans text-xs">
-								{lane.label.length > 14 ? `${lane.label.slice(0, 11)}...` : lane.label}
-							</text>
+							<foreignObject x="0" {y} width={plotLeft - 8} height="20">
+								<div class="text-muted-foreground truncate text-xs" title={lane.label}>
+									{lane.label}
+								</div>
+							</foreignObject>
 							{#each lane.blocks ?? [] as block (block.id)}
 								<rect
 									x={xScale(

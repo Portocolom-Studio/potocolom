@@ -16,6 +16,8 @@
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
 	import { HardDrive, MemoryStick, Check, Download, AlertTriangle } from '@lucide/svelte';
+	import ServerOffIcon from '@lucide/svelte/icons/server-off';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { Badge } from '$lib/components/ui/badge';
 	import { GIB } from '$lib/model-management';
 
@@ -433,15 +435,26 @@
 			>{t('app.model_management.retry')}</Button
 		>{/if}
 	{#if !loading && !error && workers.length === 0}
-		<div class="bg-card border-border text-muted-foreground rounded-xl border p-6 text-sm">
-			<p>{t('app.model_management.empty')}</p>
-			<a
+		<div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+			<div
+				class="bg-raised border-border grid size-10 place-items-center rounded-lg border"
+				aria-hidden="true"
+			>
+				<ServerOffIcon class="text-muted-foreground size-4.5" />
+			</div>
+			<p class="text-foreground max-w-64 text-sm font-medium text-balance">
+				{t('app.availability.worker_offline')}
+			</p>
+			<Button
+				variant="outline"
+				size="sm"
 				href="https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md"
 				target="_blank"
 				rel="noopener noreferrer"
-				class="text-foreground mt-3 inline-block rounded-sm underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring"
-				>{t('app.gen.setup_guide')}</a
 			>
+				{t('app.availability.start_worker')}
+				<ExternalLinkIcon aria-hidden="true" />
+			</Button>
 		</div>
 	{/if}
 	<p class="sr-only" aria-live="polite">{announcement}</p>
@@ -522,7 +535,12 @@
 								aria-valuemax={total || 1}
 								aria-valuetext={`${new Intl.NumberFormat(getLocale()).format(percent)}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
 							>
-								<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
+								<div
+									class="disk-used"
+									class:warning={used / total > 0.85 && used / total <= 0.95}
+									class:error={used / total > 0.95}
+									style:width={`${(used / total) * 100}%`}
+								></div>
 								{#if segments.reserved > 0}<div
 										class="disk-reserved"
 										data-reserved
@@ -536,9 +554,11 @@
 							</div>
 							<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
 								<span
-									><span class="disk-swatch disk-used"></span>{t('app.model_management.used')}: {formatSize(
-										used
-									)}</span
+									><span
+										class="disk-swatch disk-used"
+										class:warning={used / total > 0.85 && used / total <= 0.95}
+										class:error={used / total > 0.95}
+									></span>{t('app.model_management.used')}: {formatSize(used)}</span
 								>
 								<span
 									><span class="disk-swatch disk-free"></span>{t('app.model_management.free')}: {formatSize(
@@ -851,6 +871,12 @@
 	}
 	.disk-used {
 		background: var(--primary);
+	}
+	.disk-used.warning {
+		background: var(--status-warning);
+	}
+	.disk-used.error {
+		background: var(--status-error);
 	}
 	.disk-free {
 		background: var(--muted);

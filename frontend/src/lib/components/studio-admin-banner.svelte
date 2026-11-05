@@ -132,7 +132,7 @@
 				</p>
 			{/if}
 
-			<label class="flex flex-col gap-1 text-xs font-medium">
+			<label class="flex w-full max-w-sm flex-col gap-1 text-xs font-medium">
 				{t('app.admin.banner_kind')}
 				<select
 					data-testid="admin-banner-kind"
@@ -145,7 +145,7 @@
 				</select>
 			</label>
 
-			<label class="flex flex-col gap-1 text-xs font-medium">
+			<label class="flex w-full max-w-sm flex-col gap-1 text-xs font-medium">
 				{t('app.admin.banner_message')}
 				<select
 					data-testid="admin-banner-message-choice"

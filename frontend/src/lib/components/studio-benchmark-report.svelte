@@ -2,6 +2,7 @@
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { leaderboardRows, type BenchmarkReport } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import StudioBenchmarkChart from '$lib/components/studio-benchmark-chart.svelte';
 	import StudioBenchmarkRunTimeline from '$lib/components/studio-benchmark-run-timeline.svelte';
 	import { Button } from '$lib/components/ui/button';
@@ -66,7 +67,9 @@
 				{#each benchmarkRows as row (row.model_id)}
 					<tr class="border-border border-t">
 						<td class="px-3 py-2 tabular-nums">{row.rank}</td>
-						<td class="px-3 py-2 font-medium">{row.model_id}</td>
+						<td class="px-3 py-2 font-medium"
+							>{studio.models.find((model) => model.id === row.model_id)?.name ?? row.model_id}</td
+						>
 						<td class="px-3 py-2 tabular-nums">{row.gpu_display}</td>
 						<td class="px-3 py-2 tabular-nums">{row.wall_display}</td>
 					</tr>

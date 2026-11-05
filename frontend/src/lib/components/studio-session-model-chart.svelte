@@ -2,6 +2,7 @@
 	import { BarChart } from 'layerchart';
 	import { formatMs } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import type { ModelRuntimeRow } from '$lib/studio-session-metrics';
 	import * as Card from '$lib/components/ui/card';
 	import * as Chart from '$lib/components/ui/chart';
@@ -19,7 +20,7 @@
 		if (rows.length <= 6) {
 			return rows.map((row) => ({
 				key: row.modelId,
-				modelId: row.modelId,
+				modelId: studio.models.find((model) => model.id === row.modelId)?.name ?? row.modelId,
 				count: row.count,
 				avgGpuMs: row.avgGpuMs
 			}));
@@ -31,7 +32,7 @@
 		return [
 			...head.map((row) => ({
 				key: row.modelId,
-				modelId: row.modelId,
+				modelId: studio.models.find((model) => model.id === row.modelId)?.name ?? row.modelId,
 				count: row.count,
 				avgGpuMs: row.avgGpuMs
 			})),

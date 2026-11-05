@@ -2,6 +2,7 @@
 	import { BarChart } from 'layerchart';
 	import { formatMs, type ModelStats } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import * as Card from '$lib/components/ui/card';
 	import * as Chart from '$lib/components/ui/chart';
 
@@ -13,7 +14,7 @@
 		stats
 			.filter((stat) => stat.avg_gpu_ms != null && stat.avg_wall_s != null)
 			.map((stat) => ({
-				model: stat.model_id,
+				model: studio.models.find((model) => model.id === stat.model_id)?.name ?? stat.model_id,
 				gpuMs: stat.avg_gpu_ms as number,
 				wallMs: (stat.avg_wall_s as number) * 1000
 			}))

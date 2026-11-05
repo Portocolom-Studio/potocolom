@@ -20,6 +20,14 @@
 	} from '$lib/studio.svelte';
 	import { isStripNavKey, nextFocusIndex, thumbnailLabel } from '$lib/history-strip-nav';
 
+	let {
+		shownId,
+		failureReason
+	}: {
+		shownId: string | null;
+		failureReason: (reason: string | null) => string;
+	} = $props();
+
 	let stripEl = $state<HTMLDivElement | null>(null);
 	let loadingOlder = $state(false);
 	let loadError = $state('');
@@ -61,10 +69,6 @@
 	const INERTIA_FRICTION_PER_MS = 0.0028;
 	const INERTIA_VELOCITY_BOOST = 1.15;
 	const VELOCITY_EMA_ALPHA = 0.35;
-
-	const shownId = $derived(
-		studio.selectedId ?? studio.history.find((g) => g.assets.length > 0)?.id ?? null
-	);
 
 	function maxScrollLeft(el: HTMLDivElement): number {
 		return Math.max(0, el.scrollWidth - el.clientWidth);
@@ -115,8 +119,7 @@
 	onDestroy(stopInertia);
 
 	// Starred jobs outside the loaded history pages still appear at the front.
-	// Each entry carries its thumbnail index: only entries with assets render
-	// a thumbnail, so the roving focus counts those, not the working cards.
+	// Each selectable image or failure carries its roving focus index.
 	type StripItem = { generation: Generation; thumbIndex: number };
 	const stripItems = $derived.by(() => {
 		const seen = new Set<string>();
@@ -127,14 +130,14 @@
 			seen.add(generation.id);
 			items.push({
 				generation,
-				thumbIndex: generation.assets.length > 0 ? thumbIndex++ : -1
+				thumbIndex:
+					generation.assets.length > 0 || generation.state === 'failed' ? thumbIndex++ : -1
 			});
 		};
 		for (const generation of starredGenerations()) {
 			push(generation);
 		}
 		for (const generation of studio.history) {
-			if (generation.state === 'failed') continue;
 			push(generation);
 		}
 		return items;
@@ -279,7 +282,28 @@
 			aria-label={t('app.gen.history_strip')}
 		>
 			{#each stripItems as item (item.generation.id)}
-				{#if item.generation.assets.length > 0}
+				{#if item.generation.state === 'failed'}
+					{@const label = t('app.gen.failed_tile')
+						.replace(
+							'{prompt}',
+							thumbnailLabel(item.generation.params.prompt, t('app.gen.untitled'))
+						)
+						.replace('{reason}', failureReason(item.generation.failure_reason))}
+					<button
+						type="button"
+						class={'bg-panel text-muted-foreground ring-line-strong relative grid size-[72px] shrink-0 place-items-center rounded-md ring-1 outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-ring ' +
+							(shownId === item.generation.id ? 'ring-2 ring-offset-1 ring-offset-background' : '')}
+						title={label}
+						aria-label={label}
+						tabindex={item.thumbIndex === tabStop ? 0 : -1}
+						aria-current={shownId === item.generation.id ? 'true' : undefined}
+						data-strip-thumb={item.thumbIndex}
+						onkeydown={onStripKeydown}
+						onclick={(event) => onThumbClick(event, item.generation)}
+					>
+						<CircleXIcon class="size-5" aria-hidden="true" />
+					</button>
+				{:else if item.generation.assets.length > 0}
 					<button
 						type="button"
 						class="focus-visible:ring-ring relative shrink-0 rounded-md outline-none hover:opacity-90 focus-visible:ring-2"

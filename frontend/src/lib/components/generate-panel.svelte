@@ -1,4 +1,5 @@
 <script lang="ts">
+	import CircleXIcon from '@lucide/svelte/icons/circle-x';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
@@ -41,6 +42,7 @@
 		valueToNorm
 	} from '$lib/model-params';
 	import { countError, seedError } from '$lib/generate-validation';
+	import { isCancellable } from '$lib/generation-state';
 	import { apiFetch } from '$lib/api';
 	import { shortcutLabel } from '$lib/platform.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -65,6 +67,7 @@
 		starredGenerations,
 		studio,
 		toggleStarred,
+		type Generation,
 		type GenerationLineage,
 		type LineageEntry,
 		type Model
@@ -107,8 +110,27 @@
 	let upscaleFactor = $state(2);
 	let errorText = $state('');
 	let lineage = $state<GenerationLineage | null>(null);
+	let stageEl = $state<HTMLElement | null>(null);
+	let pendingResultIds = $state<Set<string>>(new Set());
+	type GenerationRequest = Pick<Generation, 'model_id' | 'params'> & {
+		source_asset_id?: string;
+	};
 
-	// The viewer shows the clicked generation, or the newest finished one.
+	function generationAction(generation: Generation): 'generate' | 'image_to_image' | 'upscale' {
+		if (generation.source_asset_id === null) return 'generate';
+		return studio.models
+			.find((model) => model.id === generation.model_id)
+			?.capabilities.includes('upscale')
+			? 'upscale'
+			: 'image_to_image';
+	}
+
+	const latestViewJob = $derived(
+		studio.history.find(
+			(generation) => generationAction(generation) === mode && generation.state !== 'cancelled'
+		)
+	);
+
 	const shown = $derived(
 		(() => {
 			if (studio.selectedId) {
@@ -116,6 +138,7 @@
 				if (selected !== undefined) return selected;
 			}
 			return (
+				latestViewJob ??
 				studio.history.find((g) => g.assets.length > 0) ??
 				studio.starredExtras.find((g) => g.assets.length > 0) ??
 				null
@@ -137,18 +160,44 @@
 	// generation object, so tracking shown itself would refetch and blank the
 	// breadcrumb every 1.5 seconds while a job is running.
 	const shownId = $derived(shown?.id ?? null);
-	const shownThumbnail = $derived(shown?.assets[0]?.thumbnail_url ?? null);
-	const shownAction = $derived(
-		shown === null
-			? null
-			: shown.source_asset_id === null
-				? 'generate'
-				: studio.models
-							.find((model) => model.id === shown.model_id)
-							?.capabilities.includes('upscale')
-					? 'upscale'
-					: 'image_to_image'
+	const shownResultId = $derived(
+		shown?.state === 'succeeded' && shown.assets.length > 0 ? shown.id : null
 	);
+	const shownThumbnail = $derived(shown?.assets[0]?.thumbnail_url ?? null);
+	const shownAction = $derived(shown === null ? null : generationAction(shown));
+	const shownPending = $derived(
+		shown !== null &&
+			(isCancellable(shown.state) ||
+				(shown.state === 'succeeded' &&
+					shown.assets.length === 0 &&
+					pendingResultIds.has(shown.id)))
+	);
+	const shownProgress = $derived(
+		shown?.state === 'running' && shown.progress !== null ? Math.round(shown.progress * 100) : null
+	);
+
+	$effect(() => {
+		const finishedIds = [...pendingResultIds].filter((id) => {
+			const generation = generationById(id);
+			return (
+				generation !== undefined &&
+				!isCancellable(generation.state) &&
+				(generation.state !== 'succeeded' || generation.assets.length > 0)
+			);
+		});
+		if (finishedIds.length === 0) return;
+		const revealResult =
+			shown !== null && shown.state === 'succeeded' && finishedIds.includes(shown.id);
+		pendingResultIds = new Set([...pendingResultIds].filter((id) => !finishedIds.includes(id)));
+		if (!revealResult || stageEl === null || !window.matchMedia('(max-width: 1023px)').matches)
+			return;
+		const bounds = stageEl.getBoundingClientRect();
+		if (bounds.bottom > 0 && bounds.top < window.innerHeight) return;
+		stageEl.scrollIntoView({
+			block: 'start',
+			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
+		});
+	});
 
 	const textToImageModels = $derived(filterTextToImageModels(studio.models));
 	const imageToImageModels = $derived(filterImageToImageModels(studio.models));
@@ -186,17 +235,14 @@
 	);
 	const upscaleModel = $derived(upscaleModels.find((model) => model.id === upscaleModelId));
 	const selectedModel = $derived(diffusionModels.find((model) => model.id === activeModelId));
-	const sourceAsset = $derived(
-		sourceAssetId === null
-			? null
-			: ([
-					...studio.history,
-					...studio.starredExtras,
-					...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
-				]
-					.flatMap((generation) => generation.assets)
-					.find((asset) => asset.id === sourceAssetId) ?? null)
+	const knownAssets = $derived(
+		[
+			...studio.history,
+			...studio.starredExtras,
+			...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
+		].flatMap((generation) => generation.assets)
 	);
+	const sourceAsset = $derived(knownAssets.find((asset) => asset.id === sourceAssetId) ?? null);
 	const canEdit = $derived(
 		worker.online !== false &&
 			shown !== null &&
@@ -243,7 +289,12 @@
 	const COUNT_MAX = 8;
 	const countProblem = $derived(countError(count, COUNT_MIN, COUNT_MAX));
 	const seedProblem = $derived(seedError(seed, modelProperty(selectedModel, 'seed') ?? {}));
-	const upscaleSourceAsset = $derived(sourceAsset ?? shown?.assets[0] ?? null);
+	const upscaleSourceAsset = $derived(
+		sourceAsset ??
+			shown?.assets[0] ??
+			knownAssets.find((asset) => asset.id === shown?.source_asset_id) ??
+			null
+	);
 	const upscaleSource = $derived(
 		upscaleSourceAsset !== null
 			? { width: upscaleSourceAsset.width, height: upscaleSourceAsset.height }
@@ -257,7 +308,9 @@
 	);
 	const upscaleOutLabel = $derived(
 		upscaleSource != null
-			? `${upscaleSource.width * upscaleFactor}x${upscaleSource.height * upscaleFactor}`
+			? t('app.upscale.output_size')
+					.replace('{width}', String(upscaleSource.width * upscaleFactor))
+					.replace('{height}', String(upscaleSource.height * upscaleFactor))
 			: null
 	);
 	const shownFactor = $derived(
@@ -319,7 +372,7 @@
 	});
 
 	$effect(() => {
-		const jobId = shownId;
+		const jobId = shownResultId;
 		lineage = null;
 		if (!jobId) return;
 		let cancelled = false;
@@ -384,6 +437,48 @@
 		normsReady = true;
 	});
 
+	async function submitGeneration(
+		request: GenerationRequest
+	): Promise<{ jobId: string | null } | null> {
+		const response = await apiFetch('/api/v1/generations', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(request)
+		}).catch(() => null);
+		return readSubmission(response);
+	}
+
+	async function readSubmission(
+		response: Response | null
+	): Promise<{ jobId: string | null } | null> {
+		if (response === null) {
+			errorText = t('app.gen.submit_failed');
+			return null;
+		}
+		if (!response.ok) {
+			const body: unknown = await response.json().catch(() => null);
+			errorText =
+				body !== null &&
+				typeof body === 'object' &&
+				'detail' in body &&
+				typeof body.detail === 'string'
+					? body.detail
+					: response.statusText;
+			return null;
+		}
+		const body: unknown = await response.json().catch(() => null);
+		if (
+			body !== null &&
+			typeof body === 'object' &&
+			'job_id' in body &&
+			typeof body.job_id === 'string'
+		) {
+			pendingResultIds = new Set(pendingResultIds).add(body.job_id);
+			return { jobId: body.job_id };
+		}
+		return { jobId: null };
+	}
+
 	async function generate(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		await runExclusive(submitLock, async () => {
@@ -401,22 +496,12 @@
 				};
 				if (mode === 'image_to_image') params.strength = strengthValue;
 				if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
-				const response = await apiFetch('/api/v1/generations', {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({
-						model_id: activeModelId,
-						params,
-						...(mode === 'image_to_image' && sourceAssetId
-							? { source_asset_id: sourceAssetId }
-							: {})
-					})
+				const submitted = await submitGeneration({
+					model_id: activeModelId,
+					params,
+					...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
 				});
-				if (!response.ok) {
-					const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-					errorText = body?.detail ?? response.statusText;
-					break;
-				}
+				if (!submitted) break;
 			}
 			await loadHistory();
 			void pollWhileWorking();
@@ -441,15 +526,53 @@
 					params: { ...branchParams, factor: upscaleFactor },
 					source_asset_id: sourceId
 				})
-			});
-			if (!response.ok) {
-				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-				errorText = body?.detail ?? response.statusText;
-				return;
-			}
+			}).catch(() => null);
+			if (!(await readSubmission(response))) return;
 			await loadHistory();
 			void pollWhileWorking();
 		});
+	}
+
+	async function retryShown(): Promise<void> {
+		if (shown === null || shown.state !== 'failed' || worker.online === false) return;
+		const request: GenerationRequest = {
+			model_id: shown.model_id,
+			params: { ...shown.params },
+			...(shown.source_asset_id === null ? {} : { source_asset_id: shown.source_asset_id })
+		};
+		await runExclusive(submitLock, async () => {
+			errorText = '';
+			const submitted = await submitGeneration(request);
+			if (submitted === null) return;
+			studio.selectedId = submitted.jobId;
+			await loadHistory();
+			void pollWhileWorking();
+		});
+	}
+
+	function failureReason(reason: string | null): string {
+		switch (reason?.trim()) {
+			case 'worker disconnected':
+				return t('app.gen.failure_worker');
+			case 'restart while running':
+				return t('app.gen.failure_restart');
+			case 'source asset not found':
+				return t('app.gen.failure_source');
+			case 'input image invalid':
+				return t('app.gen.failure_input');
+			case 'worker output was missing or invalid':
+				return t('app.gen.failure_output');
+			case undefined:
+			case '':
+			case 'generation failed':
+			case 'worker reported failure':
+				return t('app.gen.failure_unknown');
+			default:
+				if (/out of memory|OutOfMemoryError/i.test(reason ?? ''))
+					return t('app.gen.failure_memory');
+				if (/^no progress for \d+s$/.test(reason ?? '')) return t('app.gen.failure_stalled');
+				return reason?.trim() ?? t('app.gen.failure_unknown');
+		}
 	}
 
 	function insertPrompt(): void {
@@ -577,9 +700,7 @@
 		'https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md';
 
 	// The strip shows starred jobs too, so it is empty only when both lists are.
-	const hasHistoryItems = $derived(
-		starredGenerations().length > 0 || studio.history.some((g) => g.state !== 'failed')
-	);
+	const hasHistoryItems = $derived(starredGenerations().length > 0 || studio.history.length > 0);
 </script>
 
 {#snippet modelCard(model: Model | undefined)}
@@ -596,8 +717,8 @@
 {/snippet}
 
 {#snippet progress()}
-	{#if working > 0}
-		<div class="mt-3">
+	<div class="mt-3 h-6">
+		{#if working > 0}
 			<div class="text-dim flex items-center justify-between text-xs tabular-nums">
 				<span role="status" title={t('app.gen.working_suffix')}
 					>{working} {t('app.gen.working_short')}</span
@@ -614,8 +735,8 @@
 					></div>
 				</div>
 			{/if}
-		</div>
-	{/if}
+		{/if}
+	</div>
 	{#if errorText !== ''}
 		<p role="alert" class="text-destructive mt-2 text-sm leading-relaxed">{errorText}</p>
 	{/if}
@@ -1110,19 +1231,18 @@
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
 	<!-- Phones scroll the whole page, so the result takes its content height; the desktop workbench fills the row. -->
 	<section
+		bind:this={stageEl}
 		class="flex min-h-0 min-w-0 flex-none flex-col lg:flex-1"
 		class:tour-canvas={studio.tourOpen}
 		aria-label={t('app.gen.result')}
 		data-tour="canvas"
 		tabindex="-1"
 	>
-		{#if shown !== null}
-			<div
-				class="border-border flex min-h-14 flex-wrap items-center gap-2 border-b px-4 py-2.5 lg:flex-nowrap"
-			>
-				{#if shown !== null && lineage !== null}
+		{#if shown !== null && shownResultId !== null}
+			<div class="border-border flex flex-col gap-2 border-b px-4 py-2.5">
+				{#if lineage !== null && lineage.ancestors.length > 0}
 					<div
-						class="no-scrollbar flex min-w-0 basis-full items-center gap-1 overflow-x-auto sm:flex-1 sm:basis-auto"
+						class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
 						role="group"
 						aria-label={t('app.lineage.ancestors')}
 					>
@@ -1153,36 +1273,34 @@
 							</button>
 							<ChevronRightIcon class="text-dim size-3 shrink-0" aria-hidden="true" />
 						{/each}
-						<div
-							class="text-foreground flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs"
-							aria-current="true"
-						>
-							{#if shownThumbnail !== null}
-								<img
-									src={shownThumbnail}
-									alt=""
-									class="ring-brand size-8 rounded object-cover ring-1"
-									width="32"
-									height="32"
-									loading="lazy"
-								/>
-							{/if}
-							<span class="truncate">
-								{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
-								{shownFactor != null ? ` x${shownFactor}` : ''}
-							</span>
-						</div>
 					</div>
-				{:else}
-					<div class="flex-1"></div>
 				{/if}
-				{#if shown !== null}
+				<div class="flex min-w-0 items-center gap-2">
+					<div
+						class="text-foreground flex min-w-0 flex-1 items-center gap-2 text-xs"
+						aria-current="true"
+					>
+						{#if shownThumbnail !== null}
+							<img
+								src={shownThumbnail}
+								alt=""
+								class="ring-brand size-8 shrink-0 rounded object-cover ring-1"
+								width="32"
+								height="32"
+								loading="lazy"
+							/>
+						{/if}
+						<span class="truncate">
+							{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
+							{shownFactor != null ? ` x${shownFactor}` : ''}
+						</span>
+					</div>
 					<div class="ms-auto flex min-w-0 shrink-0 items-center gap-1.5">
 						<Button
 							type="button"
-							variant="ghost"
-							size="icon-sm"
-							class={'h-9 w-9 shrink-0 sm:h-8 sm:w-8 ' +
+							variant="outline"
+							size="sm"
+							class={'size-9 shrink-0 px-0 sm:size-8 ' +
 								(shownStarred ? 'text-status-warning' : 'text-muted-foreground')}
 							aria-pressed={shownStarred}
 							aria-label={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
@@ -1197,6 +1315,7 @@
 							size="sm"
 							class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
 							title={t('app.gen.use_as_source')}
+							aria-label={t('app.gen.use_as_source')}
 							aria-pressed={mode === 'image_to_image' && sourceAssetId === shown.assets[0]?.id}
 							disabled={!canEdit}
 							onclick={editShown}
@@ -1211,6 +1330,7 @@
 								size="sm"
 								class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
 								title={t('app.gen.upscale')}
+								aria-label={t('app.gen.upscale')}
 								disabled={shown.assets.length === 0 || shown.state !== 'succeeded'}
 								onclick={() => openService('upscale')}
 							>
@@ -1225,18 +1345,50 @@
 								size="sm"
 								class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
 								title={t('app.gen.download')}
+								aria-label={t('app.gen.download')}
 							>
 								<DownloadIcon class="size-3.5 shrink-0" aria-hidden="true" />
 								<span class="sr-only sm:not-sr-only">{t('app.gen.download')}</span>
 							</Button>
 						{/if}
 					</div>
-				{/if}
+				</div>
 			</div>
 		{/if}
 
 		<div class="flex flex-none flex-col lg:min-h-0 lg:flex-1 lg:flex-row">
-			{#if shown !== null}
+			{#if shown?.state === 'failed' || shownPending}
+				<div class="flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10">
+					<div
+						role="status"
+						class="bg-panel/50 border-border flex aspect-square w-full max-w-lg flex-col items-center justify-center gap-3 rounded-xl border p-6 text-center"
+					>
+						{#if shown?.state === 'failed'}
+							<CircleXIcon class="text-muted-foreground size-7" aria-hidden="true" />
+							<h2 class="text-sm font-medium">{t('app.gen.failure_title')}</h2>
+							<p class="text-muted-foreground max-w-xs break-words text-sm leading-relaxed">
+								{failureReason(shown.failure_reason)}
+							</p>
+							<Button
+								variant="outline"
+								disabled={submitLock.busy || worker.online === false}
+								onclick={retryShown}
+							>
+								<RefreshCwIcon aria-hidden="true" />
+								{t('app.gen.try_again')}
+							</Button>
+						{:else}
+							<ImageIcon class="text-dim size-7" aria-hidden="true" />
+							<p class="text-muted-foreground text-sm tabular-nums">
+								{shown?.state === 'queued'
+									? t('app.gen.status_queued')
+									: t('app.gen.status_rendering')}
+								{shownProgress !== null ? `${shownProgress}%` : ''}
+							</p>
+						{/if}
+					</div>
+				</div>
+			{:else if shown !== null}
 				<div
 					class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-5 min-[1400px]:p-7"
 				>
@@ -1380,13 +1532,18 @@
 		</div>
 		{#if !studio.historyLoaded || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
 			<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
-				<HistoryStrip />
+				<HistoryStrip {shownId} {failureReason} />
 			</div>
 		{/if}
 	</section>
 </div>
 
 <style>
+	textarea::placeholder {
+		color: var(--dim);
+		opacity: 1;
+	}
+
 	@media (max-width: 1023px) {
 		.tour-canvas {
 			min-height: 360px;

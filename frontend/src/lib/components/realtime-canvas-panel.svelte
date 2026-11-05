@@ -1026,10 +1026,13 @@
 {/snippet}
 
 {#snippet sessionActions()}
-	<div class="flex min-w-0 items-center gap-2 text-sm sm:gap-3.5">
-		<span role="status" class="flex min-w-0 items-center gap-2 font-medium">
+	<div
+		data-canvas-session-actions
+		class="flex min-w-0 items-center gap-1.5 text-xs sm:gap-3.5 sm:text-sm"
+	>
+		<span role="status" class="flex min-w-0 items-center gap-1.5 font-medium" title={statusLabel}>
 			<span class={'size-[7px] shrink-0 rounded-full ' + statusTone} aria-hidden="true"></span>
-			<span class="sr-only sm:not-sr-only">{statusLabel}</span>
+			<span class="max-w-20 truncate sm:max-w-none">{statusLabel}</span>
 		</span>
 		{#if connected && selectedModel?.realtime_p95_ms != null}
 			<span class="text-muted-foreground hidden tabular-nums md:inline">
@@ -1042,18 +1045,24 @@
 				<b class="text-foreground font-medium">{fps.toFixed(1)}</b> fps
 			</span>
 		{/if}
+		{#if busy}
+			<Button variant="outline" size="sm" class="gap-1 px-2 sm:px-3" onclick={disconnect}>
+				<PowerIcon />
+				{t('app.realtime_canvas.disconnect')}
+			</Button>
+		{:else if !unavailable}
+			<Button
+				variant={canConnect ? 'brand' : 'outline'}
+				size="sm"
+				class="gap-1 px-2 sm:px-3"
+				disabled={!canConnect}
+				onclick={connect}
+			>
+				<PowerIcon />
+				{t('app.realtime_canvas.connect')}
+			</Button>
+		{/if}
 	</div>
-	{#if busy}
-		<Button variant="outline" size="sm" onclick={disconnect}>
-			<PowerIcon />
-			{t('app.realtime_canvas.disconnect')}
-		</Button>
-	{:else if !unavailable}
-		<Button variant="brand" size="sm" disabled={!canConnect} onclick={connect}>
-			<PowerIcon />
-			{t('app.realtime_canvas.connect')}
-		</Button>
-	{/if}
 {/snippet}
 
 <!-- A control's name with its key beside it. The tooltip replaces the title
@@ -1282,8 +1291,12 @@
 
 <div class="flex min-h-0 flex-1 flex-col">
 	{#if unavailable}
-		<div class="border-border flex shrink-0 items-center justify-between gap-4 border-b px-4 py-3">
-			<div id="realtime-unavailable" role="status" class="min-w-0 text-sm leading-relaxed">
+		<div class="border-border flex shrink-0 items-center justify-end gap-3 border-b px-4 py-3">
+			<div
+				id="realtime-unavailable"
+				role="status"
+				class="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-end text-xs leading-relaxed sm:text-sm"
+			>
 				<p class="text-muted-foreground">
 					{worker.online === false
 						? t('app.availability.worker_offline')
@@ -1320,7 +1333,7 @@
 				{/if}
 			</div>
 			<Button
-				variant="brand"
+				variant="outline"
 				size="sm"
 				class="shrink-0"
 				disabled
@@ -1551,7 +1564,11 @@
 								<kbd class="kbd-on-brand">{shortcutLabel(['enter'])}</kbd>
 							</Button>
 						{:else if !unavailable}
-							<Button variant="brand" disabled={!canConnect} onclick={connect}>
+							<Button
+								variant={canConnect ? 'brand' : 'outline'}
+								disabled={!canConnect}
+								onclick={connect}
+							>
 								{t('app.realtime_canvas.connect')}
 								<kbd class="kbd-on-brand">{shortcutLabel(['enter'])}</kbd>
 							</Button>
@@ -1625,7 +1642,7 @@
 						<Button
 							variant="outline"
 							size="icon"
-							class="sm:w-auto sm:px-3"
+							class="gap-1.5 sm:w-auto sm:px-3"
 							title={t('app.realtime_canvas.save')}
 							disabled={openingDrawing}
 							onclick={saveDrawing}
@@ -1636,7 +1653,7 @@
 						<Button
 							variant="outline"
 							size="icon"
-							class="sm:w-auto sm:px-3"
+							class="gap-1.5 sm:w-auto sm:px-3"
 							disabled={openingDrawing}
 							title={t('app.realtime_canvas.open_hint')}
 							aria-describedby="realtime-open-hint"
@@ -1803,6 +1820,16 @@
 </div>
 
 <style>
+	@media (max-width: 639px) {
+		:global(header:has([data-canvas-session-actions])) {
+			gap: 0.5rem;
+		}
+
+		:global(header:has([data-canvas-session-actions]) > nav) {
+			flex-shrink: 1;
+		}
+	}
+
 	.stage-body {
 		display: flex;
 		flex-direction: column;
