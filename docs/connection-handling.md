@@ -27,7 +27,7 @@ Canvas payloads larger than 1 MiB after whichever header the frame uses are drop
 
 Frames never contain JSON and control messages never contain image bytes; the two kinds are routable without parsing payloads.
 
-> Shipped status (2026-09-29): the 21 byte header above is the current wire, with protocol version 5 on the worker socket. A browser that does not ask for `frame_header: 2` keeps the 17 byte header of protocol 4, with no revision field of its own; the API stamps and strips those revisions so a session's counter is the same either way. Monotonic input revisions and generated-output correlation (issue #19) are implemented as described here.
+> Shipped status (2026-11-05): the 21 byte header above is the current wire. On the worker socket the worker offers protocol 6 (`worker/worker/client.py:49`) and lists 5 in `compatible_versions`; the API registers it as protocol 6 when `ROOT_KEYS` is set and a scheduler lease is current, and as protocol 5 otherwise ("Protocol 6 framing" below). `PROTOCOL_VERSION = 5` in `backend/app/realtime.py` is the API's protocol 5 baseline, not the highest version it accepts. A browser that does not ask for `frame_header: 2` keeps the 17 byte header of protocol 4, with no revision field of its own; the API stamps and strips those revisions so a session's counter is the same either way. Monotonic input revisions and generated-output correlation (issue #19) are implemented as described here.
 
 ## Message catalogue
 

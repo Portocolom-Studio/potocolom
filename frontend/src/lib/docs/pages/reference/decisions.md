@@ -27,10 +27,10 @@ Some entries have a dated "Shipped status" note. The note says what is built tod
 
 ## Superseded entries
 
-When a decision changes, the old entry stays in the file. The entry gets a note at its top that says it is Superseded and names the newer entry that replaced it. The old text stays on purpose, so the record shows what was decided before and why it changed.
+When a decision changes, the old entry stays in the file. A note right under its heading says Superseded and names the newer entry. When only part of it changed, the note says Partly superseded, names what no longer holds, and what still stands. The newer entry opens with "Supersedes" and the old entry's name. The old text stays on purpose, so the record shows what was decided before and why it changed.
 
 > [!NOTE]
-> Read an entry marked Superseded for history only. Its present-tense claims no longer apply.
+> Read an entry marked Superseded for history only. Its present-tense claims no longer apply. In a Partly superseded entry, only the parts its note names no longer apply.
 
 ## Propose a new entry
 
@@ -38,7 +38,7 @@ A new entry follows the same path as any other change. The steps below come from
 
 1. Open an issue that describes the change and the reason for it.
 2. Make a short-lived branch from main.
-3. Add the entry to docs/decisions.md. State the decision, the reasons, and the main alternative you rejected. If the change replaces an older entry, mark that entry Superseded and name the new one.
+3. Add the entry to docs/decisions.md. State the decision, the reasons, and the main alternative you rejected. If the change replaces an older entry, add a Superseded or Partly superseded note under its heading that names the new one.
 4. Run `make verify` locally. It runs what CI runs.
 5. Open a PR into main. Commit with `git commit -s`, so each commit carries a `Signed-off-by` line. A PR without the sign-off cannot be merged.
 
