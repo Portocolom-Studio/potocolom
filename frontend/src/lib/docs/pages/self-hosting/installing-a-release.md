@@ -4,7 +4,7 @@ subtitle: Install the latest release with the install script, or pin a specific 
 tab: self-hosting
 group: Install
 order: 1
-source: docs/self-hosting.md "Installing a release", "First run"; README.md "Self-hosting"; scripts/install.sh
+source: docs/self-hosting.md "Installing a release", "First run", "Accounts" ("First run"); README.md "Self-hosting"; scripts/install.sh
 ---
 
 The install script downloads a release, checks it, starts the stack, and leaves the studio running on this machine. Run the script as the OS user who will own the install.
@@ -36,6 +36,7 @@ The `latest` address always serves the install script of the newest release, and
 4. Writes the release version into `deploy/compose/.env` as `POTOCOLOM_VERSION`.
 5. Pulls the released images and starts the stack.
 6. Waits up to 120 seconds for the local API and its data store to pass `/api/v1/ready`.
+7. Prints a one-use setup link. The link decides how the install works, so spend it in a browser within one hour. See [First run](/docs/self-hosting/first-run).
 
 Step 6 does not wait for GPU warmup or model downloads. The first job for each model downloads that model's weights, and jobs for that model wait in the queue until the download ends.
 
@@ -50,7 +51,7 @@ curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/downlo
 > [!WARNING]
 > Keep `deploy/compose/.env` in the install directory. It holds the database password and `FLEET_SECRET`. When the database volume exists and this file is missing, the script refuses to continue, because a new password would not match the database. The backup script copies this file too.
 
-Open http://localhost:8080 in a browser to reach the studio on this machine.
+Open the setup link that the script printed. Until you spend it, the studio shows the setup page. After that, open http://localhost:8080 in a browser to reach the studio on this machine.
 
 ## Upgrade
 

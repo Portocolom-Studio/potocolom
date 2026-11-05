@@ -3,7 +3,7 @@ title: TLS and HSTS
 subtitle: Serve the studio over HTTPS, and know how the HSTS header is sent.
 tab: self-hosting
 group: Run it
-order: 7
+order: 8
 source: docs/self-hosting.md "TLS and HSTS"
 ---
 

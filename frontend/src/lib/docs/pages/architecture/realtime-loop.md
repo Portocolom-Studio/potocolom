@@ -4,7 +4,7 @@ subtitle: How a stroke becomes a frame, and how the frame comes back.
 tab: architecture
 group: System
 order: 2
-source: docs/connection-handling.md "Endpoints and transport", "Message catalogue", "Session states", "Reconnection and resume", "Latest input wins", "Delivery semantics"; docs/architecture.md "Real time drawing session", "Frame relay across API replicas", "Idle sessions"
+source: docs/connection-handling.md "Endpoints and transport", "Message catalogue", "Session states", "Reconnection and resume", "Latest input wins", "Delivery semantics"; docs/architecture.md "Real time drawing session", "Frame relay across API replicas", "Idle sessions"; docs/decisions.md "First run is decided in the browser through a setup link"
 ---
 
 A drawing session is a loop. The browser sends the canvas as image frames. A worker turns each frame into a new generated image and sends it back. The target rate is 2 to 4 generated frames per second at 512 px.
@@ -13,7 +13,7 @@ Today, one API process holds both sockets and relays frames between them. Frames
 
 ## The loop in steps
 
-1. **Open:** the browser connects to `WS /api/v1/realtime` and sends an `open` message with `model_id`, optional `params` and an optional `frame_header`. In `accounts` mode, the socket checks the session cookie on the upgrade.
+1. **Open:** the browser connects to `WS /api/v1/realtime` and sends an `open` message with `model_id`, optional `params` and an optional `frame_header`. In `accounts` mode, the socket checks the session cookie on the upgrade. A socket opened while the install runs without accounts has no session, so turning accounts on closes it.
 2. **Assign:** the API finds a free slot on a worker and sends it `open_session` with a `control_generation` number. The worker loads the model and answers `session_ready`. The API then sends `ready` to the browser. `ready` carries the frame limits: `max_frame_bytes`, `formats`, `width` and `height`.
 3. **Capture:** the browser encodes the canvas as WebP and sends a binary canvas frame. It sends a new frame every 250 or 500 ms, based on how long the last encode and send took.
 4. **Forward:** the API checks the size of the frame. A frame over the 1 MiB payload cap is refused with a non-terminal `error` that has code 4005. The socket stays open. A frame inside the cap goes to the worker that holds the session.

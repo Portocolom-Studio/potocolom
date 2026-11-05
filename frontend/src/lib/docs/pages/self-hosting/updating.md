@@ -3,8 +3,8 @@ title: Updating
 subtitle: Upgrade to a new release, and go back if an upgrade fails.
 tab: self-hosting
 group: Run it
-order: 12
-source: docs/self-hosting.md "Upgrading", "Updating"
+order: 13
+source: docs/self-hosting.md "Upgrading", "Updating", "Accounts" ("First run")
 ---
 
 The steps depend on how you installed. Use the release steps for an install made with the install script. Use the checkout steps for an install made from a source checkout.
@@ -31,6 +31,7 @@ Notes for the upgrade:
 - The installer checks the downloaded bundle against the release's `SHA256SUMS`. It then sets `POTOCOLOM_VERSION` in `deploy/compose/.env`.
 - Use the same profile that you first started with. Set `POTOCOLOM_PROFILE=gpu`, `rocm` or `api` on each install or upgrade when the automatic choice is not suitable.
 - The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. Keep the data, fix the cause, and retry.
+- An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](/docs/self-hosting/first-run).
 
 ## Upgrade a source checkout
 
@@ -55,6 +56,7 @@ When a worker is one version ahead of its API, the API drops the extra fields in
 - Volumes are untouched by rebuilds, so your jobs, assets and downloaded weights stay in place. See [What persists where](/docs/self-hosting/what-persists-where).
 - Database migrations run automatically when the API starts. See [the decision on migrations at startup](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md).
 - Model volumes keep their files across image upgrades. If an old SDXL Turbo manifest is still in the model volume, remove `/models/sdxl-turbo.json` from that worker's model volume and restart the worker. Saved images and cached weights do not need removal.
+- Legacy model caches need Hugging Face Hub metadata once before the worker can adopt them as installed. A permanently offline worker cannot adopt an unmarked cache, so connect it to the Hub for adoption first. See [What persists where](/docs/self-hosting/what-persists-where).
 
 > [!WARNING]
 > Migrations run as soon as the new API starts. The source describes no way to undo them. Read the rollback section below before you upgrade.

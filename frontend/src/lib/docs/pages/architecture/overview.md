@@ -4,7 +4,7 @@ subtitle: The services, the database and the storage, and how they talk.
 tab: architecture
 group: System
 order: 1
-source: docs/architecture.md "Goals", "Components", "Deployment profiles"; deploy/compose/compose.yml
+source: docs/architecture.md "Goals", "Components", "Deployment profiles", "Data model"; docs/connection-handling.md "Model store"; deploy/compose/compose.yml
 ---
 
 potocolom has three deployable parts: a web frontend, an API server and an inference worker. Two more parts hold data: PostgreSQL for records, and a storage adapter for image files. The same three parts run in every deployment. A self-hosted install differs from other deployments only in its settings, not in its code.
@@ -13,9 +13,9 @@ potocolom has three deployable parts: a web frontend, an API server and an infer
 
 - **Frontend:** a single page app built with SvelteKit and the static adapter. It runs in the browser. On start it reads `GET /api/v1/config` to learn which sign-in methods exist and which features are on. In a self-hosted install, the API server serves the built files.
 - **API server:** a FastAPI app. It serves REST endpoints for sign-in, the model registry, generation jobs, generation history and saved images. It also accepts the realtime drawing socket from the browser. Admin endpoints sit behind an admin role flag.
-- **Worker:** a Python process that runs the image models with Hugging Face diffusers and PyTorch. It accepts no inbound connections. It dials out to the API at `/api/v1/fleet` and keeps one connection open for registration, job dispatch, frames and heartbeats. Its `DEVICE` setting selects `cuda` (NVIDIA), `rocm` (AMD) or `cpu`. The default is `cpu`.
+- **Worker:** a Python process that runs the image models with Hugging Face diffusers and PyTorch. It accepts no inbound connections. It dials out to the API at `/api/v1/fleet` and keeps one connection open for registration, job dispatch, frames and heartbeats. Its `DEVICE` setting selects `cuda` (NVIDIA), `rocm` (AMD) or `cpu`. The default is `cpu`. It downloads and removes model files when the API asks, and it lists only the models it has installed.
 - **Storage:** holds the image bytes. A self-hosted install stores them on local disk by default. The storage adapter can also use an S3 compatible service.
-- **Database:** PostgreSQL holds users, sessions, the model registry, jobs and generation history. Image bytes do not go into the database.
+- **Database:** PostgreSQL holds users, sessions, the model registry, jobs and generation history. It also records the install's sign-in choice, which is `unclaimed` until the setup link is spent, then `none` or `accounts`. Image bytes do not go into the database.
 
 > [!NOTE]
 > The backend does not use Redis today. Generation queues and realtime session ownership live in memory inside the API process. Run one API process. A second API process would not see the first one's queues or drawing sessions.

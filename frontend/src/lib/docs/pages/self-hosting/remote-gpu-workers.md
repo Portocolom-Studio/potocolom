@@ -3,8 +3,8 @@ title: Remote GPU workers
 subtitle: Run the API on one machine and the GPU worker on another.
 tab: self-hosting
 group: Install
-order: 5
-source: docs/self-hosting.md "An API host with remote GPU workers", "Upgrading", "First run"; deploy/compose/.env.example; deploy/compose/compose.yml
+order: 6
+source: docs/self-hosting.md "An API host with remote GPU workers", "Upgrading", "First run", "Accounts" ("First run"); deploy/compose/.env.example; deploy/compose/compose.yml
 ---
 
 Use this layout when the machine that runs the studio has no GPU, or when the GPU sits on another machine.
@@ -49,7 +49,9 @@ These are the secrets in this setup. Their values never appear in this guide, so
 
    `PUBLIC_URL` and `INTERNAL_URL` must both use addresses that the remote worker can reach. The default `INTERNAL_URL`, `http://api:8080`, works only on the local Compose network.
 
-   Keep `AUTH_MODE=none` only on a trusted network. Anyone who can reach that API has full access. See [Accounts](/docs/self-hosting/accounts).
+   The installer prints a one-use setup link. Spend it in a browser on the API host before you use the studio. The fleet socket answers before setup, so a worker can report its hardware while the install is still unclaimed.
+
+   If you choose no accounts, keep the install on a trusted network. Anyone who can reach that API has full access. See [First run](/docs/self-hosting/first-run) and [Accounts](/docs/self-hosting/accounts).
 
 ## Set up the GPU host
 

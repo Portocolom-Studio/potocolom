@@ -35,7 +35,7 @@ Passing these checks does not prove that the product is ready for production. Th
 
 ## Scope and accepted exceptions
 
-`AUTH_MODE=none` is the trusted-network, single-user mode. In this mode, the server checks for accounts do not apply. Accounts mode uses the server checks in check 4. Admin access and bearer share links are explicit permissions. They are not failures of the ownership checks.
+`AUTH_MODE=none`, chosen at setup or set by the override, is the trusted-network, single-user mode. An install that has not chosen yet answers only the setup surface. In this mode, the server checks for accounts do not apply. Accounts mode uses the server checks in check 4. Admin access and bearer share links are explicit permissions. They are not failures of the ownership checks.
 
 Worker releases must still work with the previous protocol version (N-1).
 

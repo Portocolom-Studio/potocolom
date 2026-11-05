@@ -27,7 +27,7 @@ Some entries have a dated "Shipped status" note. The note says what is built tod
 
 ## Superseded entries
 
-When a decision changes, the old entry stays in the file. Its heading is marked Superseded, and the entry names the newer entry that replaced it. The old text stays on purpose, so the record shows what was decided before and why it changed.
+When a decision changes, the old entry stays in the file. The entry gets a note at its top that says it is Superseded and names the newer entry that replaced it. The old text stays on purpose, so the record shows what was decided before and why it changed.
 
 > [!NOTE]
 > Read an entry marked Superseded for history only. Its present-tense claims no longer apply.

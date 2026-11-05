@@ -4,15 +4,18 @@ subtitle: How a session cookie or a bearer token identifies a user.
 tab: api
 group: Start here
 order: 2
-source: docs/api.md "Conventions", "Authentication (shipped, kept here for the exact shapes)"; backend/app/accounts.py, backend/app/auth.py, backend/app/sessions.py, backend/app/recovery.py, backend/app/factors.py
+source: docs/api.md "Conventions", "Authentication (shipped, kept here for the exact shapes)"; docs/blueprint.md "The mode seam"; docs/self-hosting.md "First run"; backend/app/accounts.py, backend/app/auth.py, backend/app/sessions.py, backend/app/recovery.py, backend/app/factors.py, backend/app/enable.py, backend/app/passwords.py, backend/app/auth_mode.py
 ---
 
 Every request resolves to a principal, which is the account and role the API acts for. How the API finds that account depends on `AUTH_MODE`.
 
 ## Modes
 
-- **`none`:** the default. Every request is the one implicit local admin, and nobody signs in. The account routes answer `404`, and `GET /api/v1/config` returns an empty `auth_methods` list.
+- **Unclaimed:** a new install starts here. Until someone spends the setup link, every API route answers `503` with `{"detail": "setup_required"}`, except the few routes that must work before setup. The setup link chooses `none` or `accounts`.
+- **`none`:** the install runs without accounts. Every request is the one implicit local admin, and nobody signs in. The account routes answer `404`, and `GET /api/v1/config` returns an empty `auth_methods` list.
 - **`accounts`:** every request must present a session cookie or a bearer token. Sign-in, invitations and the account routes are active.
+
+The `AUTH_MODE` environment variable is an optional override. When it is unset, the database decides. When it is set, it must agree with the recorded choice, or the API refuses to start and names the variable.
 
 This page covers `accounts` mode.
 
@@ -60,15 +63,43 @@ If either is missing or wrong, the API answers `403`. An unsafe request with no 
 
 A request that sends `Authorization: Bearer <token>` needs neither header. A bearer is presented deliberately rather than sent along by the browser. A bearer wins over the cookie. An invalid bearer gets `401`, and the API never falls back to the cookie.
 
+## Passwords
+
+A password must be 10 to 128 characters and must not be on the bundled blocklist. Spaces at the start and end of a password do not count toward the 10, but the 128 limit applies to the whole string, spaces included. The blocklist ignores case and those surrounding spaces, so changing them does not get a blocked password through. The password is stored exactly as typed.
+
 ## Set up a new install
 
-`POST /api/v1/auth/setup` claims the installation. It uses the one-use setup link:
+A new install is unclaimed until someone spends its one-use setup link. The installer prints the link. It works once and lasts one hour. The person who opens it chooses how the install works, and `POST /api/v1/auth/setup` records that choice. With `mode` set to `accounts`, which is the default, the link claims the administrator account:
 
 ```json
-{ "token": "...", "email": "ana@example.com", "password": "..." }
+{ "token": "...", "mode": "accounts", "email": "ana@example.com", "password": "..." }
 ```
 
-The answer is `204` with the session cookies. The link works once and lasts one hour.
+The answer is `204` with the session cookies. The claimant takes over the implicit local user, so the jobs and assets made before accounts existed belong to them. The claim grants no recent authentication.
+
+To run without accounts, send `mode` set to `none` with the token only:
+
+```json
+{ "token": "...", "mode": "none" }
+```
+
+The answer is `204` with no cookies. The install then runs in `none` mode.
+
+`POST /api/v1/auth/setup/status` takes the same token and answers `200` with `{"claimed": true}` or `{"claimed": false}`. It does not spend the link. An unknown, spent or expired link answers `403`.
+
+A refusal never spends the link. A bad email or password answers `400`. An unknown, spent or expired link answers `403`, and so does every link on an install that has accounts. An install that runs without accounts answers `404`. A live link on an install that is already decided answers `409`. If `ROOT_KEYS` is empty, the answer is `503` with `root_keys_missing`. Run `scripts/ensure-env.sh` or the installer, recreate the API container, and then use the link again.
+
+## Turn accounts on later
+
+A `none` install can turn accounts on without a restart. An administrator sends an email and a password to `POST /api/v1/auth/enable`:
+
+```json
+{ "email": "ana@example.com", "password": "..." }
+```
+
+The answer is `204` with the session cookies, and the install runs in `accounts` mode from then on. The administrator is the implicit local user, and the account they name takes that row over, as the setup claim does. Every socket opened without a session closes with `4401`. The switch is one way.
+
+The route answers `404` when the install already runs with accounts, and `403` to a caller without the admin role. A request with no `Origin`, or one that is not allowed, also answers `403`. A `409` means one of three things: `AUTH_MODE=none` is set in the environment, the recorded mode is already `accounts` (for example after `make auth-enable` ran elsewhere), or an account already holds an identity. For the first case, remove every top-level `AUTH_MODE` line from `deploy/compose/.env` and restart the API. A bad email or password answers `400`, and the install stays in `none`. An unclaimed install answers `503` with `setup_required`, and a database that is down answers `503` too.
 
 ## Join by invitation
 

@@ -4,7 +4,7 @@ subtitle: The WebSocket that carries canvas frames and generated frames.
 tab: api
 group: Endpoints
 order: 4
-source: docs/api.md "WS /api/v1/realtime"; docs/connection-handling.md "Endpoints and transport", "Message catalogue", "Timeouts and intervals", "Latest input wins", "Close codes"
+source: docs/api.md "WS /api/v1/realtime", "Authentication (shipped, kept here for the exact shapes)"; backend/app/auth_mode.py; docs/connection-handling.md "Endpoints and transport", "Message catalogue", "Timeouts and intervals", "Latest input wins", "Close codes"
 ---
 
 The studio opens this socket while a person draws. The browser sends canvas frames up. The server sends generated frames back. Control messages are JSON text. Images are binary frames. The full wire rules are in [connection-handling.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/connection-handling.md).
@@ -13,8 +13,8 @@ The studio opens this socket while a person draws. The browser sends canvas fram
 
 `WS /api/v1/realtime`
 
-- **Sign-in:** with `AUTH_MODE=accounts`, the session cookie authenticates the upgrade. With no cookie, the handshake fails with HTTP 403. A cookie that matches no session closes the socket with `4401`. An account that is not `active`, or that has the `viewer` role, closes with `4403`. With `AUTH_MODE=none`, the socket belongs to the implicit local user.
-- **Revocation:** logout, a role change, a suspension, a disable or a deletion closes the live socket with `4401`.
+- **Sign-in:** with `AUTH_MODE=accounts`, the session cookie authenticates the upgrade. With no cookie, the handshake fails with HTTP 403. A cookie that matches no session closes the socket with `4401`. An account that is not `active`, or that has the `viewer` role, closes with `4403`. With `AUTH_MODE=none`, the socket belongs to the implicit local user. While the installation is unclaimed, the upgrade is refused and no socket opens.
+- **Revocation:** logout, a role change, a suspension, a disable or a deletion closes the live socket with `4401`. Turning accounts on with `POST /api/v1/auth/enable` closes every socket that was opened without a session, with `4401` as well.
 - **Origin:** if the handshake carries an `Origin` header that is not the install's public address or one of its `ALLOWED_ORIGINS`, the handshake fails with HTTP 403. A handshake with no `Origin` is accepted.
 - **Limit:** one account may hold two realtime sockets at once. A third is refused with `4003`.
 
@@ -96,7 +96,7 @@ Two errors leave the socket open. Code `4005` means the canvas frame was over th
 
 ## Protocol version
 
-The browser socket has no version field of its own. Its frame layout is set by `frame_header`, as described above. The worker socket has a separate protocol version. The current worker speaks version 5, and the API still accepts version 4, which is the compatibility floor. Version 6 is described in the connection-handling document.
+The browser socket has no version field of its own. Its frame layout is set by `frame_header`, as described above. The worker socket has a separate protocol version, which the connection-handling document describes.
 
 > [!PLANNED]
 > A browser cannot reconnect to a session yet. A session lives inside the API process that owns it, so a restart or a move to another replica ends it. Drain messages and more close codes are planned under issue #19.

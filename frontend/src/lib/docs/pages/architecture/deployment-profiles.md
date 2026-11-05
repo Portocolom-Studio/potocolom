@@ -4,7 +4,7 @@ subtitle: The self-hosted profile, and what changes when you scale it.
 tab: architecture
 group: System
 order: 4
-source: docs/deployment-profiles.md "The profile spectrum", "Version migrations within any profile"; docs/connection-handling.md "Connection establishment"; docs/decisions.md "Database migrations: gated step in the cloud, automatic self-hosted", "SPA/API compatibility: N-1 through expand-contract", "Retiring something means removing it, and a dropped column does not come back"; deploy/compose/compose.yml
+source: docs/deployment-profiles.md "The profile spectrum", "Enabling accounts on an install that ran without them", "Version migrations within any profile"; docs/architecture.md "Authentication by deployment mode"; docs/connection-handling.md "Connection establishment", "Model store"; docs/decisions.md "Database migrations: gated step in the cloud, automatic self-hosted", "SPA/API compatibility: N-1 through expand-contract", "Retiring something means removing it, and a dropped column does not come back", "First run is decided in the browser through a setup link"; deploy/compose/compose.yml
 ---
 
 One codebase builds every deployment. A deployment profile is a set of settings that picks how one install behaves. The self-hosted profile is the one that ships today. Each profile uses the same container images, so a change of profile is a change of settings, not of code.
@@ -39,15 +39,32 @@ The [self-hosting guide](https://github.com/Portocolom-Studio/potocolom/blob/mai
 
 ### Settings for this profile
 
-| Setting           | Self-hosted value                                                                                                                                               |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_MODE`       | `none` (default), which signs in one local administrator automatically. Or `accounts`, which uses passwords, with Google and GitHub as options.                 |
-| `STORAGE_BACKEND` | `local`, which stores images in the `assets` volume                                                                                                             |
-| `EMAIL_BACKEND`   | `none`                                                                                                                                                          |
-| `TELEMETRY`       | `true` by default. Set it to `false` to switch it off.                                                                                                          |
-| `LOG_FORMAT`      | `plain`                                                                                                                                                         |
-| `FLEET_TOKEN_KEY` | Required. Compose passes it from `FLEET_SECRET`, and `scripts/preflight.sh` writes that secret into `deploy/compose/.env`. The API refuses to start without it. |
-| Workers           | One worker service, `worker` or `worker-rocm`, from the same image version as the API                                                                           |
+| Setting           | Self-hosted value                                                                                                                                                                                                                                                                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_MODE`       | Not set, which is the default. The database decides: a new install is unclaimed until someone spends the setup link and chooses `none` (one local administrator signs in automatically) or `accounts` (passwords, with Google and GitHub as options). Setting `none` or `accounts` overrides the database, and it must match the recorded choice. |
+| `STORAGE_BACKEND` | `local`, which stores images in the `assets` volume                                                                                                                                                                                                                                                                                               |
+| `EMAIL_BACKEND`   | `none`                                                                                                                                                                                                                                                                                                                                            |
+| `TELEMETRY`       | `true` by default. Set it to `false` to switch it off.                                                                                                                                                                                                                                                                                            |
+| `LOG_FORMAT`      | `plain`                                                                                                                                                                                                                                                                                                                                           |
+| `FLEET_TOKEN_KEY` | Required. Compose passes it from `FLEET_SECRET`, and `scripts/preflight.sh` writes that secret into `deploy/compose/.env`. The API refuses to start without it.                                                                                                                                                                                   |
+| Workers           | One worker service, `worker` or `worker-rocm`, from the same image version as the API                                                                                                                                                                                                                                                             |
+
+### Sign-in and first run
+
+The installer prints a one-use setup link. The link lasts one hour and works once. Only its hash is stored. Until someone spends the link, the install is unclaimed. Every API route answers `503 setup_required` except the health and readiness probes, `GET /api/v1/config`, the setup route and the fleet socket. Workers can still connect in that state. Spending the link makes one of two choices:
+
+- An administrator account. It takes over the implicit local user and keeps its library.
+- No accounts. The install records `none`, and every request runs as one local administrator without sign-in.
+
+A bad link gets the same `403` as any other bad link. The recorded choice is stored in PostgreSQL, and each API process loads it at startup.
+
+Scripted installs and CI can skip the browser. A value of `none` or `accounts` in `AUTH_MODE` decides an unclaimed install at startup. On a decided install, the value must match the recorded choice. If it does not, startup refuses and names the variable.
+
+### Turning on accounts later
+
+An install that runs in `none` can turn on accounts without a restart. Its administrator names an email address and a password. The switch is one way: the install then refuses to start in `none` mode again, and undoing it needs an offline destructive reset. The switch needs an allowed `Origin` header, so a page on another site cannot take over the install. It is refused when `AUTH_MODE=none` is set explicitly, and the refusal names the variable. Turning accounts on closes every canvas socket that was opened without a session.
+
+The offline switch is `make auth-enable`. It writes the root key ring if it is missing, records the change in PostgreSQL, and prints a one-use link valid for an hour. The claimant adopts the implicit user, which keeps its UUID. Google and GitHub, when configured, are added beside password accounts.
 
 The backend reads no Redis setting and no quota service setting today. The API process keeps its queues and realtime sessions in memory, so run one API process.
 
@@ -61,6 +78,8 @@ A release tag produces one set of images. The compose file pulls the API and the
 
 The API applies its Alembic migrations when it starts. In a self-hosted install, one process runs the migration and then serves from the same image, so there is no window between the migration and the serving process.
 
+Migration 0035 records each install's sign-in choice. An install that already has users or work is recorded as `none`, unless it already uses accounts, so an upgrade never shows the setup page. Only an empty database starts unclaimed.
+
 The rule for migrations is that they keep the previous release's code working. Read the rule in [docs/decisions.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md) under "Database migrations: gated step in the cloud, automatic self-hosted".
 
 > [!WARNING]
@@ -72,13 +91,15 @@ Workers talk to the API over a versioned protocol. The API accepts workers on th
 
 Because of this, an API and a worker one release apart keep working during an upgrade. The order still matters. Upgrade the API first, then the worker. Compose takes both from the same image, so an install that follows compose does not hit the gap.
 
+The model store adds messages between a worker and the API, such as installing and removing a model. A worker sends them only after the API says that it supports the store, so an older API never receives one.
+
 ### The frontend can be one release behind
 
 Each API release tolerates the previous release's frontend build. A browser tab that was open during an upgrade keeps working, and the page can offer a reload.
 
 ## Scaling a self-hosted install
 
-The shipped compose file runs one API process and one worker service. Adding API processes does not share queues or realtime sessions, because both live in memory in one process. Adding a Redis service does not change this either, because the backend does not read a Redis setting today.
+The shipped compose file runs one API process and one worker service. Adding API processes does not share queues or realtime sessions, because both live in memory in one process. Adding a Redis service does not change this either, because the backend does not read a Redis setting today. The mode is held per API process, so run one API process unless `AUTH_MODE` is pinned to the recorded choice, which a scaled deployment must do.
 
 Scaling out is planned, and its design is in [docs/decisions.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md) under "Redis topology: one instance, split-ready namespaces". The scheduling and relay parts are on the [GPU scheduling](/docs/architecture/gpu-scheduling) and [realtime loop](/docs/architecture/realtime-loop) pages.
 

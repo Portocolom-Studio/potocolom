@@ -3,8 +3,8 @@ title: Checking a machine before you start
 subtitle: Run preflight to see which GPU profile this machine can use.
 tab: self-hosting
 group: Install
-order: 2
-source: docs/self-hosting.md "Checking a machine before you start"; scripts/preflight.sh; scripts/ensure-env.sh
+order: 3
+source: docs/self-hosting.md "Checking a machine before you start", "First run"; scripts/preflight.sh; scripts/ensure-env.sh
 ---
 
 `scripts/preflight.sh` checks this machine against the install requirements. It names the Compose profile the machine can run, and it prints a fix for each missing item. With make, run `make preflight`.
@@ -41,14 +41,15 @@ Preflight prints each result as ok, warn or fail. A fail is a blocking problem. 
 
 ## What it writes
 
-Preflight writes one file, `deploy/compose/.env`. When the file is missing, preflight creates it from `deploy/compose/.env.example`. It then fills these keys with values from `openssl rand -hex 32`:
+Preflight writes one file, `deploy/compose/.env`. When the file is missing, preflight creates it from `deploy/compose/.env.example`. It then fills these keys when they are empty:
 
-- `POSTGRES_PASSWORD`, when the value is empty. An empty value is filled only when Docker shows that no database volume exists. If a database exists and the value is empty, preflight stops and asks you to restore the saved password.
-- `FLEET_SECRET`, when the value is empty. Preflight prints the value once. A worker on another machine needs a copy of it.
+- `POSTGRES_PASSWORD`, with a value from `openssl rand -hex 32`. An empty value is filled only when Docker shows that no database volume exists. If a database exists and the value is empty, preflight stops and asks you to restore the saved password.
+- `FLEET_SECRET`, with a value from `openssl rand -hex 32`. Preflight prints the value once. A worker on another machine needs a copy of it.
+- `ROOT_KEYS`, the root key ring for accounts. It starts as one entry, version `1`, with 32 random bytes in base64 from `openssl rand -base64 32`. See [Accounts](/docs/self-hosting/accounts).
 
 Preflight never replaces a non-empty value. The one exception is the example database password `change-me`. Preflight replaces it only when Docker answers and no database volume exists yet, because PostgreSQL reads the password once, when it creates the volume. When a database already uses `change-me`, preflight warns and prints the `ALTER ROLE` command that changes it.
 
-The file holds the database password and `FLEET_SECRET`. Do not share it.
+The file holds the database password, `FLEET_SECRET` and the root key ring. Do not share it.
 
 ## What it does not do
 

@@ -4,21 +4,21 @@ subtitle: Every endpoint that ships, grouped by purpose.
 tab: api
 group: Endpoints
 order: 3
-source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration"
+source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration", "Worker models", "Authentication (shipped, kept here for the exact shapes)"; docs/connection-handling.md "Model store"; backend/app/worker_models.py, backend/app/enable.py
 ---
 
 > [!PLANNED]
 > Other endpoints are designed, and their request and response shapes are fixed in [docs/blueprint.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/blueprint.md). This page lists only the routes that ship.
 
-Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. In `AUTH_MODE=none` the account routes answer `404`. The `user` role can write its own work, `viewer` is read only, and `admin` covers install settings and other accounts. See the [authentication page](/docs/api/authentication) for the rules.
+Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. The health, configuration, authentication and share-resolving rows need no session, except `enable`, which needs an administrator. While the install is unclaimed, most routes answer `503` with `setup_required`; see the [authentication page](/docs/api/authentication). In `AUTH_MODE=none` the account routes answer `404`. The `user` role can write its own work, `viewer` is read only, and `admin` covers install settings and other accounts. See the [authentication page](/docs/api/authentication) for the rules.
 
 ## Health and configuration
 
-| Method    | Path             | Purpose                                                                            |
-| --------- | ---------------- | ---------------------------------------------------------------------------------- |
-| GET, HEAD | `/api/v1/health` | Process liveness for the load balancer. HEAD answers with no body.                 |
-| GET       | `/api/v1/ready`  | PostgreSQL and asset storage readiness. `200` when both are up, `503` otherwise.   |
-| GET       | `/api/v1/config` | Runtime settings for the studio: sign-in methods, languages and the status banner. |
+| Method    | Path             | Purpose                                                                                                           |
+| --------- | ---------------- | ----------------------------------------------------------------------------------------------------------------- |
+| GET, HEAD | `/api/v1/health` | Process liveness for the load balancer. HEAD answers with no body.                                                |
+| GET       | `/api/v1/ready`  | PostgreSQL and asset storage readiness. `200` when both are up, `503` otherwise.                                  |
+| GET       | `/api/v1/config` | Runtime settings for the studio: sign-in methods, languages, the status banner and whether setup is still needed. |
 
 ## Realtime and fleet sockets
 
@@ -26,6 +26,8 @@ Every REST path below starts with `/api/v1`. Unless a row says otherwise, the ca
 | ------ | ------------------ | --------------------------------------------------------------------------------------------------- |
 | WS     | `/api/v1/realtime` | Realtime drawing session for the studio. See the [realtime socket page](/docs/api/realtime-socket). |
 | WS     | `/api/v1/fleet`    | Worker connection, not for browsers. Needs the `X-Fleet-Token` header.                              |
+
+The fleet socket also carries the worker model store. The API sends `"model_store": true` in its registration reply only to a worker that offers the `model_store` capability, and only that worker sends store reports. The worker model routes below send their commands over this socket. The message formats are in [connection-handling.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/connection-handling.md#model-store).
 
 ## Models and generations
 
@@ -62,12 +64,31 @@ Every REST path below starts with `/api/v1`. Unless a row says otherwise, the ca
 
 ## Studio, metrics and usage
 
-| Method | Path                          | Purpose                                                               |
-| ------ | ----------------------------- | --------------------------------------------------------------------- |
-| GET    | `/api/v1/studio/gpu`          | Live GPU snapshot and the models loaded on it. Admin only.            |
-| GET    | `/api/v1/metrics/gpu/history` | GPU samples over a time range. Admin only.                            |
-| GET    | `/api/v1/usage/me`            | The caller's own usage totals, by model and category.                 |
-| GET    | `/api/v1/telemetry/preview`   | The anonymous telemetry payload for the previous UTC day. Admin only. |
+| Method | Path                          | Purpose                                                                                                                                                                                                                         |
+| ------ | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/studio/gpu`          | Live GPU snapshot and the models loaded on it. Admin only. `gpu` is `null` when workers are connected but none can answer; the route answers `503` when no worker is connected, or when the worker answers without GPU metrics. |
+| GET    | `/api/v1/metrics/gpu/history` | GPU samples over a time range. Admin only.                                                                                                                                                                                      |
+| GET    | `/api/v1/usage/me`            | The caller's own usage totals, by model and category.                                                                                                                                                                           |
+| GET    | `/api/v1/telemetry/preview`   | The anonymous telemetry payload for the previous UTC day. Admin only.                                                                                                                                                           |
+
+## Worker models
+
+These routes are for admins. They install, cancel and remove the model weights on one connected worker. Each accepted action answers `202` with an `op_id`. The worker does the work afterwards, so read `GET /api/v1/admin/models` for the result.
+
+| Method | Path                                                          | Purpose                                                                                                   |
+| ------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/admin/models`                                        | One entry per connected worker: its hardware, free disk, suggested models and each model's install state. |
+| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/install` | Queue a download. Answers `409` with `needs_token` when the model is gated and `HF_TOKEN` is unset.       |
+| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/cancel`  | Skip a queued install, or stop a running one at its next chunk.                                           |
+| DELETE | `/api/v1/admin/workers/{worker_id}/models/{model_id}`         | Remove the model's files. Refused while a session or a job uses the model.                                |
+
+- A worker that predates model management is listed with `manageable: false`, a `reason` and no models. The routes answer `409` for it.
+- A removal that the worker refuses is not an HTTP error. It shows in the model's `download` field as `state: "failed"` with `error: "in_use"`.
+- Each model's `download` field is the last store report the worker sent for it: `kind` (`install`, `remove` or `cancel`), `state`, `bytes_done`, `bytes_total`, `error` and `op_id`. It is `null` when there is no report.
+- Suggestions: for each class (`realtime`, `text_to_image` and `upscale`) the default model is offered when it fits the worker's VRAM, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered.
+- Other refusals: `404` for an unknown worker or a model that is not in the worker's catalog, and `503` when the worker drops the connection as the command is sent.
+- Operation IDs are a 20-digit time stamp, a hyphen and eight hex digits. They sort in the order they were issued.
+- The POST and DELETE routes are audited like other admin changes. The GET is a read and is not audited.
 
 ## Benchmark
 
@@ -85,17 +106,19 @@ These routes are for the benchmark script. Every route needs an admin. The sessi
 
 ## Authentication
 
-| Method | Path                               | Purpose                                                         |
-| ------ | ---------------------------------- | --------------------------------------------------------------- |
-| POST   | `/api/v1/auth/setup`               | Claim the installation with the one-use setup link.             |
-| POST   | `/api/v1/auth/register`            | Accept an invitation and set a password.                        |
-| POST   | `/api/v1/auth/login`               | Password sign-in. Sets the session cookies.                     |
-| POST   | `/api/v1/auth/totp`                | Answer a sign-in challenge with a TOTP code or a recovery code. |
-| POST   | `/api/v1/auth/logout`              | End the current session and clear the cookies.                  |
-| GET    | `/api/v1/auth/redirect/{provider}` | Start a Google or GitHub sign-in.                               |
-| GET    | `/api/v1/auth/callback/{provider}` | Finish a provider sign-in or link.                              |
-| POST   | `/api/v1/auth/reset`               | Ask for a password reset link. Always answers `202`.            |
-| POST   | `/api/v1/auth/reset/complete`      | Spend a reset or recovery link and set a password.              |
+| Method | Path                               | Purpose                                                          |
+| ------ | ---------------------------------- | ---------------------------------------------------------------- |
+| POST   | `/api/v1/auth/setup`               | Spend the one-use setup link and choose accounts or none.        |
+| POST   | `/api/v1/auth/setup/status`        | Check whether a setup link is live, without spending it.         |
+| POST   | `/api/v1/auth/enable`              | Turn accounts on in a none install, with no restart. Admin only. |
+| POST   | `/api/v1/auth/register`            | Accept an invitation and set a password.                         |
+| POST   | `/api/v1/auth/login`               | Password sign-in. Sets the session cookies.                      |
+| POST   | `/api/v1/auth/totp`                | Answer a sign-in challenge with a TOTP code or a recovery code.  |
+| POST   | `/api/v1/auth/logout`              | End the current session and clear the cookies.                   |
+| GET    | `/api/v1/auth/redirect/{provider}` | Start a Google or GitHub sign-in.                                |
+| GET    | `/api/v1/auth/callback/{provider}` | Finish a provider sign-in or link.                               |
+| POST   | `/api/v1/auth/reset`               | Ask for a password reset link. Always answers `202`.             |
+| POST   | `/api/v1/auth/reset/complete`      | Spend a reset or recovery link and set a password.               |
 
 ## Account
 

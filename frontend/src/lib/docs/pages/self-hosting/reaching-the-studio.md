@@ -3,8 +3,8 @@ title: Reaching the studio from other machines
 subtitle: Open the studio from a phone or laptop on your network.
 tab: self-hosting
 group: Install
-order: 4
-source: docs/self-hosting.md "Reaching the studio from other machines", "TLS and HSTS"; deploy/compose/compose.yml
+order: 5
+source: docs/self-hosting.md "Reaching the studio from other machines", "TLS and HSTS", "Accounts" ("First run"); deploy/compose/compose.yml
 ---
 
 The compose file publishes port 8080 without an address, so Docker listens on every host interface. Another machine on your network can reach the studio at the address of the host. Before you open it up, set the public address, so that the browser and the API agree on the origin.
@@ -40,6 +40,6 @@ On the other machine, open the same origin in a browser. If sign-in fails, compa
 ## Security before you expose the studio
 
 > [!WARNING]
-> The default install runs with `AUTH_MODE=none`. Every request is resolved to one local user, and that user is an administrator. Anyone who can reach the API can do everything the install can do. Open the studio only on a network you trust, or turn on accounts first. See [Accounts](/docs/self-hosting/accounts).
+> A new install stays unclaimed until someone spends the setup link and chooses. Keep that link private until it is spent. If the install has no accounts, every request resolves to one local user, and that user is an administrator. Anyone who can reach the API can do everything the install can do. Open the studio only on a network you trust, or choose accounts first. See [First run](/docs/self-hosting/first-run) and [Accounts](/docs/self-hosting/accounts).
 
 The shipped compose profile serves plain HTTP. That suits a trusted home or office network. For anything beyond that, put an HTTPS reverse proxy in front of the API, and redirect HTTP to HTTPS before the service is exposed. Browsers honour the HSTS header only over HTTPS, so without TLS the header does nothing. See [TLS and HSTS](/docs/self-hosting/tls-and-hsts).

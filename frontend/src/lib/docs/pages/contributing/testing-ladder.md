@@ -4,7 +4,7 @@ subtitle: The test levels, from quick checks to the full gate.
 tab: contributing
 group: Develop
 order: 2
-source: docs/local-development.md "Testing ladder", "Continuous integration"; Makefile targets verify, verify-backend, verify-worker, verify-worker-inference, verify-frontend, verify-compose, verify-guards, verify-mermaid, verify-secrets, verify-backup
+source: docs/local-development.md "Testing ladder", "First run on a new machine" (make verify-worker-inference), "What rung 1 covers, and what it deliberately does not" (the frontend gate paragraphs), "Continuous integration"; Makefile targets verify, verify-backend, verify-worker, verify-worker-inference, verify-frontend, verify-compose, verify-guards, verify-mermaid, verify-secrets, verify-backup
 ---
 
 The project checks a change in levels. Each level is slower than the one before it, and each one is closer to the real product. Start with the cheapest level that covers your change. Climb only as far as the change needs.
@@ -24,7 +24,7 @@ The project checks a change in levels. Each level is slower than the one before 
 
 Levels 1 and 2 cover most changes. CI runs level 3 when you change the backend, the frontend, the deploy files or the smoke script. Levels 4 and 5 need a GPU and are maintainer steps, so a contributor without a GPU runs levels 1 to 3.
 
-Level 2 needs an inference virtual environment at `worker/.venv-inference`. The worker workflow creates it with the CPU-only PyTorch 2.9.0 wheel. The make target fails if these packages are missing. Read [local development](/docs/contributing/local-development) for the setup.
+Level 2 uses the inference virtual environment at `worker/.venv-inference` when it exists. The worker workflow creates it with the CPU-only PyTorch 2.9.0 wheel. Without that environment, the target uses `worker/.venv`, which needs the inference packages: run `make setup-cuda` or `make setup-rocm` first. Without those packages, the tests fail at import. Read [local development](/docs/contributing/local-development) for the setup.
 
 ## The full gate: make verify
 
@@ -36,6 +36,7 @@ make verify
 
 Run `make verify` before you push a branch. Some checks are not part of `make verify`, so run them when your change needs them:
 
+- `make verify-worker-inference` runs the CPU inference tests with a tiny model. Run it when your change touches the worker.
 - `make verify-secrets` scans the working tree for committed secrets. Run it when your change adds configuration, scripts or fixtures.
 - `make verify-guards` proves that the setup checks still refuse a toolchain that is too old. CI runs it when the Makefile, a dependency file or a workflow changes.
 - `make verify-mermaid` renders every diagram under `docs/`. It needs `mmdc` and Chrome.
@@ -46,8 +47,8 @@ Run `make verify` before you push a branch. Some checks are not part of `make ve
 `make verify-frontend` runs more than unit tests. It:
 
 1. Runs lint, type checks and unit tests.
-2. Builds the landing mode and checks the studio preview, docs and footer.
-3. Builds the studio after every landing check passes, then checks the self-hosted build, studio shell, setup, canvas, sign-in, saved views, owner focus, Models and the first-run tour.
+2. Builds the landing mode and checks the studio preview, the docs, and the footer's contrast and keyboard focus.
+3. Builds the studio only after every landing check passes. It then checks the self-hosted build, studio shell, setup, canvas, sign-in, saved views, owner focus, Models and the first-run tour. The sign-in and setup checks use separate throwaway databases and API processes.
 
 CI uses `make -j3 --output-sync=target verify-frontend` to run up to three checks of one build mode at once. Both builds and the static checks stay in order. Plain `make verify-frontend` runs the same checks one at a time.
 

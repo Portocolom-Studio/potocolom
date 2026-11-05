@@ -387,6 +387,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-install-setup-link.sh
 	@bash scripts/test-setup-link.sh
 	@bash scripts/test-frontend-verify-graph.sh
+	@bash scripts/test-check-docs-site.sh
 	@bash scripts/test-backup-guards.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)

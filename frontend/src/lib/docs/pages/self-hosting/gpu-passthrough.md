@@ -3,7 +3,7 @@ title: GPU passthrough
 subtitle: Give the containers access to an NVIDIA or AMD card.
 tab: self-hosting
 group: Install
-order: 3
+order: 4
 source: docs/self-hosting.md "GPU passthrough", "Supported hosts", "Hardware requirements"; scripts/gpu-profile.sh; deploy/compose/compose.yml
 ---
 
