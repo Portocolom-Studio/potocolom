@@ -211,6 +211,32 @@ const hasButton = (page, label) =>
 		label
 	);
 
+// Show tour lives in the sidebar's user menu (Help without an account), the
+// last menu button in the footer.
+async function openUserMenu(page) {
+	await page.waitForSelector('[data-sidebar="footer"] [data-sidebar="menu-button"]');
+	const triggers = await page.$$('[data-sidebar="footer"] [data-sidebar="menu-button"]');
+	await triggers.at(-1).click();
+	await page.waitForSelector('[role="menu"]');
+}
+
+async function hasTourEntry(page) {
+	await openUserMenu(page);
+	const found = await page.evaluate(() =>
+		[...document.querySelectorAll('[role="menuitem"]')].some(
+			(item) => item.textContent.trim() === 'Show tour'
+		)
+	);
+	await page.keyboard.press('Escape');
+	await page.waitForSelector('[role="menu"]', { hidden: true });
+	return found;
+}
+
+async function clickTourEntry(page) {
+	await openUserMenu(page);
+	await clickButton(page, '[role="menuitem"]', 'Show tour');
+}
+
 async function clickButton(page, scope, label) {
 	await page.evaluate(
 		(query, text) => {
@@ -583,7 +609,7 @@ async function main() {
 			assert.equal(await tourOpen(run.page), false, 'viewer must not get an automatic tour');
 			await clickButton(run.page, 'button', 'Toggle sidebar');
 			await run.page.waitForSelector('[data-tour="images"]');
-			assert.equal(await hasButton(run.page, 'Show tour'), false, 'viewer has no tour entry');
+			assert.equal(await hasTourEntry(run.page), false, 'viewer has no tour entry');
 			assert.equal(await run.page.evaluate((key) => localStorage.getItem(key), storageKey), null);
 			assert.deepEqual(run.errors, []);
 			await viewer.close();
@@ -596,7 +622,7 @@ async function main() {
 		await userRun.page.waitForSelector('[data-studio-tour] h2');
 		assert.equal(await heading(userRun.page), titles[0]);
 		await clickButton(userRun.page, '[data-studio-tour] button', 'Skip tour');
-		await clickButton(userRun.page, 'button', 'Show tour');
+		await clickTourEntry(userRun.page);
 		await waitFor(async () => (await heading(userRun.page)) === titles[0], 'user replay');
 		assert.deepEqual(userRun.errors, []);
 		await user.close();
@@ -606,7 +632,7 @@ async function main() {
 		const localRun = await openStudio(local, server);
 		await localRun.page.waitForSelector('[data-studio-tour] h2');
 		await clickButton(localRun.page, '[data-studio-tour] button', 'Skip tour');
-		assert.equal(await hasButton(localRun.page, 'Show tour'), true, 'local admin has tour entry');
+		assert.equal(await hasTourEntry(localRun.page), true, 'local admin has tour entry');
 		await local.close();
 		accountMode = 'admin';
 
@@ -679,7 +705,7 @@ async function main() {
 		assert.equal(await tourOpen(page), false, 'a finished tour must not auto-start');
 
 		// Leaving during a replay must not carry the open request back into the studio.
-		await clickButton(page, 'button', 'Show tour');
+		await clickTourEntry(page);
 		await waitFor(async () => (await heading(page)) === titles[0], 'replayed tour before leaving');
 		await page.evaluate(() => {
 			const link = document.createElement('a');
@@ -694,7 +720,7 @@ async function main() {
 		assert.equal(await tourOpen(page), false, 'leaving a replay must clear its open request');
 
 		// Help replays it; Escape skips and returns focus to the step's control.
-		await clickButton(page, 'button', 'Show tour');
+		await clickTourEntry(page);
 		await waitFor(async () => (await heading(page)) === titles[0], 'replayed tour');
 		await page.keyboard.press('Escape');
 		await waitFor(async () => !(await tourOpen(page)), 'Escape to close the tour');
@@ -900,7 +926,7 @@ async function main() {
 		await blockedRun.page.waitForSelector('[data-tour="prompt"]');
 		await pause(800);
 		assert.equal(await tourOpen(blockedRun.page), false, 'blocked storage must not auto-start');
-		await clickButton(blockedRun.page, 'button', 'Show tour');
+		await clickTourEntry(blockedRun.page);
 		await waitFor(async () => (await heading(blockedRun.page)) === titles[0], 'tour from Help');
 		await blocked.close();
 
@@ -976,7 +1002,7 @@ async function main() {
 		accountMode = 'user';
 		const deep = await browser.createBrowserContext();
 		const deepRun = await openStudio(deep, server, { path: '/app?view=images' });
-		await waitFor(() => hasButton(deepRun.page, 'Show tour'), 'the studio sidebar');
+		await deepRun.page.waitForSelector('[data-sidebar="footer"] [data-sidebar="menu-button"]');
 		await pause(800);
 		assert.equal(await tourOpen(deepRun.page), false, 'Images must not auto-start the tour');
 		assert.equal(new URL(deepRun.page.url()).searchParams.get('view'), 'images');
@@ -997,8 +1023,7 @@ async function main() {
 		});
 		await waitFor(() => hasButton(phoneRun.page, 'Toggle sidebar'), 'the phone header');
 		await clickButton(phoneRun.page, 'button', 'Toggle sidebar');
-		await waitFor(() => hasButton(phoneRun.page, 'Show tour'), 'Show tour in the sheet');
-		await clickButton(phoneRun.page, 'button', 'Show tour');
+		await clickTourEntry(phoneRun.page);
 		await waitFor(
 			async () => (await heading(phoneRun.page)) === titles[0],
 			'the replayed tour to start on Generate'

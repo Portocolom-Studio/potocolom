@@ -5,7 +5,6 @@
 	// keeps the bitmap DOM and drawing controls.
 	import type { Component } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
-	import BoxIcon from '@lucide/svelte/icons/box';
 	import BrushIcon from '@lucide/svelte/icons/brush';
 	import CameraIcon from '@lucide/svelte/icons/camera';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
@@ -13,6 +12,7 @@
 	import Columns2Icon from '@lucide/svelte/icons/columns-2';
 	import DownloadIcon from '@lucide/svelte/icons/download';
 	import EraserIcon from '@lucide/svelte/icons/eraser';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import FolderOpenIcon from '@lucide/svelte/icons/folder-open';
 	import LassoIcon from '@lucide/svelte/icons/lasso';
 	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
@@ -24,7 +24,8 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import Undo2Icon from '@lucide/svelte/icons/undo-2';
-	import ZapIcon from '@lucide/svelte/icons/zap';
+	import { account } from '$lib/account.svelte';
+	import { watchWorker, worker } from '$lib/studio-worker.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { loginSearchFor } from '$lib/auth-flow';
 	import { Button } from '$lib/components/ui/button';
@@ -68,7 +69,14 @@
 		structureStrengthSpec,
 		valueToNorm
 	} from '$lib/model-params';
-	import { fallbackModelId, modelIsRemoved, studio, type Model } from '$lib/studio.svelte';
+	import {
+		fallbackModelId,
+		modelIsRemoved,
+		openAdmin,
+		openService,
+		studio,
+		type Model
+	} from '$lib/studio.svelte';
 	import {
 		createRealtimeCanvasSession,
 		isTerminalNotice,
@@ -81,6 +89,9 @@
 
 	/** The wire dimensions. CSS scales the display without changing these. */
 	const CANVAS_SIZE = 512;
+	const SETUP_GUIDE_URL =
+		'https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md';
+	$effect(() => watchWorker());
 	const INK = '#111827';
 	const PAPER = '#ffffff';
 	const BRUSH_COLORS = [
@@ -214,6 +225,10 @@
 	// among the current entries.
 	let modelId = $state('');
 	const selectedModel = $derived(realtimeModels.find((model) => model.id === modelId));
+	const canManageModels = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+	const realtimeModelsRegistered = $derived(
+		studio.models.some((model) => model.capabilities.includes('realtime'))
+	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const structureRange = $derived(structureStrengthSpec(selectedModel));
 	// Norm positions for the sliders. The defaults belong to the model, so a
@@ -226,8 +241,15 @@
 	const structureValue = $derived(normToValue(structureNorm, structureRange));
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	const busy = $derived(connection === 'connecting' || connection === 'queued' || connected);
+	const unavailable = $derived(
+		!busy && (worker.online === false || (studio.modelsLoaded && realtimeModels.length === 0))
+	);
 	const canConnect = $derived(
-		!busy && !isTerminalNotice(rawNotice) && modelId !== '' && prompt.trim() !== ''
+		worker.online !== false &&
+			!busy &&
+			!isTerminalNotice(rawNotice) &&
+			selectedModel !== undefined &&
+			prompt.trim() !== ''
 	);
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
@@ -1004,10 +1026,10 @@
 {/snippet}
 
 {#snippet sessionActions()}
-	<div class="flex items-center gap-3.5 text-sm">
-		<span role="status" class="flex items-center gap-2 font-medium">
+	<div class="flex min-w-0 items-center gap-2 text-sm sm:gap-3.5">
+		<span role="status" class="flex min-w-0 items-center gap-2 font-medium">
 			<span class={'size-[7px] shrink-0 rounded-full ' + statusTone} aria-hidden="true"></span>
-			{statusLabel}
+			<span class="sr-only sm:not-sr-only">{statusLabel}</span>
 		</span>
 		{#if connected && selectedModel?.realtime_p95_ms != null}
 			<span class="text-muted-foreground hidden tabular-nums md:inline">
@@ -1026,7 +1048,7 @@
 			<PowerIcon />
 			{t('app.realtime_canvas.disconnect')}
 		</Button>
-	{:else}
+	{:else if !unavailable}
 		<Button variant="brand" size="sm" disabled={!canConnect} onclick={connect}>
 			<PowerIcon />
 			{t('app.realtime_canvas.connect')}
@@ -1221,24 +1243,21 @@
 				<Skeleton class="h-2.5 w-20 rounded" />
 			</div>
 		</div>
-	{:else}
+	{:else if selectedModel}
 		<div
 			class="bg-field border-line-strong focus-within:ring-ring/60 relative flex items-center gap-2.5 rounded-md border px-2.5 py-2 focus-within:ring-2"
 		>
 			<span
 				class="bg-raised ring-line-strong text-dim grid size-7 shrink-0 place-items-center rounded-md text-xs font-semibold ring-1 ring-inset"
-				aria-hidden="true"
-				>{#if selectedModel}{selectedModel.name.charAt(0)}{:else}<BoxIcon
-						class="size-3.5"
-					/>{/if}</span
+				aria-hidden="true">{selectedModel.name.charAt(0)}</span
 			>
 			<div class="min-w-0 flex-1">
 				<p class="truncate font-medium">
-					{selectedModel?.name ?? t('app.realtime_canvas.no_model')}
+					{selectedModel.name}
 				</p>
 				<p class="text-dim text-xs tabular-nums">
-					{CANVAS_SIZE} × {CANVAS_SIZE}{selectedModel?.realtime_p95_ms != null
-						? ` · p95 ${Math.round(selectedModel.realtime_p95_ms)} ${t('app.realtime_canvas.latency_ms')}`
+					{CANVAS_SIZE} x {CANVAS_SIZE}{selectedModel?.realtime_p95_ms != null
+						? ` / p95 ${Math.round(selectedModel.realtime_p95_ms)} ${t('app.realtime_canvas.latency_ms')}`
 						: ''}
 				</p>
 			</div>
@@ -1261,437 +1280,510 @@
 	{/if}
 {/snippet}
 
-<div
-	class="rt relative flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
-	data-mode={focus ? 'focus' : 'workbench'}
-	bind:this={panelRoot}
->
-	<div class="stage relative flex min-w-0 flex-col lg:min-h-0 lg:flex-1">
-		<div class="stage-body">
-			<div class="rail-slot">{@render toolRail()}</div>
-			<div class="panes">
-				<section class="pane pane-sketch" aria-label={t('app.realtime_canvas.input_title')}>
-					<div class="pane-head">
-						<h2 class="text-sm font-semibold">{t('app.realtime_canvas.sketch_title')}</h2>
-						<span class="text-dim text-xs tabular-nums">{CANVAS_SIZE} × {CANVAS_SIZE}</span>
-						<span class="flex-1"></span>
-						{#snippet undoButton(props: Record<string, unknown>)}
-							<button
-								{...props}
-								type="button"
-								class="icon-button hit-slop"
-								aria-keyshortcuts={ariaKeyShortcuts(UNDO_KEYS)}
-								disabled={openingDrawing || !canUndo}
-								onclick={undoCanvas}
-								><Undo2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
-									>{t('app.realtime_canvas.undo')}</span
-								></button
-							>
-						{/snippet}
-						{@render hinted(t('app.realtime_canvas.undo'), UNDO_KEYS, 'top', undoButton)}
-						{#snippet redoButton(props: Record<string, unknown>)}
-							<button
-								{...props}
-								type="button"
-								class="icon-button hit-slop"
-								aria-keyshortcuts={ariaKeyShortcuts(REDO_KEYS)}
-								disabled={openingDrawing || !canRedo}
-								onclick={redoCanvas}
-								><Redo2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
-									>{t('app.realtime_canvas.redo')}</span
-								></button
-							>
-						{/snippet}
-						{@render hinted(t('app.realtime_canvas.redo'), REDO_KEYS, 'top', redoButton)}
-						<button
-							type="button"
-							class="icon-button hit-slop"
-							title={t('app.realtime_canvas.clear')}
-							disabled={openingDrawing || blank}
-							onclick={clearCanvas}
-							><Trash2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
-								>{t('app.realtime_canvas.clear')}</span
-							></button
-						>
-					</div>
-					<div
-						class="surface surface-sketch"
-						role="img"
-						aria-label={t('app.realtime_canvas.draw_surface')}
-						style:--sketch-opacity={sketchOpacity / 100}
+<div class="flex min-h-0 flex-1 flex-col">
+	{#if unavailable}
+		<div class="border-border flex shrink-0 items-center justify-between gap-4 border-b px-4 py-3">
+			<div id="realtime-unavailable" role="status" class="min-w-0 text-sm leading-relaxed">
+				<p class="text-muted-foreground">
+					{worker.online === false
+						? t('app.availability.worker_offline')
+						: canManageModels && realtimeModelsRegistered
+							? t('app.models.none_available')
+							: canManageModels && worker.online === true
+								? t('app.realtime_canvas.no_model_installed')
+								: t('app.realtime_canvas.no_model_available')}
+				</p>
+				{#if worker.online === false}
+					<a
+						href={SETUP_GUIDE_URL}
+						target="_blank"
+						rel="noopener noreferrer"
+						class="text-foreground inline-flex items-center gap-1.5 rounded-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					>
-						<canvas
-							bind:this={drawCanvas}
-							width={CANVAS_SIZE}
-							height={CANVAS_SIZE}
+						{t('app.availability.start_worker')}<ExternalLinkIcon
+							class="size-3.5"
+							aria-hidden="true"
+						/>
+					</a>
+				{:else if canManageModels}
+					<button
+						type="button"
+						class="text-foreground rounded-sm text-start underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						onclick={() => (realtimeModelsRegistered ? openService('models') : openAdmin('models'))}
+					>
+						{realtimeModelsRegistered
+							? t('app.gen.open_models')
+							: t('app.availability.open_admin_models')}
+					</button>
+				{:else}
+					<p class="text-muted-foreground">{t('app.availability.ask_admin')}</p>
+				{/if}
+			</div>
+			<Button
+				variant="brand"
+				size="sm"
+				class="shrink-0"
+				disabled
+				aria-describedby="realtime-unavailable"
+			>
+				<PowerIcon />{t('app.realtime_canvas.connect')}
+			</Button>
+		</div>
+	{/if}
+	<div
+		class="rt relative flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden"
+		data-mode={focus ? 'focus' : 'workbench'}
+		bind:this={panelRoot}
+	>
+		<div class="stage relative flex min-w-0 flex-col lg:min-h-0 lg:flex-1">
+			<div class="stage-body">
+				<div class="rail-slot">{@render toolRail()}</div>
+				<div class="panes">
+					<section class="pane pane-sketch" aria-label={t('app.realtime_canvas.input_title')}>
+						<div class="pane-head">
+							<h2 class="text-sm font-semibold">{t('app.realtime_canvas.sketch_title')}</h2>
+							<span class="text-dim text-xs tabular-nums">{CANVAS_SIZE} x {CANVAS_SIZE}</span>
+							<span class="flex-1"></span>
+							{#snippet undoButton(props: Record<string, unknown>)}
+								<button
+									{...props}
+									type="button"
+									class="icon-button hit-slop"
+									aria-keyshortcuts={ariaKeyShortcuts(UNDO_KEYS)}
+									disabled={openingDrawing || !canUndo}
+									onclick={undoCanvas}
+									><Undo2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
+										>{t('app.realtime_canvas.undo')}</span
+									></button
+								>
+							{/snippet}
+							{@render hinted(t('app.realtime_canvas.undo'), UNDO_KEYS, 'top', undoButton)}
+							{#snippet redoButton(props: Record<string, unknown>)}
+								<button
+									{...props}
+									type="button"
+									class="icon-button hit-slop"
+									aria-keyshortcuts={ariaKeyShortcuts(REDO_KEYS)}
+									disabled={openingDrawing || !canRedo}
+									onclick={redoCanvas}
+									><Redo2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
+										>{t('app.realtime_canvas.redo')}</span
+									></button
+								>
+							{/snippet}
+							{@render hinted(t('app.realtime_canvas.redo'), REDO_KEYS, 'top', redoButton)}
+							<button
+								type="button"
+								class="icon-button hit-slop"
+								title={t('app.realtime_canvas.clear')}
+								disabled={openingDrawing || blank}
+								onclick={clearCanvas}
+								><Trash2Icon class="size-[15px]" aria-hidden="true" /><span class="sr-only"
+									>{t('app.realtime_canvas.clear')}</span
+								></button
+							>
+						</div>
+						<div
+							class="surface surface-sketch"
+							role="img"
 							aria-label={t('app.realtime_canvas.draw_surface')}
-							class="block h-full w-full touch-none bg-white"
-							onpointerdown={onPointerDown}
-							onpointermove={onPointerMove}
-							onpointerup={onPointerUp}
-							onpointercancel={onPointerCancel}
-							onlostpointercapture={onPointerCancel}
-						></canvas>
-						{#if showOutline}
+							style:--sketch-opacity={sketchOpacity / 100}
+						>
 							<canvas
-								bind:this={drawOutline}
+								bind:this={drawCanvas}
 								width={CANVAS_SIZE}
 								height={CANVAS_SIZE}
-								aria-hidden="true"
-								class="pointer-events-none absolute inset-0 h-full w-full"
+								aria-label={t('app.realtime_canvas.draw_surface')}
+								class="block h-full w-full touch-none bg-white"
+								onpointerdown={onPointerDown}
+								onpointermove={onPointerMove}
+								onpointerup={onPointerUp}
+								onpointercancel={onPointerCancel}
+								onlostpointercapture={onPointerCancel}
 							></canvas>
+							{#if showOutline}
+								<canvas
+									bind:this={drawOutline}
+									width={CANVAS_SIZE}
+									height={CANVAS_SIZE}
+									aria-hidden="true"
+									class="pointer-events-none absolute inset-0 h-full w-full"
+								></canvas>
+							{/if}
+						</div>
+						{@render paint()}
+					</section>
+
+					<section class="pane pane-output" aria-label={t('app.realtime_canvas.output_title')}>
+						<div class="pane-head">
+							<h2 class="text-sm font-semibold">{t('app.realtime_canvas.output_title')}</h2>
+							<span class="text-dim text-xs tabular-nums" title={frameCounterTitle}
+								>{t('app.realtime_canvas.output_frame').replace(
+									'{count}',
+									renderedFrames.toLocaleString()
+								)}</span
+							>
+							<span class="flex-1"></span>
+							<button
+								type="button"
+								class="icon-button hit-slop"
+								aria-label={t('app.realtime_canvas.capture')}
+								title={t('app.realtime_canvas.capture')}
+								disabled={renderedFrames === 0}
+								onclick={captureOutput}
+								><CameraIcon class="size-[15px]" aria-hidden="true" /></button
+							>
+							<button
+								type="button"
+								class="icon-button hit-slop"
+								aria-label={t('app.realtime_canvas.download_frame')}
+								title={t('app.realtime_canvas.download_frame')}
+								disabled={renderedFrames === 0}
+								onclick={downloadOutput}
+								><DownloadIcon class="size-[15px]" aria-hidden="true" /></button
+							>
+							<button
+								type="button"
+								class="icon-button hit-slop focus-entry"
+								aria-label={t('app.realtime_canvas.view_focus')}
+								title={t('app.realtime_canvas.view_focus')}
+								onclick={() => setViewMode('focus')}
+								><Maximize2Icon class="size-[15px]" aria-hidden="true" /></button
+							>
+						</div>
+						<div
+							class="surface surface-output"
+							role="img"
+							aria-label={t('app.realtime_canvas.output_title')}
+						>
+							<canvas
+								bind:this={outputCanvas}
+								width={CANVAS_SIZE}
+								height={CANVAS_SIZE}
+								class="bg-raised block h-full w-full"
+								class:touch-none={selecting}
+								onpointerdown={onOutputPointerDown}
+								onpointermove={onPointerMove}
+								onpointerup={onPointerUp}
+								onpointercancel={onPointerCancel}
+								onlostpointercapture={onPointerCancel}
+							></canvas>
+							{#if showOutline}
+								<canvas
+									bind:this={outputOutline}
+									width={CANVAS_SIZE}
+									height={CANVAS_SIZE}
+									aria-hidden="true"
+									class="pointer-events-none absolute inset-0 h-full w-full"
+								></canvas>
+							{/if}
+							{#if renderedFrames === 0}
+								<p
+									class="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-sm"
+								>
+									{t('app.realtime_canvas.output_empty')}
+								</p>
+							{/if}
+						</div>
+					</section>
+				</div>
+
+				{#if focus}
+					<div class="opacity-control glass">
+						<label for="realtime-sketch-opacity" class="text-muted-foreground"
+							>{t('app.realtime_canvas.sketch_opacity')}</label
+						>
+						<input
+							id="realtime-sketch-opacity"
+							type="range"
+							min="0"
+							max="100"
+							step="1"
+							bind:value={sketchOpacity}
+							class="accent-foreground w-24"
+						/>
+						<span class="w-8 text-end tabular-nums">{sketchOpacity}%</span>
+					</div>
+					{#if supportsSelection && (selecting || selection)}
+						<div class="selection-float glass">{@render selectionControls()}</div>
+					{/if}
+					<div class="prompt-bar glass">
+						{#if selectedModel}<span
+								class="border-line-strong text-foreground flex h-[30px] max-w-44 shrink-0 items-center gap-2 rounded-full border px-2.5 text-xs font-medium"
+							>
+								<span
+									class="bg-raised ring-line-strong size-3.5 rounded ring-1 ring-inset"
+									aria-hidden="true"
+								></span>
+								<span class="truncate">{selectedModel.name}</span>
+							</span>{/if}
+						<Label for="realtime-prompt" class="sr-only">{t('app.gen.prompt')}</Label>
+						<input
+							id="realtime-prompt"
+							name="prompt"
+							autocomplete="off"
+							bind:value={prompt}
+							placeholder={t('app.realtime_canvas.prompt_placeholder')}
+							class="placeholder:text-dim h-[34px] min-w-0 flex-1 bg-transparent px-2.5 text-sm outline-none"
+							onkeydown={onPromptKeydown}
+						/>
+						{#if selectedModel}
+							<span class="pill tabular-nums"
+								>{t('app.realtime_canvas.structure')}
+								{formatParamValue(structureValue, structureRange)}</span
+							>
+							<span class="pill tabular-nums"
+								>{t('app.realtime_canvas.steps')} {formatParamValue(stepsValue, stepsRange)}</span
+							>
+							<button
+								type="button"
+								class="icon-button hit-slop bordered"
+								aria-label={t('app.realtime_canvas.guidance')}
+								aria-expanded={guidanceOpen}
+								aria-controls="realtime-guidance-float"
+								onclick={() => (guidanceOpen = !guidanceOpen)}
+								><SlidersHorizontalIcon class="size-[15px]" aria-hidden="true" /></button
+							>
+						{/if}
+						{#if connected}
+							<Button variant="brand" disabled={!promptDirty} onclick={applyPrompt}>
+								{t('app.realtime_canvas.update')}
+								<kbd class="kbd-on-brand">{shortcutLabel(['enter'])}</kbd>
+							</Button>
+						{:else if !unavailable}
+							<Button variant="brand" disabled={!canConnect} onclick={connect}>
+								{t('app.realtime_canvas.connect')}
+								<kbd class="kbd-on-brand">{shortcutLabel(['enter'])}</kbd>
+							</Button>
 						{/if}
 					</div>
-					{@render paint()}
-				</section>
+					{#if guidanceOpen && selectedModel}
+						<div id="realtime-guidance-float" class="guidance-float glass">
+							<ParamSliderField
+								id="realtime-structure"
+								label={t('app.realtime_canvas.structure')}
+								bind:norm={structureNorm}
+								steps={trackSteps(structureRange)}
+								minLabel={formatParamValue(structureRange.min, structureRange)}
+								maxLabel={formatParamValue(structureRange.max, structureRange)}
+								valueLabel={formatParamValue(structureValue, structureRange)}
+							/>
+							<ParamSliderField
+								id="realtime-steps"
+								label={t('app.realtime_canvas.steps')}
+								bind:norm={stepsNorm}
+								steps={trackSteps(stepsRange)}
+								minLabel={formatParamValue(stepsRange.min, stepsRange)}
+								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+								valueLabel={formatParamValue(stepsValue, stepsRange)}
+							/>
+						</div>
+					{/if}
+				{/if}
+			</div>
 
-				<section class="pane pane-output" aria-label={t('app.realtime_canvas.output_title')}>
-					<div class="pane-head">
-						<h2 class="text-sm font-semibold">{t('app.realtime_canvas.output_title')}</h2>
-						<span class="text-dim text-xs tabular-nums" title={frameCounterTitle}
-							>{t('app.realtime_canvas.output_frame').replace(
-								'{count}',
-								renderedFrames.toLocaleString()
-							)}</span
-						>
-						<span class="flex-1"></span>
+			<div class="bottom-bar">
+				<div class="flex min-w-0 flex-1 items-center gap-2.5">
+					<span class="text-muted-foreground w-16 shrink-0 text-xs font-medium"
+						>{t('app.realtime_canvas.captures')}</span
+					>
+					<div class="no-scrollbar flex min-w-0 gap-2 overflow-x-auto p-0.5">
+						{#each captures as capture, index (capture.id)}
+							<button
+								type="button"
+								class="capture"
+								aria-label={t('app.realtime_canvas.capture_download').replace(
+									'{index}',
+									String(index + 1)
+								)}
+								title={t('app.realtime_canvas.capture_download').replace(
+									'{index}',
+									String(index + 1)
+								)}
+								onclick={() => downloadUrl(capture.url, `potocolom-capture-${capture.id}.png`)}
+							>
+								<img src={capture.url} alt="" width="52" height="52" />
+							</button>
+						{/each}
 						<button
 							type="button"
-							class="icon-button hit-slop"
+							class="capture capture-add"
 							aria-label={t('app.realtime_canvas.capture')}
 							title={t('app.realtime_canvas.capture')}
 							disabled={renderedFrames === 0}
-							onclick={captureOutput}><CameraIcon class="size-[15px]" aria-hidden="true" /></button
-						>
-						<button
-							type="button"
-							class="icon-button hit-slop"
-							aria-label={t('app.realtime_canvas.download_frame')}
-							title={t('app.realtime_canvas.download_frame')}
-							disabled={renderedFrames === 0}
-							onclick={downloadOutput}
-							><DownloadIcon class="size-[15px]" aria-hidden="true" /></button
-						>
-						<button
-							type="button"
-							class="icon-button hit-slop focus-entry"
-							aria-label={t('app.realtime_canvas.view_focus')}
-							title={t('app.realtime_canvas.view_focus')}
-							onclick={() => setViewMode('focus')}
-							><Maximize2Icon class="size-[15px]" aria-hidden="true" /></button
+							onclick={captureOutput}><CameraIcon class="size-4" aria-hidden="true" /></button
 						>
 					</div>
-					<div
-						class="surface surface-output"
-						role="img"
-						aria-label={t('app.realtime_canvas.output_title')}
-					>
-						<canvas
-							bind:this={outputCanvas}
-							width={CANVAS_SIZE}
-							height={CANVAS_SIZE}
-							class="bg-raised block h-full w-full"
-							class:touch-none={selecting}
-							onpointerdown={onOutputPointerDown}
-							onpointermove={onPointerMove}
-							onpointerup={onPointerUp}
-							onpointercancel={onPointerCancel}
-							onlostpointercapture={onPointerCancel}
-						></canvas>
-						{#if showOutline}
-							<canvas
-								bind:this={outputOutline}
-								width={CANVAS_SIZE}
-								height={CANVAS_SIZE}
-								aria-hidden="true"
-								class="pointer-events-none absolute inset-0 h-full w-full"
-							></canvas>
-						{/if}
-						{#if renderedFrames === 0}
-							<p
-								class="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center px-6 text-center text-sm"
-							>
-								{t('app.realtime_canvas.output_empty')}
-							</p>
-						{/if}
-					</div>
-					<div class="pane-foot text-dim flex items-center gap-2 text-xs">
-						<ZapIcon class="size-[13px] shrink-0" aria-hidden="true" />
-						<span class="truncate"
-							>{busy
-								? t('app.realtime_canvas.prompt_locked')
-								: t('app.realtime_canvas.output_sub')}</span
-						>
-					</div>
-				</section>
-			</div>
-
-			{#if focus}
-				<div class="opacity-control glass">
-					<label for="realtime-sketch-opacity" class="text-muted-foreground"
-						>{t('app.realtime_canvas.sketch_opacity')}</label
-					>
-					<input
-						id="realtime-sketch-opacity"
-						type="range"
-						min="0"
-						max="100"
-						step="1"
-						bind:value={sketchOpacity}
-						class="accent-foreground w-24"
-					/>
-					<span class="w-8 text-end tabular-nums">{sketchOpacity}%</span>
 				</div>
-				{#if supportsSelection && (selecting || selection)}
-					<div class="selection-float glass">{@render selectionControls()}</div>
-				{/if}
-				<div class="prompt-bar glass">
-					<span
-						class="border-line-strong text-foreground flex h-[30px] max-w-44 shrink-0 items-center gap-2 rounded-full border px-2.5 text-xs font-medium"
-					>
-						<span
-							class="bg-raised ring-line-strong size-3.5 rounded ring-1 ring-inset"
-							aria-hidden="true"
-						></span>
-						<span class="truncate">{selectedModel?.name ?? t('app.realtime_canvas.no_model')}</span>
-					</span>
-					<Label for="realtime-prompt" class="sr-only">{t('app.gen.prompt')}</Label>
-					<input
+				<div class="flex min-w-0 flex-col items-end gap-1">
+					{#if drawingNotice}
+						<div role="status" class="text-end">
+							<p class="text-destructive text-xs" aria-live="polite">{t(drawingNotice)}</p>
+						</div>
+					{/if}
+					<div class="flex items-center gap-2">
+						<Button
+							variant="outline"
+							size="icon"
+							class="sm:w-auto sm:px-3"
+							title={t('app.realtime_canvas.save')}
+							disabled={openingDrawing}
+							onclick={saveDrawing}
+						>
+							<SaveIcon />
+							<span class="sr-only sm:not-sr-only">{t('app.realtime_canvas.save')}</span>
+						</Button>
+						<Button
+							variant="outline"
+							size="icon"
+							class="sm:w-auto sm:px-3"
+							disabled={openingDrawing}
+							title={t('app.realtime_canvas.open_hint')}
+							aria-describedby="realtime-open-hint"
+							onclick={chooseDrawingFile}
+						>
+							<FolderOpenIcon />
+							<span class="sr-only sm:not-sr-only">{t('app.realtime_canvas.open')}</span>
+						</Button>
+						<input
+							bind:this={drawingFileInput}
+							type="file"
+							accept=".potocolom.json,application/json"
+							hidden
+							onchange={openDrawing}
+						/>
+					</div>
+					<p id="realtime-open-hint" class="sr-only">
+						{t('app.realtime_canvas.open_hint')}
+					</p>
+				</div>
+			</div>
+		</div>
+
+		{#if !focus}
+			<aside class="inspector">
+				{#if !studio.modelsLoaded || selectedModel}<div class="section">
+						<h2 class="section-title">{t('app.realtime_canvas.model')}</h2>
+						{#if realtimeModels.length > 1}
+							<Label for="realtime-model" class="sr-only">{t('app.realtime_canvas.model')}</Label>
+						{/if}
+						{@render modelPicker()}
+						{#if selectedModel}
+							<div class="mt-2 flex flex-wrap gap-1.5">
+								{#if supportsSelection}<span class="tag">{t('app.realtime_canvas.cap_masks')}</span
+									>{/if}
+								{#if supportsEditPrompt}<span class="tag"
+										>{t('app.realtime_canvas.cap_edit_prompt')}</span
+									>{/if}
+							</div>
+						{/if}
+						{#if selectedModel?.requires_attribution}
+							<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
+						{/if}
+					</div>{/if}
+				<div class="section">
+					<div class="section-title">
+						<Label for="realtime-prompt" class="text-xs font-semibold">{t('app.gen.prompt')}</Label>
+						{#if connected}<span id="realtime-prompt-hint" class="text-dim font-medium"
+								>{t('app.realtime_canvas.prompt_next_frame')}</span
+							>{/if}
+					</div>
+					<textarea
 						id="realtime-prompt"
 						name="prompt"
 						autocomplete="off"
+						rows="3"
 						bind:value={prompt}
 						placeholder={t('app.realtime_canvas.prompt_placeholder')}
-						class="placeholder:text-dim h-[34px] min-w-0 flex-1 bg-transparent px-2.5 text-sm outline-none"
-						onkeydown={onPromptKeydown}
-					/>
-					{#if selectedModel}
-						<span class="pill tabular-nums"
-							>{t('app.realtime_canvas.structure')}
-							{formatParamValue(structureValue, structureRange)}</span
-						>
-						<span class="pill tabular-nums"
-							>{t('app.realtime_canvas.steps')} {formatParamValue(stepsValue, stepsRange)}</span
-						>
-						<button
-							type="button"
-							class="icon-button hit-slop bordered"
-							aria-label={t('app.realtime_canvas.guidance')}
-							aria-expanded={guidanceOpen}
-							aria-controls="realtime-guidance-float"
-							onclick={() => (guidanceOpen = !guidanceOpen)}
-							><SlidersHorizontalIcon class="size-[15px]" aria-hidden="true" /></button
-						>
-					{/if}
-					{#if connected}
-						<Button variant="brand" disabled={!promptDirty} onclick={applyPrompt}>
+						aria-describedby={connected
+							? 'realtime-prompt-hint'
+							: !busy && selectedModel
+								? 'realtime-prompt-required'
+								: undefined}
+						class="bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 min-h-[76px] w-full resize-none rounded-md border px-2.5 py-2 text-sm leading-normal outline-none focus-visible:ring-2"
+						onkeydown={onPromptKeydown}></textarea>
+					<div class="mt-2 flex items-center gap-2">
+						<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
+						<span class="flex-1"></span>
+						<Button variant="outline" size="sm" disabled={!promptDirty} onclick={applyPrompt}>
 							{t('app.realtime_canvas.update')}
-							<kbd class="kbd-on-brand">↵</kbd>
+							<kbd class="kbd">{shortcutLabel(['mod', 'enter'])}</kbd>
 						</Button>
-					{:else}
-						<Button variant="brand" disabled={!canConnect} onclick={connect}>
-							{t('app.realtime_canvas.connect')}
-							<kbd class="kbd-on-brand">↵</kbd>
-						</Button>
-					{/if}
-				</div>
-				{#if guidanceOpen && selectedModel}
-					<div id="realtime-guidance-float" class="guidance-float glass">
-						<ParamSliderField
-							id="realtime-structure"
-							label={t('app.realtime_canvas.structure')}
-							bind:norm={structureNorm}
-							steps={trackSteps(structureRange)}
-							minLabel={formatParamValue(structureRange.min, structureRange)}
-							maxLabel={formatParamValue(structureRange.max, structureRange)}
-							valueLabel={formatParamValue(structureValue, structureRange)}
-						/>
-						<ParamSliderField
-							id="realtime-steps"
-							label={t('app.realtime_canvas.steps')}
-							bind:norm={stepsNorm}
-							steps={trackSteps(stepsRange)}
-							minLabel={formatParamValue(stepsRange.min, stepsRange)}
-							maxLabel={formatParamValue(stepsRange.max, stepsRange)}
-							valueLabel={formatParamValue(stepsValue, stepsRange)}
-						/>
 					</div>
-				{/if}
-			{/if}
-		</div>
-
-		<div class="bottom-bar">
-			<div class="flex min-w-0 flex-1 items-center gap-2.5">
-				<span class="text-muted-foreground w-16 shrink-0 text-xs font-medium"
-					>{t('app.realtime_canvas.captures')}</span
-				>
-				<div class="no-scrollbar flex min-w-0 gap-2 overflow-x-auto p-0.5">
-					{#each captures as capture, index (capture.id)}
-						<button
-							type="button"
-							class="capture"
-							aria-label={t('app.realtime_canvas.capture_download').replace(
-								'{index}',
-								String(index + 1)
-							)}
-							title={t('app.realtime_canvas.capture_download').replace(
-								'{index}',
-								String(index + 1)
-							)}
-							onclick={() => downloadUrl(capture.url, `potocolom-capture-${capture.id}.png`)}
-						>
-							<img src={capture.url} alt="" width="52" height="52" />
-						</button>
-					{/each}
-					<button
-						type="button"
-						class="capture capture-add"
-						aria-label={t('app.realtime_canvas.capture')}
-						title={t('app.realtime_canvas.capture')}
-						disabled={renderedFrames === 0}
-						onclick={captureOutput}><CameraIcon class="size-4" aria-hidden="true" /></button
-					>
-				</div>
-			</div>
-			<div class="flex min-w-0 flex-col items-end gap-1">
-				<div role="status" class="text-end">
-					{#if drawingNotice}
-						<p class="text-destructive text-xs" aria-live="polite">{t(drawingNotice)}</p>
+					{#if selectedModel && !busy}
+						<p id="realtime-prompt-required" class="text-dim mt-1.5 text-xs">
+							{t('app.realtime_canvas.prompt_required')}
+						</p>
 					{/if}
 				</div>
-				<div class="flex items-center gap-2">
-					<Button variant="outline" disabled={openingDrawing} onclick={saveDrawing}>
-						<SaveIcon />
-						{t('app.realtime_canvas.save')}
-					</Button>
-					<Button
-						variant="outline"
-						disabled={openingDrawing}
-						aria-describedby="realtime-open-hint"
-						onclick={chooseDrawingFile}
-					>
-						<FolderOpenIcon />
-						{t('app.realtime_canvas.open')}
-					</Button>
-					<input
-						bind:this={drawingFileInput}
-						type="file"
-						accept=".potocolom.json,application/json"
-						hidden
-						onchange={openDrawing}
-					/>
-				</div>
-				<p id="realtime-open-hint" class="text-dim text-balance max-w-80 text-end text-xs">
-					{t('app.realtime_canvas.open_hint')}
-				</p>
-			</div>
-		</div>
-	</div>
-
-	{#if !focus}
-		<aside class="inspector">
-			<div class="section">
-				<h2 class="section-title">{t('app.realtime_canvas.model')}</h2>
-				{#if realtimeModels.length > 1}
-					<Label for="realtime-model" class="sr-only">{t('app.realtime_canvas.model')}</Label>
-				{/if}
-				{@render modelPicker()}
 				{#if selectedModel}
-					<div class="mt-2 flex flex-wrap gap-1.5">
-						<span class="tag">{t('app.realtime_canvas.cap_realtime')}</span>
-						{#if supportsSelection}<span class="tag">{t('app.realtime_canvas.cap_masks')}</span
-							>{/if}
-						{#if supportsEditPrompt}<span class="tag"
-								>{t('app.realtime_canvas.cap_edit_prompt')}</span
-							>{/if}
+					<div class="section">
+						<h2 class="section-title">{t('app.realtime_canvas.guidance')}</h2>
+						<div class="flex flex-col gap-3.5">
+							<ParamSliderField
+								id="realtime-structure"
+								label={t('app.realtime_canvas.structure')}
+								bind:norm={structureNorm}
+								steps={trackSteps(structureRange)}
+								minLabel={formatParamValue(structureRange.min, structureRange)}
+								maxLabel={formatParamValue(structureRange.max, structureRange)}
+								valueLabel={formatParamValue(structureValue, structureRange)}
+							/>
+							<ParamSliderField
+								id="realtime-steps"
+								label={t('app.realtime_canvas.steps')}
+								bind:norm={stepsNorm}
+								steps={trackSteps(stepsRange)}
+								minLabel={formatParamValue(stepsRange.min, stepsRange)}
+								maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+								valueLabel={formatParamValue(stepsValue, stepsRange)}
+							/>
+						</div>
 					</div>
 				{/if}
-				{#if selectedModel?.requires_attribution}
-					<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
+				{#if supportsSelection && (selecting || selection)}
+					<div class="section bg-brand/5">{@render selectionControls()}</div>
 				{/if}
-			</div>
-			<div class="section">
-				<div class="section-title">
-					<Label for="realtime-prompt" class="text-xs font-semibold">{t('app.gen.prompt')}</Label>
-					<span class="text-dim font-medium">{t('app.realtime_canvas.prompt_next_frame')}</span>
-				</div>
-				<textarea
-					id="realtime-prompt"
-					name="prompt"
-					autocomplete="off"
-					rows="3"
-					bind:value={prompt}
-					placeholder={t('app.realtime_canvas.prompt_placeholder')}
-					aria-describedby={selectedModel || busy ? 'realtime-prompt-hint' : undefined}
-					class="bg-field border-line-strong placeholder:text-dim focus-visible:ring-ring/60 min-h-[76px] w-full resize-none rounded-md border px-2.5 py-2 text-sm leading-normal outline-none focus-visible:ring-2"
-					onkeydown={onPromptKeydown}></textarea>
-				<div class="mt-2 flex items-center gap-2">
-					<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
-					<span class="flex-1"></span>
-					<Button variant="outline" size="sm" disabled={!promptDirty} onclick={applyPrompt}>
-						{t('app.realtime_canvas.update')}
-						<kbd class="kbd">{shortcutLabel(['mod', 'enter'])}</kbd>
-					</Button>
-				</div>
-				{#if selectedModel || busy}
-					<p id="realtime-prompt-hint" class="text-dim mt-1.5 text-xs">
-						{busy
-							? t('app.realtime_canvas.prompt_locked')
-							: t('app.realtime_canvas.prompt_required')}
-					</p>
-				{/if}
-			</div>
-			{#if selectedModel}
-				<div class="section">
-					<h2 class="section-title">{t('app.realtime_canvas.guidance')}</h2>
-					<div class="flex flex-col gap-3.5">
-						<ParamSliderField
-							id="realtime-structure"
-							label={t('app.realtime_canvas.structure')}
-							bind:norm={structureNorm}
-							steps={trackSteps(structureRange)}
-							minLabel={formatParamValue(structureRange.min, structureRange)}
-							maxLabel={formatParamValue(structureRange.max, structureRange)}
-							valueLabel={formatParamValue(structureValue, structureRange)}
-						/>
-						<ParamSliderField
-							id="realtime-steps"
-							label={t('app.realtime_canvas.steps')}
-							bind:norm={stepsNorm}
-							steps={trackSteps(stepsRange)}
-							minLabel={formatParamValue(stepsRange.min, stepsRange)}
-							maxLabel={formatParamValue(stepsRange.max, stepsRange)}
-							valueLabel={formatParamValue(stepsValue, stepsRange)}
-						/>
+				<div class="section section-last">
+					<div class="section-title">
+						<span>{t('app.realtime_canvas.session')}</span>
+						{#if sessionElapsed !== null}
+							<span class="text-dim font-medium tabular-nums">{sessionElapsed}</span>
+						{/if}
 					</div>
+					<dl class="grid grid-cols-3 gap-2" title={frameCounterTitle}>
+						<div>
+							<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_sent')}</dt>
+							<dd class="mt-0.5 text-sm tabular-nums">{sentFrames.toLocaleString()}</dd>
+						</div>
+						<div>
+							<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_rendered')}</dt>
+							<dd class="mt-0.5 text-sm tabular-nums">{renderedFrames.toLocaleString()}</dd>
+						</div>
+						<div>
+							<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_skipped')}</dt>
+							<dd class="mt-0.5 text-sm tabular-nums">{stageCounters.replaced.toLocaleString()}</dd>
+						</div>
+					</dl>
 				</div>
-			{/if}
-			{#if supportsSelection && (selecting || selection)}
-				<div class="section bg-brand/5">{@render selectionControls()}</div>
-			{/if}
-			<div class="section section-last">
-				<div class="section-title">
-					<span>{t('app.realtime_canvas.session')}</span>
-					{#if sessionElapsed !== null}
-						<span class="text-dim font-medium tabular-nums">{sessionElapsed}</span>
+				<div role="status" class="px-4 pb-4">
+					{#if notice}
+						<p class="text-destructive text-sm" aria-live="polite">
+							{t(notice)}
+							{#if notice === 'app.realtime_canvas.session_revoked'}
+								{' '}
+								<a
+									class="text-foreground underline underline-offset-4"
+									href={`${resolve('/login')}${loginSearchFor('?view=realtime_canvas')}`}
+									>{t('app.realtime_canvas.sign_in_again')}</a
+								>
+							{/if}
+						</p>
 					{/if}
 				</div>
-				<dl class="grid grid-cols-3 gap-2" title={frameCounterTitle}>
-					<div>
-						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_sent')}</dt>
-						<dd class="mt-0.5 text-sm tabular-nums">{sentFrames.toLocaleString()}</dd>
-					</div>
-					<div>
-						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_rendered')}</dt>
-						<dd class="mt-0.5 text-sm tabular-nums">{renderedFrames.toLocaleString()}</dd>
-					</div>
-					<div>
-						<dt class="text-dim text-xs">{t('app.realtime_canvas.stat_skipped')}</dt>
-						<dd class="mt-0.5 text-sm tabular-nums">{stageCounters.replaced.toLocaleString()}</dd>
-					</div>
-				</dl>
-			</div>
-			<div role="status" class="px-4 pb-4">
+			</aside>
+		{:else}
+			<div role="status" class="session-notice">
 				{#if notice}
 					<p class="text-destructive text-sm" aria-live="polite">
 						{t(notice)}
@@ -1706,24 +1798,8 @@
 					</p>
 				{/if}
 			</div>
-		</aside>
-	{:else}
-		<div role="status" class="session-notice">
-			{#if notice}
-				<p class="text-destructive text-sm" aria-live="polite">
-					{t(notice)}
-					{#if notice === 'app.realtime_canvas.session_revoked'}
-						{' '}
-						<a
-							class="text-foreground underline underline-offset-4"
-							href={`${resolve('/login')}${loginSearchFor('?view=realtime_canvas')}`}
-							>{t('app.realtime_canvas.sign_in_again')}</a
-						>
-					{/if}
-				</p>
-			{/if}
-		</div>
-	{/if}
+		{/if}
+	</div>
 </div>
 
 <style>
@@ -1839,11 +1915,6 @@
 		border-radius: 8px;
 		box-shadow: 0 0 0 1px var(--line-strong);
 	}
-	.pane-foot {
-		height: 30px;
-		margin-top: 12px;
-		padding: 0 2px;
-	}
 	.paint {
 		display: flex;
 		flex-wrap: wrap;
@@ -1883,7 +1954,6 @@
 	}
 	.bottom-bar {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
 		gap: 10px 16px;
 		border-top: 1px solid var(--border);
@@ -1993,9 +2063,6 @@
 		.surface {
 			width: min(100%, calc(100svh - 262px));
 		}
-		.bottom-bar {
-			flex-wrap: nowrap;
-		}
 		.inspector {
 			width: 312px;
 			flex: none;
@@ -2035,8 +2102,7 @@
 		.rt[data-mode='focus'] .pane {
 			grid-area: stack;
 		}
-		.rt[data-mode='focus'] .pane-head,
-		.rt[data-mode='focus'] .pane-foot {
+		.rt[data-mode='focus'] .pane-head {
 			display: none;
 		}
 

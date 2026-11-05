@@ -416,7 +416,8 @@
 	</section>
 
 	<aside
-		class="bg-panel border-border min-h-0 shrink-0 border-t xl:w-[360px] xl:overflow-y-auto xl:border-t-0 xl:border-s"
+		class={'bg-panel border-border min-h-0 shrink-0 border-t xl:w-[360px] xl:overflow-y-auto xl:border-t-0 xl:border-s ' +
+			(!detail && !detailLoading && !detailError ? 'hidden xl:block' : '')}
 		aria-label={t('app.admin.user_detail')}
 	>
 		{#if detailLoading && !detail}

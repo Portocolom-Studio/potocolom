@@ -150,6 +150,7 @@
 	const MAX_SCALE = 1.6;
 	const PAN_STEP = 80;
 	const TREE_KEYBOARD_STEP = 24;
+	const VIEWPORT_FIT_MARGIN = 24;
 	const VIEWPORT_SAVE_DELAY = 300;
 	const HOVER_RADIUS = 150;
 	const HOVER_PULL = 0.08;
@@ -176,8 +177,8 @@
 	let inspectorEl = $state<HTMLElement | null>(null);
 	let viewportWidth = $state(0);
 	let viewportHeight = $state(0);
-	let translateX = $state(restoredViewport?.translateX ?? 72);
-	let translateY = $state(restoredViewport?.translateY ?? 72);
+	let translateX = $state(restoredViewport?.translateX ?? VIEWPORT_FIT_MARGIN);
+	let translateY = $state(restoredViewport?.translateY ?? VIEWPORT_FIT_MARGIN);
 	let scale = $state(restoredViewport?.scale ?? 1);
 	let treeOffsets = $state({ ...studio.lineageTreeOffsets });
 	let roots = $state<Generation[]>([]);
@@ -1895,8 +1896,11 @@
 		}
 		const x = packed.x + rootNode.x;
 		const y = packed.y + rootNode.y;
-		translateX = clampLineageCoordinate(viewportWidth / 2 - x * scale);
-		translateY = clampLineageCoordinate(viewportHeight / 2 - y * scale);
+		const left = Math.min(packed.x, x - LINEAGE_TILE_WIDTH / 2);
+		const top = Math.min(packed.y, y - LINEAGE_TILE_HEIGHT / 2);
+		scale = 1;
+		translateX = clampLineageCoordinate(VIEWPORT_FIT_MARGIN - left * scale);
+		translateY = clampLineageCoordinate(VIEWPORT_FIT_MARGIN - top * scale);
 		return { rootId: newest.id, x, y };
 	}
 
@@ -2553,7 +2557,7 @@
 
 {#snippet imageSearchControls()}
 	{@render imageSearchField()}
-	{#if imagesMode === 'lineage'}
+	{#if imagesMode === 'lineage' && searchQuery !== ''}
 		<Button
 			variant="outline"
 			size="sm"
@@ -2784,49 +2788,51 @@
 			aria-label={t('app.images.canvas')}
 			tabindex="0"
 		>
-			<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					disabled={!hasTreeOffsets}
-					title={t('app.images.reset_all_positions')}
-					aria-label={t('app.images.reset_all_positions')}
-					onclick={resetAllTreePositions}
-				>
-					<RotateCcwIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.zoom_out')}
-					aria-label={t('app.images.zoom_out')}
-					onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
-				>
-					<MinusIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.zoom_in')}
-					aria-label={t('app.images.zoom_in')}
-					onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
-				>
-					<PlusIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.recenter')}
-					aria-label={t('app.images.recenter')}
-					onclick={() => recenterNewest()}
-				>
-					<LocateFixedIcon />
-				</Button>
-			</div>
+			{#if persistedRoots.length > 0}
+				<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						disabled={!hasTreeOffsets}
+						title={t('app.images.reset_all_positions')}
+						aria-label={t('app.images.reset_all_positions')}
+						onclick={resetAllTreePositions}
+					>
+						<RotateCcwIcon />
+					</Button>
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.zoom_out')}
+						aria-label={t('app.images.zoom_out')}
+						onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
+					>
+						<MinusIcon />
+					</Button>
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.zoom_in')}
+						aria-label={t('app.images.zoom_in')}
+						onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
+					>
+						<PlusIcon />
+					</Button>
+					<Button
+						variant="secondary"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.recenter')}
+						aria-label={t('app.images.recenter')}
+						onclick={() => recenterNewest()}
+					>
+						<LocateFixedIcon />
+					</Button>
+				</div>
+			{/if}
 
 			{#if rootsLoading && roots.length === 0}
 				<!-- A tree's outline while the roots load; the status line above
@@ -3910,6 +3916,10 @@
 	.card-copy strong {
 		font-size: 12px;
 		white-space: nowrap;
+	}
+
+	.lineage-tile.is-root .card-copy strong {
+		padding-right: 16px;
 	}
 
 	.card-copy span {

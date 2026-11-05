@@ -241,8 +241,8 @@
 		outline-offset: 2px;
 	}
 
-	/* Below 56rem the field is a band above the form. The brand row moves to
-	   the top of the page and the overlay keeps only the optional kicker. */
+	/* Below 56rem the field is a short band above the form. The brand row moves
+	   to the top of the page and the text overlay is hidden. */
 	@media (max-width: 55.99rem) {
 		.split,
 		.split.field-start {
@@ -260,7 +260,7 @@
 
 		.field {
 			order: -1;
-			flex: 0 0 12rem;
+			flex: 0 0 8rem;
 			border-inline-start: 0;
 			border-block-end: 1px solid #1c2440;
 		}
@@ -271,13 +271,15 @@
 
 		.form-wrap {
 			order: 0;
-			padding: 0 1.25rem 2.5rem;
+			justify-content: flex-start;
+			padding: 1.5rem 1.25rem 2.5rem;
 		}
 
 		.overlay {
 			inset: 1.5rem 1.25rem auto;
 		}
 
+		.kicker,
 		.heading,
 		.body {
 			display: none;

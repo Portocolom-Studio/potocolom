@@ -140,7 +140,9 @@
 		<Card.Content class="flex flex-col gap-3 p-4">
 			<div class="text-muted-foreground flex flex-wrap gap-x-5 gap-y-1 text-xs">
 				<span data-testid="admin-fleet-worker-count">
-					{t('app.admin.workers_count').replace('{count}', String(workers.length))}
+					{t(
+						workers.length === 1 ? 'app.admin.worker_count_one' : 'app.admin.workers_count'
+					).replace('{count}', String(workers.length))}
 				</span>
 				<span data-testid="admin-fleet-sample-count">
 					{t('app.admin.samples_count').replace('{count}', String(samples.length))}

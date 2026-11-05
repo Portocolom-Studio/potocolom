@@ -17,6 +17,8 @@
 	import { resolve } from '$app/paths';
 
 	const landing = PUBLIC_SITE_MODE === 'landing';
+	const releaseCommand =
+		'env -u COMPOSE_PROJECT_NAME docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml exec -T api python -m app.operator setup-link';
 	const phaseFor: Record<SetupStep, Phase> = {
 		choose: 'choose',
 		claim: 'accounts',
@@ -221,19 +223,16 @@
 				<h1 data-slot="card-title" class="text-base font-medium">{t('setup.title')}</h1>
 				<Card.Description>{refused ? t('setup.refused') : t('setup.missing')}</Card.Description>
 			</Card.Header>
-			<Card.Content>
-				<div class="flex flex-col gap-3 break-all text-sm">
-					<p>
-						{t('setup.source_command')}
-						<code class="bg-muted rounded px-2 py-1 font-mono">make setup-link</code>
-					</p>
-					<p>
-						{t('setup.release_command')}
-						<code class="bg-muted rounded px-2 py-1 font-mono"
-							>env -u COMPOSE_PROJECT_NAME docker compose --env-file deploy/compose/.env -f
-							deploy/compose/compose.yml exec -T api python -m app.operator setup-link</code
-						>
-					</p>
+			<Card.Content class="flex flex-col gap-4 text-sm">
+				<div class="flex flex-col gap-2">
+					<p>{t('setup.source_command')}</p>
+					<pre
+						class="bg-muted overflow-x-auto rounded px-3 py-2 font-mono text-xs whitespace-pre">make setup-link</pre>
+				</div>
+				<div class="flex flex-col gap-2">
+					<p>{t('setup.release_command')}</p>
+					<pre
+						class="bg-muted overflow-x-auto rounded px-3 py-2 font-mono text-xs whitespace-pre">{releaseCommand}</pre>
 				</div>
 			</Card.Content>
 		</Card.Root>

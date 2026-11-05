@@ -215,7 +215,11 @@
 					<ul class="flex flex-col gap-2">
 						{#each anomalies as anomaly (anomaly.actor_user_id)}
 							<li class="text-sm">
-								<span class="font-medium">{anomaly.actor_user_id}</span>
+								<span
+									class="font-medium"
+									title={anomaly.actor_user_id}
+									aria-label={anomaly.actor_user_id}>{anomaly.actor_user_id.slice(0, 8)}</span
+								>
 								<span class="text-muted-foreground">
 									{t('app.admin.anomaly_reads')
 										.replace('{count}', String(anomaly.distinct_targets))
@@ -335,8 +339,18 @@
 										{formatDateTime(entry.occurred_at)}
 									</td>
 									<td class="px-3 py-2 font-medium">{entry.action}</td>
-									<td class="px-3 py-2 font-mono text-xs">{entry.actor_user_id ?? '-'}</td>
-									<td class="px-3 py-2 font-mono text-xs">{entry.target_user_id ?? '-'}</td>
+									<td
+										class="px-3 py-2 font-mono text-xs"
+										title={entry.actor_user_id ?? undefined}
+										aria-label={entry.actor_user_id ?? undefined}
+										>{entry.actor_user_id?.slice(0, 8) ?? '-'}</td
+									>
+									<td
+										class="px-3 py-2 font-mono text-xs"
+										title={entry.target_user_id ?? undefined}
+										aria-label={entry.target_user_id ?? undefined}
+										>{entry.target_user_id?.slice(0, 8) ?? '-'}</td
+									>
 									<td class="px-3 py-2">{entry.severity}</td>
 									<td class="px-3 py-2 tabular-nums">{entry.object_count}</td>
 								</tr>

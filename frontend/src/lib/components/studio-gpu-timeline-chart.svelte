@@ -76,7 +76,7 @@
 
 <div class="flex flex-col gap-4">
 	<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
-		<Card.Header class="border-border border-b px-5 py-4">
+		<Card.Header class="border-border border-b px-5 py-3">
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
 					<Card.Title class="text-base">{t('app.metrics.gpu_timeline')}</Card.Title>
@@ -97,8 +97,8 @@
 				</div>
 			</div>
 		</Card.Header>
-		<Card.Content class="overflow-x-auto p-5">
-			<div class="grid min-w-[28rem] gap-5">
+		<Card.Content class="overflow-x-auto px-5 py-4">
+			<div class="grid min-w-[28rem] gap-4">
 				{#each visibleMetricLanes as lane (lane.id)}
 					<StudioGpuMetricLineChart
 						title={lane.label}
