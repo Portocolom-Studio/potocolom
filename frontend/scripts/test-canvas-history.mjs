@@ -6838,14 +6838,35 @@ test('filtered older grid images open in the inspector and close with Back or a 
 		await page.setViewport({ width: 390, height: 844 });
 		await page.$eval(olderTile, (tile) => tile.click());
 		await page.waitForSelector('.selection-inspector', { timeout: WAIT_MS });
+		// The overlay slides in from beyond the end edge. Measure it only once it
+		// is in place, or the swipe below starts outside the viewport.
+		await page.waitForFunction(
+			() => {
+				const inspector = document.querySelector('.selection-inspector');
+				return (
+					inspector.getAnimations().length === 0 &&
+					inspector.getBoundingClientRect().right <= innerWidth + 1
+				);
+			},
+			{ timeout: WAIT_MS }
+		);
 		const panel = await page.$('.selection-inspector');
 		const bounds = await panel.boundingBox();
 		assert.ok(bounds);
+		const start = { x: bounds.x + 30, y: bounds.y + 120 };
+		assert.ok(
+			await page.evaluate(
+				({ x, y }) =>
+					document.querySelector('.selection-inspector').contains(document.elementFromPoint(x, y)),
+				start
+			),
+			'the swipe starts on the inspector'
+		);
 		const touch = await page.createCDPSession();
 		await touch.send('Emulation.setTouchEmulationEnabled', { enabled: true });
 		await touch.send('Input.dispatchTouchEvent', {
 			type: 'touchStart',
-			touchPoints: [{ x: bounds.x + 30, y: bounds.y + 120, id: 1 }]
+			touchPoints: [{ ...start, id: 1 }]
 		});
 		await touch.send('Input.dispatchTouchEvent', {
 			type: 'touchMove',
