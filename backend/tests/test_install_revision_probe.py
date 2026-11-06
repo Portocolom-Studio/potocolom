@@ -36,7 +36,7 @@ def _revisions() -> list[str]:
 def test_every_shipped_revision_is_known():
     revisions = _revisions()
     assert len(revisions) > 10
-    assert {_answer(revision) for revision in (revisions[0], revisions[-1])} == {"known"}
+    assert {_answer(revision) for revision in revisions} == {"known"}
 
 
 def test_a_revision_the_release_lacks_is_unknown():

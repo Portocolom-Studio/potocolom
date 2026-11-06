@@ -92,15 +92,19 @@ client_sessions() {
 	live_psql "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()" 2>/dev/null || echo unknown
 }
 
-# Returns 0 when the database volume exists and 1 when it does not. A failed
-# listing ends the install: an unanswered question must not read as "no database".
-database_volume_exists() {
-	local listed
-	if ! listed="$(docker volume ls -q --filter "name=${PROJECT}_pgdata")"; then
-		echo "error: could not list the Docker volumes to look for ${PROJECT}_pgdata; nothing was changed" >&2
+# Returns 0 when the named Docker volume exists and 1 when it does not. A failed
+# listing ends the install: an unanswered question must not read as "no volume".
+volume_exists() {
+	local name="$1" listed
+	if ! listed="$(docker volume ls -q --filter "name=$name")"; then
+		echo "error: could not list the Docker volumes to look for $name; nothing was changed" >&2
 		exit 1
 	fi
-	grep -Fxq -- "${PROJECT}_pgdata" <<<"$listed"
+	grep -Fxq -- "$name" <<<"$listed"
+}
+
+database_volume_exists() {
+	volume_exists "${PROJECT}_pgdata"
 }
 
 # Stops the running containers of this project except postgres, and starts
@@ -168,14 +172,24 @@ wait_for_sessions() {
 	return 1
 }
 
-# Prints the Alembic revision of the database. An empty database (no
-# alembic_version table) prints nothing and succeeds. Any other failure, and a
-# table with no row, fails: the revision must be read or the upgrade is refused.
+# Prints the Alembic revision of the database. An empty database (no public
+# tables at all) prints nothing and succeeds. A database with tables but no
+# alembic_version table fails, because its revision cannot be read. Any other
+# failure, and a table with no row, fails too: the revision must be read or the
+# upgrade is refused.
 database_revision() {
-	local has_table revision
+	local has_table revision tables
 	has_table="$(live_psql "SELECT to_regclass('public.alembic_version') IS NOT NULL")" || return 1
 	case "$has_table" in
-	f) return 0 ;;
+	f)
+		tables="$(live_psql "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")" || return 1
+		[[ "$tables" =~ ^[0-9]+$ ]] || return 1
+		if ((tables > 0)); then
+			echo "error: the database has $tables table(s) but no alembic_version table, so its revision is unknown" >&2
+			return 1
+		fi
+		return 0
+		;;
 	t) ;;
 	*) return 1 ;;
 	esac
@@ -202,6 +216,7 @@ target_revision_verdict() {
 
 # Refuses a database that a newer release migrated. Prints the forward fix, and
 # the restore command for the newest backup this release knows, when there is one.
+# That restore runs the release being installed, which knows the backup's revision.
 refuse_newer_database() {
 	local revision="$1" name rev newest="" verdict
 	local pattern='^(v[0-9]+\.[0-9]+\.[0-9]+|source)-([A-Za-z0-9_]+)-[0-9]{8}T[0-9]{6}Z$'
@@ -221,7 +236,7 @@ refuse_newer_database() {
 	if [[ -n "$newest" ]]; then
 		echo "  Or restore the newest backup that $VERSION knows, into a new project:" >&2
 		echo "    docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") down" >&2
-		echo "    COMPOSE_PROFILES=$(printf '%q' "$profile") COMPOSE_FILE=$(printf '%q' "$newest/compose.yml") COMPOSE_PROJECT_NAME=$(printf '%q' "${PROJECT}-restored") $(printf '%q' "$DIR/scripts/restore.sh") $(printf '%q' "$newest")" >&2
+		echo "    COMPOSE_PROFILES=$(printf '%q' "$profile") POTOCOLOM_VERSION=$(printf '%q' "$VERSION") COMPOSE_FILE=$(printf '%q' "$newest/compose.yml") COMPOSE_PROJECT_NAME=$(printf '%q' "${PROJECT}-restored") $(printf '%q' "$DIR/scripts/restore.sh") $(printf '%q' "$newest")" >&2
 		echo "  The restored project starts with an empty model cache." >&2
 	fi
 	exit 1
@@ -237,8 +252,13 @@ take_backup() {
 		return 0
 	fi
 	db_bytes="$(live_psql "SELECT pg_database_size('potocolom')")" || db_bytes=""
-	assets_bytes="$(docker run --rm --mount "type=volume,src=${PROJECT}_assets,dst=/src,readonly" \
-		postgres:16 du -sb /src | awk '{print $1}')" || assets_bytes=""
+	# A missing assets volume measures as 0. The check comes first because a
+	# docker run with a --mount of a missing volume would create that volume.
+	assets_bytes=0
+	if volume_exists "${PROJECT}_assets"; then
+		assets_bytes="$(docker run --rm --mount "type=volume,src=${PROJECT}_assets,dst=/src,readonly" \
+			postgres:16 du -sb /src | awk '{print $1}')" || assets_bytes=""
+	fi
 	avail="$(df -B1 --output=avail "$DIR" | tail -n 1 | tr -dc '0-9')"
 	if [[ ! "$db_bytes" =~ ^[0-9]+$ || ! "$assets_bytes" =~ ^[0-9]+$ || -z "$avail" ]]; then
 		echo "error: could not measure the database, the assets or the free space for a backup; nothing was changed" >&2
@@ -254,10 +274,16 @@ take_backup() {
 	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 	if [[ "$saved_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then old="$saved_version"; else old=source; fi
 	if [[ ! -d "$DIR/backups" ]]; then
-		mkdir -p "$DIR/backups"
+		mkdir "$DIR/backups"
 		BACKUPS_CREATED=1
 	fi
 	dest="$DIR/backups/$old-$revision-$stamp"
+	# An existing destination is an earlier recovery point. It is refused before
+	# BACKUP_PARTIAL names it, so install_exit never removes it.
+	if [[ -e "$dest" ]]; then
+		echo "error: the backup $dest already exists; nothing was changed" >&2
+		exit 1
+	fi
 	BACKUP_PARTIAL="$dest"
 	echo "backing up $PROJECT to $dest"
 	if ! ENV_FILE="$ENV_FILE" COMPOSE_FILE="$DIR/deploy/compose/compose.yml" COMPOSE_PROJECT_NAME="$PROJECT" \
@@ -292,11 +318,13 @@ install_exit() {
 }
 
 # Replaces the live bundle with the verified one and publishes the staged .env,
-# pinned to this release and profile, in one rename. Once the rename is done,
-# the stopped services are not put back: the upgrade's own up starts them.
+# pinned to this release and profile, in one rename. The marker stays until the
+# readiness check passes, so a rerun knows the last upgrade did not finish. The
+# recovery trap stays set: nothing has migrated until the up that main runs next.
 swap_in_bundle() {
 	local env_tmp
 	mkdir -p "$DIR"
+	: >"$DIR/.upgrade-incomplete"
 	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
 	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
 	chmod 600 "$env_tmp"
@@ -330,8 +358,6 @@ swap_in_bundle() {
 		}
 	' "$STAGE_ENV" >"$env_tmp"
 	mv "$env_tmp" "$ENV_FILE"
-	QUIESCED=0
-	trap 'rm -rf "$TMP"' EXIT
 }
 
 main() {
@@ -599,7 +625,9 @@ main() {
 				;;
 			esac
 		fi
-		if [[ "$saved_version" != "$VERSION" ]]; then
+		# A marker left by an upgrade that never became ready means the database
+		# may have been migrated, so that rerun backs up even at the same version.
+		if [[ "$saved_version" != "$VERSION" || -e "$DIR/.upgrade-incomplete" ]]; then
 			take_backup "${revision:-none}"
 		fi
 	fi
@@ -622,6 +650,10 @@ main() {
 		fi
 	fi
 
+	# Nothing has migrated before this up, so the stopped services can still be put
+	# back by restore_quiesced. From here on only the plain temporary cleanup runs.
+	QUIESCED=0
+	trap 'rm -rf "$TMP"' EXIT
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
 	# Readiness covers the API and its store. It does not wait for model downloads
@@ -639,6 +671,7 @@ main() {
 		echo "  Diagnose with: docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") logs api postgres" >&2
 		exit 1
 	fi
+	rm -f -- "$DIR/.upgrade-incomplete"
 
 	# Compose syntax: an optional export, and an unquoted value ends at a comment.
 	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
@@ -699,7 +732,7 @@ main() {
 	echo "Secrets are in $ENV_FILE."
 	echo "Lost the link? docs/self-hosting.md explains how to mint another one."
 	echo "Running the install.sh of a newer release upgrades this install in place."
-	echo "Stop: docker compose -f $(printf '%q' "$DIR/deploy/compose/compose.yml") --profile $(printf '%q' "$profile") down"
+	echo "Stop: docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") --profile $(printf '%q' "$profile") down"
 }
 
 # Sourced, the functions are available to a test; run, the installer starts.

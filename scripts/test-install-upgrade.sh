@@ -13,6 +13,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 REAL_CURL="$(command -v curl)"
 REAL_ID="$(command -v id)"
+REAL_DATE="$(command -v date)"
 RELEASE_TEST_AWK="$(type -P awk)"
 failures=0
 
@@ -126,6 +127,13 @@ if [[ "$1" == -nG ]]; then printf 'video render\n'; exit 0; fi
 exec "${REAL_ID:?}" "$@"
 EOF
 
+# FAKE_STAMP replaces the UTC stamp that names a backup, so a test can make one collide.
+cat >"$tmp/stubs/date" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${FAKE_STAMP:-}" && "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then printf '%s\n' "$FAKE_STAMP"; exit 0; fi
+exec "${REAL_DATE:?}" "$@"
+EOF
+
 # The docker state machine. Containers are "ID SERVICE STATE" lines in
 # $STATE_DIR/containers. The database exists when $STATE_DIR/pgdata exists, and
 # its Alembic revision is the content of $STATE_DIR/revision (absent means no
@@ -223,6 +231,10 @@ psql_stub() {
 			;;
 		*to_regclass*)
 			if [[ -f "$state/revision" ]]; then printf 't\n'; else printf 'f\n'; fi
+			;;
+		*pg_tables*)
+			# Public tables of the database: $state/tables holds the count, 0 when absent.
+			cat "$state/tables" 2>/dev/null || printf '0\n'
 			;;
 		*version_num*)
 			local stuck=0
@@ -340,6 +352,7 @@ compose_cmd() {
 			done
 			;;
 		rm)
+			if [[ "${RM_FAIL:-0}" == 1 ]]; then return 1; fi
 			for arg in "$@"; do
 				if [[ "$arg" != -* ]]; then remove_container 2 "$arg"; fi
 			done
@@ -407,10 +420,12 @@ case "${1:-}" in
 				exit $?
 				;;
 			ls)
-				# Lists every volume: the database when $state/pgdata exists, and a
-				# name that only contains the database name when DECOY_VOLUME is set.
+				# Lists every volume: the database when $state/pgdata exists, the assets
+				# volume unless $state/no_assets exists, and a name that only contains the
+				# database name when DECOY_VOLUME is set.
 				if [[ -n "${DOCKER_VOLUME_LS_FAIL:-}" ]]; then exit 1; fi
 				if [[ -f "$state/pgdata" ]]; then printf '%s_pgdata\n' "${DB_PROJECT:-potocolom}"; fi
+				if [[ ! -f "$state/no_assets" ]]; then printf '%s_assets\n' "${DB_PROJECT:-potocolom}"; fi
 				if [[ -n "${DECOY_VOLUME:-}" ]]; then printf '%s_pgdata_copy\n' "${DB_PROJECT:-potocolom}"; fi
 				exit 0
 				;;
@@ -449,7 +464,7 @@ new_case() {
 	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
 	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id docker; do
+	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 	# Each case gets its own bundle directory, so SHA256SUMS can name any version.
@@ -524,7 +539,7 @@ run_install() {
 	env -u DISPLAY -u WAYLAND_DISPLAY -u POTOCOLOM_PROFILE -u COMPOSE_PROFILES -u POTOCOLOM_PUBLIC_URL \
 		PATH="$case_dir/bin:$PATH" TMPDIR="$case_dir/tmp" STATE_DIR="$case_dir/state" \
 		DOCKER_LOG="$case_dir/docker.log" CURL_LOG="$case_dir/curl.log" BUNDLE_DIR="$case_dir/source" \
-		READY_COUNT_FILE="$case_dir/ready-count" REAL_CURL="$REAL_CURL" REAL_ID="$REAL_ID" \
+		READY_COUNT_FILE="$case_dir/ready-count" REAL_CURL="$REAL_CURL" REAL_ID="$REAL_ID" REAL_DATE="$REAL_DATE" \
 		RELEASE_TEST_AWK="$RELEASE_TEST_AWK" POTOCOLOM_SKIP_GPU_TEST=1 \
 		POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_KFD_TOPOLOGY="$case_dir/kfd" \
 		POTOCOLOM_DRI="$case_dir/dri" POTOCOLOM_PCI_DEVICES="$case_dir/pci" \
@@ -1050,9 +1065,10 @@ else
 fi
 
 # 26. A refused downgrade prints a restore command that runs as printed, starts the
-# old release's worker, and needs no COMPOSE_PROFILES in the backup's own env file.
-# The backup's env file names POTOCOLOM_VERSION, so the restored project starts that release.
-new_case printed-restore-command-starts-old-release
+# worker of the release being installed, and needs no COMPOSE_PROFILES in the backup's
+# own env file. The printed line sets POTOCOLOM_VERSION to that release, which knows the
+# backup's revision, so the restored project starts it and not the release the backup names.
+new_case printed-restore-command-starts-installing-release
 seed_live "$case_dir" v10.0.0
 seed_db "$case_dir" r2
 seed_running "$case_dir"
@@ -1075,12 +1091,12 @@ fi
 # The release the restore's own up started, as recorded by the docker stub.
 started="$(grep '^up-release ' "$case_dir/docker.log" | tail -n 1)"
 if [[ "$rc" -ne 0 && -n "$line" && "$restore_rc" -eq 0 && "$restore_out" == *'restored potocolom-restored'* \
-	&& "$started" == 'up-release v8.8.8 profiles=gpu' \
+	&& "$started" == 'up-release v9.9.9 profiles=gpu' \
 	&& "$(grep -E 'potocolom-restored .*up -d \|' "$case_dir/docker.log" | tail -n 1)" == *'COMPOSE_PROFILES=gpu'* \
 	&& "$(grep -E 'potocolom-restored .*up -d \|' "$case_dir/docker.log" | tail -n 1)" == *"$bdir/compose.yml"* ]]; then
-	pass_case printed-restore-command-starts-old-release
+	pass_case printed-restore-command-starts-installing-release
 else
-	fail_case printed-restore-command-starts-old-release "rc=$rc restore_rc=$restore_rc line=$line $output $restore_out"
+	fail_case printed-restore-command-starts-installing-release "rc=$rc restore_rc=$restore_rc line=$line $output $restore_out"
 fi
 
 # 27. Preflight takes the disk it measures from the install directory it is given.
@@ -1220,6 +1236,119 @@ if [[ "$rc" -ne 0 && "$output" == *'could not list the Docker volumes'* && ! -e 
 	pass_case volume-listing-failure-refuses-with-database-and-no-env
 else
 	fail_case volume-listing-failure-refuses-with-database-and-no-env "rc=$rc $output"
+fi
+
+# 36. A database with tables but no alembic_version table is refused, not read as empty.
+new_case database-without-alembic-table-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" none
+printf '3\n' >"$case_dir/state/tables"
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" TARGET_KNOWN="")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+states_after="$(container_states "$case_dir")"
+if [[ "$rc" -ne 0 && "$output" == *'no alembic_version table'* && "$before" == "$after" \
+	&& "$states_before" == "$states_after" && ! -e "$case_dir/install/backups" \
+	&& "$(log_line 'pg_dump' "$case_dir")" -eq 0 \
+	&& "$(grep -c '^api1 api running$' "$case_dir/state/containers")" -eq 1 ]]; then
+	pass_case database-without-alembic-table-refuses
+else
+	fail_case database-without-alembic-table-refuses "rc=$rc $output"
+fi
+
+# 37. A missing assets volume measures as 0, and measuring it does not create it.
+new_case missing-assets-volume-measures-zero
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+touch "$case_dir/state/no_assets"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" DB_BYTES=100000000000 AVAIL_BYTES=1000)" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+states_after="$(container_states "$case_dir")"
+if [[ "$rc" -ne 0 && "$output" == *'Need 111073741824 bytes: database 100000000000, assets 0,'* \
+	&& "$(grep -c 'du -sb /src' "$case_dir/docker.log")" -eq 0 \
+	&& "$(grep -c 'src=potocolom_assets' "$case_dir/docker.log")" -eq 0 \
+	&& "$before" == "$after" && "$states_before" == "$states_after" ]]; then
+	pass_case missing-assets-volume-measures-zero
+else
+	fail_case missing-assets-volume-measures-zero "rc=$rc $output"
+fi
+
+# 38. A backup destination that already exists is refused, and the recovery point in it is kept.
+new_case existing-backup-destination-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/install/backups/v8.8.8-r1-20260101T000000Z"
+printf 'EARLIER\n' >"$case_dir/install/backups/v8.8.8-r1-20260101T000000Z/database.dump"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260101T000000Z BACKUP_FAIL=1)" && rc=0 || rc=$?
+states_after="$(container_states "$case_dir")"
+if [[ "$rc" -ne 0 && "$output" == *'already exists'* \
+	&& "$(cat "$case_dir/install/backups/v8.8.8-r1-20260101T000000Z/database.dump")" == EARLIER \
+	&& "$(log_line 'pg_dump' "$case_dir")" -eq 0 && "$states_before" == "$states_after" \
+	&& "$(grep -c '^api1 api running$' "$case_dir/state/containers")" -eq 1 ]]; then
+	pass_case existing-backup-destination-refuses
+else
+	fail_case existing-backup-destination-refuses "rc=$rc $output"
+fi
+
+# 39. A rerun after an upgrade that never became ready takes a backup, even at the same version.
+new_case rerun-after-unready-upgrade-takes-backup
+seed_live "$case_dir" v9.9.9
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" MIGRATE_TO=r2 READY_FAIL=1)" && rc=0 || rc=$?
+first_marker=no
+if [[ -e "$case_dir/install/.upgrade-incomplete" ]]; then first_marker=yes; fi
+first_backups=no
+if [[ -e "$case_dir/install/backups" ]]; then first_backups=yes; fi
+output2="$(run_install "$case_dir" TARGET_KNOWN="r2")" && rc2=0 || rc2=$?
+if [[ "$rc" -ne 0 && "$output" == *'did not become ready'* && "$first_marker" == yes && "$first_backups" == no \
+	&& "$rc2" -eq 0 && -n "$(backup_dirs "$case_dir" '^v9\.9\.9-r2-[0-9]{8}T[0-9]{6}Z$')" \
+	&& ! -e "$case_dir/install/.upgrade-incomplete" ]]; then
+	pass_case rerun-after-unready-upgrade-takes-backup
+else
+	fail_case rerun-after-unready-upgrade-takes-backup "rc=$rc/$rc2 $output $output2"
+fi
+
+# 40. A worker removal that fails after the swap starts again the services that were stopped.
+new_case failed-worker-removal-restores-services
+seed_live "$case_dir" v8.8.8 gpu
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" POTOCOLOM_PROFILE=api TARGET_KNOWN="r1 r2" RM_FAIL=1)" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$(log_line 'up -d --no-build' "$case_dir")" -eq 0 \
+	&& "$(grep -c '^api1 api running$' "$case_dir/state/containers")" -eq 1 \
+	&& "$(grep -c '^wk1 worker running$' "$case_dir/state/containers")" -eq 1 \
+	&& -z "$(ls -A "$case_dir/tmp")" ]]; then
+	pass_case failed-worker-removal-restores-services
+else
+	fail_case failed-worker-removal-restores-services "rc=$rc $output"
+fi
+
+# 41. The printed Stop command names the project and the env file, each quoted for a paste.
+new_case stop-line-names-project-and-env-file
+seed_live "$case_dir" v8.8.8
+printf 'COMPOSE_PROJECT_NAME=my-studio\n' >>"$case_dir/install/deploy/compose/.env"
+ln -s "$case_dir/install" "$case_dir/poto\$cash"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" POTOCOLOM_DIR="$case_dir/poto\$cash" TARGET_KNOWN="")" && rc=0 || rc=$?
+dir="$case_dir/poto\$cash"
+expected="Stop: docker compose -p my-studio --env-file $(printf '%q' "$dir/deploy/compose/.env") -f $(printf '%q' "$dir/deploy/compose/compose.yml") --profile gpu down"
+if [[ "$rc" -eq 0 ]] && grep -qxF -- "$expected" <<<"$output"; then
+	pass_case stop-line-names-project-and-env-file
+else
+	fail_case stop-line-names-project-and-env-file "rc=$rc expected=$expected $output"
 fi
 
 if ((failures > 0)); then
