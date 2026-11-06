@@ -37,7 +37,7 @@ from worker.protocol6 import canonical_bytes, decode_control, validate_message
 def test_build_runtime_passes_vram_reserve_to_diffusers_engine(monkeypatch):
     manifests = [SIMULATED_MANIFEST]
     engine_constructor = MagicMock()
-    monkeypatch.setattr("worker.client.load_manifests", lambda _directory: manifests)
+    monkeypatch.setattr("worker.client.load_fleet_manifests", lambda _directory, **_: manifests)
     monkeypatch.setattr("worker.client.enable_categorizer", lambda: None)
     monkeypatch.setattr("worker.engine.DiffusersEngine", engine_constructor)
     settings = Settings(

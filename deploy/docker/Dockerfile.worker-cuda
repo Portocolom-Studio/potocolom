@@ -9,8 +9,8 @@ WORKDIR /app
 COPY worker/pyproject.toml .
 COPY worker/worker ./worker
 COPY worker/vendor ./vendor
-# Default manifests seed the empty models volume on first boot.
-COPY worker/models /models
+# Bundled manifests sit beside the package: worker/manifests.py reads ./models.
+COPY worker/models ./models
 
 RUN pip install --no-cache-dir ".[inference]" \
 	&& pip install --no-cache-dir --upgrade setuptools wheel urllib3 fsspec msgpack soupsieve brotli 'certifi>=2026.10.19' 'uv>=0.13.4'
