@@ -2358,3 +2358,15 @@ Upgrade the API before workers. Legacy caches are adopted only after Hub metadat
 ## Bundled Hub metadata lets the worker adopt models offline
 
 The worker ships the pinned Hub listings, pipeline indexes and upscaler sizes needed to reproduce its installation plans without a network connection. This supersedes only the statement in "Model store rollout and legacy caches" that a permanently offline cache cannot be adopted. Exact file names and sizes remain required. Scanning extra cache folders and importing them was rejected in favor of sharing through `HF_HOME`; a loose directory walk remains rejected. Hashing every file at startup was rejected because tens of gigabytes can take minutes; the existing exact plan and size checks remain the bar.
+
+## The download plan is the loader's own file selection
+
+The model store installs and adopts a model by an exact plan of files and sizes. That plan was a hand-written approximation of what a load reads, and it chose more: ONNX and OpenVINO exports, the stock VAE folder although the load passes its own VAE, every root Python file, every weight file in a folder, a model folder's extra configs, and every folder of a plain repository. A cache that diffusers filled was therefore never adopted for seven of the fourteen bundled models, and an install of an SDXL model fetched about 25 GiB it never read (28 GiB for iris-3b). The plan now follows each loader's own selection. A diffusers pipeline plans what `DiffusionPipeline.download` would fetch, with the components the engine passes in left out. The VAE companion plans its `config.json` and default weights. A plain repository plans the allow-patterns its loader passes to `snapshot_download`, from one constant that the loader also reads. A conformance test in `worker/tests_inference` drives diffusers' download with the Hub stubbed to the bundled lock and fails when a diffusers upgrade changes the selection. Exact names and sizes remain the adoption bar. Marker fingerprints are unchanged, so markers written under the old plan stay valid.
+
+Rejected alternatives: keeping the approximation (this bug); calling diffusers' private selection helpers at runtime (couples planning to a private API; the test-only coupling catches drift without that risk).
+
+## The token requirement follows the files still to fetch
+
+An install needs a Hugging Face token only when a file it still has to fetch comes from a gated repository. Before, one flag for the whole plan refused a token-free install of a complete gated cache, and of a gated model whose only missing files came from an ungated companion such as the output categorizer. The worker's probe reports the same rule, so the API, which only reads that flag, lets those installs through.
+
+Rejected alternative: one gate flag per plan (it refused installs that fetch nothing gated).

@@ -10,6 +10,21 @@ from worker.manifests import Manifest
 
 Callback = Callable[[Any, int, Any, dict[str, Any]], dict[str, Any]]
 
+# The custom pipeline module each candidate ships at its repository root, by manifest
+# pipeline name. The loader and the download plan both read it.
+CUSTOM_PIPELINES = {"MOSSImage": "pipeline_moss_image"}
+
+# Plain repositories (weights and a config beside them, no model_index.json): the files
+# each load reads, by repository. The loader and the download plan both read this table.
+PLAIN_REPO_ALLOW: dict[str, tuple[str, ...]] = {
+    "speridlabs/iris-3b": ("config.yaml", "model.safetensors"),
+    "Qwen/Qwen3-VL-4B-Instruct": (
+        "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
+        "special_tokens_map.json", "vocab.json", "merges.txt", "added_tokens.json",
+        "*.safetensors", "model.safetensors.index.json",
+    ),
+}
+
 
 class MossAdapter:
     def __init__(self, pipe: Any, *, device: str, rung: str, torch: Any):
@@ -262,7 +277,7 @@ def _load_moss(manifest: Manifest, rung: str, device: str) -> MossAdapter:
         raise OSError(f"{manifest.id} is not installed")
     model_dir = os.path.dirname(index)
     pipe = DiffusionPipeline.from_pretrained(
-        model_dir, custom_pipeline="pipeline_moss_image", trust_remote_code=True,
+        model_dir, custom_pipeline=CUSTOM_PIPELINES["MOSSImage"], trust_remote_code=True,
         torch_dtype={"default": torch.bfloat16, "vae": torch.float32},
         local_files_only=True,
     )
@@ -280,19 +295,18 @@ def _load_iris(manifest: Manifest, rung: str, device: str) -> IrisAdapter:
     from iris3b.sampling import generate, load_for_inference
     from iris3b.text.qwen3_vl import Qwen3VLTextEncoder
 
+    if not manifest.worker_repos:
+        raise ValueError(f"{manifest.id} names no text encoder in worker_repos")
+    encoder_pin = manifest.worker_repos[0]
     model_dir = snapshot_download(
         repo_id=manifest.source, revision=_revision(manifest),
-        allow_patterns=["config.yaml", "model.safetensors"], local_files_only=True,
+        allow_patterns=list(PLAIN_REPO_ALLOW[manifest.source]), local_files_only=True,
     )
     raw, weights = load_for_inference(model_dir)
     cfg = inference_config(raw)
     cfg.text_encoder.pretrained = snapshot_download(
-        repo_id="Qwen/Qwen3-VL-4B-Instruct", revision="ebb281ec70b05090aa6165b016eac8ec08e71b17",
-        allow_patterns=["config.json", "generation_config.json", "tokenizer.json",
-                        "tokenizer_config.json", "special_tokens_map.json", "vocab.json",
-                        "merges.txt", "added_tokens.json", "*.safetensors",
-                        "model.safetensors.index.json"],
-        local_files_only=True,
+        repo_id=encoder_pin.repo, revision=encoder_pin.revision,
+        allow_patterns=list(PLAIN_REPO_ALLOW[encoder_pin.repo]), local_files_only=True,
     )
     with torch.device("meta"):
         model = IrisDiT(cfg.model)
