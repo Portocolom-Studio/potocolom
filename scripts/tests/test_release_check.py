@@ -15,7 +15,7 @@ import threading
 import time
 import unittest
 import zlib
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 from contextlib import redirect_stderr
 
 DRIVER = Path(__file__).resolve().parents[1] / "release-check.py"
@@ -126,7 +126,7 @@ class ReleaseCheckTests(unittest.TestCase):
                         check.cleanup_rehearsal(root)
                 self.assertFalse(any(c.args[0][1] == "rm" or c.args[0][2:3] == ["rm"] for c in docker.call_args_list))
 
-    def test_upgrade_restores_default_models_and_candidate_image_size(self):
+    def test_upgrade_seeds_previous_manifests_and_requests_the_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             release = release_fixture(root / "candidate")
@@ -140,13 +140,26 @@ class ReleaseCheckTests(unittest.TestCase):
             def generated(_base, _prompt, _guard, *, size=768):
                 events.append(("generate", size))
                 return "saved", png(size, size)
-            def model_config(*_args, restore=False):
-                events.append(("models", "restore" if restore else "select"))
+            def seed(_install_dir, _project, _profile, manifests):
+                events.append(("seed", dict(manifests)))
+            def install_model(_base, model_id, _guard):
+                events.append(("model", model_id))
+            def compose(_install_dir, _project, args):
+                if args[:1] == ["stop"]:
+                    events.append(("stop",))
+            def fleet_check(_base, _install_dir, _project, _profile, manifests, _guard):
+                events.append(("fleet", dict(manifests)))
+            bundles = {"v1.2.2": {"ssd-1b-lightning.json": "previous ssd", "vega-rt.json": "previous vega"},
+                       "v1.2.3": {"ssd-1b-lightning.json": "candidate ssd"}}
             with patch.object(check, "free_port_8080"), \
                     patch.object(check, "_project_exists", side_effect=[False, True]), \
                     patch.object(check, "run_installer", side_effect=installer), \
-                    patch.object(check, "legacy_model_config", side_effect=model_config), \
-                    patch.object(check, "compose_owned"), patch.object(check, "remove_owned_data_volumes"), \
+                    patch.object(check, "request_model_install", side_effect=install_model), \
+                    patch.object(check, "seed_models_volume", side_effect=seed), \
+                    patch.object(check, "bundle_manifests", side_effect=lambda _dir, version: bundles[version]), \
+                    patch.object(check, "assert_upgraded_fleet", side_effect=fleet_check), \
+                    patch.object(check, "compose_owned", side_effect=compose), \
+                    patch.object(check, "remove_owned_data_volumes"), \
                     patch.object(check, "cleanup_rehearsal"), \
                     patch.object(check, "project_owns_api_port", return_value=True), \
                     patch.object(check, "api_base", return_value="http://localhost:8080"), \
@@ -154,11 +167,98 @@ class ReleaseCheckTests(unittest.TestCase):
                     patch.object(check, "generate", side_effect=generated), \
                     patch.object(check, "verify_assets") as saved:
                 check.fresh_rehearsal(args, release / "install.sh")
-            self.assertEqual(events, [("install", "v1.2.3"), ("generate", 768),
-                                     ("models", "select"), ("install", "v1.2.2"),
-                                     ("generate", 768), ("models", "restore"),
-                                     ("install", "v1.2.3"), ("generate", 768)])
+            self.assertEqual(events, [("install", "v1.2.3"), ("model", check.MODEL),
+                                     ("generate", 768), ("seed", {"ssd-1b-lightning.json": "previous ssd"}),
+                                     ("install", "v1.2.2"), ("generate", 768),
+                                     ("stop",), ("seed", {"ssd-1b-lightning.json": "previous ssd"}),
+                                     ("install", "v1.2.3"), ("fleet", {"ssd-1b-lightning.json": "candidate ssd"}),
+                                     ("generate", 768)])
             saved.assert_called_once_with("http://localhost:8080", {"saved": hashlib.sha256(png()).hexdigest()})
+
+    def test_stale_seeds_are_still_bundled_manifests_with_changed_bytes(self):
+        previous = {"a.json": "old pin", "b.json": "same", "gone.json": "removed model"}
+        candidate = {"a.json": "new pin", "b.json": "same"}
+        self.assertEqual(check.stale_seeds(previous, candidate), {"a.json": "old pin"})
+
+    def test_an_unchanged_previous_release_takes_a_stale_seed_from_the_history(self):
+        history = {"h1": {"id": "a", "body": "same"}, "h2": {"id": "a", "body": "older pin"},
+                   "h3": {"id": "gone", "body": "removed model"}}
+        self.assertEqual(check.stale_seeds({"a.json": "same"}, {"a.json": "same"}, history),
+                         {"a.json": "older pin"})
+
+    def test_no_earlier_version_anywhere_refuses(self):
+        with self.assertRaisesRegex(check.CheckError, "no earlier version"):
+            check.stale_seeds({"a.json": "same"}, {"a.json": "same"},
+                              {"h1": {"id": "a", "body": "same"}})
+
+    def test_the_shipped_history_always_has_a_stale_seed_for_the_current_bundle(self):
+        bundle = {path.name: path.read_text() for path in
+                  (Path(check.__file__).resolve().parents[1] / "worker/models").glob("*.json")}
+        self.assertTrue(check.stale_seeds(dict(bundle), bundle))
+
+    def test_bundle_manifests_reads_the_release_worker_models(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / "release"
+            directory.mkdir()
+            bundle = directory / "potocolom-v1.2.2-selfhost.tar.gz"
+            members = {"deploy/compose/.env.example": b"AUTH_MODE=none\n",
+                       "worker/models/ssd-1b-lightning.json": b"{}",
+                       "worker/worker/not-a-manifest.json": b"{}"}
+            with tarfile.open(bundle, "w:gz") as archive:
+                for name, data in members.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(data)
+                    archive.addfile(info, io.BytesIO(data))
+            (directory / "install.sh").write_text("#!/bin/bash\n", encoding="utf-8")
+            sums = [hashlib.sha256((directory / "install.sh").read_bytes()).hexdigest() + "  install.sh",
+                    hashlib.sha256(bundle.read_bytes()).hexdigest() + "  " + bundle.name]
+            (directory / "SHA256SUMS").write_text("\n".join(sums) + "\n", encoding="utf-8")
+            self.assertEqual(check.bundle_manifests(directory, "v1.2.2"), {"ssd-1b-lightning.json": "{}"})
+
+    def test_model_install_is_requested_once_a_worker_offers_the_model(self):
+        listings = [[], [{"worker_id": "w1", "manageable": True,
+                          "models": [{"id": "m", "installed": False}]}]]
+        calls = []
+        def api(_base, path, **kwargs):
+            if path == "/api/v1/admin/models":
+                return listings.pop(0) if len(listings) > 1 else listings[0]
+            calls.append((path, kwargs.get("method")))
+            return {"op_id": "op"}
+        with patch.object(check, "http_json", side_effect=api), patch.object(check.time, "sleep"):
+            check.request_model_install("http://localhost:8080", "m")
+        self.assertEqual(calls, [("/api/v1/admin/workers/w1/models/m/install", "POST")])
+
+    def test_model_install_is_not_repeated_for_an_installed_model(self):
+        calls = []
+        def api(_base, path, **kwargs):
+            if path == "/api/v1/admin/models":
+                return [{"worker_id": "w1", "manageable": True, "models": [{"id": "m", "installed": True}]}]
+            calls.append(path)
+            return {}
+        with patch.object(check, "http_json", side_effect=api):
+            check.request_model_install("http://localhost:8080", "m")
+        self.assertEqual(calls, [])
+
+    def _upgraded_fleet_case(self, fleet, announced=("a",)):
+        bundle = {"a.json": json.dumps({"id": "a", "source_revision": "a" * 40})}
+        listing = [{"worker_id": "w1", "manageable": True,
+                    "models": [{"id": model_id} for model_id in announced]}]
+        with patch.object(check, "http_json", return_value=listing), \
+                patch.object(check, "worker_fleet", return_value=fleet):
+            check.assert_upgraded_fleet("http://localhost:8080", Path("/install"), "p", "gpu", bundle)
+
+    def test_upgrade_check_passes_when_the_worker_loads_the_candidate_bundle(self):
+        self._upgraded_fleet_case({"a": {"id": "a", "source_revision": "a" * 40, "tier": "standard"}})
+
+    def test_upgrade_check_refuses_an_old_pin(self):
+        with self.assertRaisesRegex(check.CheckError, "source_revision"):
+            self._upgraded_fleet_case({"a": {"id": "a", "source_revision": "b" * 40}})
+
+    def test_upgrade_check_refuses_a_missing_model(self):
+        with self.assertRaisesRegex(check.CheckError, "different model set"):
+            self._upgraded_fleet_case({"a": {"id": "a", "source_revision": "a" * 40}},
+                                      announced=("a", "b"))
 
     def test_cleanup_refuses_user_projects_before_docker_access(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -633,10 +733,12 @@ class ReleaseCheckTests(unittest.TestCase):
                     patch.object(check, "run_installer") as installer, \
                     patch.object(check, "wait_ready") as ready, \
                     patch.object(check, "generate", return_value=("a", png())), \
+                    patch.object(check, "request_model_install") as install_model, \
                     patch.object(check, "compose_environment", return_value={"AUTH_MODE": "none"}):
                 check.existing_install(args, candidate)
             installer.assert_called_once()
             ready.assert_called_once()
+            install_model.assert_called_once_with("http://localhost:8080", check.MODEL, ANY)
             compose.assert_not_called()
             self.assertTrue(all(call.args[0] != install for call in remove.call_args_list))
             self.assertTrue(install.is_dir())

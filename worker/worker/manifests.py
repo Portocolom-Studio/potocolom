@@ -3,6 +3,8 @@ a manifest into the models directory; `source` names the Hugging Face
 repository or local path the pipeline loads from and never crosses the wire.
 """
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 from typing import Literal
@@ -10,6 +12,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger("potocolom.worker")
+
+# Bundled manifests sit beside the package: worker/models/ in a source checkout,
+# and /app/models in the worker image (the Dockerfiles copy them next to worker/).
+BUNDLED_MODELS_DIR = Path(__file__).parents[1] / "models"
+# sha256 of every manifest file that ever shipped or was seeded, each with its
+# body: {"<sha256>": {"id": "<id or null>", "body": "<raw file text>"}}. Written by
+# scripts/generate-hub-lock.py --history.
+MANIFEST_HISTORY = Path(__file__).with_name("manifest_history.json")
 
 # A pin is a full commit sha or nothing. A tag or a branch name is not a pin,
 # because upstream can move either one and the worker would follow it.
@@ -174,19 +184,86 @@ def validate_revision_pins(manifest: Manifest) -> None:
             raise ValueError(f"manifest {manifest.id}: {revision_field} pins nothing")
 
 
+def _checked(manifest: Manifest) -> Manifest:
+    validate_capability_exclusivity(manifest)
+    validate_revision_pins(manifest)
+    return manifest
+
+
 def load_manifests(models_dir: str) -> list[Manifest]:
-    """Operator errors here should be loud, not degrade into an empty fleet."""
+    """Load one directory of manifest files. Operator errors here should be loud,
+    not degrade into an empty fleet."""
     files = sorted(Path(models_dir).glob("*.json"))
     if not files:
         raise ValueError(f"no manifests found in {models_dir}")
-    manifests = [Manifest.model_validate_json(file.read_text()) for file in files]
+    manifests = [_checked(Manifest.model_validate_json(file.read_text())) for file in files]
     seen: set[str] = set()
     for manifest in manifests:
         if manifest.id in seen:
             raise ValueError(f"duplicate manifest id: {manifest.id}")
-        validate_capability_exclusivity(manifest)
-        validate_revision_pins(manifest)
         seen.add(manifest.id)
     logger.info("loaded %d manifests from %s: %s",
                 len(manifests), models_dir, [m.id for m in manifests])
+    return manifests
+
+
+def _same_directory(left: Path, right: Path) -> bool:
+    return left.resolve() == right.resolve()
+
+
+def _add_operator(operator: dict[str, Manifest], manifest: Manifest, source: Path) -> None:
+    if manifest.id in operator:
+        raise ValueError(f"duplicate manifest id: {manifest.id} (in {source})")
+    operator[manifest.id] = manifest
+
+
+def load_fleet_manifests(models_dir: str, *, bundled_on: bool = True) -> list[Manifest]:
+    """The fleet a worker serves: the bundled manifests, then the operator's.
+
+    Operator manifests are `models_dir/overrides/*.json` and the top-level
+    `models_dir/*.json`. An operator manifest replaces a bundled one of the same
+    id. A top-level file whose bytes are an earlier release's copy of a manifest
+    that is still bundled is a stale seed and is ignored. An earlier copy of a
+    model no longer bundled loads as an operator manifest. `bundled_on=False`
+    (BUNDLED_MANIFESTS=false) serves only the operator manifests, such as the
+    upscale-only worker in docs/architecture.md.
+    """
+    directory = Path(models_dir)
+    if not directory.is_dir():
+        raise ValueError(f"models directory {models_dir} does not exist")
+    history = json.loads(MANIFEST_HISTORY.read_text())
+    bundled: dict[str, Manifest] = {}
+    if bundled_on:
+        if not BUNDLED_MODELS_DIR.is_dir():
+            raise ValueError(
+                f"bundled manifests missing at {BUNDLED_MODELS_DIR}; "
+                "set BUNDLED_MANIFESTS=false to serve operator manifests only")
+        for file in sorted(BUNDLED_MODELS_DIR.glob("*.json")):
+            _add_operator(bundled, _checked(Manifest.model_validate_json(file.read_bytes())), file)
+    # A models directory that is the bundled one holds the bundled files; they
+    # load once, from the bundle.
+    scan_top = not (bundled_on and _same_directory(directory, BUNDLED_MODELS_DIR))
+    operator: dict[str, Manifest] = {}
+    if scan_top:
+        for file in sorted(directory.glob("*.json")):
+            raw = file.read_bytes()
+            earlier = history.get(hashlib.sha256(raw).hexdigest())
+            if earlier is not None and earlier["id"] in bundled:
+                logger.info("ignoring %s: an earlier release's copy of bundled manifest %s",
+                            file, earlier["id"])
+                continue
+            if earlier is not None:
+                logger.info("loading %s: an earlier release's manifest for %s",
+                            file, earlier["id"])
+            _add_operator(operator, _checked(Manifest.model_validate_json(raw)), file)
+    for file in sorted((directory / "overrides").glob("*.json")):
+        _add_operator(operator, _checked(Manifest.model_validate_json(file.read_bytes())), file)
+    for manifest_id in sorted(bundled.keys() & operator.keys()):
+        logger.info("operator manifest replaces the bundled manifest %s", manifest_id)
+    merged = {**bundled, **operator}
+    if not merged:
+        raise ValueError(f"no manifests found in {models_dir}")
+    manifests = [merged[manifest_id] for manifest_id in sorted(merged)]
+    logger.info("loaded %d manifests (%d bundled) from %s: %s",
+                len(manifests), len(bundled), models_dir, [m.id for m in manifests])
     return manifests
