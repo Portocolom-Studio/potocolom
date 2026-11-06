@@ -3532,3 +3532,32 @@ def test_without_the_shared_companion_each_model_shows_its_bytes_and_waits(monke
         f"{CATEGORIZER_SOURCE}@{CATEGORIZER_REVISION}"])
     for manifest in manifests:
         assert model_store.probe_model(manifest, "") == (companion, False), manifest.id
+
+
+def _bundled(model_id):
+    from worker.manifests import load_manifests
+    return next(m for m in load_manifests(str(Path(__file__).resolve().parents[1] / "models"))
+                if m.id == model_id)
+
+
+def test_a_pinned_iris_fork_plans_the_patterns_its_loader_reads():
+    from worker.candidate_pipelines import IRIS_ALLOW, IRIS_ENCODER_ALLOW, plain_repo_patterns
+    iris = _bundled("iris-3b")
+    fork = iris.model_copy(update={"source": "someone/iris-fork"})
+    assert plain_repo_patterns(fork, "someone/iris-fork") == IRIS_ALLOW
+    assert plain_repo_patterns(fork, iris.worker_repos[0].repo) == IRIS_ENCODER_ALLOW
+    assert plain_repo_patterns(_bundled("sdxl-base"), "someone/iris-fork") is None
+
+
+def test_a_candidate_pipeline_keeps_its_stock_vae_even_when_the_manifest_names_one(monkeypatch):
+    # The MOSS loader never hands a replacement VAE to diffusers, so its plan must keep the
+    # stock vae/ folder; only the engine's own loads pass `manifest.vae` in.
+    monkeypatch.setattr(model_store, "plan_items", REAL_PLAN_ITEMS)
+    monkeypatch.setattr(model_store, "bundled_hub_metadata", REAL_BUNDLED_METADATA)
+    sdxl = _bundled("sdxl-base")
+    kromoss = _bundled("kromoss").model_copy(
+        update={"vae": sdxl.vae, "vae_revision": sdxl.vae_revision})
+    items, _gated = model_store.plan_items(kromoss, "models", "cuda")
+    assert any(item.repo == kromoss.source and item.name.startswith("vae/") for item in items)
+    items, _gated = model_store.plan_items(sdxl, "models", "cuda")
+    assert not any(item.repo == sdxl.source and item.name.startswith("vae/") for item in items)

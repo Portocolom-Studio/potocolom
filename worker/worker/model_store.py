@@ -37,7 +37,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
-from worker.candidate_pipelines import CUSTOM_PIPELINES, PLAIN_REPO_ALLOW
+from worker.candidate_pipelines import CANDIDATE_PIPELINES, CUSTOM_PIPELINES, plain_repo_patterns
 from worker.categorize import SOURCE as CATEGORIZER_SOURCE, SOURCE_REVISION as CATEGORIZER_REVISION
 from worker.gpu_device import weight_config
 from worker.manifests import Manifest
@@ -563,7 +563,7 @@ def select_vae_plan(files: list[tuple[str, int]]) -> list[tuple[str, int]]:
 
 def select_plain_plan(files: list[tuple[str, int]],
                       patterns: tuple[str, ...]) -> list[tuple[str, int]]:
-    """The files a plain repository load reads: the names PLAIN_REPO_ALLOW lists, by fnmatch."""
+    """The files a plain repository load reads: the names `patterns` lists, by fnmatch."""
     return sorted((name, size) for name, size in files
                   if any(fnmatchcase(name, pattern) for pattern in patterns))
 
@@ -716,14 +716,17 @@ def plan_items(manifest: Manifest, models_dir: str,
             if index_text is None:
                 raise ModelStoreError("unavailable")
             index = json.loads(index_text)
-            passed = frozenset({"vae"}) if manifest.vae else frozenset()
+            # Only the engine's own loads hand in a replacement VAE; a candidate pipeline's
+            # loader ignores `manifest.vae` and reads the stock one.
+            passed = (frozenset({"vae"}) if manifest.vae
+                      and manifest.pipeline not in CANDIDATE_PIPELINES else frozenset())
             custom = CUSTOM_PIPELINES.get(manifest.pipeline, "")
             chosen = select_pipeline_plan(files, index, ref.variant, passed=passed,
                                           custom_pipeline=custom)
         elif ref.repo == manifest.vae:
             chosen = select_vae_plan(files)
-        elif ref.repo in PLAIN_REPO_ALLOW:
-            chosen = select_plain_plan(files, PLAIN_REPO_ALLOW[ref.repo])
+        elif (patterns := plain_repo_patterns(manifest, ref.repo)) is not None:
+            chosen = select_plain_plan(files, patterns)
         else:
             chosen = select_plan(files, ref.variant)
         root = snapshot_dir(ref.repo, ref.revision)

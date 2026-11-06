@@ -34,7 +34,7 @@ from unittest import mock
 import pytest
 
 from worker import model_store
-from worker.candidate_pipelines import CUSTOM_PIPELINES, PLAIN_REPO_ALLOW
+from worker.candidate_pipelines import CUSTOM_PIPELINES, IRIS_ALLOW, IRIS_ENCODER_ALLOW, plain_repo_patterns
 from worker.gpu_device import weight_config
 from worker.manifests import load_manifests
 
@@ -239,9 +239,10 @@ def test_plain_repositories_follow_the_loader_constant():
         pin = (manifest.source_revision if repo == manifest.source
                else manifest.worker_repos[0].revision)
         files, _index = _listing(repo, pin)
-        chosen = model_store.select_plain_plan(files, PLAIN_REPO_ALLOW[repo])
+        patterns = plain_repo_patterns(manifest, repo)
+        chosen = model_store.select_plain_plan(files, patterns)
         assert [n for n, _s in chosen] == sorted(
-            n for n, _s in files if any(fnmatch.fnmatchcase(n, p) for p in PLAIN_REPO_ALLOW[repo]))
+            n for n, _s in files if any(fnmatch.fnmatchcase(n, p) for p in patterns))
 
 
 class _StopLoad(Exception):
@@ -302,10 +303,10 @@ def test_iris_loader_fetches_the_planned_patterns(monkeypatch):
 
     (iris_request, qwen_request) = requests
     assert iris_request == (manifest.source, manifest.source_revision,
-                            list(PLAIN_REPO_ALLOW[manifest.source]))
+                            list(IRIS_ALLOW))
     encoder = manifest.worker_repos[0]
     assert qwen_request == (encoder.repo, encoder.revision,
-                            list(PLAIN_REPO_ALLOW[encoder.repo]))
+                            list(IRIS_ENCODER_ALLOW))
 
 
 def test_moss_candidates_ship_the_custom_pipeline_module_the_loader_names():

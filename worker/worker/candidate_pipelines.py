@@ -14,16 +14,29 @@ Callback = Callable[[Any, int, Any, dict[str, Any]], dict[str, Any]]
 # pipeline name. The loader and the download plan both read it.
 CUSTOM_PIPELINES = {"MOSSImage": "pipeline_moss_image"}
 
+# Pipelines this module loads. Their loaders ignore `manifest.vae`.
+CANDIDATE_PIPELINES = frozenset({"MOSSImage", "Iris3B", "Flux3Distilled"})
+
 # Plain repositories (weights and a config beside them, no model_index.json): the files
-# each load reads, by repository. The loader and the download plan both read this table.
-PLAIN_REPO_ALLOW: dict[str, tuple[str, ...]] = {
-    "speridlabs/iris-3b": ("config.yaml", "model.safetensors"),
-    "Qwen/Qwen3-VL-4B-Instruct": (
-        "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
-        "special_tokens_map.json", "vocab.json", "merges.txt", "added_tokens.json",
-        "*.safetensors", "model.safetensors.index.json",
-    ),
-}
+# each load reads, by its role in the load, so a pinned fork of either repository plans
+# and loads the same way. The loader and the download plan both read these.
+IRIS_ALLOW = ("config.yaml", "model.safetensors")
+IRIS_ENCODER_ALLOW = (
+    "config.json", "generation_config.json", "tokenizer.json", "tokenizer_config.json",
+    "special_tokens_map.json", "vocab.json", "merges.txt", "added_tokens.json",
+    "*.safetensors", "model.safetensors.index.json",
+)
+
+
+def plain_repo_patterns(manifest: Manifest, repo: str) -> tuple[str, ...] | None:
+    """The allow-patterns a plain-repository load of `manifest` reads from `repo`, or None."""
+    if manifest.pipeline != "Iris3B":
+        return None
+    if repo == manifest.source:
+        return IRIS_ALLOW
+    if manifest.worker_repos and repo == manifest.worker_repos[0].repo:
+        return IRIS_ENCODER_ALLOW
+    return None
 
 
 class MossAdapter:
@@ -300,13 +313,13 @@ def _load_iris(manifest: Manifest, rung: str, device: str) -> IrisAdapter:
     encoder_pin = manifest.worker_repos[0]
     model_dir = snapshot_download(
         repo_id=manifest.source, revision=_revision(manifest),
-        allow_patterns=list(PLAIN_REPO_ALLOW[manifest.source]), local_files_only=True,
+        allow_patterns=list(IRIS_ALLOW), local_files_only=True,
     )
     raw, weights = load_for_inference(model_dir)
     cfg = inference_config(raw)
     cfg.text_encoder.pretrained = snapshot_download(
         repo_id=encoder_pin.repo, revision=encoder_pin.revision,
-        allow_patterns=list(PLAIN_REPO_ALLOW[encoder_pin.repo]), local_files_only=True,
+        allow_patterns=list(IRIS_ENCODER_ALLOW), local_files_only=True,
     )
     with torch.device("meta"):
         model = IrisDiT(cfg.model)
