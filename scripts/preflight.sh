@@ -163,7 +163,7 @@ else
   fail "RAM ${ram_gb} GB is below the 8 GB minimum"
 fi
 
-disk_gb="$(df -BG --output=avail "$ROOT" 2>/dev/null | tail -n1 | tr -dc '0-9')"
+disk_gb="$(df -BG --output=avail "${POTOCOLOM_DISK_PATH:-$ROOT}" 2>/dev/null | tail -n1 | tr -dc '0-9')"
 disk_gb="${disk_gb:-0}"
 if ((disk_gb >= 50)); then
   pass "Disk ${disk_gb} GB free"
@@ -478,7 +478,7 @@ fi
 
 # install.sh runs this before it writes POTOCOLOM_PUBLIC_URL into .env.
 if [[ "$contributor" != true && -z "${POTOCOLOM_PUBLIC_URL:-}" ]]; then
-  env_file="$ROOT/deploy/compose/.env"
+  env_file="$ENV_FILE"
   # Compose syntax: an optional export, and an unquoted value ends at a comment.
   public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$env_file" 2>/dev/null | tail -n 1)"
   if [[ "$public_url" =~ ^https?://(\[[^]]+\]|[^:/?#]+)(:[0-9]+)?$ ]]; then
