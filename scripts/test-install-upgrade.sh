@@ -15,6 +15,11 @@ REAL_CURL="$(command -v curl)"
 REAL_ID="$(command -v id)"
 REAL_DATE="$(command -v date)"
 RELEASE_TEST_AWK="$(type -P awk)"
+REAL_MV="$(command -v mv)"
+REAL_TAR="$(command -v tar)"
+REAL_FIND="$(command -v find)"
+REAL_RM="$(command -v rm)"
+export REAL_MV REAL_TAR REAL_FIND REAL_RM
 failures=0
 
 
@@ -134,6 +139,82 @@ if [[ -n "${FAKE_STAMP:-}" && "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then printf '%s\n
 exec "${REAL_DATE:?}" "$@"
 EOF
 
+# MV_FAIL_BUNDLE_AT=N fails the Nth move out of a bundle extraction directory,
+# so the swap stops after some files have moved. Other moves pass through.
+cat >"$tmp/stubs/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MV_FAIL_BUNDLE_AT:-}" ]]; then
+	for arg in "$@"; do
+		if [[ "$arg" == */.bundle.* ]]; then
+			count=0
+			if [[ -f "${STATE_DIR:?}/mv.count" ]]; then count="$(cat "$STATE_DIR/mv.count")"; fi
+			count=$((count + 1))
+			printf '%s\n' "$count" >"$STATE_DIR/mv.count"
+			if ((count == MV_FAIL_BUNDLE_AT)); then exit 1; fi
+			break
+		fi
+	done
+fi
+# MV_FAIL_FINAL=1 fails the final -T move of each file, the one onto its live path.
+if [[ -n "${MV_FAIL_FINAL:-}" ]]; then
+	fails_final=no from_bundle=no
+	for arg in "$@"; do
+		if [[ "$arg" == -fT ]]; then fails_final=yes; fi
+		if [[ "$arg" == */.bundle.* ]]; then from_bundle=yes; fi
+	done
+	if [[ "$fails_final" == yes && "$from_bundle" == no ]]; then exit 1; fi
+fi
+if [[ -n "${MV_LOG:-}" ]]; then printf '%s\n' "$*" >>"$MV_LOG"; fi
+exec "${REAL_MV:?}" "$@"
+EOF
+
+# TAR_TRUNCATE=1 extracts the bundle for real, truncates the file that the
+# swap must not damage (deploy/compose/compose.yml) in the target directory, then
+# fails: a write error in the middle of the extraction. The installer's own
+# extraction into its stage directory is passed through untouched.
+cat >"$tmp/stubs/tar" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${TAR_TRUNCATE:-0}" == 1 ]]; then
+	dest="" prev=""
+	for arg in "$@"; do
+		if [[ "$prev" == -C ]]; then dest="$arg"; fi
+		prev="$arg"
+	done
+	if [[ -n "$dest" && "$dest" != */stage ]]; then
+		"${REAL_TAR:?}" "$@" || exit $?
+		: >"$dest/deploy/compose/compose.yml"
+		exit 1
+	fi
+fi
+exec "${REAL_TAR:?}" "$@"
+EOF
+
+# FIND_FAIL=1 makes find fail with no output while it runs inside the bundle extraction
+# directory. FIND_FAIL=dirs fails only the directory listing. FIND_FAIL=files prints one
+# partial entry and then fails the file listing.
+cat >"$tmp/stubs/find" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$(pwd -P)" == */.bundle.* ]]; then
+	if [[ "${FIND_FAIL:-0}" == 1 ]]; then exit 1; fi
+	if [[ "${FIND_FAIL:-0}" == dirs && "$*" == *"-type d "* ]]; then exit 1; fi
+	if [[ "${FIND_FAIL:-0}" == files && "$*" == *"-type f"* ]]; then printf './partial-entry\0'; exit 1; fi
+fi
+exec "${REAL_FIND:?}" "$@"
+EOF
+
+# RM_FAIL_GLOB=PATTERN makes rm fail on any argument that matches PATTERN.
+cat >"$tmp/stubs/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${RM_FAIL_GLOB:-}" ]]; then
+	for arg in "$@"; do
+		case "$arg" in
+		$RM_FAIL_GLOB) exit 1 ;;
+		esac
+	done
+fi
+exec "${REAL_RM:?}" "$@"
+EOF
+
 # The docker state machine. Containers are "ID SERVICE STATE" lines in
 # $STATE_DIR/containers. The database exists when $STATE_DIR/pgdata exists, and
 # its Alembic revision is the content of $STATE_DIR/revision (absent means no
@@ -177,11 +258,11 @@ remove_container() {
 
 kill_installer() {
 	# backup.sh is this process's parent and install.sh is backup.sh's parent.
-	local stat rest ppid
+	local signal="${1:-TERM}" stat rest ppid
 	read -r stat </proc/"$PPID"/stat
 	rest="${stat##*) }"
 	read -r _ ppid _ <<<"$rest"
-	kill -TERM "$ppid"
+	kill -"$signal" "$ppid"
 }
 
 psql_stub() {
@@ -257,6 +338,11 @@ postgres_exec() {
 		pg_dump)
 			if [[ "${BACKUP_KILL:-0}" == 1 ]]; then
 				kill_installer
+				return 1
+			fi
+			# BACKUP_HARD_KILL=1 is a SIGKILL: no trap runs, so the backup is left as it was.
+			if [[ "${BACKUP_HARD_KILL:-0}" == 1 ]]; then
+				kill_installer KILL
 				return 1
 			fi
 			if [[ "${BACKUP_FAIL:-0}" == 1 ]]; then return 1; fi
@@ -438,7 +524,10 @@ case "${1:-}" in
 	run)
 		case "$*" in
 			*" du -sb /src"*) printf '%s\t/src\n' "${ASSET_BYTES:-1000}" ;;
-			*" tar -C /src -cf -"*) printf 'ASSETS-TAR\n' ;;
+			*" tar -C /src -cf -"*)
+				# PLANT_DEST=DIR creates a non-empty DIR while the backup runs.
+				if [[ -n "${PLANT_DEST:-}" ]]; then mkdir -p "$PLANT_DEST"; printf 'PLANTED\n' >"$PLANT_DEST/keep"; fi
+				printf 'ASSETS-TAR\n' ;;
 		esac
 		;;
 	compose)
@@ -464,7 +553,7 @@ new_case() {
 	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
 	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker; do
+	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar find rm; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 	# Each case gets its own bundle directory, so SHA256SUMS can name any version.
@@ -479,6 +568,7 @@ make_bundle() {  # CASE_DIR VERSION
 		cp "$repo/scripts/preflight.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/install-lock.sh" \
 			"$repo/scripts/gpu-profile.sh" "$repo/scripts/backup.sh" "$repo/scripts/restore.sh" "$src/scripts/"
 		chmod +x "$src"/scripts/*.sh
+		ln -s compose.yml "$src/deploy/compose/compose-alias.yml"
 		(cd "$src" && tar -czf "$case_dir/source/bundle.tar.gz" deploy scripts)
 	fi
 	(cd "$case_dir/source" && sha256sum bundle.tar.gz | sed "s#bundle.tar.gz#potocolom-$version-selfhost.tar.gz#" >SHA256SUMS)
@@ -550,6 +640,43 @@ run_install() {
 # Line number of the first docker call whose text contains $1, or 0.
 log_line() {
 	grep -n -F -- "$1" "$2/docker.log" | head -n 1 | cut -d: -f1
+}
+
+# Prints each bundle file that is in the live install neither as the bundle's
+# version nor as the version it had before the run. An absent file counts as
+# whole only when the old install did not have it either.
+whole_files_problems() {  # CASE_DIR
+	local case_dir="$1" rel live old
+	while IFS= read -r rel; do
+		rel="${rel#./}"
+		live="$case_dir/install/$rel"
+		old="$case_dir/old-install/$rel"
+		if [[ ! -e "$live" && ! -e "$old" ]]; then continue; fi
+		if [[ -e "$live" ]] && cmp -s "$live" "$case_dir/bundle-src/$rel"; then continue; fi
+		if [[ -e "$live" && -e "$old" ]] && cmp -s "$live" "$old"; then continue; fi
+		echo "$rel"
+	done < <(cd "$case_dir/bundle-src" && find . -type f)
+}
+
+# Prints each bundle entry that the live install does not match: type, symlink
+# target, bytes and mode. Prints nothing when every entry matches.
+bundle_mismatches() {  # CASE_DIR
+	local case_dir="$1" rel src live
+	while IFS= read -r rel; do
+		rel="${rel#./}"
+		src="$case_dir/bundle-src/$rel"
+		live="$case_dir/install/$rel"
+		if [[ -L "$src" ]]; then
+			if [[ ! -L "$live" || "$(readlink "$live")" != "$(readlink "$src")" ]]; then echo "$rel"; fi
+		elif [[ -d "$src" ]]; then
+			if [[ ! -d "$live" || -L "$live" || "$(stat -c %a "$live")" != "$(stat -c %a "$src")" ]]; then echo "$rel"; fi
+		else
+			if [[ ! -f "$live" || -L "$live" ]] || ! cmp -s "$live" "$src" \
+				|| [[ "$(stat -c %a "$live")" != "$(stat -c %a "$src")" ]]; then
+				echo "$rel"
+			fi
+		fi
+	done < <(cd "$case_dir/bundle-src" && find . ! -name .)
 }
 
 backup_dirs() {  # CASE_DIR PATTERN: names of backups matching PATTERN
@@ -1392,6 +1519,442 @@ if [[ "$rc" -eq 0 ]] && grep -qxF -- "$expected" <<<"$output"; then
 	pass_case stop-line-names-project-and-env-file
 else
 	fail_case stop-line-names-project-and-env-file "rc=$rc expected=$expected $output"
+fi
+
+# 42. A swap that fails after some files moved leaves each live file whole, and a rerun finishes.
+new_case interrupted-swap-keeps-whole-files
+seed_live "$case_dir" v8.8.8
+printf '# old release\n' >>"$case_dir/install/deploy/compose/compose.yml"
+printf '# old release\n' >>"$case_dir/install/scripts/backup.sh"
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+cp -a "$case_dir/install" "$case_dir/old-install"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" MV_FAIL_BUNDLE_AT=4 FAKE_STAMP=20260101T000000Z)" && rc=0 || rc=$?
+whole="$(whole_files_problems "$case_dir")"
+moves="$(cat "$case_dir/state/mv.count" 2>/dev/null)"
+# Parsing is checked by shape: a services key, and the bytes of the old or the new file.
+parses=no
+if grep -q '^services:' "$case_dir/install/deploy/compose/compose.yml"; then parses=yes; fi
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+new_compose=no
+if cmp -s "$case_dir/install/deploy/compose/compose.yml" "$case_dir/bundle-src/deploy/compose/compose.yml"; then new_compose=yes; fi
+if [[ "$rc" -ne 0 && "$output" == *'could not stage'* && "$moves" == 4 && -z "$whole" && "$parses" == yes \
+	&& "$rc2" -eq 0 && "$output2" == *'Upgrading v8.8.8 to v9.9.9'* \
+	&& -z "$(bundle_mismatches "$case_dir")" && "$new_compose" == yes \
+	&& ! -e "$case_dir/install/.upgrade-incomplete" && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case interrupted-swap-keeps-whole-files
+else
+	fail_case interrupted-swap-keeps-whole-files "rc=$rc/$rc2 moves=$moves whole=$whole $output $output2"
+fi
+
+# 43. A bundle that fails to extract leaves the live files as they were, and a rerun finishes.
+new_case interrupted-extraction-keeps-live-files
+seed_live "$case_dir" v8.8.8
+printf '# old release\n' >>"$case_dir/install/deploy/compose/compose.yml"
+printf '# old release\n' >>"$case_dir/install/scripts/backup.sh"
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+cp -a "$case_dir/install" "$case_dir/old-install"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" TAR_TRUNCATE=1 FAKE_STAMP=20260102T000000Z)" && rc=0 || rc=$?
+whole="$(whole_files_problems "$case_dir")"
+leftover="$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')"
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+if [[ "$rc" -ne 0 && "$output" == *'could not extract'* && -z "$whole" && -z "$leftover" \
+	&& "$rc2" -eq 0 && "$output2" == *'Upgrading v8.8.8 to v9.9.9'* && ! -e "$case_dir/install/.upgrade-incomplete" ]]; then
+	pass_case interrupted-extraction-keeps-live-files
+else
+	fail_case interrupted-extraction-keeps-live-files "rc=$rc/$rc2 whole=$whole leftover=$leftover $output $output2"
+fi
+
+# 44. A normal upgrade leaves no extraction directory behind.
+new_case swap-leaves-no-extraction-dir
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'Upgrading v8.8.8 to v9.9.9'* && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case swap-leaves-no-extraction-dir
+else
+	fail_case swap-leaves-no-extraction-dir "rc=$rc $output"
+fi
+
+# 45. A restore selection never offers a backup that a killed run left unfinished.
+new_case unfinished-backup-is-never-offered
+bdir="$case_dir/install/backups"
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$bdir/.v8.8.8-r1-20260101T000000Z.partial" "$bdir/v8.8.8-r1-20260102T000000Z"
+: >"$bdir/.v8.8.8-r1-20260101T000000Z.partial/database.dump"
+: >"$bdir/v8.8.8-r1-20260102T000000Z/database.dump"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc=0 || rc=$?
+planted_ok=no
+if [[ "$rc" -ne 0 && "$output" == *'backups/v8.8.8-r1-20260102T000000Z'* \
+	&& "$output" != *'20260101T000000Z'* ]]; then
+	planted_ok=yes
+fi
+# A real SIGKILL during the backup, then a refusal: the restore command must not name the killed run.
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" BACKUP_HARD_KILL=1 FAKE_STAMP=20260103T000000Z)" && rc2=0 || rc2=$?
+killed_final=no
+if [[ -e "$bdir/v8.8.8-r1-20260103T000000Z" ]]; then killed_final=yes; fi
+# 137 is 128 plus SIGKILL: the run was really killed, not refused.
+killed=no
+if [[ "$rc2" -eq 137 && -f "$bdir/.v8.8.8-r1-20260103T000000Z.partial/.potocolom-installer-temp" ]]; then killed=yes; fi
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+output3="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc3=0 || rc3=$?
+if [[ "$planted_ok" == yes && "$killed" == yes && "$killed_final" == no && "$rc3" -ne 0 \
+	&& "$output3" == *'backups/v8.8.8-r1-20260102T000000Z'* && "$output3" != *'20260103T000000Z'* \
+	&& "$output3" != *'.partial'* ]]; then
+	pass_case unfinished-backup-is-never-offered
+else
+	fail_case unfinished-backup-is-never-offered "planted=$planted_ok killed=$killed rc=$rc/$rc2/$rc3 killed_final=$killed_final $output $output2 $output3"
+fi
+
+# 46. A finished backup carries its final name, and no partial directory remains.
+new_case backup-renamed-after-success
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260104T000000Z)" && rc=0 || rc=$?
+final="$case_dir/install/backups/v8.8.8-r1-20260104T000000Z"
+if [[ "$rc" -eq 0 && -f "$final/database.dump" && -f "$final/compose.yml" \
+	&& -z "$(find "$case_dir/install/backups" -name '*partial*')" ]]; then
+	pass_case backup-renamed-after-success
+else
+	fail_case backup-renamed-after-success "rc=$rc $output"
+fi
+
+# 47. Leftovers of a killed run are removed; finished backups are not touched.
+new_case stale-partials-removed
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+bdir="$case_dir/install/backups"
+mkdir -p "$bdir/.v8.8.8-r1-20260101T000000Z.partial" "$bdir/v8.8.8-r1-20260102T000000Z" \
+	"$case_dir/install/.bundle.STALE01"
+: >"$bdir/.v8.8.8-r1-20260101T000000Z.partial/.potocolom-installer-temp"
+printf 'PARTIAL\n' >"$bdir/.v8.8.8-r1-20260101T000000Z.partial/database.dump"
+printf 'FINISHED\n' >"$bdir/v8.8.8-r1-20260102T000000Z/database.dump"
+: >"$case_dir/install/.bundle.STALE01/.potocolom-installer-temp"
+printf 'STALE\n' >"$case_dir/install/.bundle.STALE01/file"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260105T000000Z)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && ! -e "$bdir/.v8.8.8-r1-20260101T000000Z.partial" \
+	&& ! -e "$case_dir/install/.bundle.STALE01" \
+	&& "$(cat "$bdir/v8.8.8-r1-20260102T000000Z/database.dump")" == FINISHED \
+	&& -f "$bdir/v8.8.8-r1-20260105T000000Z/database.dump" ]]; then
+	pass_case stale-partials-removed
+else
+	fail_case stale-partials-removed "rc=$rc $output"
+fi
+
+# 48. Directories an operator named like installer leftovers survive, because they carry no marker.
+new_case unmarked-leftovers-survive
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+bdir="$case_dir/install/backups"
+mkdir -p "$bdir/.manual.partial" "$case_dir/install/.bundle.photos"
+printf 'KEEP\n' >"$bdir/.manual.partial/notes"
+printf 'KEEP\n' >"$case_dir/install/.bundle.photos/photo"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260106T000000Z)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(cat "$bdir/.manual.partial/notes")" == KEEP \
+	&& "$(cat "$case_dir/install/.bundle.photos/photo")" == KEEP ]]; then
+	pass_case unmarked-leftovers-survive
+else
+	fail_case unmarked-leftovers-survive "rc=$rc $output"
+fi
+
+# 49. A symlinked backups folder is a legitimate setup: its target keeps every leftover, and a backup is still written there.
+new_case symlinked-backups-keeps-partials
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+ext="$case_dir/archive"
+mkdir -p "$ext/.v8.8.8-r1-20260101T000000Z.partial" "$ext/.manual.partial"
+: >"$ext/.v8.8.8-r1-20260101T000000Z.partial/.potocolom-installer-temp"
+printf 'KEEP\n' >"$ext/.v8.8.8-r1-20260101T000000Z.partial/database.dump"
+printf 'KEEP\n' >"$ext/.manual.partial/notes"
+ln -s "$ext" "$case_dir/install/backups"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260106T000000Z)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && -d "$ext/.v8.8.8-r1-20260101T000000Z.partial" \
+	&& "$(cat "$ext/.v8.8.8-r1-20260101T000000Z.partial/database.dump")" == KEEP \
+	&& "$(cat "$ext/.manual.partial/notes")" == KEEP && -f "$ext/v8.8.8-r1-20260106T000000Z/database.dump" ]]; then
+	pass_case symlinked-backups-keeps-partials
+else
+	fail_case symlinked-backups-keeps-partials "rc=$rc $output"
+fi
+
+# 50. A planted symlink at the staging name refuses the backup, and the symlink's target is not written.
+new_case partial-symlink-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/install/backups" "$case_dir/elsewhere"
+printf 'KEEP\n' >"$case_dir/elsewhere/keep"
+ln -s "$case_dir/elsewhere" "$case_dir/install/backups/.v8.8.8-r1-20260107T000000Z.partial"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260107T000000Z)" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'already exists; nothing was changed'* \
+	&& -L "$case_dir/install/backups/.v8.8.8-r1-20260107T000000Z.partial" \
+	&& "$(ls -A "$case_dir/elsewhere")" == keep && "$(cat "$case_dir/elsewhere/keep")" == KEEP \
+	&& "$(log_line 'pg_dump' "$case_dir")" -eq 0 ]]; then
+	pass_case partial-symlink-refuses
+else
+	fail_case partial-symlink-refuses "rc=$rc $output"
+fi
+
+# 51. A live directory where a bundle file goes refuses before the install stops, and nothing changes.
+new_case live-directory-at-file-path-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+rm -f "$case_dir/install/scripts/backup.sh"
+mkdir -p "$case_dir/install/scripts/backup.sh"
+printf 'KEEP\n' >"$case_dir/install/scripts/backup.sh/inside"
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* && "$before" == "$after" \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& "$(cat "$case_dir/install/scripts/backup.sh/inside")" == KEEP \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case live-directory-at-file-path-refuses
+else
+	fail_case live-directory-at-file-path-refuses "rc=$rc $output"
+fi
+
+# 52. A relative POTOCOLOM_DIR upgrades the install it names.
+new_case relative-potocolom-dir-works
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(cd "$case_dir" && run_install "$case_dir" POTOCOLOM_DIR=install TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'Upgrading v8.8.8 to v9.9.9'* \
+	&& -z "$(bundle_mismatches "$case_dir")" && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case relative-potocolom-dir-works
+else
+	fail_case relative-potocolom-dir-works "rc=$rc $output"
+fi
+
+# 53. After a successful upgrade every bundle entry matches the bundle: bytes, type, link target and mode.
+new_case strict-post-success-matches-bundle
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+printf '# old release\n' >>"$case_dir/install/scripts/restore.sh"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+mismatches="$(bundle_mismatches "$case_dir")"
+link_target="$(readlink "$case_dir/install/deploy/compose/compose-alias.yml")"
+if [[ "$rc" -eq 0 && -z "$mismatches" && "$link_target" == compose.yml ]]; then
+	pass_case strict-post-success-matches-bundle
+else
+	fail_case strict-post-success-matches-bundle "rc=$rc mismatches=$mismatches $output"
+fi
+
+# 54. A live symlink in place of a bundle directory refuses, and the symlink's target is not written.
+new_case live-symlink-parent-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mv "$case_dir/install/deploy" "$case_dir/elsewhere-deploy"
+ln -s "$case_dir/elsewhere-deploy" "$case_dir/install/deploy"
+target_before="$(tree_hash "$case_dir/elsewhere-deploy")"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* && -L "$case_dir/install/deploy" \
+	&& "$target_before" == "$(tree_hash "$case_dir/elsewhere-deploy")" && ! -e "$case_dir/install/backups" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case live-symlink-parent-refuses
+else
+	fail_case live-symlink-parent-refuses "rc=$rc $output"
+fi
+
+# 55. A find that fails while the bundle is listed refuses before anything stops, and nothing changes.
+new_case failed-find-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" FIND_FAIL=1 TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+output2="$(run_install "$case_dir" FIND_FAIL=dirs TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+after2="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$output" == *'could not list the bundle; nothing was changed'* && "$before" == "$after" \
+	&& "$rc2" -ne 0 && "$output2" == *'could not list the bundle; nothing was changed'* && "$before" == "$after2" \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case failed-find-refuses
+else
+	fail_case failed-find-refuses "rc=$rc/$rc2 $output $output2"
+fi
+
+# 56. Each final move renames a temp file within the destination directory, so no move crosses a directory boundary.
+new_case moves-rename-within-destination-dir
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" MV_LOG="$case_dir/mv.log" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+finals=0
+stages=0
+same_dir=yes
+while read -r line; do
+	read -r -a words <<<"$line"
+	if [[ "${words[0]}" != -fT ]]; then continue; fi
+	src="${words[-2]}" dst="${words[-1]}"
+	if [[ "$src" == */.bundle.* ]]; then
+		# The stage move: the temp is a random name beside the live path.
+		if [[ "$(dirname -- "$dst")" == */ || "$(basename -- "$dst")" != .?* ]]; then same_dir=no; fi
+		stages=$((stages + 1))
+		continue
+	fi
+	# The final move: the temp, with a random name, renames onto the live path in the same directory.
+	finals=$((finals + 1))
+	if [[ "$(dirname -- "$src")" != "$(dirname -- "$dst")" ]]; then same_dir=no; fi
+	if [[ "$(basename -- "$src")" != ".$(basename -- "$dst")."?????? ]]; then same_dir=no; fi
+done <"$case_dir/mv.log"
+files="$(cd "$case_dir/bundle-src" && find . \( -type f -o -type l \) | wc -l)"
+if [[ "$rc" -eq 0 && "$stages" -eq "$files" && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
+	pass_case moves-rename-within-destination-dir
+else
+	fail_case moves-rename-within-destination-dir "rc=$rc stages=$stages finals=$finals files=$files same_dir=$same_dir $output"
+fi
+
+# 58. A failed final move leaves no temp file for that bundle file: the exit cleanup removes it.
+new_case failed-move-leaves-no-temp
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" MV_FAIL_FINAL=1 TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+leftovers=""
+while IFS= read -r rel; do
+	base="$(basename -- "$rel")"
+	leftovers+="$(find "$case_dir/install" -name ".$base.??????")"
+done < <(cd "$case_dir/bundle-src" && find . -type f)
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* && -z "$leftovers" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case failed-move-leaves-no-temp
+else
+	fail_case failed-move-leaves-no-temp "rc=$rc leftovers=$leftovers $output"
+fi
+
+# 60. A symlinked parent refuses, and a file of the same temp name outside $DIR is not removed.
+new_case parent-symlink-temp-outside-survives
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/outside"
+printf 'KEEP\n' >"$case_dir/outside/.backup.sh.potocolom-new"
+rm -rf "$case_dir/install/scripts"
+ln -s "$case_dir/outside" "$case_dir/install/scripts"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* \
+	&& "$(cat "$case_dir/outside/.backup.sh.potocolom-new")" == KEEP && -L "$case_dir/install/scripts" \
+	&& ! -e "$case_dir/install/backups" && "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case parent-symlink-temp-outside-survives
+else
+	fail_case parent-symlink-temp-outside-survives "rc=$rc $output"
+fi
+
+# 57. Operator files at temp-like names in the bundle's directory are never touched.
+new_case operator-file-at-any-temp-like-name-survives
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+printf 'KEEP-A\n' >"$case_dir/install/scripts/.backup.sh.potocolom-new"
+printf 'KEEP-B\n' >"$case_dir/install/scripts/.backup.sh.ABCDEF"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new")" == KEEP-A \
+	&& "$(cat "$case_dir/install/scripts/.backup.sh.ABCDEF")" == KEEP-B \
+	&& -z "$(bundle_mismatches "$case_dir")" ]]; then
+	pass_case operator-file-at-any-temp-like-name-survives
+else
+	fail_case operator-file-at-any-temp-like-name-survives "rc=$rc $output"
+fi
+
+# 61. A failed removal of the temp during the exit cleanup does not stop the services from being restored.
+new_case failed-cleanup-still-restores-services
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" MV_FAIL_FINAL=1 RM_FAIL_GLOB='*/.*.??????' TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* && "$states_before" == "$(container_states "$case_dir")" \
+	&& "$(grep -c '^api1 api running$' "$case_dir/state/containers")" -eq 1 ]]; then
+	pass_case failed-cleanup-still-restores-services
+else
+	fail_case failed-cleanup-still-restores-services "rc=$rc $output"
+fi
+
+# 62. A fresh install creates each directory with the mode of its bundle counterpart.
+new_case fresh-install-creates-directories-with-bundle-modes
+make_bundle "$case_dir" v9.9.9
+chmod 750 "$case_dir/bundle-src/deploy/compose"
+(cd "$case_dir/bundle-src" && tar -czf "$case_dir/source/bundle.tar.gz" deploy scripts)
+(cd "$case_dir/source" && sha256sum bundle.tar.gz | sed "s#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#" >SHA256SUMS)
+output="$(run_install "$case_dir" TARGET_KNOWN="")" && rc=0 || rc=$?
+mismatches="$(bundle_mismatches "$case_dir")"
+if [[ "$rc" -eq 0 && -z "$mismatches" && "$(stat -c %a "$case_dir/install/deploy/compose")" == 750 ]]; then
+	pass_case fresh-install-creates-directories-with-bundle-modes
+else
+	fail_case fresh-install-creates-directories-with-bundle-modes "rc=$rc mismatches=$mismatches $output"
+fi
+
+# 63. A file listing that fails after partial output refuses before anything stops, and the live tree is unchanged.
+new_case failed-file-listing-after-partial-output-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" FIND_FAIL=files TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$output" == *'could not list the bundle; nothing was changed'* && "$before" == "$after" \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case failed-file-listing-after-partial-output-refuses
+else
+	fail_case failed-file-listing-after-partial-output-refuses "rc=$rc $output"
+fi
+
+# 64. A backup whose destination appears during the backup is refused by the rename, and nothing nests inside it.
+new_case backup-rename-refuses-existing-destination
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+dest="$case_dir/install/backups/v8.8.8-r1-20260104T000000Z"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260104T000000Z PLANT_DEST="$dest")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$(cat "$dest/keep")" == PLANTED && "$(ls -A "$dest")" == keep ]]; then
+	pass_case backup-rename-refuses-existing-destination
+else
+	fail_case backup-rename-refuses-existing-destination "rc=$rc $output"
 fi
 
 if ((failures > 0)); then
