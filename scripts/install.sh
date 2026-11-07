@@ -80,6 +80,9 @@ PG_CREATED=0
 BACKUP_PARTIAL=""
 BACKUPS_CREATED=0
 BUNDLE_EXTRACT=""
+BUNDLE_TEMP=""
+BUNDLE_DIRS_LIST=""
+BUNDLE_FILES_LIST=""
 # Written inside every directory the installer creates for itself. Cleanup removes
 # only a directory that holds this marker as a regular file.
 INSTALLER_TEMP_MARKER=".potocolom-installer-temp"
@@ -340,6 +343,9 @@ install_exit() {
 	if [[ -n "$BUNDLE_EXTRACT" ]]; then
 		rm -rf -- "$BUNDLE_EXTRACT"
 	fi
+	if [[ -n "$BUNDLE_TEMP" ]]; then
+		rm -rf -- "$BUNDLE_TEMP"
+	fi
 	if [[ "$BACKUPS_CREATED" == 1 ]]; then
 		rmdir -- "$DIR/backups" 2>/dev/null || true
 	fi
@@ -367,11 +373,11 @@ bundle_conflict() {
 	return 1
 }
 
-# Extracts the verified bundle beside the live files and refuses a bundle that
-# conflicts with the live tree. It runs before the install is stopped or backed
-# up, and it moves nothing in the live tree.
+# Extracts the verified bundle beside the live files, lists its entries, and
+# refuses a bundle that conflicts with the live tree. It runs before the install
+# is stopped or backed up, and it moves nothing in the live tree.
 stage_bundle() {
-	local stale rel
+	local stale rel temp
 	mkdir -p "$DIR"
 	# A killed run leaves its extraction directory behind. Only a directory that
 	# this installer marked is removed, so an operator folder with a similar name
@@ -381,29 +387,47 @@ stage_bundle() {
 			rm -rf -- "$stale"
 		fi
 	done
-	# The bundle extracts beside the live files, so each move in swap_in_bundle is
-	# one rename on the same filesystem. A failed extraction leaves the live files
-	# alone.
+	# The bundle extracts beside the live files. A failed extraction leaves the live
+	# files alone.
 	BUNDLE_EXTRACT="$(mktemp -d "$DIR/.bundle.XXXXXX")"
 	: >"$BUNDLE_EXTRACT/$INSTALLER_TEMP_MARKER"
 	if ! tar -xzf "$TMP/$BUNDLE" -C "$BUNDLE_EXTRACT"; then
 		echo "error: could not extract $BUNDLE; the live files were not replaced" >&2
 		exit 1
 	fi
+	# The two lists are written once, here, and read by the checks and by the swap.
+	# A failed find refuses now, while nothing has stopped.
+	BUNDLE_DIRS_LIST="$TMP/bundle-dirs"
+	BUNDLE_FILES_LIST="$TMP/bundle-files"
+	if ! (cd "$BUNDLE_EXTRACT" && find . -type d -print0) >"$BUNDLE_DIRS_LIST"; then
+		echo "error: could not list the bundle; nothing was changed" >&2
+		exit 1
+	fi
+	if ! (cd "$BUNDLE_EXTRACT" && find . \( -type f -o -type l \) ! -name "$INSTALLER_TEMP_MARKER" -print0) >"$BUNDLE_FILES_LIST"; then
+		echo "error: could not list the bundle; nothing was changed" >&2
+		exit 1
+	fi
+	# A kill during the swap can leave a temp file named for a bundle entry. Only
+	# that exact name is removed, and only when it is a regular file.
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
+		if [[ -f "$temp" && ! -L "$temp" ]]; then rm -f -- "$temp"; fi
+	done <"$BUNDLE_FILES_LIST"
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
 		if [[ "$rel" != . ]] && bundle_conflict "$rel" dir; then
 			echo "error: the bundle directory $rel conflicts with the live tree in $DIR; nothing was changed" >&2
 			exit 1
 		fi
-	done < <(cd "$BUNDLE_EXTRACT" && find . -type d -print0)
+	done <"$BUNDLE_DIRS_LIST"
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
 		if bundle_conflict "$rel" file; then
 			echo "error: the bundle file $rel conflicts with the live tree in $DIR; nothing was changed" >&2
 			exit 1
 		fi
-	done < <(cd "$BUNDLE_EXTRACT" && find . \( -type f -o -type l \) ! -name "$INSTALLER_TEMP_MARKER" -print0)
+	done <"$BUNDLE_FILES_LIST"
 }
 
 # Replaces the live bundle with the verified one and publishes the staged .env,
@@ -411,7 +435,7 @@ stage_bundle() {
 # readiness check passes, so a rerun knows the last upgrade did not finish. The
 # recovery trap stays set: nothing has migrated until the up that main runs next.
 swap_in_bundle() {
-	local env_tmp rel
+	local env_tmp rel temp
 	: >"$DIR/.upgrade-incomplete"
 	# Directories first. Each mkdir is checked, and a failure here moves nothing.
 	while IFS= read -r -d '' rel; do
@@ -421,16 +445,28 @@ swap_in_bundle() {
 			echo "error: could not create $DIR/$rel; the live files were not replaced" >&2
 			exit 1
 		fi
-	done < <(cd "$BUNDLE_EXTRACT" && find . -type d -print0)
-	# Each move is a rename of one file or symlink over its live path. -T keeps the
-	# destination a name, so a directory at that path is never a target.
+	done <"$BUNDLE_DIRS_LIST"
+	# A file is first moved to a temp name beside its live path. Across filesystems
+	# that move is a copy, which a kill can cut short, so the live path changes only
+	# by the second move: a rename within its own directory.
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
-		if ! mv -fT -- "$BUNDLE_EXTRACT/$rel" "$DIR/$rel"; then
+		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
+		BUNDLE_TEMP="$temp"
+		# Whatever sits at the temp name goes first. A symlink there would otherwise
+		# take the copy of a file on another filesystem.
+		rm -f -- "$temp"
+		if ! mv -f -- "$BUNDLE_EXTRACT/$rel" "$temp"; then
+			echo "error: could not stage $rel in $DIR; run this again to finish the upgrade" >&2
+			exit 1
+		fi
+		# -T keeps the destination a name, so a directory at that path is never a target.
+		if ! mv -fT -- "$temp" "$DIR/$rel"; then
 			echo "error: could not move $rel into $DIR; run this again to finish the upgrade" >&2
 			exit 1
 		fi
-	done < <(cd "$BUNDLE_EXTRACT" && find . \( -type f -o -type l \) ! -name "$INSTALLER_TEMP_MARKER" -print0)
+		BUNDLE_TEMP=""
+	done <"$BUNDLE_FILES_LIST"
 	rm -rf -- "$BUNDLE_EXTRACT"
 	BUNDLE_EXTRACT=""
 
@@ -549,7 +585,7 @@ main() {
 	fi
 
 	TMP="$(mktemp -d)"
-	trap 'rm -rf "$TMP" ${BUNDLE_EXTRACT:+"$BUNDLE_EXTRACT"}' EXIT
+	trap 'rm -rf "$TMP" ${BUNDLE_EXTRACT:+"$BUNDLE_EXTRACT"} ${BUNDLE_TEMP:+"$BUNDLE_TEMP"}' EXIT
 
 	BASE_URL="https://github.com/Portocolom-Studio/potocolom/releases/download/$VERSION"
 	BUNDLE="potocolom-$VERSION-selfhost.tar.gz"

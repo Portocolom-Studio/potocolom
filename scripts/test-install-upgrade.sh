@@ -17,7 +17,8 @@ REAL_DATE="$(command -v date)"
 RELEASE_TEST_AWK="$(type -P awk)"
 REAL_MV="$(command -v mv)"
 REAL_TAR="$(command -v tar)"
-export REAL_MV REAL_TAR
+REAL_FIND="$(command -v find)"
+export REAL_MV REAL_TAR REAL_FIND
 failures=0
 
 
@@ -153,6 +154,13 @@ if [[ -n "${MV_FAIL_BUNDLE_AT:-}" ]]; then
 		fi
 	done
 fi
+# MV_FAIL_FINAL=1 fails every move onto a live path, the -T move that ends a swap.
+if [[ -n "${MV_FAIL_FINAL:-}" ]]; then
+	for arg in "$@"; do
+		if [[ "$arg" == -fT ]]; then exit 1; fi
+	done
+fi
+if [[ -n "${MV_LOG:-}" ]]; then printf '%s\n' "$*" >>"$MV_LOG"; fi
 exec "${REAL_MV:?}" "$@"
 EOF
 
@@ -175,6 +183,17 @@ if [[ "${TAR_TRUNCATE:-0}" == 1 ]]; then
 	fi
 fi
 exec "${REAL_TAR:?}" "$@"
+EOF
+
+# FIND_FAIL=1 makes find fail with no output while it runs inside the bundle extraction
+# directory. FIND_FAIL=dirs fails only the directory listing.
+cat >"$tmp/stubs/find" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$(pwd -P)" == */.bundle.* ]]; then
+	if [[ "${FIND_FAIL:-0}" == 1 ]]; then exit 1; fi
+	if [[ "${FIND_FAIL:-0}" == dirs && "$*" == *"-type d "* ]]; then exit 1; fi
+fi
+exec "${REAL_FIND:?}" "$@"
 EOF
 
 # The docker state machine. Containers are "ID SERVICE STATE" lines in
@@ -512,7 +531,7 @@ new_case() {
 	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
 	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar; do
+	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar find; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 	# Each case gets its own bundle directory, so SHA256SUMS can name any version.
@@ -1454,9 +1473,9 @@ if grep -q '^services:' "$case_dir/install/deploy/compose/compose.yml"; then par
 output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
 new_compose=no
 if cmp -s "$case_dir/install/deploy/compose/compose.yml" "$case_dir/bundle-src/deploy/compose/compose.yml"; then new_compose=yes; fi
-if [[ "$rc" -ne 0 && "$output" == *'could not move'* && "$moves" == 4 && -z "$whole" && "$parses" == yes \
+if [[ "$rc" -ne 0 && "$output" == *'could not stage'* && "$moves" == 4 && -z "$whole" && "$parses" == yes \
 	&& "$rc2" -eq 0 && "$output2" == *'Upgrading v8.8.8 to v9.9.9'* \
-	&& -z "$(whole_files_problems "$case_dir")" && "$new_compose" == yes \
+	&& -z "$(bundle_mismatches "$case_dir")" && "$new_compose" == yes \
 	&& ! -e "$case_dir/install/.upgrade-incomplete" && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
 	pass_case interrupted-swap-keeps-whole-files
 else
@@ -1695,6 +1714,91 @@ if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* && -L "$case_
 	pass_case live-symlink-parent-refuses
 else
 	fail_case live-symlink-parent-refuses "rc=$rc $output"
+fi
+
+# 55. A find that fails while the bundle is listed refuses before anything stops, and nothing changes.
+new_case failed-find-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" FIND_FAIL=1 TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+output2="$(run_install "$case_dir" FIND_FAIL=dirs TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+after2="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$output" == *'could not list the bundle; nothing was changed'* && "$before" == "$after" \
+	&& "$rc2" -ne 0 && "$output2" == *'could not list the bundle; nothing was changed'* && "$before" == "$after2" \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case failed-find-refuses
+else
+	fail_case failed-find-refuses "rc=$rc/$rc2 $output $output2"
+fi
+
+# 56. Each final move renames a temp file within the destination directory, so no move crosses a directory boundary.
+new_case moves-rename-within-destination-dir
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" MV_LOG="$case_dir/mv.log" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+finals=0
+same_dir=yes
+while read -r line; do
+	read -r -a words <<<"$line"
+	if [[ "${words[0]}" != -fT ]]; then continue; fi
+	finals=$((finals + 1))
+	src="${words[-2]}" dst="${words[-1]}"
+	if [[ "$(dirname -- "$src")" != "$(dirname -- "$dst")" ]]; then same_dir=no; fi
+done <"$case_dir/mv.log"
+files="$(cd "$case_dir/bundle-src" && find . -type f | wc -l)"
+if [[ "$rc" -eq 0 && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
+	pass_case moves-rename-within-destination-dir
+else
+	fail_case moves-rename-within-destination-dir "rc=$rc finals=$finals files=$files same_dir=$same_dir $output"
+fi
+
+# 57. A temp file left by a killed swap is removed by the next run, even when that run refuses
+# before the swap; an operator file with another name is not touched.
+new_case stale-new-temps-removed
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+printf 'PARTIAL\n' >"$case_dir/install/deploy/compose/.compose.yml.potocolom-new"
+printf 'KEEP\n' >"$case_dir/install/deploy/compose/.notes.potocolom-new"
+rm -f "$case_dir/install/scripts/restore.sh"
+mkdir "$case_dir/install/scripts/restore.sh"
+output1="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc1=0 || rc1=$?
+temp_after_refusal=yes
+if [[ ! -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" ]]; then temp_after_refusal=no; fi
+rm -rf "$case_dir/install/scripts/restore.sh"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc1" -ne 0 && "$output1" == *'conflicts with the live tree'* && "$temp_after_refusal" == no \
+	&& "$rc" -eq 0 && ! -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" \
+	&& "$(cat "$case_dir/install/deploy/compose/.notes.potocolom-new")" == KEEP \
+	&& -z "$(bundle_mismatches "$case_dir")" ]]; then
+	pass_case stale-new-temps-removed
+else
+	fail_case stale-new-temps-removed "rc=$rc1/$rc $output1 $output"
+fi
+
+# 58. A failed move onto a live path leaves no temp file behind: the exit cleanup removes it.
+new_case failed-move-leaves-no-temp
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" MV_FAIL_FINAL=1 TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* \
+	&& -z "$(find "$case_dir/install" -name '*.potocolom-new')" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case failed-move-leaves-no-temp
+else
+	fail_case failed-move-leaves-no-temp "rc=$rc $output"
 fi
 
 if ((failures > 0)); then
