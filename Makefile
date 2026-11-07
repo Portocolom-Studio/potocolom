@@ -404,6 +404,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-install-setup-link.sh
 	@bash scripts/test-install-upgrade.sh
 	@bash scripts/test-install-hf-cache.sh
+	@bash scripts/test-install-serial-lock.sh
 	@bash scripts/test-worker-entrypoint.sh
 	@bash scripts/test-setup-link.sh
 	@bash scripts/test-frontend-verify-graph.sh

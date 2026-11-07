@@ -3,6 +3,8 @@
 # (issue #792). The link goes into a page only this user can read, xdg-open is
 # given that page's path, and the page is removed afterwards.
 set -uo pipefail
+# One installer suite at a time: they share the per-user install lock (#831).
+source "$(dirname "${BASH_SOURCE[0]}")/test-install-serial.sh"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"

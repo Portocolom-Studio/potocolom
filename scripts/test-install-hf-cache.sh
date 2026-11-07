@@ -12,6 +12,8 @@
 # containers, no GPU. Run it as a normal user; refused-foreign-descendant also needs root
 # (for example in a container), where the other cases refuse, since sharing refuses root.
 set -uo pipefail
+# One installer suite at a time: they share the per-user install lock (#831).
+source "$(dirname "${BASH_SOURCE[0]}")/test-install-serial.sh"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # A failed mktemp must never leave tmp naming the worktree, or the trap would delete it.

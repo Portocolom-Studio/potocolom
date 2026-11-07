@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# One installer suite at a time: they share the per-user install lock (#831).
+source "$(dirname "${BASH_SOURCE[0]}")/test-install-serial.sh"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 auth_source="${AUTH_SCRIPT:-$repo/scripts/auth-enable.sh}"
