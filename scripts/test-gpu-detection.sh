@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
+# One installer suite at a time: they share the per-user install lock (#831).
+source "$(dirname "${BASH_SOURCE[0]}")/test-install-serial.sh"
 # ensure-env.sh honours these; inherited, they would point at a real .env.
 unset ENV_FILE ENV_EXAMPLE
 unset POTOCOLOM_SKIP_GPU_TEST POTOCOLOM_PROFILE

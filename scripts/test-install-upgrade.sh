@@ -7,6 +7,8 @@
 # revision probe is install.sh's own Python, and it runs for real against an
 # Alembic fixture whose revisions are the ones the stubbed image knows.
 set -uo pipefail
+# One installer suite at a time: they share the per-user install lock (#831).
+source "$(dirname "${BASH_SOURCE[0]}")/test-install-serial.sh"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
