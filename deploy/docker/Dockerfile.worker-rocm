@@ -22,4 +22,7 @@ RUN pip install --no-cache-dir ".[inference]" \
 ENV DEVICE=rocm
 ENV PYTHONUNBUFFERED=1
 
+# Starts as root, or as the host cache owner when WORKER_UID is set (deploy/docker/worker-entrypoint.sh).
+COPY deploy/docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/worker-entrypoint.sh"]
 CMD ["python", "-m", "worker"]
