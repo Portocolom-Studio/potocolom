@@ -7,8 +7,6 @@
 	import LayoutGridIcon from '@lucide/svelte/icons/layout-grid';
 	import LockIcon from '@lucide/svelte/icons/lock';
 	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
-	import MessageSquareTextIcon from '@lucide/svelte/icons/message-square-text';
-	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PenToolIcon from '@lucide/svelte/icons/pen-tool';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -39,22 +37,13 @@
 
 	type CreateView = Extract<
 		GatedSection,
-		'generate' | 'image_to_image' | 'upscale' | 'realtime_canvas' | 'edit_image' | 'image_to_text'
+		'generate' | 'image_to_image' | 'upscale' | 'realtime_canvas'
 	>;
-	const createItems = $derived<
-		{ view: CreateView; label: string; icon: Component; soon?: boolean }[]
-	>([
+	const createItems = $derived<{ view: CreateView; label: string; icon: Component }[]>([
 		{ view: 'generate', label: t('app.service.generate'), icon: SparklesIcon },
 		{ view: 'image_to_image', label: t('app.service.image_to_image'), icon: LayersIcon },
 		{ view: 'upscale', label: t('app.service.upscale'), icon: Maximize2Icon },
-		{ view: 'realtime_canvas', label: t('app.service.realtime_canvas'), icon: PenToolIcon },
-		{ view: 'edit_image', label: t('app.service.edit_image'), icon: PencilIcon, soon: true },
-		{
-			view: 'image_to_text',
-			label: t('app.service.image_to_text'),
-			icon: MessageSquareTextIcon,
-			soon: true
-		}
+		{ view: 'realtime_canvas', label: t('app.service.realtime_canvas'), icon: PenToolIcon }
 	]);
 
 	const workspaceNeeds = $derived(sectionNeeds('generate', role));
@@ -127,7 +116,7 @@
 			{@const needs = sectionNeeds(item.view, role)}
 			<Sidebar.MenuItem>
 				<Sidebar.MenuButton
-					class={itemClass + (item.soon ? ' opacity-55' : '')}
+					class={itemClass}
 					tooltipContent={item.label}
 					isActive={studio.shellView === item.view}
 				>
@@ -148,12 +137,6 @@
 				</Sidebar.MenuButton>
 				{#if needs !== null}
 					{@render lock(needs)}
-				{:else if item.soon}
-					<span
-						class="border-line-strong text-dim pointer-events-none absolute end-2 top-1/2 -translate-y-1/2 rounded border px-1.5 text-xs leading-4 group-data-[collapsible=icon]:hidden"
-					>
-						{t('app.shell.soon')}
-					</span>
 				{:else if item.view === 'realtime_canvas' && studio.realtimeLive}
 					<span
 						class="bg-status-success pointer-events-none absolute end-3 top-1/2 size-[7px] -translate-y-1/2 rounded-full group-data-[collapsible=icon]:end-1.5 group-data-[collapsible=icon]:top-1.5 group-data-[collapsible=icon]:translate-y-0"

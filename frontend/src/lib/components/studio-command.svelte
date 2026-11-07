@@ -12,8 +12,6 @@
 	import LayersIcon from '@lucide/svelte/icons/layers';
 	import LayoutGridIcon from '@lucide/svelte/icons/layout-grid';
 	import Maximize2Icon from '@lucide/svelte/icons/maximize-2';
-	import MessageSquareTextIcon from '@lucide/svelte/icons/message-square-text';
-	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PenToolIcon from '@lucide/svelte/icons/pen-tool';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
@@ -74,21 +72,6 @@
 				id: `view-${view}`,
 				label: t(`app.service.${view}`),
 				hint: t('app.shell.create'),
-				icon,
-				run: () => openService(view)
-			});
-		}
-		// Not built yet, but they open a page of their own like any view.
-		const soon = [
-			['edit_image', PencilIcon],
-			['image_to_text', MessageSquareTextIcon]
-		] as const;
-		for (const [view, icon] of soon) {
-			if (sectionNeeds(view, role) !== null) continue;
-			entries.push({
-				id: `view-${view}`,
-				label: t(`app.service.${view}`),
-				hint: t('app.shell.soon'),
 				icon,
 				run: () => openService(view)
 			});

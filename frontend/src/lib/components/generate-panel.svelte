@@ -1,9 +1,12 @@
 <script lang="ts">
+	import CircleXIcon from '@lucide/svelte/icons/circle-x';
 	import ChevronDownIcon from '@lucide/svelte/icons/chevron-down';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 	import ClipboardPasteIcon from '@lucide/svelte/icons/clipboard-paste';
 	import DownloadIcon from '@lucide/svelte/icons/download';
+	import BoxIcon from '@lucide/svelte/icons/box';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import ServerOffIcon from '@lucide/svelte/icons/server-off';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import ImageIcon from '@lucide/svelte/icons/image';
 	import LayersIcon from '@lucide/svelte/icons/layers';
@@ -22,7 +25,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import * as Select from '$lib/components/ui/select';
 	import * as ToggleGroup from '$lib/components/ui/toggle-group';
-	import { useStudioHeader } from '$lib/studio-chrome.svelte';
+	import { watchWorker, worker } from '$lib/studio-worker.svelte';
 	import ParamSliderField from '$lib/components/param-slider-field.svelte';
 	import {
 		defaultSizeIndex,
@@ -39,6 +42,7 @@
 		valueToNorm
 	} from '$lib/model-params';
 	import { countError, seedError } from '$lib/generate-validation';
+	import { isCancellable } from '$lib/generation-state';
 	import { apiFetch } from '$lib/api';
 	import { shortcutLabel } from '$lib/platform.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -55,6 +59,7 @@
 		generationById,
 		isStarred,
 		loadHistory,
+		openAdmin,
 		openService,
 		pollWhileWorking,
 		recentPrompts,
@@ -62,6 +67,7 @@
 		starredGenerations,
 		studio,
 		toggleStarred,
+		type Generation,
 		type GenerationLineage,
 		type LineageEntry,
 		type Model
@@ -70,6 +76,7 @@
 	import { runExclusive, type SubmitLock } from '$lib/submit-once';
 
 	let { mode }: { mode: 'generate' | 'image_to_image' | 'upscale' } = $props();
+	$effect(() => watchWorker());
 
 	// The field look of the studio's native controls (the prompt textarea).
 	const fieldClass =
@@ -103,8 +110,27 @@
 	let upscaleFactor = $state(2);
 	let errorText = $state('');
 	let lineage = $state<GenerationLineage | null>(null);
+	let stageEl = $state<HTMLElement | null>(null);
+	let pendingResultIds = $state<Set<string>>(new Set());
+	type GenerationRequest = Pick<Generation, 'model_id' | 'params'> & {
+		source_asset_id?: string;
+	};
 
-	// The viewer shows the clicked generation, or the newest finished one.
+	function generationAction(generation: Generation): 'generate' | 'image_to_image' | 'upscale' {
+		if (generation.source_asset_id === null) return 'generate';
+		return studio.models
+			.find((model) => model.id === generation.model_id)
+			?.capabilities.includes('upscale')
+			? 'upscale'
+			: 'image_to_image';
+	}
+
+	const latestViewJob = $derived(
+		studio.history.find(
+			(generation) => generationAction(generation) === mode && generation.state !== 'cancelled'
+		)
+	);
+
 	const shown = $derived(
 		(() => {
 			if (studio.selectedId) {
@@ -112,6 +138,7 @@
 				if (selected !== undefined) return selected;
 			}
 			return (
+				latestViewJob ??
 				studio.history.find((g) => g.assets.length > 0) ??
 				studio.starredExtras.find((g) => g.assets.length > 0) ??
 				null
@@ -133,18 +160,47 @@
 	// generation object, so tracking shown itself would refetch and blank the
 	// breadcrumb every 1.5 seconds while a job is running.
 	const shownId = $derived(shown?.id ?? null);
-	const shownThumbnail = $derived(shown?.assets[0]?.thumbnail_url ?? null);
-	const shownAction = $derived(
-		shown === null
-			? null
-			: shown.source_asset_id === null
-				? 'generate'
-				: studio.models
-							.find((model) => model.id === shown.model_id)
-							?.capabilities.includes('upscale')
-					? 'upscale'
-					: 'image_to_image'
+	const shownResultId = $derived(
+		shown?.state === 'succeeded' && shown.assets.length > 0 ? shown.id : null
 	);
+	const shownThumbnail = $derived(shown?.assets[0]?.thumbnail_url ?? null);
+	const shownAction = $derived(shown === null ? null : generationAction(shown));
+	const shownPending = $derived(
+		shown !== null &&
+			(isCancellable(shown.state) ||
+				(shown.state === 'succeeded' &&
+					shown.assets.length === 0 &&
+					pendingResultIds.has(shown.id)))
+	);
+	const shownProgress = $derived(
+		shown?.state === 'running' && shown.progress !== null ? Math.round(shown.progress * 100) : null
+	);
+
+	$effect(() => {
+		const finishedIds = [...pendingResultIds].filter((id) => {
+			const generation = generationById(id);
+			return (
+				generation !== undefined &&
+				!isCancellable(generation.state) &&
+				(generation.state !== 'succeeded' || generation.assets.length > 0)
+			);
+		});
+		if (finishedIds.length === 0) return;
+		// A failure is an outcome too: on a phone it must come into view like a result.
+		const revealResult =
+			shown !== null &&
+			(shown.state === 'succeeded' || shown.state === 'failed') &&
+			finishedIds.includes(shown.id);
+		pendingResultIds = new Set([...pendingResultIds].filter((id) => !finishedIds.includes(id)));
+		if (!revealResult || stageEl === null || !window.matchMedia('(max-width: 1023px)').matches)
+			return;
+		const bounds = stageEl.getBoundingClientRect();
+		if (bounds.bottom > 0 && bounds.top < window.innerHeight) return;
+		stageEl.scrollIntoView({
+			block: 'start',
+			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
+		});
+	});
 
 	const textToImageModels = $derived(filterTextToImageModels(studio.models));
 	const imageToImageModels = $derived(filterImageToImageModels(studio.models));
@@ -152,6 +208,15 @@
 		mode === 'image_to_image' ? imageToImageModels : textToImageModels
 	);
 	const upscaleModels = $derived(filterUpscaleModels(studio.models));
+	const availableModels = $derived(mode === 'upscale' ? upscaleModels : diffusionModels);
+	const canManageModels = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+	const noModelKey = $derived(
+		mode === 'image_to_image'
+			? 'app.image_to_image.no_model'
+			: mode === 'upscale'
+				? 'app.upscale.no_model'
+				: 'app.gen.no_model'
+	);
 	const compatibleModelsRegistered = $derived(
 		studio.models.some((model) =>
 			model.capabilities.includes(
@@ -173,22 +238,23 @@
 	);
 	const upscaleModel = $derived(upscaleModels.find((model) => model.id === upscaleModelId));
 	const selectedModel = $derived(diffusionModels.find((model) => model.id === activeModelId));
-	const sourceAsset = $derived(
-		sourceAssetId === null
-			? null
-			: ([
-					...studio.history,
-					...studio.starredExtras,
-					...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
-				]
-					.flatMap((generation) => generation.assets)
-					.find((asset) => asset.id === sourceAssetId) ?? null)
+	const knownAssets = $derived(
+		[
+			...studio.history,
+			...studio.starredExtras,
+			...(studio.selectedExtra === null ? [] : [studio.selectedExtra])
+		].flatMap((generation) => generation.assets)
 	);
+	const sourceAsset = $derived(knownAssets.find((asset) => asset.id === sourceAssetId) ?? null);
 	const canEdit = $derived(
-		shown !== null && shown.assets.length > 0 && imageToImageModels.length > 0
+		worker.online !== false &&
+			shown !== null &&
+			shown.assets.length > 0 &&
+			imageToImageModels.length > 0
 	);
 	const canUpscale = $derived(
-		upscaleModel != null &&
+		worker.online !== false &&
+			upscaleModel != null &&
 			(sourceAsset !== null ||
 				(shown !== null && shown.assets.length > 0 && shown.state === 'succeeded'))
 	);
@@ -226,7 +292,12 @@
 	const COUNT_MAX = 8;
 	const countProblem = $derived(countError(count, COUNT_MIN, COUNT_MAX));
 	const seedProblem = $derived(seedError(seed, modelProperty(selectedModel, 'seed') ?? {}));
-	const upscaleSourceAsset = $derived(sourceAsset ?? shown?.assets[0] ?? null);
+	const upscaleSourceAsset = $derived(
+		sourceAsset ??
+			shown?.assets[0] ??
+			knownAssets.find((asset) => asset.id === shown?.source_asset_id) ??
+			null
+	);
 	const upscaleSource = $derived(
 		upscaleSourceAsset !== null
 			? { width: upscaleSourceAsset.width, height: upscaleSourceAsset.height }
@@ -240,17 +311,9 @@
 	);
 	const upscaleOutLabel = $derived(
 		upscaleSource != null
-			? `${upscaleSource.width * upscaleFactor}x${upscaleSource.height * upscaleFactor}`
-			: null
-	);
-	const upscaleChoiceLabel = $derived(
-		upscaleModel != null
-			? `${upscaleModel.name} - x${upscaleFactor}` +
-					(upscaleSource != null
-						? ` - ${upscaleSource.width}x${upscaleSource.height}` +
-							(upscaleOutLabel != null ? ` -> ${upscaleOutLabel}` : '')
-						: '') +
-					(upscaleEstimateLabel != null ? ` - ${upscaleEstimateLabel}` : '')
+			? t('app.upscale.output_size')
+					.replace('{width}', String(upscaleSource.width * upscaleFactor))
+					.replace('{height}', String(upscaleSource.height * upscaleFactor))
 			: null
 	);
 	const shownFactor = $derived(
@@ -262,13 +325,6 @@
 			: mode === 'image_to_image'
 				? t('app.image_to_image.title')
 				: t('app.upscale.title')
-	);
-	const panelSub = $derived(
-		mode === 'generate'
-			? t('app.gen.sub')
-			: mode === 'image_to_image'
-				? t('app.image_to_image.sub')
-				: t('app.upscale.sub')
 	);
 	$effect(() => {
 		const prefill = studio.generationPrefill;
@@ -319,7 +375,7 @@
 	});
 
 	$effect(() => {
-		const jobId = shownId;
+		const jobId = shownResultId;
 		lineage = null;
 		if (!jobId) return;
 		let cancelled = false;
@@ -384,6 +440,48 @@
 		normsReady = true;
 	});
 
+	async function submitGeneration(
+		request: GenerationRequest
+	): Promise<{ jobId: string | null } | null> {
+		const response = await apiFetch('/api/v1/generations', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify(request)
+		}).catch(() => null);
+		return readSubmission(response);
+	}
+
+	async function readSubmission(
+		response: Response | null
+	): Promise<{ jobId: string | null } | null> {
+		if (response === null) {
+			errorText = t('app.gen.submit_failed');
+			return null;
+		}
+		if (!response.ok) {
+			const body: unknown = await response.json().catch(() => null);
+			errorText =
+				body !== null &&
+				typeof body === 'object' &&
+				'detail' in body &&
+				typeof body.detail === 'string'
+					? body.detail
+					: response.statusText;
+			return null;
+		}
+		const body: unknown = await response.json().catch(() => null);
+		if (
+			body !== null &&
+			typeof body === 'object' &&
+			'job_id' in body &&
+			typeof body.job_id === 'string'
+		) {
+			pendingResultIds = new Set(pendingResultIds).add(body.job_id);
+			return { jobId: body.job_id };
+		}
+		return { jobId: null };
+	}
+
 	async function generate(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 		await runExclusive(submitLock, async () => {
@@ -401,22 +499,12 @@
 				};
 				if (mode === 'image_to_image') params.strength = strengthValue;
 				if (typeof seed === 'number' && Number.isFinite(seed)) params.seed = seed + index;
-				const response = await apiFetch('/api/v1/generations', {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({
-						model_id: activeModelId,
-						params,
-						...(mode === 'image_to_image' && sourceAssetId
-							? { source_asset_id: sourceAssetId }
-							: {})
-					})
+				const submitted = await submitGeneration({
+					model_id: activeModelId,
+					params,
+					...(mode === 'image_to_image' && sourceAssetId ? { source_asset_id: sourceAssetId } : {})
 				});
-				if (!response.ok) {
-					const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-					errorText = body?.detail ?? response.statusText;
-					break;
-				}
+				if (!submitted) break;
 			}
 			await loadHistory();
 			void pollWhileWorking();
@@ -441,15 +529,53 @@
 					params: { ...branchParams, factor: upscaleFactor },
 					source_asset_id: sourceId
 				})
-			});
-			if (!response.ok) {
-				const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-				errorText = body?.detail ?? response.statusText;
-				return;
-			}
+			}).catch(() => null);
+			if (!(await readSubmission(response))) return;
 			await loadHistory();
 			void pollWhileWorking();
 		});
+	}
+
+	async function retryShown(): Promise<void> {
+		if (shown === null || shown.state !== 'failed' || worker.online === false) return;
+		const request: GenerationRequest = {
+			model_id: shown.model_id,
+			params: { ...shown.params },
+			...(shown.source_asset_id === null ? {} : { source_asset_id: shown.source_asset_id })
+		};
+		await runExclusive(submitLock, async () => {
+			errorText = '';
+			const submitted = await submitGeneration(request);
+			if (submitted === null) return;
+			studio.selectedId = submitted.jobId;
+			await loadHistory();
+			void pollWhileWorking();
+		});
+	}
+
+	function failureReason(reason: string | null): string {
+		switch (reason?.trim()) {
+			case 'worker disconnected':
+				return t('app.gen.failure_worker');
+			case 'restart while running':
+				return t('app.gen.failure_restart');
+			case 'source asset not found':
+				return t('app.gen.failure_source');
+			case 'input image invalid':
+				return t('app.gen.failure_input');
+			case 'worker output was missing or invalid':
+				return t('app.gen.failure_output');
+			case undefined:
+			case '':
+			case 'generation failed':
+			case 'worker reported failure':
+				return t('app.gen.failure_unknown');
+			default:
+				if (/out of memory|OutOfMemoryError/i.test(reason ?? ''))
+					return t('app.gen.failure_memory');
+				if (/^no progress for \d+s$/.test(reason ?? '')) return t('app.gen.failure_stalled');
+				return reason?.trim() ?? t('app.gen.failure_unknown');
+		}
 	}
 
 	function insertPrompt(): void {
@@ -528,7 +654,7 @@
 	);
 	const shownSize = $derived(
 		shown !== null && shown.assets.length > 0
-			? `${shown.assets[0].width} × ${shown.assets[0].height}`
+			? `${shown.assets[0].width} x ${shown.assets[0].height}`
 			: null
 	);
 	const shownSeed = $derived(typeof shown?.params.seed === 'number' ? shown.params.seed : null);
@@ -547,7 +673,7 @@
 		if (model.estimated_gpu_ms_default != null)
 			parts.push(`~${formatMs(model.estimated_gpu_ms_default)} GPU`);
 		if (model.min_vram_gb > 0) parts.push(`${model.min_vram_gb} GB`);
-		return parts.join(' · ');
+		return parts.join(' / ');
 	}
 
 	function stepCount(delta: number): void {
@@ -558,7 +684,9 @@
 	// requestSubmit() fires even while the submit button is disabled, so the
 	// shortcut checks the same conditions as the button.
 	const canGenerate = $derived(
-		!submitLock.busy &&
+		worker.online !== false &&
+			selectedModel !== undefined &&
+			!submitLock.busy &&
 			studio.prompt.trim() !== '' &&
 			countProblem === null &&
 			seedProblem === null &&
@@ -574,47 +702,9 @@
 	const SETUP_GUIDE_URL =
 		'https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md';
 
-	const resultEmpty = $derived(shown === null && studio.historyLoaded);
-	const resultFrameClass = $derived(
-		resultEmpty
-			? 'flex min-h-0 flex-1 flex-col'
-			: 'bg-field border-border m-3 flex flex-none flex-col overflow-hidden rounded-xl border lg:min-h-0 lg:flex-1 lg:flex-row'
-	);
 	// The strip shows starred jobs too, so it is empty only when both lists are.
-	const hasHistoryItems = $derived(
-		starredGenerations().length > 0 || studio.history.some((g) => g.state !== 'failed')
-	);
-
-	const MODES = [
-		{ view: 'generate', label: 'app.service.generate' },
-		{ view: 'image_to_image', label: 'app.service.image_to_image' },
-		{ view: 'upscale', label: 'app.service.upscale' }
-	] as const;
-
-	useStudioHeader(() => ({ actions: modeSwitch }));
+	const hasHistoryItems = $derived(starredGenerations().length > 0 || studio.history.length > 0);
 </script>
-
-{#snippet modeSwitch()}
-	<div
-		class="bg-field border-line-strong hidden gap-0.5 rounded-lg border p-0.5 md:flex"
-		role="group"
-		aria-label={panelTitle}
-	>
-		{#each MODES as option (option.view)}
-			<button
-				type="button"
-				class={'flex h-[26px] min-w-28 items-center justify-center rounded-[6px] px-3 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
-					(mode === option.view
-						? 'bg-hover text-foreground ring-line-strong shadow-[0_1px_2px_rgba(0,0,0,0.4)] ring-1 ring-inset'
-						: 'text-muted-foreground hover:text-foreground')}
-				aria-pressed={mode === option.view}
-				onclick={() => openService(option.view)}
-			>
-				{t(option.label)}
-			</button>
-		{/each}
-	</div>
-{/snippet}
 
 {#snippet modelCard(model: Model | undefined)}
 	<span
@@ -630,8 +720,8 @@
 {/snippet}
 
 {#snippet progress()}
-	{#if working > 0}
-		<div class="mt-3">
+	<div class="mt-3 h-6">
+		{#if working > 0}
 			<div class="text-dim flex items-center justify-between text-xs tabular-nums">
 				<span role="status" title={t('app.gen.working_suffix')}
 					>{working} {t('app.gen.working_short')}</span
@@ -648,8 +738,8 @@
 					></div>
 				</div>
 			{/if}
-		</div>
-	{/if}
+		{/if}
+	</div>
 	{#if errorText !== ''}
 		<p role="alert" class="text-destructive mt-2 text-sm leading-relaxed">{errorText}</p>
 	{/if}
@@ -660,17 +750,7 @@
 		class="bg-panel border-border flex min-h-0 flex-none flex-col border-b lg:w-[340px] lg:border-e lg:border-b-0"
 		aria-label={panelTitle}
 	>
-		<!-- Below lg the top bar already names the screen, so the title is only for screen readers. -->
-		<div class="flex flex-col gap-1 lg:px-5 lg:pt-5 lg:pb-3">
-			<h1
-				class="text-foreground sr-only text-lg leading-tight font-semibold tracking-[-0.01em] lg:not-sr-only"
-			>
-				{panelTitle}
-			</h1>
-			<p class="text-muted-foreground sr-only text-xs leading-relaxed lg:not-sr-only">
-				{panelSub}
-			</p>
-		</div>
+		<h1 class="sr-only">{panelTitle}</h1>
 		{#if !studio.modelsLoaded}
 			<!-- The parameter column's shape while the models load. -->
 			<div role="status" class="flex flex-col gap-4 p-4">
@@ -691,363 +771,380 @@
 				{/each}
 				<Skeleton class="mt-2 h-9 rounded-md" aria-hidden="true" />
 			</div>
-		{:else if mode !== 'upscale'}
-			{#if diffusionModels.length === 0 && compatibleModelsRegistered}
-				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
-					{t('app.models.none_available')}
+		{:else if worker.online === false || availableModels.length === 0}
+			<div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+				<div
+					class="bg-raised border-border grid size-10 place-items-center rounded-lg border"
+					aria-hidden="true"
+				>
+					{#if worker.online === false}
+						<ServerOffIcon class="text-muted-foreground size-4.5" />
+					{:else}
+						<BoxIcon class="text-muted-foreground size-4.5" />
+					{/if}
+				</div>
+				<p class="text-foreground max-w-64 text-sm font-medium text-balance">
+					{worker.online === false
+						? t('app.availability.worker_offline')
+						: canManageModels && compatibleModelsRegistered
+							? t('app.models.none_available')
+							: t(
+									`${noModelKey}_${canManageModels && worker.online === true ? 'installed' : 'available'}`
+								)}
 				</p>
-			{:else if diffusionModels.length === 0 && (account.current?.role === 'user' || account.current?.role === 'viewer')}
-				<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
-					{t('app.gen.no_models_viewer')}
-				</p>
-			{:else if diffusionModels.length === 0}
-				<div class="flex flex-col gap-2 p-4 lg:p-5">
-					<h2 class="text-foreground text-sm font-semibold">{t('app.gen.setup_title')}</h2>
-					<p class="text-muted-foreground text-sm leading-relaxed">{t('app.gen.no_models')}</p>
-					<Button variant="outline" size="sm" class="w-fit" onclick={() => openService('models')}
-						>{t('app.gen.open_models')}</Button
-					>
-					<a
+				{#if worker.online === false}
+					<Button
+						variant="outline"
+						size="sm"
 						href={SETUP_GUIDE_URL}
 						target="_blank"
 						rel="noopener noreferrer"
-						class="text-foreground decoration-line-strong hover:decoration-foreground mt-1 inline-flex w-fit items-center gap-1.5 rounded-sm text-sm underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-ring"
 					>
-						{t('app.gen.setup_guide')}
-						<ExternalLinkIcon class="size-3.5" aria-hidden="true" />
-					</a>
-				</div>
-			{:else}
-				<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
-					<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
-						<div class="border-border border-b p-4 lg:p-5">
-							<Label for="gen-model" class="text-muted-foreground mb-2 text-xs font-medium"
-								>{t('app.gen.model')}</Label
+						{t('app.availability.start_worker')}
+						<ExternalLinkIcon aria-hidden="true" />
+					</Button>
+				{:else if canManageModels && compatibleModelsRegistered}
+					<Button variant="outline" size="sm" onclick={() => openService('models')}
+						>{t('app.gen.open_models')}</Button
+					>
+				{:else if canManageModels}
+					<Button variant="outline" size="sm" onclick={() => openAdmin('models')}
+						>{t('app.availability.open_admin_models')}</Button
+					>
+				{:else}
+					<p class="text-muted-foreground max-w-64 text-sm text-balance">
+						{t('app.availability.ask_admin')}
+					</p>
+				{/if}
+			</div>
+		{:else if mode !== 'upscale'}
+			<form class="flex min-h-0 flex-1 flex-col" novalidate onsubmit={generate}>
+				<div class="min-h-0 flex-1 overflow-y-auto scroll-pb-6 pb-6 [scrollbar-width:thin]">
+					<div class="border-border border-b p-4 lg:p-5">
+						<Label for="gen-model" class="text-muted-foreground mb-2 text-xs font-medium"
+							>{t('app.gen.model')}</Label
+						>
+						<Select.Root
+							type="single"
+							value={activeModelId}
+							onValueChange={(value) => value && onModelChange(value)}
+						>
+							<Select.Trigger
+								id="gen-model"
+								data-tour="model"
+								class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
 							>
-							<Select.Root
-								type="single"
-								value={activeModelId}
-								onValueChange={(value) => value && onModelChange(value)}
-							>
-								<Select.Trigger
-									id="gen-model"
-									data-tour="model"
-									class="bg-field border-line-strong h-auto! w-full gap-2.5 px-2.5 py-2 font-sans"
-								>
-									{@render modelCard(
-										diffusionModels.find((model) => model.id === activeModelId) ??
-											diffusionModels[0]
-									)}
-								</Select.Trigger>
-								<Select.Content>
-									<Select.Group>
-										{#each diffusionModels as model (model.id)}
-											<Select.Item value={model.id} label={modelOptionLabel(model)} />
-										{/each}
-									</Select.Group>
-								</Select.Content>
-							</Select.Root>
-							{#if selectedModel?.requires_attribution}
-								<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
-							{/if}
-						</div>
-						{#if mode === 'image_to_image'}
-							<div class="border-border border-b p-4 lg:p-5">
-								<p class="text-muted-foreground mb-2 text-xs font-medium">
-									{t('app.image_to_image.source')}
-								</p>
-								<div
-									class="border-line-strong flex min-h-16 items-center gap-3 rounded-md border border-dashed p-2.5"
-								>
-									{#if sourceAsset !== null}
-										<img
-											src={sourceAsset.thumbnail_url ?? sourceAsset.url}
-											alt={t('app.image_to_image.source')}
-											class="size-12 rounded-md object-cover"
-											width="48"
-											height="48"
-										/>
-										<p class="min-w-0 flex-1 truncate text-sm">
-											{t('app.image_to_image.ready')}
-										</p>
-									{:else}
-										<p class="text-muted-foreground flex-1 text-sm">
-											{t('app.image_to_image.source_empty')}
-										</p>
-									{/if}
-								</div>
-								<div class="mt-2 flex gap-2">
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										class="flex-1"
-										disabled={shown === null || shown.assets.length === 0}
-										onclick={() => {
-											if (shown !== null && shown.assets.length > 0) {
-												sourceAssetId = shown.assets[0].id;
-											}
-										}}
-									>
-										{t('app.image_to_image.use_selected')}
-									</Button>
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										disabled={sourceAssetId === null}
-										onclick={() => (sourceAssetId = null)}
-									>
-										{t('app.image_to_image.clear')}
-									</Button>
-								</div>
-							</div>
+								{@render modelCard(
+									diffusionModels.find((model) => model.id === activeModelId) ?? diffusionModels[0]
+								)}
+							</Select.Trigger>
+							<Select.Content>
+								<Select.Group>
+									{#each diffusionModels as model (model.id)}
+										<Select.Item value={model.id} label={modelOptionLabel(model)} />
+									{/each}
+								</Select.Group>
+							</Select.Content>
+						</Select.Root>
+						{#if selectedModel?.requires_attribution}
+							<p class="text-dim mt-2 text-xs">{selectedModel.requires_attribution}</p>
 						{/if}
+					</div>
+					{#if mode === 'image_to_image'}
 						<div class="border-border border-b p-4 lg:p-5">
-							<div class="mb-2 flex items-center justify-between gap-2">
-								<Label for="gen-prompt" class="text-muted-foreground text-xs font-medium"
-									>{t('app.gen.prompt')}</Label
-								>
-								<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
+							<p class="text-muted-foreground mb-2 text-xs font-medium">
+								{t('app.image_to_image.source')}
+							</p>
+							<div
+								class="border-line-strong flex min-h-16 items-center gap-3 rounded-md border border-dashed p-2.5"
+							>
+								{#if sourceAsset !== null}
+									<img
+										src={sourceAsset.thumbnail_url ?? sourceAsset.url}
+										alt={t('app.image_to_image.source')}
+										class="size-12 rounded-md object-cover"
+										width="48"
+										height="48"
+									/>
+									<p class="min-w-0 flex-1 truncate text-sm">
+										{t('app.image_to_image.ready')}
+									</p>
+								{:else}
+									<p class="text-muted-foreground flex-1 text-sm">
+										{t('app.image_to_image.source_empty')}
+									</p>
+								{/if}
 							</div>
-							<textarea
-								id="gen-prompt"
-								data-tour="prompt"
-								name="prompt"
-								autocomplete="off"
-								class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
-								placeholder={t('app.gen.prompt_placeholder')}
-								aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
-								aria-keyshortcuts="Meta+Enter Control+Enter"
-								onkeydown={onPromptKeydown}
-								bind:value={studio.prompt}></textarea>
-							{#if promptTokenNotice}
-								<!-- Described by the field rather than announced from a live region:
+							<div class="mt-2 flex gap-2">
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									class="flex-1"
+									disabled={shown === null || shown.assets.length === 0}
+									onclick={() => {
+										if (shown !== null && shown.assets.length > 0) {
+											sourceAssetId = shown.assets[0].id;
+										}
+									}}
+								>
+									{t('app.image_to_image.use_selected')}
+								</Button>
+								<Button
+									type="button"
+									variant="ghost"
+									size="sm"
+									disabled={sourceAssetId === null}
+									onclick={() => (sourceAssetId = null)}
+								>
+									{t('app.image_to_image.clear')}
+								</Button>
+							</div>
+						</div>
+					{/if}
+					<div class="border-border border-b p-4 lg:p-5">
+						<div class="mb-2 flex items-center justify-between gap-2">
+							<Label for="gen-prompt" class="text-muted-foreground text-xs font-medium"
+								>{t('app.gen.prompt')}</Label
+							>
+							<span class="text-dim text-xs tabular-nums">{tokenLabel}</span>
+						</div>
+						<textarea
+							id="gen-prompt"
+							data-tour="prompt"
+							name="prompt"
+							autocomplete="off"
+							class={fieldClass + ' no-scrollbar h-[136px] resize-none overflow-y-auto'}
+							placeholder={t('app.gen.prompt_placeholder')}
+							aria-describedby={promptTokenNotice ? 'gen-prompt-window' : undefined}
+							aria-keyshortcuts="Meta+Enter Control+Enter"
+							onkeydown={onPromptKeydown}
+							bind:value={studio.prompt}></textarea>
+						{#if promptTokenNotice}
+							<!-- Described by the field rather than announced from a live region:
 								the count changes on every keystroke, which a polite region would
 								read out again and again while the user is still typing. -->
-								<p
-									id="gen-prompt-window"
-									class="text-status-warning mt-1.5 text-xs leading-relaxed tabular-nums"
-								>
-									{promptTokenNotice}
-								</p>
-							{/if}
-							<div class="mt-2 flex flex-wrap gap-1.5">
-								<DropdownMenu.Root>
-									<DropdownMenu.Trigger>
-										{#snippet child({ props })}
-											<button
-												type="button"
-												{...props}
-												class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
-											>
-												<HistoryIcon class="size-3" aria-hidden="true" />
-												{t('app.gen.prompt_history')}
-											</button>
-										{/snippet}
-									</DropdownMenu.Trigger>
-									<DropdownMenu.Content class="w-80 max-w-[calc(100vw-2rem)]" align="start">
-										{#each prompts as recent (recent)}
-											<DropdownMenu.Item title={recent} onclick={() => (studio.prompt = recent)}>
-												<span class="line-clamp-2 text-sm">{recent}</span>
-											</DropdownMenu.Item>
-										{:else}
-											<p class="text-muted-foreground px-2 py-1.5 text-sm">
-												{t('app.shell.prompt_history_empty')}
-											</p>
-										{/each}
-									</DropdownMenu.Content>
-								</DropdownMenu.Root>
-								<button
-									type="button"
-									class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-									disabled={shownPrompt === ''}
-									onclick={insertPrompt}
-								>
-									<ClipboardPasteIcon class="size-3" aria-hidden="true" />
-									{t('app.gen.insert_prompt')}
-								</button>
-							</div>
-						</div>
-						<div class="border-border border-b p-4 lg:p-5">
-							<Label id="gen-size-label" class="text-muted-foreground mb-2 text-xs font-medium"
-								>{t('app.gen.size')}</Label
+							<p
+								id="gen-prompt-window"
+								class="text-status-warning mt-1.5 text-xs leading-relaxed tabular-nums"
 							>
-							<ToggleGroup.Root
-								type="single"
-								aria-labelledby="gen-size-label"
-								spacing={0}
-								class={segmentRootClass}
-								value={sizeKey}
-								onValueChange={onSizeChange}
-							>
-								{#each sizeOptions as option (option)}
-									<ToggleGroup.Item
-										value={String(option)}
-										aria-label={`${option} x ${option}`}
-										class={segmentItemClass}
-									>
-										{option}²
-									</ToggleGroup.Item>
-								{/each}
-							</ToggleGroup.Root>
-							<div class="mt-3.5 grid grid-cols-2 gap-3">
-								<div class="flex flex-col gap-2">
-									<Label for="gen-count" class="text-muted-foreground text-xs font-medium"
-										>{t('app.gen.count')}</Label
-									>
-									<div class="relative">
-										<Input
-											id="gen-count"
-											name="count"
-											autocomplete="off"
-											inputmode="numeric"
-											class="pe-14 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-											type="number"
-											min="1"
-											max="8"
-											aria-describedby={countProblem ? 'gen-count-error' : undefined}
-											bind:value={count}
-										/>
-										<div class="absolute inset-y-0 end-1 flex items-center">
-											<button
-												type="button"
-												class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
-												aria-label={t('app.gen.count_less')}
-												onclick={() => stepCount(-1)}
-												><MinusIcon class="size-3.5" aria-hidden="true" /></button
-											>
-											<button
-												type="button"
-												class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
-												aria-label={t('app.gen.count_more')}
-												onclick={() => stepCount(1)}
-												><PlusIcon class="size-3.5" aria-hidden="true" /></button
-											>
-										</div>
-									</div>
-									{#if countProblem}
-										<p id="gen-count-error" class="text-destructive text-xs leading-relaxed">
-											{t(countProblem)
-												.replace('{min}', String(COUNT_MIN))
-												.replace('{max}', String(COUNT_MAX))}
-										</p>
-									{/if}
-								</div>
-								<div class="flex flex-col gap-2">
-									<Label for="gen-seed" class="text-muted-foreground text-xs font-medium"
-										>{t('app.gen.seed')}</Label
-									>
-									<div class="relative">
-										<Input
-											id="gen-seed"
-											name="seed"
-											autocomplete="off"
-											inputmode="numeric"
-											class="pe-8 font-mono tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
-											type="number"
-											placeholder={t('app.gen.seed_random')}
-											aria-describedby={seedProblem ? 'gen-seed-error' : undefined}
-											bind:value={seed}
-										/>
+								{promptTokenNotice}
+							</p>
+						{/if}
+						<div class="mt-2 flex flex-wrap gap-1.5">
+							<DropdownMenu.Root>
+								<DropdownMenu.Trigger>
+									{#snippet child({ props })}
 										<button
 											type="button"
-											class="text-dim hover:text-foreground absolute inset-y-0 end-1 my-auto grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
-											aria-label={t('app.gen.seed_clear')}
-											title={t('app.gen.seed_clear')}
-											onclick={() => (seed = null)}
-											><RefreshCwIcon class="size-3.5" aria-hidden="true" /></button
+											{...props}
+											class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<HistoryIcon class="size-3" aria-hidden="true" />
+											{t('app.gen.prompt_history')}
+										</button>
+									{/snippet}
+								</DropdownMenu.Trigger>
+								<DropdownMenu.Content
+									class="max-h-64 w-80 max-w-[calc(100vw-2rem)] overflow-y-auto"
+									align="start"
+								>
+									{#each prompts as recent (recent)}
+										<DropdownMenu.Item title={recent} onclick={() => (studio.prompt = recent)}>
+											<span class="block min-w-0 truncate text-sm">{recent}</span>
+										</DropdownMenu.Item>
+									{:else}
+										<p class="text-muted-foreground px-2 py-1.5 text-sm">
+											{t('app.shell.prompt_history_empty')}
+										</p>
+									{/each}
+								</DropdownMenu.Content>
+							</DropdownMenu.Root>
+							<button
+								type="button"
+								class="border-line-strong text-muted-foreground hover:text-foreground hover:bg-hover flex h-[22px] items-center gap-1.5 rounded-full border px-2 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+								disabled={shownPrompt === ''}
+								onclick={insertPrompt}
+							>
+								<ClipboardPasteIcon class="size-3" aria-hidden="true" />
+								{t('app.gen.insert_prompt')}
+							</button>
+						</div>
+					</div>
+					<div class="border-border border-b p-4 lg:p-5">
+						<Label id="gen-size-label" class="text-muted-foreground mb-2 text-xs font-medium"
+							>{t('app.gen.size')}</Label
+						>
+						<ToggleGroup.Root
+							type="single"
+							aria-labelledby="gen-size-label"
+							spacing={0}
+							class={segmentRootClass}
+							value={sizeKey}
+							onValueChange={onSizeChange}
+						>
+							{#each sizeOptions as option (option)}
+								<ToggleGroup.Item
+									value={String(option)}
+									aria-label={`${option} x ${option}`}
+									class={segmentItemClass}
+								>
+									<span>{option}<sup>2</sup></span>
+								</ToggleGroup.Item>
+							{/each}
+						</ToggleGroup.Root>
+						<div class="mt-3.5 grid grid-cols-2 gap-3">
+							<div class="flex flex-col gap-2">
+								<Label for="gen-count" class="text-muted-foreground text-xs font-medium"
+									>{t('app.gen.count')}</Label
+								>
+								<div class="relative">
+									<Input
+										id="gen-count"
+										name="count"
+										autocomplete="off"
+										inputmode="numeric"
+										class="pe-14 tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+										type="number"
+										min="1"
+										max="8"
+										aria-describedby={countProblem ? 'gen-count-error' : undefined}
+										bind:value={count}
+									/>
+									<div class="absolute inset-y-0 end-1 flex items-center">
+										<button
+											type="button"
+											class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											aria-label={t('app.gen.count_less')}
+											onclick={() => stepCount(-1)}
+											><MinusIcon class="size-3.5" aria-hidden="true" /></button
+										>
+										<button
+											type="button"
+											class="text-dim hover:text-foreground grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											aria-label={t('app.gen.count_more')}
+											onclick={() => stepCount(1)}
+											><PlusIcon class="size-3.5" aria-hidden="true" /></button
 										>
 									</div>
-									{#if seedProblem}
-										<p id="gen-seed-error" class="text-destructive text-xs leading-relaxed">
-											{t(seedProblem)}
-										</p>
-									{/if}
 								</div>
+								{#if countProblem}
+									<p id="gen-count-error" class="text-destructive text-xs leading-relaxed">
+										{t(countProblem)
+											.replace('{min}', String(COUNT_MIN))
+											.replace('{max}', String(COUNT_MAX))}
+									</p>
+								{/if}
+							</div>
+							<div class="flex flex-col gap-2">
+								<Label for="gen-seed" class="text-muted-foreground text-xs font-medium"
+									>{t('app.gen.seed')}</Label
+								>
+								<div class="relative">
+									<Input
+										id="gen-seed"
+										name="seed"
+										autocomplete="off"
+										inputmode="numeric"
+										class="pe-8 font-mono tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+										type="number"
+										placeholder={t('app.gen.seed_random')}
+										aria-describedby={seedProblem ? 'gen-seed-error' : undefined}
+										bind:value={seed}
+									/>
+									<button
+										type="button"
+										class="text-dim hover:text-foreground absolute inset-y-0 end-1 my-auto grid size-6 place-items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										aria-label={t('app.gen.seed_clear')}
+										title={t('app.gen.seed_clear')}
+										onclick={() => (seed = null)}
+										><RefreshCwIcon class="size-3.5" aria-hidden="true" /></button
+									>
+								</div>
+								{#if seedProblem}
+									<p id="gen-seed-error" class="text-destructive text-xs leading-relaxed">
+										{t(seedProblem)}
+									</p>
+								{/if}
 							</div>
 						</div>
-						{#if normsReady}
-							<Collapsible.Root open class="group/advanced p-4 lg:p-5">
-								<Collapsible.Trigger
-									class="flex w-full items-center justify-between rounded text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
-								>
-									{t('app.gen.advanced')}
-									<ChevronDownIcon
-										class="text-dim size-3.5 transition-transform group-data-[state=closed]/advanced:-rotate-90"
-										aria-hidden="true"
-									/>
-								</Collapsible.Trigger>
-								<Collapsible.Content class="mt-3.5 flex flex-col gap-4">
-									<ParamSliderField
-										id="gen-steps"
-										label={t('app.gen.steps')}
-										bind:norm={stepsNorm}
-										steps={trackSteps(stepsRange)}
-										minLabel={formatParamValue(stepsRange.min, stepsRange)}
-										maxLabel={formatParamValue(stepsRange.max, stepsRange)}
-										valueLabel={formatParamValue(stepsValue, stepsRange)}
-									/>
-									<ParamSliderField
-										id="gen-guidance"
-										label={t('app.gen.guidance')}
-										bind:norm={guidanceNorm}
-										steps={trackSteps(guidanceRange)}
-										minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
-										maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
-										valueLabel={formatParamValue(guidanceValue, guidanceRange)}
-									/>
-									{#if mode === 'image_to_image'}
-										<ParamSliderField
-											id="gen-strength"
-											label={t('app.image_to_image.strength')}
-											bind:norm={strengthNorm}
-											steps={trackSteps(strengthRange)}
-											minLabel={formatParamValue(strengthRange.min, strengthRange)}
-											maxLabel={formatParamValue(strengthRange.max, strengthRange)}
-											valueLabel={formatParamValue(strengthValue, strengthRange)}
-										/>
-									{/if}
-								</Collapsible.Content>
-							</Collapsible.Root>
-						{/if}
 					</div>
-					<div
-						class="bg-panel border-border sticky bottom-0 z-10 border-t p-4 lg:relative lg:p-5 lg:before:pointer-events-none lg:before:absolute lg:before:inset-x-0 lg:before:bottom-full lg:before:h-6 lg:before:bg-linear-to-t lg:before:from-panel lg:before:to-transparent"
-					>
-						<Button
-							type="submit"
-							variant="brand"
-							class="h-10 w-full tabular-nums"
-							data-tour="generate"
-							disabled={!canGenerate}
-						>
-							<SparklesIcon />
-							{mode === 'image_to_image' ? t('app.image_to_image.generate') : t('app.gen.generate')}
-							{jobCount > 1 ? jobCount : ''}
-							{#if totalEstimateLabel != null}
-								<span class="opacity-75">{totalEstimateLabel}</span>
-							{/if}
-							<kbd
-								class="ms-1 hidden rounded border border-white/30 px-1 font-sans text-xs leading-[15px] text-[#dfe6ff] sm:inline-block pointer-coarse:hidden"
-								>{shortcutLabel(['mod', 'enter'])}</kbd
+					{#if normsReady}
+						<Collapsible.Root open class="group/advanced p-4 lg:p-5">
+							<Collapsible.Trigger
+								class="flex w-full items-center justify-between rounded text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
 							>
-						</Button>
-						{@render progress()}
-					</div>
-				</form>
-			{/if}
-		{:else if upscaleModels.length === 0}
-			<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
-				{compatibleModelsRegistered ? t('app.models.none_available') : t('app.upscale.no_models')}
-			</p>
+								{t('app.gen.advanced')}
+								<ChevronDownIcon
+									class="text-dim size-3.5 transition-transform group-data-[state=closed]/advanced:-rotate-90"
+									aria-hidden="true"
+								/>
+							</Collapsible.Trigger>
+							<Collapsible.Content class="mt-3.5 flex flex-col gap-4">
+								<ParamSliderField
+									id="gen-steps"
+									label={t('app.gen.steps')}
+									bind:norm={stepsNorm}
+									steps={trackSteps(stepsRange)}
+									minLabel={formatParamValue(stepsRange.min, stepsRange)}
+									maxLabel={formatParamValue(stepsRange.max, stepsRange)}
+									valueLabel={formatParamValue(stepsValue, stepsRange)}
+								/>
+								<ParamSliderField
+									id="gen-guidance"
+									label={t('app.gen.guidance')}
+									bind:norm={guidanceNorm}
+									steps={trackSteps(guidanceRange)}
+									minLabel={formatParamValue(guidanceRange.min, guidanceRange)}
+									maxLabel={formatParamValue(guidanceRange.max, guidanceRange)}
+									valueLabel={formatParamValue(guidanceValue, guidanceRange)}
+								/>
+								{#if mode === 'image_to_image'}
+									<ParamSliderField
+										id="gen-strength"
+										label={t('app.image_to_image.strength')}
+										bind:norm={strengthNorm}
+										steps={trackSteps(strengthRange)}
+										minLabel={formatParamValue(strengthRange.min, strengthRange)}
+										maxLabel={formatParamValue(strengthRange.max, strengthRange)}
+										valueLabel={formatParamValue(strengthValue, strengthRange)}
+									/>
+								{/if}
+							</Collapsible.Content>
+						</Collapsible.Root>
+					{/if}
+				</div>
+				<div
+					class="bg-panel border-border sticky bottom-0 z-10 shrink-0 border-t p-4 lg:relative lg:p-5"
+				>
+					<Button
+						type="submit"
+						variant="brand"
+						class="h-10 w-full tabular-nums"
+						data-tour="generate"
+						disabled={!canGenerate}
+					>
+						<SparklesIcon />
+						{mode === 'image_to_image' ? t('app.image_to_image.generate') : t('app.gen.generate')}
+						{jobCount > 1 ? jobCount : ''}
+						{#if totalEstimateLabel != null}
+							<span class="opacity-75">{totalEstimateLabel}</span>
+						{/if}
+						<kbd
+							class="ms-1 hidden rounded border border-white/30 px-1 font-sans text-xs leading-[15px] text-[#dfe6ff] sm:inline-block pointer-coarse:hidden"
+							>{shortcutLabel(['mod', 'enter'])}</kbd
+						>
+					</Button>
+					{@render progress()}
+				</div>
+			</form>
 		{:else if !canUpscale}
 			<p class="text-muted-foreground p-4 text-sm leading-relaxed lg:p-5">
 				{t('app.upscale.need_image')}
 			</p>
 		{:else}
 			<div class="flex min-h-0 flex-1 flex-col">
-				<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
+				<div class="min-h-0 flex-1 overflow-y-auto scroll-pb-6 pb-6 [scrollbar-width:thin]">
 					<div class="border-border border-b p-4 lg:p-5">
 						<p class="text-muted-foreground mb-2 text-xs font-medium">{t('app.upscale.source')}</p>
 						<div class="border-line-strong flex items-center gap-3 rounded-md border p-2.5">
@@ -1090,8 +1187,8 @@
 								</Select.Group>
 							</Select.Content>
 						</Select.Root>
-						{#if upscaleChoiceLabel != null}
-							<p class="text-dim mt-2 text-xs leading-relaxed tabular-nums">{upscaleChoiceLabel}</p>
+						{#if upscaleOutLabel != null}
+							<p class="text-dim mt-2 text-xs tabular-nums">{upscaleOutLabel}</p>
 						{/if}
 					</div>
 					<div class="p-4 lg:p-5">
@@ -1116,7 +1213,7 @@
 					</div>
 				</div>
 				<div
-					class="bg-panel border-border sticky bottom-0 z-10 border-t p-4 lg:relative lg:p-5 lg:before:pointer-events-none lg:before:absolute lg:before:inset-x-0 lg:before:bottom-full lg:before:h-6 lg:before:bg-linear-to-t lg:before:from-panel lg:before:to-transparent"
+					class="bg-panel border-border sticky bottom-0 z-10 shrink-0 border-t p-4 lg:relative lg:p-5"
 				>
 					<Button
 						type="button"
@@ -1137,19 +1234,18 @@
 	<!-- min-w-0: the thumbnail strip's intrinsic width must not widen the column -->
 	<!-- Phones scroll the whole page, so the result takes its content height; the desktop workbench fills the row. -->
 	<section
+		bind:this={stageEl}
 		class="flex min-h-0 min-w-0 flex-none flex-col lg:flex-1"
 		class:tour-canvas={studio.tourOpen}
 		aria-label={t('app.gen.result')}
 		data-tour="canvas"
 		tabindex="-1"
 	>
-		{#if shown !== null}
-			<div
-				class="border-border flex min-h-14 flex-wrap items-center gap-2 border-b px-4 py-2.5 lg:flex-nowrap"
-			>
-				{#if shown !== null && lineage !== null}
+		{#if shown !== null && shownResultId !== null}
+			<div class="border-border flex flex-col gap-2 border-b px-4 py-2.5">
+				{#if lineage !== null && lineage.ancestors.length > 0}
 					<div
-						class="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+						class="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto"
 						role="group"
 						aria-label={t('app.lineage.ancestors')}
 					>
@@ -1180,87 +1276,122 @@
 							</button>
 							<ChevronRightIcon class="text-dim size-3 shrink-0" aria-hidden="true" />
 						{/each}
-						<div
-							class="text-foreground flex shrink-0 items-center gap-2 rounded-md py-1 ps-1 pe-2 text-xs"
-							aria-current="true"
-						>
-							{#if shownThumbnail !== null}
-								<img
-									src={shownThumbnail}
-									alt=""
-									class="ring-brand size-8 rounded object-cover ring-1"
-									width="32"
-									height="32"
-									loading="lazy"
-								/>
-							{/if}
-							<span class="truncate">
-								{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
-								{shownFactor != null ? ` ×${shownFactor}` : ''}
-							</span>
-						</div>
 					</div>
-				{:else}
-					<div class="flex-1"></div>
 				{/if}
-				{#if shown !== null}
-					<Button
-						type="button"
-						variant="ghost"
-						size="icon-sm"
-						class={'hit-slop relative [--hit-slop-x:3px] ' +
-							(shownStarred ? 'text-status-warning' : 'text-muted-foreground')}
-						aria-pressed={shownStarred}
-						aria-label={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-						title={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
-						onclick={starShown}
+				<div class="flex min-w-0 items-center gap-2">
+					<div
+						class="text-foreground flex min-w-0 flex-1 items-center gap-2 text-xs"
+						aria-current="true"
 					>
-						<StarIcon class={shownStarred ? 'fill-current' : ''} />
-					</Button>
-					<div class="flex w-full min-w-0 items-center gap-1.5 sm:w-auto sm:shrink-0">
+						{#if shownThumbnail !== null}
+							<img
+								src={shownThumbnail}
+								alt=""
+								class="ring-brand size-8 shrink-0 rounded object-cover ring-1"
+								width="32"
+								height="32"
+								loading="lazy"
+							/>
+						{/if}
+						<span class="truncate">
+							{shownAction !== null ? lineageActionLabel(shownAction) : t('app.gen.result')}
+							{shownFactor != null ? ` x${shownFactor}` : ''}
+						</span>
+					</div>
+					<div class="ms-auto flex min-w-0 shrink-0 items-center gap-1.5">
 						<Button
 							type="button"
 							variant="outline"
 							size="sm"
-							class="h-12 min-w-0 flex-[1.4] px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
+							class={'size-9 shrink-0 px-0 sm:size-8 ' +
+								(shownStarred ? 'text-status-warning' : 'text-muted-foreground')}
+							aria-pressed={shownStarred}
+							aria-label={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+							title={shownStarred ? t('app.gen.unstar') : t('app.gen.star')}
+							onclick={starShown}
+						>
+							<StarIcon class={shownStarred ? 'fill-current' : ''} />
+						</Button>
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
+							title={t('app.gen.use_as_source')}
+							aria-label={t('app.gen.use_as_source')}
 							aria-pressed={mode === 'image_to_image' && sourceAssetId === shown.assets[0]?.id}
 							disabled={!canEdit}
 							onclick={editShown}
 						>
-							<LayersIcon class="hidden sm:block" />
-							{t('app.gen.use_as_source')}
+							<LayersIcon class="size-3.5 shrink-0" aria-hidden="true" />
+							<span class="sr-only sm:not-sr-only">{t('app.gen.use_as_source')}</span>
 						</Button>
-						<Button
-							type="button"
-							variant="outline"
-							size="sm"
-							class="h-12 min-w-0 flex-1 px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
-							disabled={shown.assets.length === 0 ||
-								shown.state !== 'succeeded' ||
-								mode === 'upscale'}
-							onclick={() => openService('upscale')}
-						>
-							<Maximize2Icon class="hidden sm:block" />
-							{t('app.gen.upscale')}
-						</Button>
+						{#if mode !== 'upscale'}
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
+								title={t('app.gen.upscale')}
+								aria-label={t('app.gen.upscale')}
+								disabled={shown.assets.length === 0 || shown.state !== 'succeeded'}
+								onclick={() => openService('upscale')}
+							>
+								<Maximize2Icon class="size-3.5 shrink-0" aria-hidden="true" />
+								<span class="sr-only sm:not-sr-only">{t('app.gen.upscale')}</span>
+							</Button>
+						{/if}
 						{#if shown.assets.length > 0}
 							<Button
 								href={shown.assets[0].download_url}
 								variant="outline"
 								size="sm"
-								class="h-12 min-w-0 flex-1 px-1.5 whitespace-normal sm:h-8 sm:flex-none sm:px-3"
+								class="h-9 w-9 shrink-0 px-0 sm:h-8 sm:w-auto sm:px-3"
+								title={t('app.gen.download')}
+								aria-label={t('app.gen.download')}
 							>
-								<DownloadIcon class="hidden sm:block" />
-								{t('app.gen.download')}
+								<DownloadIcon class="size-3.5 shrink-0" aria-hidden="true" />
+								<span class="sr-only sm:not-sr-only">{t('app.gen.download')}</span>
 							</Button>
 						{/if}
 					</div>
-				{/if}
+				</div>
 			</div>
 		{/if}
 
-		<div class={resultFrameClass}>
-			{#if shown !== null}
+		<div class="flex flex-none flex-col lg:min-h-0 lg:flex-1 lg:flex-row">
+			{#if shown?.state === 'failed' || shownPending}
+				<div class="flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10">
+					<div
+						role="status"
+						class="bg-panel/50 border-border flex aspect-square w-full max-w-lg flex-col items-center justify-center gap-3 rounded-xl border p-6 text-center"
+					>
+						{#if shown?.state === 'failed'}
+							<CircleXIcon class="text-muted-foreground size-7" aria-hidden="true" />
+							<h2 class="text-sm font-medium">{t('app.gen.failure_title')}</h2>
+							<p class="text-muted-foreground max-w-xs break-words text-sm leading-relaxed">
+								{failureReason(shown.failure_reason)}
+							</p>
+							<Button
+								variant="outline"
+								disabled={submitLock.busy || worker.online === false}
+								onclick={retryShown}
+							>
+								<RefreshCwIcon aria-hidden="true" />
+								{t('app.gen.try_again')}
+							</Button>
+						{:else}
+							<ImageIcon class="text-dim size-7" aria-hidden="true" />
+							<p class="text-muted-foreground text-sm tabular-nums">
+								{shown?.state === 'queued'
+									? t('app.gen.status_queued')
+									: t('app.gen.status_rendering')}
+								{shownProgress !== null ? `${shownProgress}%` : ''}
+							</p>
+						{/if}
+					</div>
+				</div>
+			{:else if shown !== null}
 				<div
 					class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-5 min-[1400px]:p-7"
 				>
@@ -1303,7 +1434,7 @@
 					{/if}
 				</div>
 				<dl
-					class="border-border flex shrink-0 flex-col gap-4 border-t px-6 py-5 text-sm lg:w-[220px] lg:overflow-y-auto lg:border-t-0 lg:border-s lg:px-5 lg:py-6 min-[1400px]:w-[260px]"
+					class="flex shrink-0 flex-col gap-4 px-4 py-5 text-sm lg:w-[260px] lg:overflow-y-auto lg:px-5"
 				>
 					{#if shownPrompt !== ''}
 						<div>
@@ -1311,10 +1442,12 @@
 							<dd class="mt-1 break-words">{shownPrompt}</dd>
 						</div>
 					{/if}
-					<div>
-						<dt class="text-muted-foreground text-xs">{t('app.gen.model')}</dt>
-						<dd class="mt-1">{shownModel?.name ?? shown.model_id}</dd>
-					</div>
+					{#if shownModel}
+						<div>
+							<dt class="text-muted-foreground text-xs">{t('app.gen.model')}</dt>
+							<dd class="mt-1 break-words">{shownModel.name}</dd>
+						</div>
+					{/if}
 					{#if shownSize !== null}
 						<div>
 							<dt class="text-muted-foreground text-xs">{t('app.gen.size')}</dt>
@@ -1330,10 +1463,10 @@
 					{#if shownSteps !== null || shownGuidance !== null}
 						<div>
 							<dt class="text-muted-foreground text-xs">
-								{t('app.gen.steps')} · {t('app.gen.guidance')}
+								{t('app.gen.steps')} / {t('app.gen.guidance')}
 							</dt>
 							<dd class="mt-1 tabular-nums">
-								{shownSteps ?? '-'} · {shownGuidance ?? '-'}
+								{shownSteps ?? '-'} / {shownGuidance ?? '-'}
 							</dd>
 						</div>
 					{/if}
@@ -1343,39 +1476,35 @@
 							<dd class="mt-1 tabular-nums">{formatMs(shown.gpu_ms)}</dd>
 						</div>
 					{/if}
-					{#if lineage !== null}
+					{#if lineage !== null && lineage.children.length > 0}
 						<div>
 							<dt class="text-muted-foreground text-xs">{t('app.lineage.derivatives')}</dt>
 							<dd class="mt-1">
-								{#if lineage.children.length > 0}
-									<div class="flex flex-wrap gap-1.5">
-										{#each lineage.children as entry (entry.asset_id)}
-											<button
-												type="button"
-												class="ring-line-strong hover:ring-foreground rounded ring-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-												title={lineageActionLabel(entry.action)}
-												onclick={() => selectLineage(entry)}
-											>
-												{#if entry.thumbnail_url !== null}
-													<img
-														src={entry.thumbnail_url}
-														alt={lineageActionLabel(entry.action)}
-														class="size-10 rounded object-cover"
-														width="40"
-														height="40"
-														loading="lazy"
-													/>
-												{:else}
-													<span class="text-dim grid size-10 place-items-center text-xs"
-														>{lineageActionLabel(entry.action)}</span
-													>
-												{/if}
-											</button>
-										{/each}
-									</div>
-								{:else}
-									<span>{t('app.lineage.no_derivatives')}</span>
-								{/if}
+								<div class="flex flex-wrap gap-1.5">
+									{#each lineage.children as entry (entry.asset_id)}
+										<button
+											type="button"
+											class="ring-line-strong hover:ring-foreground rounded ring-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											title={lineageActionLabel(entry.action)}
+											onclick={() => selectLineage(entry)}
+										>
+											{#if entry.thumbnail_url !== null}
+												<img
+													src={entry.thumbnail_url}
+													alt={lineageActionLabel(entry.action)}
+													class="size-10 rounded object-cover"
+													width="40"
+													height="40"
+													loading="lazy"
+												/>
+											{:else}
+												<span class="text-dim grid size-10 place-items-center text-xs"
+													>{lineageActionLabel(entry.action)}</span
+												>
+											{/if}
+										</button>
+									{/each}
+								</div>
 							</dd>
 						</div>
 					{/if}
@@ -1406,13 +1535,18 @@
 		</div>
 		{#if !studio.historyLoaded || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
 			<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
-				<HistoryStrip />
+				<HistoryStrip {shownId} {failureReason} />
 			</div>
 		{/if}
 	</section>
 </div>
 
 <style>
+	textarea::placeholder {
+		color: var(--dim);
+		opacity: 1;
+	}
+
 	@media (max-width: 1023px) {
 		.tour-canvas {
 			min-height: 360px;

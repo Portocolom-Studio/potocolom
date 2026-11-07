@@ -10,7 +10,6 @@
 	import LocateFixedIcon from '@lucide/svelte/icons/locate-fixed';
 	import MinusIcon from '@lucide/svelte/icons/minus';
 	import MoveIcon from '@lucide/svelte/icons/move';
-	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
@@ -150,6 +149,12 @@
 	const MAX_SCALE = 1.6;
 	const PAN_STEP = 80;
 	const TREE_KEYBOARD_STEP = 24;
+	const VIEWPORT_FIT_MARGIN = 24;
+	// The zoom toolbar floats at end-3 bottom-3: four icon-sm buttons.
+	const ZOOM_TOOLBAR = { width: 140, height: 38, inset: 12 };
+	// A card's copy starts below this top padding, so the toolbar may overlap
+	// the top strip of a cut-off row without covering any text.
+	const CARD_TEXT_INSET = 12;
 	const VIEWPORT_SAVE_DELAY = 300;
 	const HOVER_RADIUS = 150;
 	const HOVER_PULL = 0.08;
@@ -176,8 +181,8 @@
 	let inspectorEl = $state<HTMLElement | null>(null);
 	let viewportWidth = $state(0);
 	let viewportHeight = $state(0);
-	let translateX = $state(restoredViewport?.translateX ?? 72);
-	let translateY = $state(restoredViewport?.translateY ?? 72);
+	let translateX = $state(restoredViewport?.translateX ?? VIEWPORT_FIT_MARGIN);
+	let translateY = $state(restoredViewport?.translateY ?? VIEWPORT_FIT_MARGIN);
 	let scale = $state(restoredViewport?.scale ?? 1);
 	let treeOffsets = $state({ ...studio.lineageTreeOffsets });
 	let roots = $state<Generation[]>([]);
@@ -224,7 +229,7 @@
 	let initializeFrame = 0;
 	let treeCache = $state(new Map<string, CachedTree>());
 	let newNodeIds = $state(new Set<string>());
-	let failedImageIds = $state(new Set<string>());
+	let failedImageUrls = $state(new Set<string>());
 	let refreshingImageIds = $state(new Set<string>());
 	let refreshedImageIds = new Set<string>();
 	let pointerWorld = $state<{ x: number; y: number } | null>(null);
@@ -1199,7 +1204,6 @@
 	const canGenerateFromPrompt = $derived(
 		mayCreate && selectedPrompt !== '' && textToImageModels.length > 0
 	);
-	const canEditSelected = $derived(mayCreate && selectedHasBytes && imageToImageModels.length > 0);
 	const canUpscaleSelected = $derived(mayCreate && selectedHasBytes && upscaleModels.length > 0);
 	const selectedPathEdgeIds = $derived.by(() => {
 		if (studio.lineageSelectedAssetId === null) return new Set<string>();
@@ -1895,9 +1899,45 @@
 		}
 		const x = packed.x + rootNode.x;
 		const y = packed.y + rootNode.y;
-		translateX = clampLineageCoordinate(viewportWidth / 2 - x * scale);
-		translateY = clampLineageCoordinate(viewportHeight / 2 - y * scale);
+		const left = Math.min(packed.x, x - LINEAGE_TILE_WIDTH / 2);
+		const top = Math.min(packed.y, y - LINEAGE_TILE_HEIGHT / 2);
+		scale = scaleClearingZoomToolbar(left, top);
+		translateX = clampLineageCoordinate(VIEWPORT_FIT_MARGIN - left * scale);
+		translateY = clampLineageCoordinate(VIEWPORT_FIT_MARGIN - top * scale);
 		return { rootId: newest.id, x, y };
+	}
+
+	// The largest card-band scale at which no card text sits under the zoom
+	// toolbar when the world point (left, top) is placed at the fit margin.
+	// ponytail: 0.5% steps, about 40 scans of worldNodes on recenter only.
+	function scaleClearingZoomToolbar(left: number, top: number): number {
+		const screen = {
+			left: viewportWidth - ZOOM_TOOLBAR.inset - ZOOM_TOOLBAR.width,
+			top: viewportHeight - ZOOM_TOOLBAR.inset - ZOOM_TOOLBAR.height,
+			right: viewportWidth - ZOOM_TOOLBAR.inset,
+			bottom: viewportHeight - ZOOM_TOOLBAR.inset
+		};
+		for (let step = 0; lineageLod(1 - step / 200) === 'cards'; step += 1) {
+			const candidate = 1 - step / 200;
+			const toWorld = (value: number, origin: number) =>
+				origin + (value - VIEWPORT_FIT_MARGIN) / candidate;
+			const toolbar = {
+				left: toWorld(screen.left, left),
+				top: toWorld(screen.top, top),
+				right: toWorld(screen.right, left),
+				bottom: toWorld(screen.bottom, top)
+			};
+			const covered = worldNodes.some((item) =>
+				rectsIntersect(toolbar, {
+					left: item.x - LINEAGE_TILE_WIDTH / 2,
+					top: item.y - LINEAGE_TILE_HEIGHT / 2 + CARD_TEXT_INSET,
+					right: item.x + LINEAGE_TILE_WIDTH / 2,
+					bottom: item.y + LINEAGE_TILE_HEIGHT / 2
+				})
+			);
+			if (!covered) return candidate;
+		}
+		return 1;
 	}
 
 	function restoredViewportIsUsable(): boolean {
@@ -2092,6 +2132,21 @@
 
 	function timeLabel(createdAt: string): string {
 		return timeFormatter.format(new Date(createdAt));
+	}
+
+	const PARAM_LABEL_KEYS: Record<string, Parameters<typeof t>[0]> = {
+		steps: 'app.gen.steps',
+		width: 'app.images.param_width',
+		height: 'app.images.param_height',
+		guidance: 'app.gen.guidance',
+		seed: 'app.gen.seed',
+		strength: 'app.realtime_canvas.strength',
+		factor: 'app.upscale.factor'
+	};
+
+	function paramLabel(key: string): string {
+		const label = PARAM_LABEL_KEYS[key];
+		return label === undefined ? key : t(label);
 	}
 
 	function paramValue(value: unknown): string {
@@ -2404,22 +2459,40 @@
 		if (hasBytes && upscaleModels.length > 0) openFromNode(data, 'upscale');
 	}
 
+	function loadableUrl(...urls: (string | null | undefined)[]): string | null {
+		return urls.find((url): url is string => !!url && !failedImageUrls.has(url)) ?? null;
+	}
+
 	function imageUrl(data: CanvasNodeData, band: typeof lod): string | null {
-		if (data.entry.missing || failedImageIds.has(data.entry.asset_id)) return null;
-		if (band === 'cards') {
-			return data.generation?.assets[0]?.url ?? data.entry.thumbnail_url;
-		}
-		return data.entry.thumbnail_url;
+		if (data.entry.missing) return null;
+		// A card falls back to the thumbnail when the full image cannot load.
+		return band === 'cards'
+			? loadableUrl(data.generation?.assets[0]?.url, data.entry.thumbnail_url)
+			: loadableUrl(data.entry.thumbnail_url);
+	}
+
+	// .img-reveal keeps an image invisible until data-loaded. Unlike
+	// revealOnLoad, a failed load stays hidden: the fallback replaces it.
+	function showLoadedImage(event: Event): void {
+		(event.currentTarget as HTMLImageElement).dataset.loaded = '';
+	}
+
+	function hideFailedImage(event: Event): void {
+		delete (event.currentTarget as HTMLImageElement).dataset.loaded;
+	}
+
+	function markImageFailed(url: string): void {
+		failedImageUrls = new Set([...failedImageUrls, url]);
 	}
 
 	function replaceGeneration(assetId: string, generation: Generation): void {
 		roots = forest.replaceGeneration(roots, assetId, generation);
 	}
 
-	async function refreshImage(data: CanvasNodeData): Promise<void> {
+	async function refreshImage(data: CanvasNodeData, failedUrl: string): Promise<void> {
 		const assetId = data.entry.asset_id;
 		if (data.entry.job_id === null || refreshedImageIds.has(assetId)) {
-			failedImageIds = new Set([...failedImageIds, assetId]);
+			markImageFailed(failedUrl);
 			return;
 		}
 		refreshedImageIds.add(assetId);
@@ -2429,11 +2502,14 @@
 				`/api/v1/generations/${data.entry.job_id}`,
 				'generation refresh failed'
 			);
-			failedImageIds = new Set([...failedImageIds].filter((id) => id !== assetId));
 			replaceGeneration(assetId, generation);
+			// The same URL again cannot load any better, and no new error fires for it.
+			const asset = generation.assets[0];
+			if (asset?.url === failedUrl || asset?.thumbnail_url === failedUrl)
+				markImageFailed(failedUrl);
 		} catch (error) {
 			if (error instanceof DOMException && error.name === 'AbortError') return;
-			failedImageIds = new Set([...failedImageIds, assetId]);
+			markImageFailed(failedUrl);
 		} finally {
 			refreshingImageIds = new Set([...refreshingImageIds].filter((id) => id !== assetId));
 		}
@@ -2553,7 +2629,7 @@
 
 {#snippet imageSearchControls()}
 	{@render imageSearchField()}
-	{#if imagesMode === 'lineage'}
+	{#if imagesMode === 'lineage' && searchQuery !== ''}
 		<Button
 			variant="outline"
 			size="sm"
@@ -2718,27 +2794,37 @@
 					{#each gridItems as generation (generation.id)}
 						{@const tileLabel =
 							generation.params.prompt?.trim() || actionLabel(generationAction(generation))}
+						{@const tileImage = loadableUrl(
+							generation.assets[0].thumbnail_url,
+							generation.assets[0].url
+						)}
 						<li>
 							<button
 								type="button"
-								class={'grid-tile shimmer ' +
+								class={'grid-tile ' +
+									(tileImage === null ? 'is-missing ' : 'shimmer ') +
 									(gridSelectedId === generation.id ? 'is-selected' : '')}
 								data-generation-id={generation.id}
 								aria-pressed={gridSelectedId === generation.id}
 								title={tileLabel}
 								onclick={(event) => void selectGridTile(generation.id, event.currentTarget)}
 							>
-								<img
-									src={generation.assets[0].thumbnail_url ?? generation.assets[0].url}
-									alt={tileLabel}
-									loading="lazy"
-									decoding="async"
-									draggable="false"
-									class="img-reveal"
-									{@attach revealOnLoad(
-										generation.assets[0].thumbnail_url ?? generation.assets[0].url
-									)}
-								/>
+								{#if tileImage === null}
+									<ImageOffIcon class="text-muted-foreground size-6" aria-hidden="true" />
+								{:else}
+									{#key tileImage}
+										<img
+											src={tileImage}
+											alt={tileLabel}
+											loading="lazy"
+											decoding="async"
+											draggable="false"
+											class="img-reveal"
+											onload={showLoadedImage}
+											onerror={() => markImageFailed(tileImage)}
+										/>
+									{/key}
+								{/if}
 								{#if isStarred(generation.id)}
 									<span class="grid-star" aria-hidden="true"><StarIcon /></span>
 								{/if}
@@ -2784,49 +2870,53 @@
 			aria-label={t('app.images.canvas')}
 			tabindex="0"
 		>
-			<div class="absolute end-3 top-3 z-30 flex flex-wrap items-center justify-end gap-1">
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					disabled={!hasTreeOffsets}
-					title={t('app.images.reset_all_positions')}
-					aria-label={t('app.images.reset_all_positions')}
-					onclick={resetAllTreePositions}
+			{#if persistedRoots.length > 0}
+				<div
+					class="bg-popover border-border absolute end-3 bottom-3 z-30 flex items-center gap-0.5 rounded-lg border p-0.5 shadow-lg"
 				>
-					<RotateCcwIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.zoom_out')}
-					aria-label={t('app.images.zoom_out')}
-					onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
-				>
-					<MinusIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.zoom_in')}
-					aria-label={t('app.images.zoom_in')}
-					onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
-				>
-					<PlusIcon />
-				</Button>
-				<Button
-					variant="secondary"
-					size="icon-sm"
-					class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
-					title={t('app.images.recenter')}
-					aria-label={t('app.images.recenter')}
-					onclick={() => recenterNewest()}
-				>
-					<LocateFixedIcon />
-				</Button>
-			</div>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						disabled={!hasTreeOffsets}
+						title={t('app.images.reset_all_positions')}
+						aria-label={t('app.images.reset_all_positions')}
+						onclick={resetAllTreePositions}
+					>
+						<RotateCcwIcon />
+					</Button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.zoom_out')}
+						aria-label={t('app.images.zoom_out')}
+						onclick={() => zoomAt(scale / 1.2, viewportWidth / 2, viewportHeight / 2)}
+					>
+						<MinusIcon />
+					</Button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.zoom_in')}
+						aria-label={t('app.images.zoom_in')}
+						onclick={() => zoomAt(scale * 1.2, viewportWidth / 2, viewportHeight / 2)}
+					>
+						<PlusIcon />
+					</Button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						class="hit-slop relative [--hit-slop-x:2px] [--hit-slop-y:2px]"
+						title={t('app.images.recenter')}
+						aria-label={t('app.images.recenter')}
+						onclick={() => recenterNewest()}
+					>
+						<LocateFixedIcon />
+					</Button>
+				</div>
+			{/if}
 
 			{#if rootsLoading && roots.length === 0}
 				<!-- A tree's outline while the roots load; the status line above
@@ -3083,7 +3173,12 @@
 											src={lod === 'constellation' ? shownImage : undefined}
 											alt=""
 											draggable="false"
-											onerror={() => void refreshImage(data)}
+											class="img-reveal"
+											onload={showLoadedImage}
+											onerror={(event) => {
+												hideFailedImage(event);
+												void refreshImage(data, shownImage);
+											}}
 										/>
 									{/key}
 								{:else}
@@ -3100,7 +3195,12 @@
 											src={lod === 'trees' ? shownImage : undefined}
 											alt=""
 											draggable="false"
-											onerror={() => void refreshImage(data)}
+											class="img-reveal"
+											onload={showLoadedImage}
+											onerror={(event) => {
+												hideFailedImage(event);
+												void refreshImage(data, shownImage);
+											}}
 										/>
 									{/key}
 								{:else}
@@ -3118,7 +3218,12 @@
 												src={lod === 'cards' ? shownImage : undefined}
 												alt=""
 												draggable="false"
-												onerror={() => void refreshImage(data)}
+												class="img-reveal"
+												onload={showLoadedImage}
+												onerror={(event) => {
+													hideFailedImage(event);
+													void refreshImage(data, shownImage);
+												}}
 											/>
 										{/key}
 									{:else if refreshingImageIds.has(data.entry.asset_id)}
@@ -3267,20 +3372,12 @@
 				<Button
 					variant="outline"
 					size="sm"
+					class="col-span-2"
 					disabled={!canUpscaleSelected}
 					onclick={() => openFromSelection('upscale')}
 				>
 					<ScanLineIcon />
 					{t('app.images.action_upscale')}
-				</Button>
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={!canEditSelected}
-					onclick={() => openFromSelection('image_to_image')}
-				>
-					<PencilIcon />
-					{t('app.images.action_edit')}
 				</Button>
 				<Button
 					variant="brand"
@@ -3328,7 +3425,7 @@
 						<dt class="text-muted-foreground text-xs">{t('app.images.parameters')}</dt>
 						<dd class="mt-2 grid grid-cols-2 gap-x-4 gap-y-2">
 							{#each selectedParams as [key, value] (key)}
-								<span class="text-muted-foreground">{key}</span>
+								<span class="text-muted-foreground">{paramLabel(key)}</span>
 								<span class="min-w-0 break-words text-end font-sans text-xs tabular-nums">
 									{paramValue(value)}
 								</span>
@@ -3381,6 +3478,11 @@
 		border-radius: 8px;
 		box-shadow: 0 0 0 1px var(--line-strong);
 		outline: none;
+	}
+	.grid-tile.is-missing {
+		display: grid;
+		place-items: center;
+		background: var(--muted);
 	}
 	:global(.grid-scroller.is-drag-scrolling .grid-tile) {
 		cursor: grabbing;
@@ -3910,6 +4012,10 @@
 	.card-copy strong {
 		font-size: 12px;
 		white-space: nowrap;
+	}
+
+	.lineage-tile.is-root .card-copy strong {
+		padding-right: 16px;
 	}
 
 	.card-copy span {

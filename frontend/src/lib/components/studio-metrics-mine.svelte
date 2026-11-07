@@ -4,6 +4,7 @@
 	import { account } from '$lib/account.svelte';
 	import { accountCacheKey, studioCache } from '$lib/swr-cache';
 	import { formatMs } from '$lib/benchmark';
+	import { studio } from '$lib/studio.svelte';
 	import type { MetricsRange } from '$lib/studio-metrics-range';
 	import {
 		getMetricsPreferences,
@@ -63,6 +64,20 @@
 		if (ownerEpoch !== viewOwnerEpoch()) return;
 		saveMetricsPreferences({ ...getMetricsPreferences(), mineRange: currentRange });
 	});
+
+	// Usage rows carry ids; show the names people chose from. A model no longer
+	// connected keeps its id, an unknown category its words.
+	const CATEGORY_KEYS: Record<string, Parameters<typeof t>[0]> = {
+		art: 'app.metrics.category_art',
+		photo_edit: 'app.metrics.category_photo_edit',
+		design: 'app.metrics.category_design',
+		character: 'app.metrics.category_character',
+		nsfw: 'app.metrics.category_nsfw',
+		other: 'app.metrics.category_other'
+	};
+	const modelName = (id: string) => studio.models.find((model) => model.id === id)?.name ?? id;
+	const categoryName = (category: string) =>
+		category in CATEGORY_KEYS ? t(CATEGORY_KEYS[category]) : category.replaceAll('_', ' ');
 
 	const shares = $derived(
 		usage === null ? [] : categoryShares(usage.by_category, usage.totals.events)
@@ -125,7 +140,7 @@
 			<ul class="flex flex-col gap-2">
 				{#each shares as row (row.category)}
 					<li class="flex items-center gap-3 text-sm">
-						<span class="w-24 shrink-0 truncate">{row.category}</span>
+						<span class="w-28 shrink-0 truncate">{categoryName(row.category)}</span>
 						<span class="bg-muted h-2.5 flex-1 overflow-hidden rounded-full">
 							<span class="bg-primary block h-full" style={`width: ${row.pct}%`}></span>
 						</span>
@@ -152,7 +167,7 @@
 					<tbody>
 						{#each models as row (row.model_id)}
 							<tr class="border-border/60 border-t">
-								<td class="px-4 py-2.5 text-xs">{row.model_id}</td>
+								<td class="px-4 py-2.5 text-xs">{modelName(row.model_id)}</td>
 								<td class="px-4 py-2.5 text-xs tabular-nums">{row.events}</td>
 								<td class="px-4 py-2.5 text-xs tabular-nums">{formatMs(row.avg_gpu_ms)}</td>
 								<td class="px-4 py-2.5 text-xs tabular-nums">{formatMs(row.p50_duration_ms)}</td>
@@ -178,8 +193,8 @@
 					<tbody>
 						{#each modelCategories as row (`${row.model_id}\u0000${row.category}`)}
 							<tr class="border-border/60 border-t">
-								<td class="px-4 py-2.5 text-xs">{row.model_id}</td>
-								<td class="px-4 py-2.5 text-xs">{row.category}</td>
+								<td class="px-4 py-2.5 text-xs">{modelName(row.model_id)}</td>
+								<td class="px-4 py-2.5 text-xs">{categoryName(row.category)}</td>
 								<td class="px-4 py-2.5 text-xs tabular-nums">{row.events}</td>
 								<td class="px-4 py-2.5 text-xs tabular-nums">
 									{formatMs(row.avg_duration_ms)}

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import {
 		CHART_MARGINS,
 		formatRangeCaption,
@@ -35,7 +36,15 @@
 	} = $props();
 
 	const metricLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'metric'));
-	const modelLanes = $derived(timeline.lanes.filter((lane) => lane.kind === 'model'));
+	// Lanes are keyed by model id; label them with the name people pick from.
+	const modelLanes = $derived(
+		timeline.lanes
+			.filter((lane) => lane.kind === 'model')
+			.map((lane) => ({
+				...lane,
+				label: studio.models.find((model) => model.id === lane.label)?.name ?? lane.label
+			}))
+	);
 	const visibleMetricLanes = $derived(
 		metricLanes.filter(
 			(lane) =>
@@ -48,7 +57,7 @@
 	const vramHidden = $derived(visibleMetricLanes.length < metricLanes.length);
 
 	let swimWidth = $state(720);
-	const swimMargin = CHART_MARGINS;
+	const swimMargin = { ...CHART_MARGINS, left: 160 };
 	const plotLeft = swimMargin.left;
 	const plotWidth = $derived(Math.max(1, swimWidth - swimMargin.left - swimMargin.right));
 	const rowH = 64;
@@ -76,7 +85,7 @@
 
 <div class="flex flex-col gap-4">
 	<Card.Root class="overflow-hidden p-0 [--card-spacing:0]">
-		<Card.Header class="border-border border-b px-5 py-4">
+		<Card.Header class="border-border border-b px-5 py-3">
 			<div class="flex flex-wrap items-center justify-between gap-3">
 				<div>
 					<Card.Title class="text-base">{t('app.metrics.gpu_timeline')}</Card.Title>
@@ -97,8 +106,8 @@
 				</div>
 			</div>
 		</Card.Header>
-		<Card.Content class="overflow-x-auto p-5">
-			<div class="grid min-w-[28rem] gap-5">
+		<Card.Content class="overflow-x-auto px-5 py-4">
+			<div class="grid min-w-[28rem] gap-4">
 				{#each visibleMetricLanes as lane (lane.id)}
 					<StudioGpuMetricLineChart
 						title={lane.label}
@@ -143,9 +152,11 @@
 								rx="6"
 								class={index % 2 === 0 ? 'fill-muted/25' : 'fill-muted/10'}
 							/>
-							<text x="0" y={y + 12} class="fill-muted-foreground font-sans text-xs">
-								{lane.label.length > 14 ? `${lane.label.slice(0, 11)}...` : lane.label}
-							</text>
+							<foreignObject x="0" {y} width={plotLeft - 8} height="20">
+								<div class="text-muted-foreground truncate text-xs" title={lane.label}>
+									{lane.label}
+								</div>
+							</foreignObject>
 							{#each lane.blocks ?? [] as block (block.id)}
 								<rect
 									x={xScale(

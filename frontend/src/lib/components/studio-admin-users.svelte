@@ -352,14 +352,24 @@
 			{:else if users.length === 0}
 				<p class="text-muted-foreground p-4 text-[13px]">{t('app.admin.users_empty')}</p>
 			{:else}
-				<table class="w-full min-w-[560px] border-collapse text-[12.5px]">
+				<table
+					class="w-full table-fixed border-collapse text-[12.5px] sm:min-w-[560px] sm:table-auto"
+				>
 					<thead>
 						<tr class="text-muted-foreground border-border border-b text-xs">
 							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.col_account')}</th>
-							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.role')}</th>
-							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.state')}</th>
-							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.generations')}</th>
-							<th class="h-[34px] px-3 text-start font-medium">{t('app.admin.created')}</th>
+							<th class="h-[34px] w-16 px-2 text-start font-medium sm:w-auto sm:px-3"
+								>{t('app.admin.role')}</th
+							>
+							<th class="h-[34px] w-32 px-2 text-start font-medium sm:w-auto sm:px-3"
+								>{t('app.admin.state')}</th
+							>
+							<th class="hidden h-[34px] px-3 text-start font-medium sm:table-cell"
+								>{t('app.admin.generations')}</th
+							>
+							<th class="hidden h-[34px] px-3 text-start font-medium sm:table-cell"
+								>{t('app.admin.created')}</th
+							>
 						</tr>
 					</thead>
 					<tbody>
@@ -372,7 +382,7 @@
 									<button
 										type="button"
 										data-testid="admin-user-row"
-										class="flex max-w-full items-center gap-2.5 rounded text-start outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										class="flex w-full min-w-0 items-center gap-2.5 rounded text-start outline-none focus-visible:ring-2 focus-visible:ring-ring"
 										aria-pressed={selectedId === user.id}
 										onclick={() => selectUser(user.id)}
 									>
@@ -380,15 +390,19 @@
 											class="ring-line-strong bg-raised grid size-6 shrink-0 place-items-center rounded-md text-[11px] font-medium ring-1 ring-inset"
 											aria-hidden="true">{accountInitial(user.email)}</span
 										>
-										<span class="truncate">{user.email}</span>
+										<span class="min-w-0 truncate">{user.email}</span>
 									</button>
 								</td>
-								<td class="text-muted-foreground px-3">{t(roleLabelKey(user.role))}</td>
-								<td class="px-3">
-									<span class={'tag ' + stateTone(user.state)}>{t(stateLabelKey(user.state))}</span>
+								<td class="text-muted-foreground px-2 sm:px-3">{t(roleLabelKey(user.role))}</td>
+								<td class="px-2 sm:px-3">
+									<span
+										class={'tag max-w-full ' + stateTone(user.state)}
+										style="height: auto; min-height: 22px; white-space: normal"
+										>{t(stateLabelKey(user.state))}</span
+									>
 								</td>
-								<td class="px-3 tabular-nums">{user.generations ?? '-'}</td>
-								<td class="text-muted-foreground px-3 whitespace-nowrap"
+								<td class="hidden px-3 tabular-nums sm:table-cell">{user.generations ?? '-'}</td>
+								<td class="text-muted-foreground hidden px-3 whitespace-nowrap sm:table-cell"
 									>{formatDateTime(user.created_at)}</td
 								>
 							</tr>
@@ -416,7 +430,8 @@
 	</section>
 
 	<aside
-		class="bg-panel border-border min-h-0 shrink-0 border-t xl:w-[360px] xl:overflow-y-auto xl:border-t-0 xl:border-s"
+		class={'bg-panel border-border min-h-0 shrink-0 border-t xl:w-[360px] xl:overflow-y-auto xl:border-t-0 xl:border-s ' +
+			(!detail && !detailLoading && !detailError ? 'hidden xl:block' : '')}
 		aria-label={t('app.admin.user_detail')}
 	>
 		{#if detailLoading && !detail}

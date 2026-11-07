@@ -16,6 +16,8 @@
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
 	import { HardDrive, MemoryStick, Check, Download, AlertTriangle } from '@lucide/svelte';
+	import ServerOffIcon from '@lucide/svelte/icons/server-off';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import { Badge } from '$lib/components/ui/badge';
 	import { GIB } from '$lib/model-management';
 
@@ -432,7 +434,29 @@
 		<Button variant="outline" onclick={() => retryRefresh()}
 			>{t('app.model_management.retry')}</Button
 		>{/if}
-	{#if !loading && workers.length === 0}<p>{t('app.model_management.empty')}</p>{/if}
+	{#if !loading && !error && workers.length === 0}
+		<div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
+			<div
+				class="bg-raised border-border grid size-10 place-items-center rounded-lg border"
+				aria-hidden="true"
+			>
+				<ServerOffIcon class="text-muted-foreground size-4.5" />
+			</div>
+			<p class="text-foreground max-w-64 text-sm font-medium text-balance">
+				{t('app.availability.worker_offline')}
+			</p>
+			<Button
+				variant="outline"
+				size="sm"
+				href="https://github.com/Portocolom-Studio/potocolom/blob/main/docs/self-hosting.md"
+				target="_blank"
+				rel="noopener noreferrer"
+			>
+				{t('app.availability.start_worker')}
+				<ExternalLinkIcon aria-hidden="true" />
+			</Button>
+		</div>
+	{/if}
 	<p class="sr-only" aria-live="polite">{announcement}</p>
 	{#each workers as worker (worker.worker_id)}
 		<section class="space-y-4" aria-label={worker.worker_id} data-worker={worker.worker_id}>
@@ -511,7 +535,12 @@
 								aria-valuemax={total || 1}
 								aria-valuetext={`${new Intl.NumberFormat(getLocale()).format(percent)}% · ${t('app.model_management.used')}: ${formatSize(used)} · ${t('app.model_management.free')}: ${formatSize(free)}`}
 							>
-								<div class="disk-used" style:width={`${(used / (total || 1)) * 100}%`}></div>
+								<div
+									class="disk-used"
+									class:warning={used / total > 0.85 && used / total <= 0.95}
+									class:error={used / total > 0.95}
+									style:width={`${(used / total) * 100}%`}
+								></div>
 								{#if segments.reserved > 0}<div
 										class="disk-reserved"
 										data-reserved
@@ -525,9 +554,11 @@
 							</div>
 							<div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
 								<span
-									><span class="disk-swatch disk-used"></span>{t('app.model_management.used')}: {formatSize(
-										used
-									)}</span
+									><span
+										class="disk-swatch disk-used"
+										class:warning={used / total > 0.85 && used / total <= 0.95}
+										class:error={used / total > 0.95}
+									></span>{t('app.model_management.used')}: {formatSize(used)}</span
 								>
 								<span
 									><span class="disk-swatch disk-free"></span>{t('app.model_management.free')}: {formatSize(
@@ -564,7 +595,7 @@
 						{@const active =
 							model.download?.state === 'queued' || model.download?.state === 'downloading'}
 						<div
-							class="flex min-w-0 flex-col gap-3 rounded-lg border bg-card p-4"
+							class="flex min-w-0 flex-col gap-2 rounded-xl border bg-card p-4"
 							data-model={model.id}
 						>
 							<div class="flex flex-wrap items-center gap-2">
@@ -583,21 +614,26 @@
 									>{/if}
 							</div>
 							<div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-								{#each [...model.capabilities.map( (capability) => capabilityLabel(capability) ), tierLabel(model.tier), model.license_id || t('app.model_management.unknown')] as chip}<span
+								{#each [...model.capabilities.map( (capability) => capabilityLabel(capability) ), tierLabel(model.tier)] as chip}<span
 										class="rounded-md border px-2 py-0.5">{chip}</span
 									>{/each}
+								<span class="text-dim self-center"
+									>{model.license_id || t('app.model_management.unknown')}</span
+								>
 							</div>
 							<div class="grid grid-cols-2 gap-3 text-sm">
-								<div>
-									<span class="text-muted-foreground flex items-center gap-1"
-										><HardDrive size={15} aria-hidden="true" />
-										{t('app.model_management.download_size')}</span
-									><strong
-										>{knownSize(model.download_bytes) == null
-											? t('app.model_management.unknown')
-											: formatSize(model.download_bytes ?? 0)}</strong
-									>
-								</div>
+								{#if model.download_bytes === null || model.download_bytes >= 5 * 1024 ** 2}
+									<div>
+										<span class="text-muted-foreground flex items-center gap-1"
+											><HardDrive size={15} aria-hidden="true" />
+											{t('app.model_management.download_size')}</span
+										><strong
+											>{knownSize(model.download_bytes) == null
+												? t('app.model_management.unknown')
+												: formatSize(model.download_bytes ?? 0)}</strong
+										>
+									</div>
+								{/if}
 								<div>
 									<span class="text-muted-foreground flex items-center gap-1"
 										><MemoryStick size={15} aria-hidden="true" />
@@ -609,58 +645,74 @@
 									>
 								</div>
 							</div>
-							{#if model.installed}<Badge variant="outline" class="status-success"
-									><Check aria-hidden="true" />{t('app.model_management.installed')}</Badge
-								>
-							{:else if active}<Badge variant="outline" class="status-info"
-									><Download aria-hidden="true" />{t(
-										model.download?.state === 'queued'
-											? 'app.model_management.queued'
-											: 'app.model_management.downloading'
-									)}</Badge
-								>
-							{:else if model.download?.state === 'failed' && model.download.error !== 'cancelled' && model.download.error !== 'not_running'}<Badge
-									variant="outline"
-									class="status-error"
-									><AlertTriangle aria-hidden="true" />{t('app.model_management.failed')}</Badge
-								>
-							{:else if !operation}<Badge variant="outline" class="text-muted-foreground"
-									>{t('app.model_management.not_installed')}</Badge
-								>{/if}
-							{#if !model.fits}<div class="warning-callout">
-									<AlertTriangle size={16} class="shrink-0" aria-hidden="true" /><span
+							<div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+								{#if model.installed}<Badge variant="outline" class="status-success"
+										><Check aria-hidden="true" />{t('app.model_management.installed')}</Badge
+									>
+								{:else if active}<Badge variant="outline" class="status-info"
+										><Download aria-hidden="true" />{t(
+											model.download?.state === 'queued'
+												? 'app.model_management.queued'
+												: 'app.model_management.downloading'
+										)}</Badge
+									>
+								{:else if !operation && (model.needs_token || model.download?.error === 'needs_token')}<span
+										id={`access-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`}
+										>{t('app.model_management.access_badge')}</span
+									>
+								{:else if model.download?.state === 'failed' && model.download.error !== 'cancelled' && model.download.error !== 'not_running'}<Badge
+										variant="outline"
+										class="status-error"
+										><AlertTriangle aria-hidden="true" />{t('app.model_management.failed')}</Badge
+									>
+								{:else if !operation}<Badge variant="outline" class="text-muted-foreground"
+										>{t('app.model_management.not_installed')}</Badge
+									>{/if}
+								{#if !model.fits}<span
 										>{t(
-											!knownSize(worker.hardware?.vram_total_bytes)
-												? 'app.model_management.needs_vram_unknown'
-												: 'app.model_management.needs_vram'
-										)
-											.replace(
-												'{vram}',
-												knownSize(model.min_vram_gb) === null
-													? t('app.model_management.unknown')
-													: formatSize(model.min_vram_gb * GIB)
-											)
-											.replace(
-												'{gpu_vram}',
+											knownSize(worker.hardware?.vram_total_bytes)
+												? 'app.model_management.slow_gpu'
+												: 'app.model_management.slow_gpu_unknown'
+										)}</span
+									>{/if}
+							</div>
+							{#if !model.fits || (!model.installed && (model.needs_token || model.download?.error === 'needs_token'))}
+								<details class="text-muted-foreground text-xs">
+									<summary
+										class="w-fit cursor-pointer rounded-sm focus-visible:ring-2 focus-visible:ring-ring"
+										>{t('app.model_management.details')}</summary
+									>
+									{#if !model.fits}<p class="mt-2">
+											{t(
 												!knownSize(worker.hardware?.vram_total_bytes)
-													? t('app.model_management.unknown')
-													: formatSize(worker.hardware?.vram_total_bytes ?? 0)
-											)}</span
-									>
-								</div>{/if}
-							{#if model.needs_token || model.download?.error === 'needs_token'}<div
-									id={`access-${encodeURIComponent(worker.worker_id)}-${encodeURIComponent(model.id)}`}
-									class="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
-								>
-									<strong>{t('app.model_management.access_badge')}</strong>
-									<p class="mt-1">{t('app.model_management.access_help')}</p>
-									<a
-										class="underline"
-										href="https://huggingface.co/docs/hub/security-tokens"
-										target="_blank"
-										rel="noreferrer">{t('app.model_management.docs')}</a
-									>
-								</div>{/if}
+													? 'app.model_management.needs_vram_unknown'
+													: 'app.model_management.needs_vram'
+											)
+												.replace(
+													'{vram}',
+													knownSize(model.min_vram_gb) === null
+														? t('app.model_management.unknown')
+														: formatSize(model.min_vram_gb * GIB)
+												)
+												.replace(
+													'{gpu_vram}',
+													!knownSize(worker.hardware?.vram_total_bytes)
+														? t('app.model_management.unknown')
+														: formatSize(worker.hardware?.vram_total_bytes ?? 0)
+												)}
+										</p>
+									{/if}
+									{#if !model.installed && (model.needs_token || model.download?.error === 'needs_token')}
+										<p class="mt-1">{t('app.model_management.access_help')}</p>
+										<a
+											class="underline"
+											href="https://huggingface.co/docs/hub/security-tokens"
+											target="_blank"
+											rel="noreferrer">{t('app.model_management.docs')}</a
+										>
+									{/if}
+								</details>
+							{/if}
 							{#if (operation && (operation.action === 'remove' || !active || !answers(model.download, operation))) || (active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}
 								<p role="status">{t('app.model_management.waiting')}</p>
 								{#if operation?.action === 'install' && !(active && (model.download?.kind === 'remove' || model.download?.kind === 'cancel'))}<Button
@@ -704,7 +756,7 @@
 								>
 									{t('app.model_management.cancelled')}
 								</p>
-							{:else if (!operation || answers(model.download, operation)) && model.download?.state === 'failed'}<p
+							{:else if (!operation || answers(model.download, operation)) && model.download?.state === 'failed' && model.download.error !== 'needs_token'}<p
 									role="alert"
 								>
 									{t('app.model_management.failed')}: {model.download.error}
@@ -820,6 +872,12 @@
 	.disk-used {
 		background: var(--primary);
 	}
+	.disk-used.warning {
+		background: var(--status-warning);
+	}
+	.disk-used.error {
+		background: var(--status-error);
+	}
 	.disk-free {
 		background: var(--muted);
 		border: 1px solid var(--muted-foreground);
@@ -858,17 +916,6 @@
 		border-radius: 6px;
 		background: var(--card);
 	}
-	.warning-callout {
-		display: flex;
-		gap: 8px;
-		align-items: flex-start;
-		border: 1px solid var(--status-warning);
-		border-radius: 6px;
-		padding: 12px;
-		background: color-mix(in srgb, var(--status-warning) 10%, var(--card));
-		color: var(--foreground);
-		font-size: var(--text-sm);
-	}
 	:global([data-slot='badge'].suggested-badge) {
 		background: var(--accent);
 		color: var(--accent-foreground);
@@ -889,6 +936,7 @@
 
 	.model-grid {
 		display: grid;
+		align-items: start;
 		grid-template-columns: repeat(auto-fill, minmax(min(100%, max(17rem, (100% - 3rem) / 4)), 1fr));
 		gap: 1rem;
 	}

@@ -13,7 +13,6 @@
 	import { apiFetch } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
-	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { formatMs } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
 	import {
@@ -172,35 +171,6 @@
 			<p class="text-dim truncate font-mono text-xs">{model.id}</p>
 		</div>
 	</div>
-{/snippet}
-
-{#snippet capabilityMarks(model: Model)}
-	{#each model.capabilities as capability (capability)}
-		{@const Icon = capabilityIcon(capability)}
-		{@const label = capabilityLabel(capability)}
-		<li>
-			<!-- The filter pills above name every icon, so the icons
-			     are not tab stops; the tooltip serves the pointer and
-			     the hidden text names each one to assistive tech. -->
-			<Tooltip.Root>
-				<Tooltip.Trigger tabindex={-1}>
-					{#snippet child({ props })}
-						<span
-							{...props}
-							class={'inline-grid size-6 place-items-center rounded-md border ' +
-								(capability === 'realtime'
-									? 'border-status-running/35 text-status-running'
-									: 'border-line-strong text-muted-foreground')}
-						>
-							<Icon class="size-3.5" aria-hidden="true" />
-							<span class="sr-only">{label}</span>
-						</span>
-					{/snippet}
-				</Tooltip.Trigger>
-				<Tooltip.Content>{label}</Tooltip.Content>
-			</Tooltip.Root>
-		</li>
-	{/each}
 {/snippet}
 
 {#snippet pickerSwitch(model: Model, removed: boolean)}
@@ -364,14 +334,10 @@
 							</div>
 							{@render pickerSwitch(model, removed)}
 						</div>
-						<dl class="mt-3 grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
+						<dl class="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
 							<div class="col-span-2">
 								<dt class="text-muted-foreground text-xs">{t('app.models.col_capabilities')}</dt>
-								<dd class="mt-1">
-									<ul class="flex flex-wrap gap-1">
-										{@render capabilityMarks(model)}
-									</ul>
-								</dd>
+								<dd>{model.capabilities.map(capabilityLabel).join(', ')}</dd>
 							</div>
 							<div>
 								<dt class="text-muted-foreground text-xs">{t('app.models.vram')}</dt>
@@ -422,9 +388,7 @@
 									{@render modelName(model)}
 								</td>
 								<td class="px-3">
-									<ul class="flex flex-wrap gap-1">
-										{@render capabilityMarks(model)}
-									</ul>
+									{model.capabilities.map(capabilityLabel).join(', ')}
 								</td>
 								<td class="px-3 tabular-nums">{model.min_vram_gb} GB</td>
 								<td

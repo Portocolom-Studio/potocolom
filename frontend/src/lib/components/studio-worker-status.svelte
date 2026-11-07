@@ -6,20 +6,19 @@
 	// nothing but those counts.
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { account } from '$lib/account.svelte';
-	import type { GpuHardware } from '$lib/studio-gpu-sampler';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
-
-	const POLL_MS = 15000;
+	import { watchWorker, worker } from '$lib/studio-worker.svelte';
 
 	// AUTH_MODE=none has no account and runs as the local admin. The static
-	// marketing build has no API to ask.
+	// marketing build has no API to ask. The poll itself is shared with the
+	// views that explain why an action is unavailable.
 	const mayReadGpu = $derived(
 		PUBLIC_SITE_MODE !== 'landing' && (account.current === null || account.current.role === 'admin')
 	);
-	let gpu = $state<GpuHardware | null>(null);
 	// null until the first answer: unknown is not the same as offline.
-	let online = $state<boolean | null>(null);
+	const online = $derived(worker.online);
+	const gpu = $derived(worker.gpu);
 
 	const queued = $derived(studio.history.filter((g) => g.state === 'queued').length);
 	const running = $derived(studio.history.filter((g) => g.state === 'running').length);
@@ -33,48 +32,7 @@
 	);
 	const visible = $derived((mayReadGpu && online !== null) || queued + running > 0);
 
-	$effect(() => {
-		if (!mayReadGpu) {
-			gpu = null;
-			online = null;
-			return;
-		}
-		let stopped = false;
-		let controller: AbortController | null = null;
-		async function poll(): Promise<void> {
-			if (document.visibilityState === 'hidden') return;
-			controller?.abort();
-			controller = new AbortController();
-			try {
-				const response = await fetch('/api/v1/studio/gpu', { signal: controller.signal });
-				if (stopped) return;
-				if (response.status === 503) {
-					online = false;
-					gpu = null;
-					return;
-				}
-				if (!response.ok) return;
-				const body = (await response.json()) as { gpu?: GpuHardware };
-				if (stopped) return;
-				online = true;
-				gpu = body.gpu ?? null;
-			} catch {
-				// Network trouble or an abort: keep the last answer.
-			}
-		}
-		void poll();
-		const timer = setInterval(() => void poll(), POLL_MS);
-		const onVisible = () => {
-			if (document.visibilityState === 'visible') void poll();
-		};
-		document.addEventListener('visibilitychange', onVisible);
-		return () => {
-			stopped = true;
-			controller?.abort();
-			clearInterval(timer);
-			document.removeEventListener('visibilitychange', onVisible);
-		};
-	});
+	$effect(() => watchWorker());
 </script>
 
 {#if visible}

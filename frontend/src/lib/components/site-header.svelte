@@ -1,7 +1,6 @@
 <script lang="ts">
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
 	import { studioChrome } from '$lib/studio-chrome.svelte';
@@ -9,8 +8,8 @@
 	const sidebar = Sidebar.useSidebar();
 
 	// Where the view sits in the sidebar's groups: the first crumb names the
-	// group, the second the view.
-	const group = $derived.by(() => {
+	// group, the second the view. Account is not in a group, so it has one crumb.
+	const group = $derived.by((): string | null => {
 		switch (studio.shellView) {
 			case 'images':
 				return t('app.shell.library');
@@ -19,7 +18,7 @@
 			case 'admin':
 				return t('app.shell.platform');
 			case 'account':
-				return account.current?.email ?? t('app.title');
+				return null;
 			default:
 				return t('app.shell.create');
 		}
@@ -57,8 +56,10 @@
 	{/if}
 	<nav aria-label={t('app.shell.breadcrumb')} class="min-w-0 shrink-0">
 		<ol class="text-muted-foreground flex items-center gap-1.5 font-medium whitespace-nowrap">
-			<li class="hidden max-w-48 truncate sm:block">{group}</li>
-			<li class="text-dim hidden sm:block" aria-hidden="true">/</li>
+			{#if group !== null}
+				<li class="hidden max-w-48 truncate sm:block">{group}</li>
+				<li class="text-dim hidden sm:block" aria-hidden="true">/</li>
+			{/if}
 			<li class="text-foreground truncate font-semibold" aria-current="page">{sectionTitle}</li>
 		</ol>
 	</nav>
