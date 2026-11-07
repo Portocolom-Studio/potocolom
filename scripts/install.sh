@@ -354,7 +354,7 @@ target_revision_verdict() {
 # the restore command for the newest backup this release knows, when there is one.
 # That restore runs the release being installed, which knows the backup's revision.
 refuse_newer_database() {
-	local revision="$1" name rev newest="" verdict
+	local revision="$1" name rev newest="" verdict hf_cache=""
 	local pattern='^(v[0-9]+\.[0-9]+\.[0-9]+|source)-([A-Za-z0-9_]+)-[0-9]{8}T[0-9]{6}Z$'
 	echo "error: the database is at Alembic revision $revision, which release $VERSION does not know." >&2
 	echo "  A newer release migrated it. Running $VERSION on it could damage data, so the upgrade is refused." >&2
@@ -373,7 +373,13 @@ refuse_newer_database() {
 		echo "  Or restore the newest backup that $VERSION knows, into a new project:" >&2
 		echo "    docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") down" >&2
 		echo "    COMPOSE_PROFILES=$(printf '%q' "$profile") POTOCOLOM_VERSION=$(printf '%q' "$VERSION") COMPOSE_FILE=$(printf '%q' "$newest/compose.yml") COMPOSE_PROJECT_NAME=$(printf '%q' "${PROJECT}-restored") $(printf '%q' "$DIR/scripts/restore.sh") $(printf '%q' "$newest")" >&2
-		echo "  The restored project starts with an empty model cache." >&2
+		# The backup env file is a copy of .env, so a shared cache key is restored with it.
+		hf_cache="$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}HF_CACHE_DIR[[:space:]]*=[[:space:]]*//p' "$newest/env" 2>/dev/null | tail -n 1)" || true
+		if [[ -n "$hf_cache" ]]; then
+			echo "  The restored project shares the host model cache $hf_cache again, so removing a model there deletes its files in that cache." >&2
+		else
+			echo "  The restored project starts with an empty models volume." >&2
+		fi
 	fi
 	exit 1
 }
@@ -679,7 +685,12 @@ main() {
 			repos="$(find -H "$hub" -mindepth 1 -maxdepth 1 -name 'models--*' -type d 2>/dev/null | wc -l | tr -d ' ')" || repos=0
 		fi
 		if ((repos > 0)); then
-			echo "Found $repos Hugging Face model repositories in $hub. To share them with the workers, run: curl -fsSL $BASE_URL/install.sh | POTOCOLOM_HF_CACHE=$(printf '%q' "$hub") bash. Removing a model in the studio then deletes its pinned files there, which other tools on this host may read."
+			# The hint names the install directory when it is not the default, as the public URL hint does.
+			hint_prefix=""
+			if [[ "$DIR" != "$HOME/potocolom" ]]; then
+				hint_prefix="POTOCOLOM_DIR=$(printf '%q' "$DIR") "
+			fi
+			echo "Found $repos Hugging Face model repositories in $hub. To share them with the workers, run: curl -fsSL $BASE_URL/install.sh | ${hint_prefix}POTOCOLOM_HF_CACHE=$(printf '%q' "$hub") bash. Removing a model in the studio then deletes its pinned files there, which other tools on this host may read."
 		fi
 	fi
 

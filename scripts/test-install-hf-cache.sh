@@ -746,6 +746,17 @@ else
 	fail_case hint-honours-xdg "rc=$rc $output"
 fi
 
+# 24. The share hint keeps a custom install directory, so the command it prints installs into that directory.
+new_case hint-keeps-custom-dir
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" HF_HUB_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *"Found 2 Hugging Face model repositories in $case_dir/hub."* \
+	&& "$output" == *"| POTOCOLOM_DIR=$case_dir/install POTOCOLOM_HF_CACHE=$case_dir/hub bash."* ]]; then
+	pass_case hint-keeps-custom-dir
+else
+	fail_case hint-keeps-custom-dir "rc=$rc $output"
+fi
+
 if ((failures > 0)); then
 	printf '%d host cache check(s) failed\n' "$failures"
 	exit 1
