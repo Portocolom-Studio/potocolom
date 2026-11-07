@@ -711,7 +711,7 @@ Notes for the upgrade:
 
 - Run the upgrade as the same OS user that made the install. A second install or preflight under the same user fails with a retry message while a lock is held.
 - The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. The data is intact: fix the cause, then run the script again. The rerun takes a backup first, because the failed run may already have migrated the database.
-- An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](/docs/self-hosting/first-run).
+- An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](#first-run-1).
 
 ### Upgrade a source checkout
 
@@ -728,9 +728,9 @@ Legacy model caches are adopted from the Hub pins bundled with the worker, so an
 
 ### Rollback
 
-Going back to an earlier release is not automatic. The installer refuses to run an older release on a database that a newer release migrated, so the older install script alone does not undo an upgrade. Two routes remain:
+Going back to an earlier release is not automatic. Install scripts from releases after v0.1.3 refuse to run an older release on a database that a newer release migrated. The scripts of v0.1.3 and earlier have no such check: they start the older release on the migrated database. Either way, running an older install script does not undo an upgrade. Two routes remain:
 
 - Rerun the install script of the newer release. This is the forward fix, and it also works after a failed upgrade.
-- Restore a backup into a new project. The installer prints the restore command only when a backup in `backups/` has a database revision that the release being installed knows. The command runs `scripts/restore.sh` from the install directory with that backup's compose file. It sets `POTOCOLOM_VERSION` to the release being installed, and `COMPOSE_PROFILES` so that the worker starts. If no backup qualifies, the forward fix is the route. Stop the broken project first, because it holds port 8080. The restored project starts with an empty model cache.
+- Restore a backup into a new project. The installer prints the restore command only when a backup in `backups/` has a database revision that the release being installed knows. The command runs `scripts/restore.sh` from the install directory with that backup's compose file. It sets `POTOCOLOM_VERSION` to the release being installed, and `COMPOSE_PROFILES` so that the worker starts. If no backup qualifies, the forward fix is the route. Stop the broken project first, because it holds port 8080. The backup does not hold the `models` volume, so the restored project starts without the model cache, custom manifests or files in `overrides/`. Copy the files you need from the old project's `models` volume into the new one.
 
 Backups are kept in the install directory's `backups/` folder. Each one is named by the old version, the database revision and the UTC time. Old backups are kept, and there is no retention policy: delete them by hand when you no longer need them. See [Backup and restore](#backup-and-restore) for what a backup holds.
