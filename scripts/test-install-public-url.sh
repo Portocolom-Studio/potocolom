@@ -221,8 +221,8 @@ if [[ "$rc" -eq 0 && "$output" == *'API and database are ready'* && "$output" ==
 	&& "$(grep 'config --images' "$case_dir/docker.log")" == *'--profile api'* \
 	&& "$(grep -c 'pull' "$case_dir/docker.log")" -eq 1 \
 	&& "$(grep ' up -d --no-build' "$case_dir/docker.log")" == *'--profile api'* \
-	&& "$(grep -c 'rm -sf worker ' "$case_dir/docker.log")" -eq 1 \
-	&& "$(grep -c 'rm -sf worker-rocm' "$case_dir/docker.log")" -eq 1 ]]; then
+	&& "$(grep -c 'rm -sf worker ' "$case_dir/docker.log")" -eq 0 \
+	&& "$(grep -c 'rm -sf worker-rocm' "$case_dir/docker.log")" -eq 0 ]]; then
 	printf 'ok automatic-api-only-no-gpu\n'
 else fail_case automatic-api-only-no-gpu; printf '%s\n' "$output"; cat "$case_dir/docker.log"; fi
 
@@ -260,7 +260,7 @@ else fail_case decided-install-prints-a-note-and-no-link; printf 'rc=%s\n%s\n' "
 
 make_case failed-mint-prints-a-warning-with-the-retry-command
 TEST_PROFILE=api SETUP_LINK_MODE=fail output="$(run_install "$case_dir")" && rc=0 || rc=$?
-retry="env -u COMPOSE_PROJECT_NAME docker compose --env-file \"$case_dir/install/deploy/compose/.env\" -f \"$case_dir/install/deploy/compose/compose.yml\" exec -T api python -m app.operator setup-link"
+retry="env -u COMPOSE_PROJECT_NAME docker compose --env-file $(printf '%q' "$case_dir/install/deploy/compose/.env") -f $(printf '%q' "$case_dir/install/deploy/compose/compose.yml") exec -T api python -m app.operator setup-link"
 if [[ "$rc" -eq 0 && "$output" == *'warning: no setup link was made: boom'* \
 	&& "$output" == *"  Retry with: $retry"* \
 	&& "$output" != *'already chose'* ]]; then
@@ -533,11 +533,13 @@ else
 	(cd "$tmp" && sha256sum bundle.tar.gz | sed 's#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#' >SHA256SUMS)
 	if run_install "$case_dir" >"$case_dir/second.out" 2>&1; then second_install_rc=0; else second_install_rc=$?; fi
 	touch "$INSTALL_UP_RELEASE"
+	# Preflight writes its .env in the staged copy now, so the live directory
+	# sees one temporary .env, the publish that happens under the lock.
 	if wait "$first_install_pid"; then first_install_rc=0; else first_install_rc=$?; fi
 	if [[ "$first_install_rc" -eq 0 && "$second_install_rc" -ne 0 \
 		&& "$(cat "$case_dir/second.out")" == *'another potocolom install or preflight'* \
 		&& "$(grep -c 'staged-contender-marker' "$case_dir/install/scripts/gpu-profile.sh" || true)" -eq 0 \
-		&& "$(grep -c "$case_dir/install/deploy/compose/.env.XXXXXX" "$INSTALL_MKTEMP_LOG")" -ge 2 \
+		&& "$(grep -c "$case_dir/install/deploy/compose/.env.XXXXXX" "$INSTALL_MKTEMP_LOG")" -ge 1 \
 		&& "$(stat -c '%a' "$case_dir/install/deploy/compose/.env")" == 600 ]]; then
 		printf 'ok concurrent-install-lock-held-through-startup-and-before-live-extract\n'
 	else

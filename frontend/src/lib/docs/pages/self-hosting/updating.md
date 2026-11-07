@@ -25,12 +25,18 @@ To install one specific release, use the script of that release. Replace `vX.Y.Z
 curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/download/vX.Y.Z/install.sh | bash
 ```
 
+The installer does this, in order:
+
+- It checks the bundle against the release's `SHA256SUMS` and pulls the release's images. Until the pull succeeds, nothing in the install directory changes, so a failed pull leaves the install as it was.
+- It keeps the profile that the install already runs. The profile is saved in `deploy/compose/.env` as `COMPOSE_PROFILES`. If this machine now detects a different GPU, the installer warns and keeps the saved profile. Set `POTOCOLOM_PROFILE` to `gpu`, `rocm` or `api` only to change the profile; an explicit choice also removes the worker of the old profile.
+- It prints what it is doing: `Installing`, `Upgrading`, `Reinstalling` or `Downgrading`, with the versions.
+- Before it replaces the install, it stops the API and workers, reads the database revision, and takes a backup into `backups/` in the install directory. It takes no backup for a new database or for a reinstall of the same release, unless an earlier upgrade stopped before the API became ready. The backup needs free space for the database and the assets, plus 10 percent and 1 GiB. When there is not enough space, the installer refuses and prints the numbers. `POTOCOLOM_SKIP_BACKUP=1` skips the backup, and then there is no recovery point.
+- It refuses to run an older release on a database that a newer release migrated. It also refuses a database that has tables but no `alembic_version` table, since it cannot tell which release migrated it. Nothing changes in either case, and the services it stopped start again.
+
 Notes for the upgrade:
 
 - Run the upgrade as the same OS user that made the install. A second install or preflight under the same user fails with a retry message while a lock is held.
-- The installer checks the downloaded bundle against the release's `SHA256SUMS`. It then sets `POTOCOLOM_VERSION` in `deploy/compose/.env`.
-- Use the same profile that you first started with. Set `POTOCOLOM_PROFILE=gpu`, `rocm` or `api` on each install or upgrade when the automatic choice is not suitable.
-- The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. Keep the data, fix the cause, and retry.
+- The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. The data is intact: fix the cause, then run the script again. The rerun takes a backup first, because the failed run may already have migrated the database.
 - An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](/docs/self-hosting/first-run).
 
 ## Upgrade a source checkout
@@ -63,4 +69,9 @@ When a worker is one version ahead of its API, the API drops the extra fields in
 
 ## Rollback
 
-The source describes no rollback to an earlier release. It does not describe running an older install script or image to go back. The only documented way to recover data is a backup taken with `scripts/backup.sh`, restored into a new project. See [Backup and restore](/docs/self-hosting/backup-and-restore).
+Going back to an earlier release is not automatic. Install scripts from releases after v0.1.3 refuse to run an older release on a database that a newer release migrated. The scripts of v0.1.3 and earlier have no such check: they start the older release on the migrated database. Either way, running an older install script does not undo an upgrade. Two routes remain:
+
+- Rerun the install script of the newer release. This is the forward fix, and it also works after a failed upgrade.
+- Restore a backup into a new project. The installer prints the restore command only when a backup in `backups/` has a database revision that the release being installed knows. The command runs `scripts/restore.sh` from the install directory with that backup's compose file. It sets `POTOCOLOM_VERSION` to the release being installed, and `COMPOSE_PROFILES` so that the worker starts. If no backup qualifies, the forward fix is the route. Stop the broken project first, because it holds port 8080. The backup does not hold the `models` volume, so the restored project starts without the model cache, custom manifests or files in `overrides/`. Copy the files you need from the old project's `models` volume into the new one.
+
+Backups are kept in the install directory's `backups/` folder. Each one is named by the old version, the database revision and the UTC time. Old backups are kept, and there is no retention policy: delete them by hand when you no longer need them. See [Backup and restore](/docs/self-hosting/backup-and-restore) for what a backup holds.

@@ -33,6 +33,333 @@ open_setup_link() {
 	( sleep "${POTOCOLOM_SETUP_PAGE_SECONDS:-30}"; rm -rf -- "$dir" ) >/dev/null 2>&1 &
 }
 
+# Prints the worker profile that this project's existing worker containers
+# imply. Installs made before the profile was saved in .env have no other record.
+# Both workers at once is ambiguous, so it refuses.
+project_worker_profile() {
+	local project="$1" containers id service state has_gpu=false has_rocm=false
+	containers="$(docker ps -a --filter "label=com.docker.compose.project=$project" \
+		--format '{{.ID}} {{.Label "com.docker.compose.service"}} {{.State}}')" || return 1
+	while read -r id service state; do
+		if [[ "$service" == worker ]]; then has_gpu=true; fi
+		if [[ "$service" == worker-rocm ]]; then has_rocm=true; fi
+	done <<<"$containers"
+	if [[ "$has_gpu" == true && "$has_rocm" == true ]]; then
+		echo "error: $project has both the gpu and the rocm worker containers; set POTOCOLOM_PROFILE=gpu or rocm, then run this again" >&2
+		return 1
+	fi
+	if [[ "$has_gpu" == true ]]; then
+		printf 'gpu\n'
+	elif [[ "$has_rocm" == true ]]; then
+		printf 'rocm\n'
+	fi
+	return 0
+}
+
+# Checks that the database's Alembic revision is known to the release being
+# installed. The release's own Alembic scripts answer, so no database connection
+# is made. backend/tests/test_install_revision_probe.py runs it.
+REVISION_PROBE="import sys
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from alembic.util import CommandError
+script = ScriptDirectory.from_config(Config('/app/alembic.ini'))
+try:
+    script.get_revision(sys.argv[1])
+except CommandError:
+    print('unknown')
+else:
+    print('known')"
+
+# Globals shared by the live-install steps below. QUIESCED is set while the
+# running services are stopped; install_exit puts back what was recorded here.
+QUIESCED=0
+RUNNING_IDS=()
+PG_STARTED=0
+PG_CREATED=0
+BACKUP_PARTIAL=""
+BACKUPS_CREATED=0
+
+live_compose() {
+	docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$DIR/deploy/compose/compose.yml" "$@"
+}
+
+live_psql() {
+	live_compose exec -T postgres psql -U potocolom -d potocolom -Atc "$1"
+}
+
+client_sessions() {
+	live_psql "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()" 2>/dev/null || echo unknown
+}
+
+# Returns 0 when the named Docker volume exists and 1 when it does not. A failed
+# listing ends the install: an unanswered question must not read as "no volume".
+volume_exists() {
+	local name="$1" listed
+	if ! listed="$(docker volume ls -q --filter "name=$name")"; then
+		echo "error: could not list the Docker volumes to look for $name; nothing was changed" >&2
+		exit 1
+	fi
+	grep -Fxq -- "$name" <<<"$listed"
+}
+
+database_volume_exists() {
+	volume_exists "${PROJECT}_pgdata"
+}
+
+# Stops the running containers of this project except postgres, and starts
+# postgres when it is down. What it changes is recorded, so install_exit can
+# put it back when the upgrade is refused or fails before the swap.
+quiesce_project() {
+	local containers id service state pg_state=""
+	QUIESCED=1
+	trap install_exit EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	containers="$(docker ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+		--format '{{.ID}} {{.Label "com.docker.compose.service"}} {{.State}}')"
+	while read -r id service state; do
+		if [[ -z "$id" ]]; then continue; fi
+		if [[ "$service" == postgres ]]; then pg_state="$state"; fi
+		# A restarting container can run a migration between attempts, so it is stopped too.
+		if [[ "$service" != postgres && ( "$state" == running || "$state" == restarting ) ]]; then RUNNING_IDS+=("$id"); fi
+	done <<<"$containers"
+	if ((${#RUNNING_IDS[@]})); then
+		echo "stopping the API and workers of $PROJECT for the upgrade checks"
+		docker stop "${RUNNING_IDS[@]}" >/dev/null
+	fi
+	if [[ "$pg_state" != running ]]; then
+		if [[ -z "$pg_state" ]]; then PG_CREATED=1; fi
+		PG_STARTED=1
+		echo "starting postgres of $PROJECT for the upgrade checks"
+		live_compose up -d --no-deps --wait --wait-timeout 120 postgres >/dev/null
+	fi
+}
+
+# Puts back what quiesce_project changed: starts the containers it stopped,
+# and removes or stops postgres when this run created or started it.
+restore_quiesced() {
+	local status=0
+	if ((${#RUNNING_IDS[@]})); then
+		docker start "${RUNNING_IDS[@]}" >/dev/null || status=1
+	fi
+	if [[ "$PG_CREATED" == 1 ]]; then
+		live_compose rm -sf postgres >/dev/null 2>&1 || status=1
+	elif [[ "$PG_STARTED" == 1 ]]; then
+		live_compose stop postgres >/dev/null 2>&1 || status=1
+	fi
+	if ((status != 0)); then
+		echo "error: could not restore every service the upgrade stopped; start them with: docker start ${RUNNING_IDS[*]:-}" >&2
+	fi
+	return "$status"
+}
+
+# Waits until no client session is left. A session that outlives the deadline
+# is ended, and the wait then runs for a bounded time more. Any failure to
+# count the sessions counts as still open.
+wait_for_sessions() {
+	local attempt
+	for ((attempt = 0; attempt < 30; attempt++)); do
+		if [[ "$(client_sessions)" == 0 ]]; then return 0; fi
+		sleep 1
+	done
+	echo "warning: database client sessions are still open; ending them" >&2
+	live_psql "SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()) AS ended" >/dev/null || true
+	for ((attempt = 0; attempt < 10; attempt++)); do
+		if [[ "$(client_sessions)" == 0 ]]; then return 0; fi
+		sleep 1
+	done
+	return 1
+}
+
+# Prints the Alembic revision of the database. An empty database (no public
+# tables at all) prints nothing and succeeds. A database with tables but no
+# alembic_version table fails, because its revision cannot be read. Any other
+# failure, and a table with no row, fails too: the revision must be read or the
+# upgrade is refused.
+database_revision() {
+	local has_table revision tables
+	has_table="$(live_psql "SELECT to_regclass('public.alembic_version') IS NOT NULL")" || return 1
+	case "$has_table" in
+	f)
+		tables="$(live_psql "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")" || return 1
+		[[ "$tables" =~ ^[0-9]+$ ]] || return 1
+		if ((tables > 0)); then
+			echo "error: the database has $tables table(s) but no alembic_version table, so its revision is unknown" >&2
+			return 1
+		fi
+		return 0
+		;;
+	t) ;;
+	*) return 1 ;;
+	esac
+	revision="$(live_psql "SELECT version_num FROM alembic_version")" || return 1
+	[[ "$revision" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+	printf '%s\n' "$revision"
+}
+
+# Asks the release being installed whether it knows a revision. Prints known,
+# unknown, or unclear. Unclear covers every failure to ask, and the caller
+# refuses it.
+target_revision_verdict() {
+	local answer
+	if answer="$(POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" run --rm --no-deps -T api python -c "$REVISION_PROBE" "$1" 2>/dev/null)"; then
+		case "$answer" in
+		known | unknown)
+			printf '%s\n' "$answer"
+			return 0
+			;;
+		esac
+	fi
+	printf 'unclear\n'
+}
+
+# Refuses a database that a newer release migrated. Prints the forward fix, and
+# the restore command for the newest backup this release knows, when there is one.
+# That restore runs the release being installed, which knows the backup's revision.
+refuse_newer_database() {
+	local revision="$1" name rev newest="" verdict
+	local pattern='^(v[0-9]+\.[0-9]+\.[0-9]+|source)-([A-Za-z0-9_]+)-[0-9]{8}T[0-9]{6}Z$'
+	echo "error: the database is at Alembic revision $revision, which release $VERSION does not know." >&2
+	echo "  A newer release migrated it. Running $VERSION on it could damage data, so the upgrade is refused." >&2
+	echo "  Nothing in $DIR changed." >&2
+	echo "  The forward fix: rerun the install.sh of the newer release." >&2
+	while IFS= read -r name; do
+		if [[ ! "$name" =~ $pattern ]]; then continue; fi
+		rev="${BASH_REMATCH[2]}"
+		verdict="$(target_revision_verdict "$rev")"
+		if [[ "$verdict" == known ]]; then
+			newest="$DIR/backups/$name"
+			break
+		fi
+	done < <(ls -1 "$DIR/backups" 2>/dev/null | sort -t- -k3,3r)
+	if [[ -n "$newest" ]]; then
+		echo "  Or restore the newest backup that $VERSION knows, into a new project:" >&2
+		echo "    docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") down" >&2
+		echo "    COMPOSE_PROFILES=$(printf '%q' "$profile") POTOCOLOM_VERSION=$(printf '%q' "$VERSION") COMPOSE_FILE=$(printf '%q' "$newest/compose.yml") COMPOSE_PROJECT_NAME=$(printf '%q' "${PROJECT}-restored") $(printf '%q' "$DIR/scripts/restore.sh") $(printf '%q' "$newest")" >&2
+		echo "  The restored project starts with an empty model cache." >&2
+	fi
+	exit 1
+}
+
+# Takes the recovery point before the swap. The backup directory name carries
+# the saved version and the database revision, so a restore can pick a backup
+# that the release it is restored with knows.
+take_backup() {
+	local revision="$1" db_bytes assets_bytes avail need stamp old dest
+	if [[ "${POTOCOLOM_SKIP_BACKUP:-0}" == 1 ]]; then
+		echo "warning: POTOCOLOM_SKIP_BACKUP=1, so this upgrade takes no backup and has no recovery point" >&2
+		return 0
+	fi
+	db_bytes="$(live_psql "SELECT pg_database_size('potocolom')")" || db_bytes=""
+	# A missing assets volume measures as 0. The check comes first because a
+	# docker run with a --mount of a missing volume would create that volume.
+	assets_bytes=0
+	if volume_exists "${PROJECT}_assets"; then
+		assets_bytes="$(docker run --rm --mount "type=volume,src=${PROJECT}_assets,dst=/src,readonly" \
+			postgres:16 du -sb /src | awk '{print $1}')" || assets_bytes=""
+	fi
+	avail="$(df -B1 --output=avail "$DIR" | tail -n 1 | tr -dc '0-9')"
+	if [[ ! "$db_bytes" =~ ^[0-9]+$ || ! "$assets_bytes" =~ ^[0-9]+$ || -z "$avail" ]]; then
+		echo "error: could not measure the database, the assets or the free space for a backup; nothing was changed" >&2
+		exit 1
+	fi
+	need=$(((db_bytes + assets_bytes) * 110 / 100 + 1073741824))
+	if ((avail < need)); then
+		echo "error: not enough free space for a backup in $DIR/backups." >&2
+		echo "  Need $need bytes: database $db_bytes, assets $assets_bytes, plus 10 percent and 1 GiB. Free: $avail bytes." >&2
+		echo "  Free some space, or run this again with POTOCOLOM_SKIP_BACKUP=1 to upgrade with no backup." >&2
+		exit 1
+	fi
+	stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+	if [[ "$saved_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then old="$saved_version"; else old=source; fi
+	if [[ ! -d "$DIR/backups" ]]; then
+		mkdir "$DIR/backups"
+		BACKUPS_CREATED=1
+	fi
+	dest="$DIR/backups/$old-$revision-$stamp"
+	# An existing destination is an earlier recovery point. It is refused before
+	# BACKUP_PARTIAL names it, so install_exit never removes it.
+	if [[ -e "$dest" ]]; then
+		echo "error: the backup $dest already exists; nothing was changed" >&2
+		exit 1
+	fi
+	BACKUP_PARTIAL="$dest"
+	echo "backing up $PROJECT to $dest"
+	if ! ENV_FILE="$ENV_FILE" COMPOSE_FILE="$DIR/deploy/compose/compose.yml" COMPOSE_PROJECT_NAME="$PROJECT" \
+		bash "$STAGE/scripts/backup.sh" "$dest"; then
+		echo "error: the backup failed; nothing was changed" >&2
+		exit 1
+	fi
+	# restore.sh takes its compose file from its own release, which the swap
+	# replaces, so the backup keeps the compose file it was made with.
+	cp "$DIR/deploy/compose/compose.yml" "$dest/compose.yml"
+	chmod 600 "$dest/compose.yml"
+	BACKUP_PARTIAL=""
+	echo "backup kept at $dest ($(du -sh "$dest" | cut -f1))"
+}
+
+# Runs on every exit after quiesce_project. A refusal, a failed backup or an
+# interrupt removes the partial backup, puts back the services, and removes TMP.
+install_exit() {
+	local status=$?
+	trap - EXIT INT TERM
+	if [[ -n "$BACKUP_PARTIAL" ]]; then
+		rm -rf -- "$BACKUP_PARTIAL"
+	fi
+	if [[ "$BACKUPS_CREATED" == 1 ]]; then
+		rmdir -- "$DIR/backups" 2>/dev/null || true
+	fi
+	if [[ "$QUIESCED" == 1 ]]; then
+		restore_quiesced || status=1
+	fi
+	rm -rf -- "$TMP"
+	exit "$status"
+}
+
+# Replaces the live bundle with the verified one and publishes the staged .env,
+# pinned to this release and profile, in one rename. The marker stays until the
+# readiness check passes, so a rerun knows the last upgrade did not finish. The
+# recovery trap stays set: nothing has migrated until the up that main runs next.
+swap_in_bundle() {
+	local env_tmp
+	mkdir -p "$DIR"
+	: >"$DIR/.upgrade-incomplete"
+	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
+	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
+	chmod 600 "$env_tmp"
+	# Pin release metadata and apply an explicit public URL in one write.
+	awk -v v="$VERSION" -v p="$PROJECT" -v prof="$profile" -v set_url="$set_public_url" -v url="$public_url_input" '
+		/^POTOCOLOM_VERSION=/ { print "POTOCOLOM_VERSION=" v; found_v = 1; next }
+		/^COMPOSE_PROJECT_NAME=/ {
+			found_p = 1
+			if ($0 ~ /^COMPOSE_PROJECT_NAME=[[:space:]]*$/) print "COMPOSE_PROJECT_NAME=" p
+			else print
+			next
+		}
+		/^[[:space:]]*(export[[:space:]]+)?COMPOSE_PROFILES[[:space:]]*[:=]/ {
+			if (!found_f) print "COMPOSE_PROFILES=" prof
+			found_f = 1
+			next
+		}
+		/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=]/ {
+			if (set_url == "true") {
+				if (!found_url) print "PUBLIC_URL=" url
+				found_url = 1
+			} else print
+			next
+		}
+		{ print }
+		END {
+			if (!found_v) print "POTOCOLOM_VERSION=" v
+			if (!found_p) print "COMPOSE_PROJECT_NAME=" p
+			if (!found_f) print "COMPOSE_PROFILES=" prof
+			if (set_url == "true" && !found_url) print "PUBLIC_URL=" url
+		}
+	' "$STAGE_ENV" >"$env_tmp"
+	mv "$env_tmp" "$ENV_FILE"
+}
+
 main() {
 	# Nothing below may read the piped script as its input.
 	exec </dev/null
@@ -85,6 +412,9 @@ main() {
 	# Compose prefers a shell variable over .env, so an inherited PUBLIC_URL
 	# would silently replace the one this script writes.
 	unset PUBLIC_URL
+	# The same holds for COMPOSE_PROFILES: an inherited value would pick the
+	# worker. The profile this install runs is saved in .env instead.
+	unset COMPOSE_PROFILES
 
 	DIR="${POTOCOLOM_DIR:-$HOME/potocolom}"
 
@@ -149,24 +479,24 @@ main() {
 	STAGE="$TMP/stage"
 	mkdir -m 700 "$STAGE"
 	tar -xzf "$TMP/$BUNDLE" -C "$STAGE"
+	STAGE_COMPOSE="$STAGE/deploy/compose/compose.yml"
 	# Resolve the Compose project against the saved env file and verified staged
-	# compose file, then lock before replacing any live bundle file.
+	# compose file, then lock before anything in the live install changes.
 	ENV_FILE="$DIR/deploy/compose/.env"
 	source "$STAGE/scripts/install-lock.sh"
 	PROJECT="potocolom"
 	if [[ -f "$ENV_FILE" ]]; then
-		if existing="$(install_compose_project "$ENV_FILE" "$STAGE/deploy/compose/compose.yml")"; then
+		if existing="$(install_compose_project "$ENV_FILE" "$STAGE_COMPOSE")"; then
 			PROJECT="$existing"
 		else
 			echo "error: Compose could not read $ENV_FILE; refusing to inspect or change this install" >&2
 			exit 1
 		fi
 	fi
-	install_acquire_locks "$DIR" "$ENV_FILE" "$STAGE/deploy/compose/compose.yml" "$PROJECT"
-	mkdir -p "$DIR"
-	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
-	# The bundle carries no .env, so an existing install keeps its secrets.
-	if [[ ! -e "$ENV_FILE" ]] && docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
+	install_acquire_locks "$DIR" "$ENV_FILE" "$STAGE_COMPOSE" "$PROJECT"
+	# A database volume without its .env would be paired with new secrets, so
+	# this check runs before anything below can write a .env.
+	if [[ ! -e "$ENV_FILE" ]] && database_volume_exists; then
 		echo "error: the database volume ${PROJECT}_pgdata already exists, but $ENV_FILE does not." >&2
 		echo "  A new .env would get a new database password that this volume does not accept." >&2
 		echo "  Restore the .env from the earlier install into that path, or, to start over and" >&2
@@ -174,13 +504,61 @@ main() {
 		exit 1
 	fi
 
-	if [[ -n "${POTOCOLOM_PROFILE:-}" ]]; then
-		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
+	# Until the image pull succeeds, nothing in $DIR changes. Preflight, the
+	# profile and the pull run against a staged copy of the live .env.
+	STAGE_ENV="$STAGE/deploy/compose/.env"
+	saved_profile=""
+	saved_version=""
+	if [[ -f "$ENV_FILE" ]]; then
+		cp "$ENV_FILE" "$STAGE_ENV"
+		chmod 600 "$STAGE_ENV"
+		if ! saved_profile="$(install_compose_value "$ENV_FILE" "$STAGE_COMPOSE" COMPOSE_PROFILES)" \
+			|| ! saved_version="$(install_compose_value "$ENV_FILE" "$STAGE_COMPOSE" POTOCOLOM_VERSION)"; then
+			echo "error: Compose could not read $ENV_FILE; refusing to inspect or change this install" >&2
+			exit 1
+		fi
+	fi
+	if [[ ! -e "$ENV_FILE" ]]; then
+		echo "Installing $VERSION"
+	elif [[ -z "$saved_version" ]]; then
+		echo "Upgrading a source checkout to $VERSION"
+	elif [[ "$saved_version" == "$VERSION" ]]; then
+		echo "Reinstalling $VERSION"
+	elif [[ "$(printf '%s\n' "$saved_version" "$VERSION" | sort -V | tail -n 1)" == "$saved_version" ]]; then
+		echo "Downgrading $saved_version to $VERSION"
 	else
-		profile="$(bash "$DIR/scripts/gpu-profile.sh")" || exit 1
+		echo "Upgrading $saved_version to $VERSION"
+	fi
+
+	# Profile precedence: POTOCOLOM_PROFILE in the shell, then the profile saved
+	# in .env, then the worker containers of this project, then detection. Only
+	# an explicit POTOCOLOM_PROFILE may change the profile of a running install.
+	detected="$(bash "$STAGE/scripts/gpu-profile.sh")" || exit 1
+	explicit=false
+	if [[ -n "${POTOCOLOM_PROFILE:-}" ]]; then
+		explicit=true
+		profile="$detected"
+	else
 		# Source commands keep smoke as the no-GPU default. A release contains
 		# no simulated-worker image, so its automatic no-GPU choice is API-only.
-		[[ "$profile" != smoke ]] || profile=api
+		if [[ "$detected" == smoke ]]; then detected=api; fi
+		if [[ -n "$saved_profile" ]]; then
+			case "$saved_profile" in
+			gpu | rocm | api) ;;
+			*)
+				echo "error: COMPOSE_PROFILES in $ENV_FILE must be gpu, rocm or api, not $saved_profile" >&2
+				exit 1
+				;;
+			esac
+			profile="$saved_profile"
+		else
+			profile="$(project_worker_profile "$PROJECT")" || exit 1
+			profile="${profile:-$detected}"
+		fi
+		if [[ "$profile" != "$detected" ]]; then
+			echo "warning: this machine now detects $detected, but this install keeps $profile." >&2
+			echo "  To change the profile, run this again with POTOCOLOM_PROFILE=$detected (this removes the other worker)." >&2
+		fi
 	fi
 	if [[ "$profile" == smoke ]]; then
 		echo "error: the release installer does not support the simulated worker. Clone the repository and run scripts/compose-smoke.sh for source development." >&2
@@ -190,16 +568,20 @@ main() {
 		echo "error: unsupported release profile: $profile" >&2
 		exit 1
 	fi
-	if ! POTOCOLOM_PROFILE="$profile" bash "$DIR/scripts/preflight.sh"; then
+	# The shell value of COMPOSE_PROFILES beats the staged .env, so the staged
+	# commands see the resolved profile and nothing the old .env adds.
+	stage_compose=(env COMPOSE_PROFILES="$profile" docker compose -p "$PROJECT" --env-file "$STAGE_ENV" -f "$STAGE_COMPOSE" --profile "$profile")
+
+	disk_probe="$DIR"
+	while [[ ! -e "$disk_probe" ]]; do disk_probe="$(dirname "$disk_probe")"; done
+	if ! ENV_FILE="$STAGE_ENV" POTOCOLOM_PROFILE="$profile" POTOCOLOM_DISK_PATH="$disk_probe" bash "$STAGE/scripts/preflight.sh"; then
 		echo "error: preflight failed; fix what it reports, then run this again" >&2
 		exit 1
 	fi
 
-	compose=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$DIR/deploy/compose/compose.yml" --profile "$profile")
 	# The shell env beats the env file, so the pull runs against this tag
-	# before .env names it, and .env is pinned only afterwards: a failed
-	# pull must not leave it naming a tag that was never pulled.
-	images="$(POTOCOLOM_VERSION="$VERSION" "${compose[@]}" config --images)"
+	# before .env names it, and .env is pinned only after the swap.
+	images="$(POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" config --images)"
 	if [[ -z "$images" ]]; then
 		echo 'error: Compose did not list any release images' >&2
 		exit 1
@@ -212,50 +594,66 @@ main() {
 		fi
 	done <<<"$images"
 	if [[ "$missing_images" == true ]]; then
-		POTOCOLOM_VERSION="$VERSION" "${compose[@]}" pull
+		POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" pull
 	fi
 
-	# Pin release metadata and apply an explicit public URL in one write.
-	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
-	chmod 600 "$env_tmp"
-	awk -v v="$VERSION" -v p="$PROJECT" -v set_url="$set_public_url" -v url="$public_url_input" '
-		/^POTOCOLOM_VERSION=/ { print "POTOCOLOM_VERSION=" v; found_v = 1; next }
-		/^COMPOSE_PROJECT_NAME=/ {
-			found_p = 1
-			if ($0 ~ /^COMPOSE_PROJECT_NAME=[[:space:]]*$/) print "COMPOSE_PROJECT_NAME=" p
-			else print
-			next
-		}
-		/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=]/ {
-			if (set_url == "true") {
-				if (!found_url) print "PUBLIC_URL=" url
-				found_url = 1
-			} else print
-			next
-		}
-		{ print }
-		END {
-			if (!found_v) print "POTOCOLOM_VERSION=" v
-			if (!found_p) print "COMPOSE_PROJECT_NAME=" p
-			if (set_url == "true" && !found_url) print "PUBLIC_URL=" url
-		}
-	' "$ENV_FILE" >"$env_tmp"
-	mv "$env_tmp" "$ENV_FILE"
+	# The live install changes from here. A database that already exists is
+	# stopped, checked and backed up before the verified bundle is swapped in.
+	revision=""
+	if database_volume_exists; then
+		if [[ ! -f "$DIR/deploy/compose/compose.yml" ]]; then
+			echo "error: $DIR/deploy/compose/compose.yml is missing, so the running stack cannot be stopped safely; nothing was changed" >&2
+			exit 1
+		fi
+		quiesce_project
+		if ! wait_for_sessions; then
+			echo "error: database client sessions are still open after the deadline; nothing was changed" >&2
+			exit 1
+		fi
+		if ! revision="$(database_revision)"; then
+			echo "error: could not read the database revision; nothing was changed" >&2
+			exit 1
+		fi
+		if [[ -n "$revision" ]]; then
+			verdict="$(target_revision_verdict "$revision")"
+			case "$verdict" in
+			known) ;;
+			unknown) refuse_newer_database "$revision" ;;
+			*)
+				echo "error: could not ask release $VERSION whether it knows revision $revision; nothing was changed" >&2
+				exit 1
+				;;
+			esac
+		fi
+		# A marker left by an upgrade that never became ready means the database
+		# may have been migrated, so that rerun backs up even at the same version.
+		if [[ "$saved_version" != "$VERSION" || -e "$DIR/.upgrade-incomplete" ]]; then
+			take_backup "${revision:-none}"
+		fi
+	fi
+	swap_in_bundle
 
-	# Stop only this project's worker containers that do not match the selected
-	# profile. API-only transitions remove both release workers.
-	case "$profile" in
-		gpu) obsolete=('--profile' rocm rm -sf worker-rocm) ;;
-		rocm) obsolete=('--profile' gpu rm -sf worker) ;;
-		api) obsolete=(--profile gpu rm -sf worker) ;;
-	esac
-	POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
-		-f "$DIR/deploy/compose/compose.yml" "${obsolete[@]}"
-	if [[ "$profile" == api ]]; then
+	compose=(docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$DIR/deploy/compose/compose.yml" --profile "$profile")
+	# Only an explicit POTOCOLOM_PROFILE removes a worker. API-only transitions
+	# remove both release workers.
+	if [[ "$explicit" == true ]]; then
+		case "$profile" in
+			gpu) obsolete=('--profile' rocm rm -sf worker-rocm) ;;
+			rocm) obsolete=('--profile' gpu rm -sf worker) ;;
+			api) obsolete=(--profile gpu rm -sf worker) ;;
+		esac
 		POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
-			-f "$DIR/deploy/compose/compose.yml" --profile rocm rm -sf worker-rocm
+			-f "$DIR/deploy/compose/compose.yml" "${obsolete[@]}"
+		if [[ "$profile" == api ]]; then
+			POTOCOLOM_VERSION="$VERSION" docker compose -p "$PROJECT" --env-file "$ENV_FILE" \
+				-f "$DIR/deploy/compose/compose.yml" --profile rocm rm -sf worker-rocm
+		fi
 	fi
 
+	# Nothing has migrated before this up, so the stopped services can still be put
+	# back by restore_quiesced. From here on only the plain temporary cleanup runs.
+	QUIESCED=0
+	trap 'rm -rf "$TMP"' EXIT
 	POTOCOLOM_VERSION="$VERSION" "${compose[@]}" up -d --no-build
 
 	# Readiness covers the API and its store. It does not wait for model downloads
@@ -270,9 +668,10 @@ main() {
 	done
 	if [[ "$ready" != true ]]; then
 		echo 'error: API did not become ready within 120 seconds; data is intact.' >&2
-		echo "  Diagnose with: docker compose -p $PROJECT --env-file \"$ENV_FILE\" -f \"$DIR/deploy/compose/compose.yml\" logs api postgres" >&2
+		echo "  Diagnose with: docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") logs api postgres" >&2
 		exit 1
 	fi
+	rm -f -- "$DIR/.upgrade-incomplete"
 
 	# Compose syntax: an optional export, and an unquoted value ends at a comment.
 	public_url="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?PUBLIC_URL[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" | tail -n 1)"
@@ -327,13 +726,13 @@ main() {
 	else
 		setup_reason="$(head -n 1 "$setup_err" 2>/dev/null || true)"
 		echo "warning: no setup link was made: ${setup_reason:-the API did not answer}" >&2
-		echo "  Retry with: env -u COMPOSE_PROJECT_NAME docker compose --env-file \"$ENV_FILE\" -f \"$DIR/deploy/compose/compose.yml\" exec -T api python -m app.operator setup-link" >&2
+		echo "  Retry with: env -u COMPOSE_PROJECT_NAME docker compose --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") exec -T api python -m app.operator setup-link" >&2
 	fi
 	rm -f -- "$setup_err"
 	echo "Secrets are in $ENV_FILE."
 	echo "Lost the link? docs/self-hosting.md explains how to mint another one."
 	echo "Running the install.sh of a newer release upgrades this install in place."
-	echo "Stop: docker compose -f \"$DIR/deploy/compose/compose.yml\" --profile $profile down"
+	echo "Stop: docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") --profile $(printf '%q' "$profile") down"
 }
 
 # Sourced, the functions are available to a test; run, the installer starts.
