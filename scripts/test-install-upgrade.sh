@@ -190,12 +190,14 @@ exec "${REAL_TAR:?}" "$@"
 EOF
 
 # FIND_FAIL=1 makes find fail with no output while it runs inside the bundle extraction
-# directory. FIND_FAIL=dirs fails only the directory listing.
+# directory. FIND_FAIL=dirs fails only the directory listing. FIND_FAIL=files prints one
+# partial entry and then fails the file listing.
 cat >"$tmp/stubs/find" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$(pwd -P)" == */.bundle.* ]]; then
 	if [[ "${FIND_FAIL:-0}" == 1 ]]; then exit 1; fi
 	if [[ "${FIND_FAIL:-0}" == dirs && "$*" == *"-type d "* ]]; then exit 1; fi
+	if [[ "${FIND_FAIL:-0}" == files && "$*" == *"-type f"* ]]; then printf './partial-entry\0'; exit 1; fi
 fi
 exec "${REAL_FIND:?}" "$@"
 EOF
@@ -522,7 +524,10 @@ case "${1:-}" in
 	run)
 		case "$*" in
 			*" du -sb /src"*) printf '%s\t/src\n' "${ASSET_BYTES:-1000}" ;;
-			*" tar -C /src -cf -"*) printf 'ASSETS-TAR\n' ;;
+			*" tar -C /src -cf -"*)
+				# PLANT_DEST=DIR creates a non-empty DIR while the backup runs.
+				if [[ -n "${PLANT_DEST:-}" ]]; then mkdir -p "$PLANT_DEST"; printf 'PLANTED\n' >"$PLANT_DEST/keep"; fi
+				printf 'ASSETS-TAR\n' ;;
 		esac
 		;;
 	compose)
@@ -563,6 +568,7 @@ make_bundle() {  # CASE_DIR VERSION
 		cp "$repo/scripts/preflight.sh" "$repo/scripts/ensure-env.sh" "$repo/scripts/install-lock.sh" \
 			"$repo/scripts/gpu-profile.sh" "$repo/scripts/backup.sh" "$repo/scripts/restore.sh" "$src/scripts/"
 		chmod +x "$src"/scripts/*.sh
+		ln -s compose.yml "$src/deploy/compose/compose-alias.yml"
 		(cd "$src" && tar -czf "$case_dir/source/bundle.tar.gz" deploy scripts)
 	fi
 	(cd "$case_dir/source" && sha256sum bundle.tar.gz | sed "s#bundle.tar.gz#potocolom-$version-selfhost.tar.gz#" >SHA256SUMS)
@@ -663,7 +669,7 @@ bundle_mismatches() {  # CASE_DIR
 		if [[ -L "$src" ]]; then
 			if [[ ! -L "$live" || "$(readlink "$live")" != "$(readlink "$src")" ]]; then echo "$rel"; fi
 		elif [[ -d "$src" ]]; then
-			if [[ ! -d "$live" || -L "$live" ]]; then echo "$rel"; fi
+			if [[ ! -d "$live" || -L "$live" || "$(stat -c %a "$live")" != "$(stat -c %a "$src")" ]]; then echo "$rel"; fi
 		else
 			if [[ ! -f "$live" || -L "$live" ]] || ! cmp -s "$live" "$src" \
 				|| [[ "$(stat -c %a "$live")" != "$(stat -c %a "$src")" ]]; then
@@ -1555,16 +1561,19 @@ seed_running "$case_dir"
 output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" BACKUP_HARD_KILL=1 FAKE_STAMP=20260103T000000Z)" && rc2=0 || rc2=$?
 killed_final=no
 if [[ -e "$bdir/v8.8.8-r1-20260103T000000Z" ]]; then killed_final=yes; fi
+# 137 is 128 plus SIGKILL: the run was really killed, not refused.
+killed=no
+if [[ "$rc2" -eq 137 && -f "$bdir/.v8.8.8-r1-20260103T000000Z.partial/.potocolom-installer-temp" ]]; then killed=yes; fi
 seed_live "$case_dir" v10.0.0
 seed_db "$case_dir" r2
 seed_running "$case_dir"
 output3="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc3=0 || rc3=$?
-if [[ "$planted_ok" == yes && "$rc2" -ne 0 && "$killed_final" == no && "$rc3" -ne 0 \
+if [[ "$planted_ok" == yes && "$killed" == yes && "$killed_final" == no && "$rc3" -ne 0 \
 	&& "$output3" == *'backups/v8.8.8-r1-20260102T000000Z'* && "$output3" != *'20260103T000000Z'* \
 	&& "$output3" != *'.partial'* ]]; then
 	pass_case unfinished-backup-is-never-offered
 else
-	fail_case unfinished-backup-is-never-offered "planted=$planted_ok rc=$rc/$rc2/$rc3 killed_final=$killed_final $output $output2 $output3"
+	fail_case unfinished-backup-is-never-offered "planted=$planted_ok killed=$killed rc=$rc/$rc2/$rc3 killed_final=$killed_final $output $output2 $output3"
 fi
 
 # 46. A finished backup carries its final name, and no partial directory remains.
@@ -1709,7 +1718,8 @@ make_bundle "$case_dir" v9.9.9
 printf '# old release\n' >>"$case_dir/install/scripts/restore.sh"
 output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
 mismatches="$(bundle_mismatches "$case_dir")"
-if [[ "$rc" -eq 0 && -z "$mismatches" ]]; then
+link_target="$(readlink "$case_dir/install/deploy/compose/compose-alias.yml")"
+if [[ "$rc" -eq 0 && -z "$mismatches" && "$link_target" == compose.yml ]]; then
 	pass_case strict-post-success-matches-bundle
 else
 	fail_case strict-post-success-matches-bundle "rc=$rc mismatches=$mismatches $output"
@@ -1780,7 +1790,7 @@ while read -r line; do
 	if [[ "$(dirname -- "$src")" != "$(dirname -- "$dst")" ]]; then same_dir=no; fi
 	if [[ "$(basename -- "$src")" != ".$(basename -- "$dst")."?????? ]]; then same_dir=no; fi
 done <"$case_dir/mv.log"
-files="$(cd "$case_dir/bundle-src" && find . -type f | wc -l)"
+files="$(cd "$case_dir/bundle-src" && find . \( -type f -o -type l \) | wc -l)"
 if [[ "$rc" -eq 0 && "$stages" -eq "$files" && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
 	pass_case moves-rename-within-destination-dir
 else
@@ -1855,6 +1865,53 @@ if [[ "$rc" -ne 0 && "$output" == *'could not move'* && "$states_before" == "$(c
 	pass_case failed-cleanup-still-restores-services
 else
 	fail_case failed-cleanup-still-restores-services "rc=$rc $output"
+fi
+
+# 62. A fresh install creates each directory with the mode of its bundle counterpart.
+new_case fresh-install-creates-directories-with-bundle-modes
+make_bundle "$case_dir" v9.9.9
+chmod 750 "$case_dir/bundle-src/deploy/compose"
+(cd "$case_dir/bundle-src" && tar -czf "$case_dir/source/bundle.tar.gz" deploy scripts)
+(cd "$case_dir/source" && sha256sum bundle.tar.gz | sed "s#bundle.tar.gz#potocolom-v9.9.9-selfhost.tar.gz#" >SHA256SUMS)
+output="$(run_install "$case_dir" TARGET_KNOWN="")" && rc=0 || rc=$?
+mismatches="$(bundle_mismatches "$case_dir")"
+if [[ "$rc" -eq 0 && -z "$mismatches" && "$(stat -c %a "$case_dir/install/deploy/compose")" == 750 ]]; then
+	pass_case fresh-install-creates-directories-with-bundle-modes
+else
+	fail_case fresh-install-creates-directories-with-bundle-modes "rc=$rc mismatches=$mismatches $output"
+fi
+
+# 63. A file listing that fails after partial output refuses before anything stops, and the live tree is unchanged.
+new_case failed-file-listing-after-partial-output-refuses
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" FIND_FAIL=files TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$output" == *'could not list the bundle; nothing was changed'* && "$before" == "$after" \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case failed-file-listing-after-partial-output-refuses
+else
+	fail_case failed-file-listing-after-partial-output-refuses "rc=$rc $output"
+fi
+
+# 64. A backup whose destination appears during the backup is refused by the rename, and nothing nests inside it.
+new_case backup-rename-refuses-existing-destination
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+dest="$case_dir/install/backups/v8.8.8-r1-20260104T000000Z"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260104T000000Z PLANT_DEST="$dest")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$(cat "$dest/keep")" == PLANTED && "$(ls -A "$dest")" == keep ]]; then
+	pass_case backup-rename-refuses-existing-destination
+else
+	fail_case backup-rename-refuses-existing-destination "rc=$rc $output"
 fi
 
 if ((failures > 0)); then

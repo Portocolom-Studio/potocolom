@@ -324,7 +324,8 @@ take_backup() {
 	# replaces, so the backup keeps the compose file it was made with.
 	cp "$DIR/deploy/compose/compose.yml" "$partial/compose.yml"
 	chmod 600 "$partial/compose.yml"
-	mv -- "$partial" "$dest"
+	# -T: an existing destination fails here, instead of the backup nesting inside it.
+	mv -T -- "$partial" "$dest"
 	BACKUP_PARTIAL=""
 	# The marker is removed after the rename, so a kill in between leaves a finished
 	# backup with a stray file, never a partial that cleanup would skip.
@@ -425,6 +426,20 @@ stage_bundle() {
 	done <"$BUNDLE_FILES_LIST"
 }
 
+# Creates $DIR/$1 when it does not exist, with the mode of its extracted counterpart,
+# and creates a missing parent the same way, top-down. A directory that already
+# exists keeps its mode.
+make_live_dir() {
+	local rel="$1" parent="${1%/*}" mode
+	if [[ "$parent" != "$rel" && ! -e "$DIR/$parent" ]]; then
+		make_live_dir "$parent" || return 1
+	fi
+	if [[ -e "$DIR/$rel" ]]; then return 0; fi
+	mkdir -- "$DIR/$rel" || return 1
+	mode="$(stat -c %a -- "$BUNDLE_EXTRACT/$rel")" || return 1
+	chmod "$mode" -- "$DIR/$rel" || return 1
+}
+
 # Replaces the live bundle with the verified one and publishes the staged .env,
 # pinned to this release and profile, in one rename. The marker stays until the
 # readiness check passes, so a rerun knows the last upgrade did not finish. The
@@ -436,7 +451,7 @@ swap_in_bundle() {
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
 		if [[ "$rel" == . ]]; then continue; fi
-		if ! mkdir -p -- "$DIR/$rel"; then
+		if ! make_live_dir "$rel"; then
 			echo "error: could not create $DIR/$rel; the live files were not replaced" >&2
 			exit 1
 		fi
