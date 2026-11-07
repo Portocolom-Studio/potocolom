@@ -61,7 +61,7 @@ When a worker is one version ahead of its API, the API drops the extra fields in
 
 - Volumes are untouched by rebuilds, so your jobs, assets and downloaded weights stay in place. See [What persists where](/docs/self-hosting/what-persists-where).
 - Database migrations run automatically when the API starts. See [the decision on migrations at startup](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md).
-- Model volumes keep their files across image upgrades. If an old SDXL Turbo manifest is still in the model volume, remove `/models/sdxl-turbo.json` from that worker's model volume and restart the worker. Saved images and cached weights do not need removal.
+- Bundled model manifests update with each release. Model volumes keep their files across image upgrades. To change a bundled model, put the edited manifest in the volume's `overrides/` directory. If an old SDXL Turbo manifest is still in the model volume, its model keeps working; to remove it, remove `/models/sdxl-turbo.json` from that worker's model volume and restart the worker. Saved images and cached weights do not need removal.
 - Legacy model caches need Hugging Face Hub metadata once before the worker can adopt them as installed. A permanently offline worker cannot adopt an unmarked cache, so connect it to the Hub for adoption first. See [What persists where](/docs/self-hosting/what-persists-where).
 
 > [!WARNING]

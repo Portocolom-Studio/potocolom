@@ -38,7 +38,7 @@ from worker.engine import (
     make_thumbnail_webp,
 )
 from worker.categorize import categorize_output, enable_categorizer
-from worker.manifests import SIMULATED_MANIFEST, Manifest, load_manifests
+from worker.manifests import SIMULATED_MANIFEST, Manifest, load_fleet_manifests
 from worker.model_store import CAPABILITY as MODEL_STORE_CAPABILITY, ModelStore
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, get_settings
@@ -471,7 +471,8 @@ def build_runtime(settings: Settings) -> tuple[list[Manifest], Engine]:
         # Only the real engine categorizes: the model download is a real-model
         # cost, so `make simulate` and the simulated tests stay on the stub.
         enable_categorizer()
-        return load_manifests(settings.models_dir), DiffusersEngine(
+        return load_fleet_manifests(
+            settings.models_dir, bundled_on=settings.bundled_manifests), DiffusersEngine(
             settings.device,
             memory_mode=settings.memory_mode,
             vram_reserve_mb=settings.vram_reserve_mb,

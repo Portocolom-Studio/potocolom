@@ -14,7 +14,7 @@ The install keeps its data in four named Docker volumes, in PostgreSQL, and in c
 | Users, jobs (prompts, parameters, seeds) and asset records              | `pgdata` volume, PostgreSQL           | Kept. Volumes are untouched by rebuilds. | History and gallery are gone.                     |
 | Job failure reasons, phase timings, GPU sample history and usage events | PostgreSQL                            | Kept, with the rest of PostgreSQL.       | Same as `pgdata`.                                 |
 | Generated PNG masters and WebP thumbnails                               | `assets` volume                       | Kept. Volumes are untouched by rebuilds. | Images are gone, and asset rows point at nothing. |
-| Model manifests (JSON)                                                  | `models` volume                       | Kept across image upgrades.              | Re-seeded from the worker image on the next boot. |
+| Operator manifests (JSON) and `overrides/`                              | `models` volume                       | Kept across image upgrades.              | Bundled ones come back from the worker image.     |
 | Downloaded model weights                                                | `hf-cache` volume                     | Kept. Volumes are untouched by rebuilds. | Downloaded again on next use (2-7 GB per model).  |
 | Container logs                                                          | Docker's `json-file` log, on the host | Kept across container restarts.          | Removed when the container is removed.            |
 
@@ -22,11 +22,11 @@ The install keeps its data in four named Docker volumes, in PostgreSQL, and in c
 
 Back up `pgdata` and `assets` together. Jobs and asset rows refer to files by storage key. If you restore one without the other, the rows point at files that do not exist. See [Backup and restore](/docs/self-hosting/backup-and-restore).
 
-`hf-cache` and `models` can be rebuilt. You do not need to back them up.
+`hf-cache` can be rebuilt, so you do not need to back it up. Back up `models` if it holds operator manifests or `overrides/` files, because the worker image does not hold those.
 
 ## Model manifests
 
-Models are JSON manifests in the `models` volume. The worker seeds that volume from `worker/models/` on first boot. To add or edit a manifest, change it in the volume, or rebuild the image, and then restart the worker. Licensing notes for each model are in [third-party-models.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/third-party-models.md).
+Bundled model manifests come from the worker image (`worker/models/`), so a release updates them. Operator manifests go in the `models` volume, and a file in its `overrides/` directory wins over a bundled model with the same id. Restart the worker after a change. Licensing notes for each model are in [third-party-models.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/third-party-models.md).
 
 To remove an old SDXL Turbo manifest from an existing install, remove `/models/sdxl-turbo.json` from that worker's model volume and restart the worker. Saved images and cached weights do not need removal.
 
