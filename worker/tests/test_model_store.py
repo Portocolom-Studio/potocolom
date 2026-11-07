@@ -66,7 +66,7 @@ def registry_plan(manifest, models_dir, device="cuda"):
             on_disk = path.stat().st_size if path.is_file() else 0
             size = on_disk or model_store.url_size(url)
             items.append(model_store.Item(path=path, size=size, url=url, root=cache))
-        return items, False
+        return items, frozenset()
     items = []
     for ref in model_store.repo_refs(manifest, device):
         held = [(name, size) for repo, revision, name, size in REGISTRY
@@ -81,7 +81,7 @@ def registry_plan(manifest, models_dir, device="cuda"):
                 path=snapshot_dir(ref.repo, ref.revision) / name, size=size,
                 repo=ref.repo, revision=ref.revision, name=name,
                 folder=repo_folder(ref.repo), root=model_store.hub_cache_root()))
-    return items, False
+    return items, frozenset()
 
 
 @pytest.fixture(autouse=True)
@@ -328,14 +328,15 @@ def test_plan_keeps_every_shard_and_its_index_for_the_chosen_variant():
     assert chosen == sorted(files[:3])
 
 
-def fake_plan(*entries: tuple[str, str, str, int]):
-    """plan_items stand-in: (repo, revision, name, size) entries become items."""
+def fake_plan(*entries: tuple[str, str, str, int], gated: frozenset[str] = frozenset()):
+    """plan_items stand-in: (repo, revision, name, size) entries become items. `gated` names
+    the repositories that need a token."""
     items = [
         Item(path=snapshot_dir(repo, revision) / name, size=size, repo=repo,
              revision=revision, name=name, folder=repo_folder(repo))
         for repo, revision, name, size in entries
     ]
-    return lambda *_args, **_kwargs: (items, False)
+    return lambda *_args, **_kwargs: (items, frozenset(gated))
 
 
 CATEGORIZER_ENTRIES = (
@@ -470,7 +471,7 @@ def test_a_cancel_keeps_the_files_it_completed(monkeypatch):
 def test_gated_repository_without_a_token_is_refused_before_any_fetch(monkeypatch):
     manifest = pipeline_manifest()
     items, _ = fake_plan(*PIPELINE_ENTRIES)()
-    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: (items, True))
+    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: (items, frozenset({"org/pipe"})))
     monkeypatch.delenv("HF_TOKEN", raising=False)
     calls: list = []
     monkeypatch.setattr(model_store, "_fetch_hub", write_fetch(calls))
@@ -1568,7 +1569,7 @@ def test_each_destination_volume_needs_its_own_margin(monkeypatch, tmp_path):
         Item(path=models_dir / ".cache" / "upscale" / "up" / "w.pth", size=5000,
              url="https://example.test/w.pth"),
     ]
-    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: (items, False))
+    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: (items, frozenset()))
     manifest = pipeline_manifest()
     with pytest.raises(ModelStoreError) as refused:
         model_store.install_blocking(manifest, str(models_dir))
@@ -1818,15 +1819,26 @@ MOSS_FILES = [
 ]
 
 
-def test_a_moss_shaped_pipeline_plans_its_root_modules_and_no_root_weights():
-    chosen = {name for name, _size in
-              model_store.select_pipeline_plan(MOSS_FILES, MOSS_INDEX, "fp16")}
+def test_a_moss_shaped_pipeline_plans_what_diffusers_selects():
+    """Diffusers selects a root weight file whose name it knows (model.safetensors), so the
+    plan does too; the loader's download fetches it, and the plan must match that download."""
+    chosen = {name for name, _size in model_store.select_pipeline_plan(
+        MOSS_FILES, MOSS_INDEX, "fp16", custom_pipeline="pipeline_moss_image")}
     assert chosen == {
-        "model_index.json", "pipeline_moss_image.py", "modeling_moss.py",
+        "model_index.json", "pipeline_moss_image.py", "model.safetensors",
         "transformer/config.json", "transformer/diffusion_pytorch_model.fp16.safetensors",
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors",
         "text_encoder/config.json", "text_encoder/model.fp16.safetensors",
     }
+
+
+def test_only_the_named_custom_module_is_planned_among_root_python_files():
+    files = MOSS_FILES + [("convert_to_comfy.py", 5), ("quantize_convrot.py", 7)]
+    chosen = {name for name, _size in model_store.select_pipeline_plan(
+        files, MOSS_INDEX, "fp16", custom_pipeline="pipeline_moss_image")}
+    assert "convert_to_comfy.py" not in chosen and "quantize_convrot.py" not in chosen
+    assert "modeling_moss.py" not in chosen
+    assert "pipeline_moss_image.py" in chosen
 
 
 def test_a_snapshots_folder_linked_outside_the_cache_is_never_removed(tmp_path):
@@ -1889,7 +1901,7 @@ def test_a_missing_pointer_over_a_complete_blob_costs_nothing(monkeypatch, tmp_p
         path=snapshot_dir("org/pipe", REV) / "unet/weights.safetensors", size=1000,
         repo="org/pipe", revision=REV, name="unet/weights.safetensors", folder=folder,
         root=model_store.hub_cache_root(), blob_key="a" * 64)
-    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([item], False))
+    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([item], frozenset()))
     # Free space is one byte short of what fetching 1000 bytes would need, with the margin.
     monkeypatch.setattr(model_store, "free_bytes",
                         lambda _p: (10**12, 1000 + DISK_MARGIN_BYTES - 1))
@@ -1898,6 +1910,32 @@ def test_a_missing_pointer_over_a_complete_blob_costs_nothing(monkeypatch, tmp_p
                                  str(tmp_path), progress=lambda done, total: seen.append((done, total)))
     assert item.path.is_symlink() and item.path.read_bytes() == b"w" * 1000
     assert seen[0] == (0, 0)  # the shown transfer is zero bytes
+
+
+def test_a_gated_model_with_complete_blobs_and_missing_links_needs_no_token(monkeypatch, tmp_path):
+    # The gated content is already in the blob store; only the snapshot pointer is
+    # missing. Linking fetches nothing gated, so neither the probe nor the install may
+    # ask for a token.
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    folder = repo_folder("org/pipe")
+    blob = folder / "blobs" / ("b" * 64)
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b"g" * 1000)
+    item = model_store.Item(
+        path=snapshot_dir("org/pipe", REV) / "unet/weights.safetensors", size=1000,
+        repo="org/pipe", revision=REV, name="unet/weights.safetensors", folder=folder,
+        root=model_store.hub_cache_root(), blob_key="b" * 64)
+    monkeypatch.setattr(model_store, "plan_items",
+                        lambda *_a, **_k: ([item], frozenset({"org/pipe"})))
+
+    def no_fetch(*_args, **_kwargs):
+        raise AssertionError("a complete blob must be linked, not fetched")
+
+    monkeypatch.setattr(model_store, "_fetch_hub", no_fetch)
+    manifest = pipeline_manifest("gated-links", source="org/pipe", vae="")
+    assert model_store.probe_model(manifest, str(tmp_path)) == (0, False)
+    model_store.install_blocking(manifest, str(tmp_path))
+    assert item.path.is_symlink() and item.path.read_bytes() == b"g" * 1000
 
 
 def test_a_failed_removal_leaves_the_model_installed_and_retryable(monkeypatch, tmp_path):
@@ -1955,7 +1993,7 @@ def test_a_cancelled_queued_install_touches_no_disk(monkeypatch, tmp_path):
         path=snapshot_dir("org/pipe", REV) / "unet/cached.bin", size=1000,
         repo="org/pipe", revision=REV, name="unet/cached.bin", folder=folder,
         root=model_store.hub_cache_root(), blob_key="a" * 64)
-    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([pointer], False))
+    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([pointer], frozenset()))
     monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
     calls: list = []
     monkeypatch.setattr(model_store, "_fetch_hub", write_fetch(calls))
@@ -2001,7 +2039,7 @@ def test_a_pointer_target_outside_the_hub_cache_is_never_unlinked(monkeypatch, t
     item = model_store.Item(
         path=victim, size=1000, repo="org/pipe", revision=REV, name="config.json",
         folder=folder, root=model_store.hub_cache_root(), blob_key="a" * 64)
-    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([item], False))
+    monkeypatch.setattr(model_store, "plan_items", lambda *_a, **_k: ([item], frozenset()))
     monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
     manifest = pipeline_manifest("link-test", source="org/pipe", vae="")
     with pytest.raises(ModelStoreError) as refused:
@@ -2305,7 +2343,7 @@ def test_cancel_then_remove_deletes_partial(tmp_path, monkeypatch):
     partial = folder / 'blobs' / ('b' * 64 + '.incomplete')
     item = model_store.Item(path=folder / 'snapshots' / REV / 'file', size=100,
                             repo='org/pipe', folder=folder, blob_key='b' * 64)
-    monkeypatch.setattr(model_store, 'plan_items', lambda *_: ([item], False))
+    monkeypatch.setattr(model_store, 'plan_items', lambda *_: ([item], frozenset()))
     monkeypatch.setattr(model_store, 'free_bytes', lambda _p: (10**12, 10**12))
 
     def fetch(_item, _progress):
@@ -2399,7 +2437,7 @@ def test_remove_completed_blob_before_snapshot_publication(tmp_path):
 def test_shared_categorizer_does_not_probe_before_hello(monkeypatch, tmp_path):
     put_snapshot_file(CATEGORIZER_SOURCE, CATEGORIZER_REVISION, "config.json")
     calls = []
-    monkeypatch.setattr(model_store, "plan_items", lambda *args: calls.append(args) or ([], False))
+    monkeypatch.setattr(model_store, "plan_items", lambda *args: calls.append(args) or ([], frozenset()))
     fleet = ScriptedFleet("w-n1", [], settle_on=lambda raw: '"store_inventory"' in raw)
     original_send = fleet.send
 
@@ -3187,3 +3225,339 @@ def test_flux3_modular_plan_covers_loader_components_offline(device, tmp_path, m
             'vae/diffusion_pytorch_model.safetensors', 'text_encoder/tokenizer.json',
             'text_encoder/preprocessor_config.json'} <= names
     assert gated
+
+
+# ---- the plan is the loader's own file selection (WS1) -------------------------------------
+
+def _bundled_manifests():
+    from worker.manifests import load_manifests
+
+    return load_manifests(str(Path(__file__).parents[1] / 'models'))
+
+
+def _real_plan(monkeypatch) -> None:
+    monkeypatch.setattr(model_store, "plan_items", REAL_PLAN_ITEMS)
+    monkeypatch.setattr(model_store, "bundled_hub_metadata", REAL_BUNDLED_METADATA)
+
+
+def test_a_passed_component_is_not_planned():
+    chosen = {name for name, _size in model_store.select_pipeline_plan(
+        SDXL_BASE_FILES, SDXL_BASE_INDEX, "fp16", passed=frozenset({"vae"}))}
+    assert not any(name.startswith("vae/") for name in chosen)
+    assert "unet/diffusion_pytorch_model.fp16.safetensors" in chosen
+
+
+def test_a_model_folder_keeps_only_its_weights_and_config():
+    index = {"text_encoder": ["transformers", "CLIPTextModel"],
+             "tokenizer": ["transformers", "CLIPTokenizer"]}
+    files = [
+        ("model_index.json", 10), ("README.md", 1), ("config.json", 2),
+        ("text_encoder/config.json", 3), ("text_encoder/generation_config.json", 214),
+        ("text_encoder/model.safetensors", 30), ("text_encoder/tokenizer.json", 4),
+        ("tokenizer/generation_config.json", 5), ("tokenizer/vocab.json", 6),
+    ]
+    chosen = {name for name, _size in model_store.select_pipeline_plan(files, index, "")}
+    assert chosen == {
+        "model_index.json", "config.json", "text_encoder/config.json",
+        "text_encoder/model.safetensors", "tokenizer/generation_config.json",
+        "tokenizer/vocab.json",
+    }
+
+
+def test_a_pipeline_falls_back_to_the_default_weights_when_no_variant_exists():
+    index = {"unet": ["diffusers", "UNet2DConditionModel"]}
+    files = [("model_index.json", 10), ("unet/config.json", 3),
+             ("unet/diffusion_pytorch_model.safetensors", 100)]
+    assert model_store.select_pipeline_plan(files, index, "fp16") == sorted(files[:1] + files[1:])
+
+
+def test_the_vae_plan_is_its_config_and_default_weights_only():
+    files = [("config.json", 3), ("diffusion_pytorch_model.bin", 90),
+             ("diffusion_pytorch_model.safetensors", 400), ("images/fix.png", 9),
+             ("sdxl.vae.safetensors", 300), ("sdxl_vae.safetensors", 300),
+             ("model.safetensors", 500), ("README.md", 1)]
+    assert model_store.select_vae_plan(files) == [
+        ("config.json", 3), ("diffusion_pytorch_model.safetensors", 400)]
+
+
+def test_a_vae_with_only_bin_weights_plans_them_and_no_stray_safetensors():
+    """The safetensors set is incomplete (only a stray model.safetensors), so the .bin weights
+    are the ones the VAE load reads, as ModelMixin falls back to them."""
+    files = [("config.json", 3), ("diffusion_pytorch_model.bin", 90), ("model.safetensors", 500)]
+    assert model_store.select_vae_plan(files) == [
+        ("config.json", 3), ("diffusion_pytorch_model.bin", 90)]
+
+
+def test_a_component_with_only_bin_weights_keeps_them():
+    index = {"unet": ["diffusers", "UNet2DConditionModel"]}
+    files = [("model_index.json", 10), ("unet/config.json", 3),
+             ("unet/diffusion_pytorch_model.bin", 90)]
+    assert model_store.select_pipeline_plan(files, index, "") == sorted(files)
+
+
+def test_a_legacy_variant_keeps_its_shards_and_index_and_drops_the_default_bin():
+    """The older layout diffusers also reads for a variant: the shard count sits before the
+    variant (name-00001-of-00002.fp16.bin), and its index is name.bin.fp16.index.json."""
+    index = {"unet": ["diffusers", "UNet2DConditionModel"]}
+    files = [
+        ("model_index.json", 10), ("unet/config.json", 3),
+        ("unet/diffusion_pytorch_model-00001-of-00002.fp16.bin", 90),
+        ("unet/diffusion_pytorch_model-00002-of-00002.fp16.bin", 90),
+        ("unet/diffusion_pytorch_model.bin.fp16.index.json", 1),
+        ("unet/diffusion_pytorch_model-00001-of-00002.bin", 90),
+        ("unet/diffusion_pytorch_model-00002-of-00002.bin", 90),
+        ("unet/diffusion_pytorch_model.bin.index.json", 1),
+    ]
+    assert model_store.select_pipeline_plan(files, index, "fp16") == sorted(files[:5])
+
+
+def test_the_ignore_files_the_index_lists_are_not_planned():
+    index = {"_ignore_files": ["tokenizer/unused.json"],
+             "tokenizer": ["transformers", "CLIPTokenizer"]}
+    files = [("model_index.json", 10), ("tokenizer/vocab.json", 4),
+             ("tokenizer/unused.json", 5)]
+    assert model_store.select_pipeline_plan(files, index, "") == [
+        ("model_index.json", 10), ("tokenizer/vocab.json", 4)]
+
+
+def test_the_pinned_vae_plans_its_config_and_weights_only(monkeypatch):
+    _real_plan(monkeypatch)
+    manifest = next(m for m in _bundled_manifests() if m.id == "sdxl-base")
+    items, _gated = model_store.plan_items(manifest, "", "rocm")
+    vae = {item.name for item in items if item.repo == "madebyollin/sdxl-vae-fp16-fix"}
+    assert vae == {"config.json", "diffusion_pytorch_model.safetensors"}
+
+
+def test_the_categorizer_plan_is_unchanged(monkeypatch):
+    _real_plan(monkeypatch)
+    manifest = next(m for m in _bundled_manifests() if m.id == "sdxl-base")
+    items, _gated = model_store.plan_items(manifest, "", "rocm")
+    names = {item.name for item in items if item.repo == CATEGORIZER_SOURCE}
+    assert names == {
+        "config.json", "model.safetensors", "preprocessor_config.json",
+        "special_tokens_map.json", "tokenizer.json", "tokenizer.model", "tokenizer_config.json",
+    }
+
+
+def test_the_plan_reports_the_gated_repositories_it_reads(monkeypatch):
+    _real_plan(monkeypatch)
+    manifest = next(m for m in _bundled_manifests() if m.id == "sd35-medium")
+    _items, gated = model_store.plan_items(manifest, "", "rocm")
+    assert gated == {manifest.source}
+
+
+def test_a_complete_gated_cache_installs_without_a_token(monkeypatch):
+    manifest = pipeline_manifest()
+    monkeypatch.setattr(model_store, "plan_items",
+                        fake_plan(*PIPELINE_ENTRIES, gated={"org/pipe"}))
+    monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    for repo, revision, name, size in PIPELINE_ENTRIES:
+        put_snapshot_file(repo, revision, name, size)
+    # The real cache state: nothing left to fetch, so the probe does not ask for a token.
+    assert model_store.probe_model(manifest, "") == (0, False)
+    calls: list = []
+    monkeypatch.setattr(model_store, "_fetch_hub", write_fetch(calls))
+    model_store.install_blocking(manifest, "")
+    assert calls == []
+    assert is_installed(manifest, "")
+
+
+def test_a_gated_model_missing_only_ungated_companions_installs_without_a_token(monkeypatch):
+    manifest = pipeline_manifest()
+    monkeypatch.setattr(model_store, "plan_items",
+                        fake_plan(*PIPELINE_ENTRIES, gated={"org/pipe"}))
+    monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    for repo, revision, name, size in PIPELINE_ENTRIES:
+        if repo != CATEGORIZER_SOURCE:
+            put_snapshot_file(repo, revision, name, size)
+    # Only the ungated siblings are missing, so the probe does not ask for a token either.
+    categorizer_bytes = sum(size for _repo, _rev, _name, size in CATEGORIZER_ENTRIES)
+    assert model_store.probe_model(manifest, "") == (categorizer_bytes, False)
+    calls: list = []
+    monkeypatch.setattr(model_store, "_fetch_hub", write_fetch(calls))
+    model_store.install_blocking(manifest, "")
+    assert sorted(calls) == ["config.json", "model.safetensors"]
+    assert is_installed(manifest, "")
+
+
+def test_the_token_flag_follows_the_files_still_to_fetch(monkeypatch):
+    manifest = pipeline_manifest()
+    monkeypatch.setattr(model_store, "plan_items",
+                        fake_plan(*PIPELINE_ENTRIES, gated={"org/pipe"}))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    assert model_store.probe_model(manifest, "") == (PIPELINE_TOTAL, True)
+    for repo, revision, name, size in PIPELINE_ENTRIES:
+        if repo != CATEGORIZER_SOURCE:
+            put_snapshot_file(repo, revision, name, size)
+    categorizer_bytes = sum(size for _repo, _rev, _name, size in CATEGORIZER_ENTRIES)
+    assert model_store.probe_model(manifest, "") == (categorizer_bytes, False)
+
+
+def test_a_fetch_of_a_shared_companion_adopts_the_models_that_wait_for_it(monkeypatch):
+    monkeypatch.setattr(model_store, "ADOPTION_RETRY_SECONDS", 0.01)
+    monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
+    monkeypatch.setattr(model_store, "_fetch_hub", write_fetch())
+    first = pipeline_manifest("pipe-test", source="org/pipe", vae="org/vae")
+    second = pipeline_manifest("pipe-b", source="org/b-pipe", vae="")
+    complete_pipeline()
+    complete_vae()
+    put_snapshot_file("org/b-pipe", REV, "model_index.json")
+    put_snapshot_file("org/b-pipe", REV, "unet/config.json")
+    put_snapshot_file("org/b-pipe", REV, "unet/diffusion_pytorch_model.fp16.safetensors")
+    for name, size in ((n, s) for _r, _v, n, s in CATEGORIZER_ENTRIES):
+        remote(CATEGORIZER_SOURCE, CATEGORIZER_REVISION, name, size)
+
+    async def scenario():
+        store = ModelStore([first, second], FakeEngine(), "")
+        await store.scan()
+        assert not store.installed
+        sent: list = []
+
+        async def send(message):
+            sent.append(message)
+
+        store.attach(send, lambda _: False)
+        # Wait for the retry to mark pipe-b incomplete before the companion is installed.
+        for _ in range(500):
+            if "pipe-b" in store._incomplete_adoptions:
+                break
+            await asyncio.sleep(0.01)
+        assert "pipe-b" in store._incomplete_adoptions
+        store.handle({"type": "install_model", "model_id": "pipe-test", "op_id": "op-1"})
+        await wait_for_op(store, "pipe-test", ("done", "failed"))
+        assert store._ops["pipe-test"].state == "done"
+        for _ in range(500):
+            if "pipe-b" in store.installed:
+                break
+            await asyncio.sleep(0.01)
+        assert "pipe-b" in store.installed
+        await store.shutdown()
+
+    asyncio.run(scenario())
+
+
+# The fingerprint the base commit (a890b14) computes for pipeline_manifest() on cuda. It is a
+# literal produced by that code, so a change to _fingerprint fails the old-marker test.
+BASE_PIPELINE_FINGERPRINT = "c4d296a2e7f618d5084dbe572f4ee8b33773a9bcb52f2ae4367e2d168fb37318"
+
+
+def test_an_old_marker_listing_an_extra_file_still_passes_and_removal_deletes_it():
+    """A marker as the base commit wrote it. Its file list is a superset of what the plan
+    selects now: unet/generation_config.json was planned at base and is never read. The marker
+    still holds, and removal deletes the snapshot."""
+    complete_pipeline()
+    complete_companions()
+    put_snapshot_file("org/pipe", REV, "unet/generation_config.json", 12)
+    manifest = pipeline_manifest()
+    listed = [
+        ("org/pipe", REV, "model_index.json", MODEL_INDEX_SIZE),
+        ("org/pipe", REV, "unet/config.json", 8),
+        ("org/pipe", REV, "unet/diffusion_pytorch_model.fp16.safetensors", 8),
+        ("org/pipe", REV, "unet/generation_config.json", 12),
+        ("org/vae", VAE_REV, "config.json", 8),
+        ("org/vae", VAE_REV, "diffusion_pytorch_model.safetensors", 8),
+        (CATEGORIZER_SOURCE, CATEGORIZER_REVISION, "config.json", 8),
+        (CATEGORIZER_SOURCE, CATEGORIZER_REVISION, "model.safetensors", 8),
+    ]
+    model_store._write_marker(manifest.id, {
+        "state": "installed", "fingerprint": BASE_PIPELINE_FINGERPRINT, "variant": "fp16",
+        "files": [{"path": str(snapshot_dir(repo, revision) / name), "size": size}
+                  for repo, revision, name, size in listed],
+    })
+    assert is_installed(manifest, "")
+    model_store._delete_model_files(manifest, "", [])
+    assert not snapshot_dir("org/pipe", REV).exists()
+
+
+SHARED_CACHE_FIXTURE = Path(__file__).parent / "fixtures" / "expected_files.json"
+
+
+def _sparse_hub_file(repo: str, revision: str, name: str, size: int) -> None:
+    """A hub-shaped file of the given size: a sparse blob, and the snapshot link to it."""
+    folder = repo_folder(repo)
+    digest = hashlib.sha256(f"{repo}/{revision}/{name}".encode()).hexdigest()
+    blob = folder / "blobs" / digest
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    if not blob.exists():
+        with blob.open("wb") as out:
+            out.truncate(size)
+    link = snapshot_dir(repo, revision) / name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.unlink(missing_ok=True)
+    link.symlink_to(os.path.relpath(blob, link.parent))
+
+
+def _fixture_cache(manifests, *, skip_repo: str = "") -> None:
+    """Fill the hub cache with every file the committed fixture names for these manifests, at
+    the sizes the hub lock records. Nothing else is written."""
+    fixture = json.loads(SHARED_CACHE_FIXTURE.read_text())
+    locked = REAL_BUNDLED_METADATA()["repos"]
+    for manifest in manifests:
+        for key, names in fixture["manifests"][manifest.id].items():
+            repo, revision = key.rsplit("@", 1)
+            if repo == skip_repo:
+                continue
+            sizes = dict(locked[key]["files"])
+            for name in names:
+                _sparse_hub_file(repo, revision, name, sizes[name])
+
+
+def _diffusion_manifests():
+    return [m for m in _bundled_manifests() if "upscale" not in m.capabilities]
+
+
+def test_a_cache_filled_as_the_diffusion_plan_selects_adopts_all_twelve(monkeypatch):
+    _real_plan(monkeypatch)
+    manifests = _diffusion_manifests()
+    assert len(manifests) == 12
+    _fixture_cache(manifests)
+    store = ModelStore(manifests, FakeEngine(), "")
+    asyncio.run(store.scan())
+    assert set(store.installed) == {m.id for m in manifests}
+
+
+def test_without_the_shared_companion_each_model_shows_its_bytes_and_waits(monkeypatch):
+    _real_plan(monkeypatch)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    manifests = _diffusion_manifests()
+    _fixture_cache(manifests, skip_repo=CATEGORIZER_SOURCE)
+    store = ModelStore(manifests, FakeEngine(), "")
+    asyncio.run(store.scan())
+    assert not store.installed
+    fixture = json.loads(SHARED_CACHE_FIXTURE.read_text())
+    sizes = dict(REAL_BUNDLED_METADATA()["repos"][f"{CATEGORIZER_SOURCE}@{CATEGORIZER_REVISION}"]["files"])
+    companion = sum(sizes[name] for name in fixture["manifests"]["sdxl-base"][
+        f"{CATEGORIZER_SOURCE}@{CATEGORIZER_REVISION}"])
+    for manifest in manifests:
+        assert model_store.probe_model(manifest, "") == (companion, False), manifest.id
+
+
+def _bundled(model_id):
+    from worker.manifests import load_manifests
+    return next(m for m in load_manifests(str(Path(__file__).resolve().parents[1] / "models"))
+                if m.id == model_id)
+
+
+def test_a_pinned_iris_fork_plans_the_patterns_its_loader_reads():
+    from worker.candidate_pipelines import IRIS_ALLOW, IRIS_ENCODER_ALLOW, plain_repo_patterns
+    iris = _bundled("iris-3b")
+    fork = iris.model_copy(update={"source": "someone/iris-fork"})
+    assert plain_repo_patterns(fork, "someone/iris-fork") == IRIS_ALLOW
+    assert plain_repo_patterns(fork, iris.worker_repos[0].repo) == IRIS_ENCODER_ALLOW
+    assert plain_repo_patterns(_bundled("sdxl-base"), "someone/iris-fork") is None
+
+
+def test_a_candidate_pipeline_keeps_its_stock_vae_even_when_the_manifest_names_one(monkeypatch):
+    # The MOSS loader never hands a replacement VAE to diffusers, so its plan must keep the
+    # stock vae/ folder; only the engine's own loads pass `manifest.vae` in.
+    monkeypatch.setattr(model_store, "plan_items", REAL_PLAN_ITEMS)
+    monkeypatch.setattr(model_store, "bundled_hub_metadata", REAL_BUNDLED_METADATA)
+    sdxl = _bundled("sdxl-base")
+    kromoss = _bundled("kromoss").model_copy(
+        update={"vae": sdxl.vae, "vae_revision": sdxl.vae_revision})
+    items, _gated = model_store.plan_items(kromoss, "models", "cuda")
+    assert any(item.repo == kromoss.source and item.name.startswith("vae/") for item in items)
+    items, _gated = model_store.plan_items(sdxl, "models", "cuda")
+    assert not any(item.repo == sdxl.source and item.name.startswith("vae/") for item in items)
