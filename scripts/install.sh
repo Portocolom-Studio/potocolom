@@ -80,6 +80,9 @@ PG_CREATED=0
 BACKUP_PARTIAL=""
 BACKUPS_CREATED=0
 BUNDLE_EXTRACT=""
+# Written inside every directory the installer creates for itself. Cleanup removes
+# only a directory that holds this marker as a regular file.
+INSTALLER_TEMP_MARKER=".potocolom-installer-temp"
 
 live_compose() {
 	docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$DIR/deploy/compose/compose.yml" "$@"
@@ -253,10 +256,16 @@ take_backup() {
 		return 0
 	fi
 	# A killed run leaves its partial backup behind, and that space counts against
-	# the check below. The install lock is held here, so no other run owns it.
-	for stale in "$DIR"/backups/.*.partial; do
-		if [[ -d "$stale" && ! -L "$stale" ]]; then rm -rf -- "$stale"; fi
-	done
+	# the check below. Only a marked partial is removed, and none is looked for
+	# through a symlinked backups folder: that folder may be on another disk, and
+	# its target is the operator's to keep.
+	if [[ ! -L "$DIR/backups" ]]; then
+		for stale in "$DIR"/backups/.*.partial; do
+			if [[ -d "$stale" && ! -L "$stale" && -f "$stale/$INSTALLER_TEMP_MARKER" && ! -L "$stale/$INSTALLER_TEMP_MARKER" ]]; then
+				rm -rf -- "$stale"
+			fi
+		done
+	fi
 	db_bytes="$(live_psql "SELECT pg_database_size('potocolom')")" || db_bytes=""
 	# A missing assets volume measures as 0. The check comes first because a
 	# docker run with a --mount of a missing volume would create that volume.
@@ -294,6 +303,13 @@ take_backup() {
 	# matches, and renamed to $dest only after backup.sh succeeds. A killed run
 	# leaves only the dot name, never a directory that looks finished.
 	partial="$DIR/backups/.$old-$revision-$stamp.partial"
+	# mkdir without -p creates the directory only when nothing is at that name. A
+	# planted file or symlink there is refused, never written through.
+	if ! mkdir -- "$partial"; then
+		echo "error: the backup staging path $partial already exists; nothing was changed" >&2
+		exit 1
+	fi
+	: >"$partial/$INSTALLER_TEMP_MARKER"
 	BACKUP_PARTIAL="$partial"
 	echo "backing up $PROJECT to $dest"
 	if ! ENV_FILE="$ENV_FILE" COMPOSE_FILE="$DIR/deploy/compose/compose.yml" COMPOSE_PROJECT_NAME="$PROJECT" \
@@ -307,6 +323,9 @@ take_backup() {
 	chmod 600 "$partial/compose.yml"
 	mv -- "$partial" "$dest"
 	BACKUP_PARTIAL=""
+	# The marker is removed after the rename, so a kill in between leaves a finished
+	# backup with a stray file, never a partial that cleanup would skip.
+	rm -f -- "$dest/$INSTALLER_TEMP_MARKER"
 	echo "backup kept at $dest ($(du -sh "$dest" | cut -f1))"
 }
 
@@ -331,37 +350,90 @@ install_exit() {
 	exit "$status"
 }
 
+# Returns 0 when the bundle path $1 conflicts with the live tree. $2 is dir or file.
+# A conflict is a symlink or a
+# non-directory where a bundle directory goes, or a directory where a bundle file
+# goes. A file move onto a directory would land inside it, and a symlink would
+# send the move outside $DIR.
+bundle_conflict() {
+	# Every parent of a bundle entry is itself a bundle directory, which the
+	# directory pass checks, so only the entry's own path is checked here.
+	local rel="$1" kind="$2"
+	if [[ "$kind" == dir ]]; then
+		if [[ -L "$DIR/$rel" || ( -e "$DIR/$rel" && ! -d "$DIR/$rel" ) ]]; then return 0; fi
+	elif [[ -d "$DIR/$rel" ]]; then
+		return 0
+	fi
+	return 1
+}
+
+# Extracts the verified bundle beside the live files and refuses a bundle that
+# conflicts with the live tree. It runs before the install is stopped or backed
+# up, and it moves nothing in the live tree.
+stage_bundle() {
+	local stale rel
+	mkdir -p "$DIR"
+	# A killed run leaves its extraction directory behind. Only a directory that
+	# this installer marked is removed, so an operator folder with a similar name
+	# is left alone.
+	for stale in "$DIR"/.bundle.*; do
+		if [[ -d "$stale" && ! -L "$stale" && -f "$stale/$INSTALLER_TEMP_MARKER" && ! -L "$stale/$INSTALLER_TEMP_MARKER" ]]; then
+			rm -rf -- "$stale"
+		fi
+	done
+	# The bundle extracts beside the live files, so each move in swap_in_bundle is
+	# one rename on the same filesystem. A failed extraction leaves the live files
+	# alone.
+	BUNDLE_EXTRACT="$(mktemp -d "$DIR/.bundle.XXXXXX")"
+	: >"$BUNDLE_EXTRACT/$INSTALLER_TEMP_MARKER"
+	if ! tar -xzf "$TMP/$BUNDLE" -C "$BUNDLE_EXTRACT"; then
+		echo "error: could not extract $BUNDLE; the live files were not replaced" >&2
+		exit 1
+	fi
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		if [[ "$rel" != . ]] && bundle_conflict "$rel" dir; then
+			echo "error: the bundle directory $rel conflicts with the live tree in $DIR; nothing was changed" >&2
+			exit 1
+		fi
+	done < <(cd "$BUNDLE_EXTRACT" && find . -type d -print0)
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		if bundle_conflict "$rel" file; then
+			echo "error: the bundle file $rel conflicts with the live tree in $DIR; nothing was changed" >&2
+			exit 1
+		fi
+	done < <(cd "$BUNDLE_EXTRACT" && find . \( -type f -o -type l \) ! -name "$INSTALLER_TEMP_MARKER" -print0)
+}
+
 # Replaces the live bundle with the verified one and publishes the staged .env,
 # pinned to this release and profile, in one rename. The marker stays until the
 # readiness check passes, so a rerun knows the last upgrade did not finish. The
 # recovery trap stays set: nothing has migrated until the up that main runs next.
 swap_in_bundle() {
-	local env_tmp src rel
-	mkdir -p "$DIR"
+	local env_tmp rel
 	: >"$DIR/.upgrade-incomplete"
-	# The bundle extracts beside the live files, so each move below is one rename
-	# on the same filesystem. A live file is then either the old one or the new
-	# one, never a partial copy, and a failed extraction leaves the live files alone.
-	# A killed run leaves its extraction directory behind. The install lock is held
-	# here, so no other run owns it.
-	for stale in "$DIR"/.bundle.*; do
-		if [[ -d "$stale" && ! -L "$stale" ]]; then rm -rf -- "$stale"; fi
-	done
-	BUNDLE_EXTRACT="$(mktemp -d "$DIR/.bundle.XXXXXX")"
-	if ! tar -xzf "$TMP/$BUNDLE" -C "$BUNDLE_EXTRACT"; then
-		echo "error: could not extract $BUNDLE; the live files were not replaced" >&2
-		exit 1
-	fi
-	(cd "$BUNDLE_EXTRACT" && find . -type d -exec mkdir -p -- "$DIR/{}" \;)
-	while IFS= read -r -d '' src; do
-		rel="${src#"$BUNDLE_EXTRACT"/}"
-		if ! mv -f -- "$src" "$DIR/$rel"; then
+	# Directories first. Each mkdir is checked, and a failure here moves nothing.
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		if [[ "$rel" == . ]]; then continue; fi
+		if ! mkdir -p -- "$DIR/$rel"; then
+			echo "error: could not create $DIR/$rel; the live files were not replaced" >&2
+			exit 1
+		fi
+	done < <(cd "$BUNDLE_EXTRACT" && find . -type d -print0)
+	# Each move is a rename of one file or symlink over its live path. -T keeps the
+	# destination a name, so a directory at that path is never a target.
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		if ! mv -fT -- "$BUNDLE_EXTRACT/$rel" "$DIR/$rel"; then
 			echo "error: could not move $rel into $DIR; run this again to finish the upgrade" >&2
 			exit 1
 		fi
-	done < <(find "$BUNDLE_EXTRACT" \( -type f -o -type l \) -print0)
+	done < <(cd "$BUNDLE_EXTRACT" && find . \( -type f -o -type l \) ! -name "$INSTALLER_TEMP_MARKER" -print0)
 	rm -rf -- "$BUNDLE_EXTRACT"
 	BUNDLE_EXTRACT=""
+
 	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
 	chmod 600 "$env_tmp"
 	# Pin release metadata and apply an explicit public URL in one write.
@@ -453,6 +525,9 @@ main() {
 	unset COMPOSE_PROFILES
 
 	DIR="${POTOCOLOM_DIR:-$HOME/potocolom}"
+	# A relative path would break once the bundle is extracted from inside DIR.
+	# The path is made absolute without resolving symlinks.
+	[[ "$DIR" == /* ]] || DIR="$PWD/$DIR"
 
 	for cmd in docker curl tar sha256sum openssl; do
 		if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -632,6 +707,10 @@ main() {
 	if [[ "$missing_images" == true ]]; then
 		POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" pull
 	fi
+
+	# The bundle is checked against the live tree before the install is stopped or
+	# backed up, so a conflict refuses with nothing changed.
+	stage_bundle
 
 	# The live install changes from here. A database that already exists is
 	# stopped, checked and backed up before the verified bundle is swapped in.
