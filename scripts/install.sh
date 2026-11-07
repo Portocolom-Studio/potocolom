@@ -143,6 +143,55 @@ share_host_hf_cache() {  # PATH
 	echo "The release workers will share the host cache $path, as user $uid."
 }
 
+# Checks, as the cache owner, that a worker container can list and write the
+# shared directory. Host checks cannot see SELinux labels, Snap confinement or
+# uid remapping, so one real container access answers for every distribution.
+# The probe is a plain docker run of the worker image with the entrypoint
+# replaced and no network. It creates no Compose project resources and asks for
+# no GPU, so a GPU fault is never reported as a cache fault. Nothing is chowned
+# and no worker starts. It runs before the live install changes.
+probe_host_cache() {  # SERVICE PATH UID GID
+	local service="$1" path="$2" uid="$3" gid="$4" output info images image
+	# mktemp creates the probe file with O_EXCL under a random name, so a planted
+	# link at a guessable name is never followed or truncated. The trap removes it.
+	# shellcheck disable=SC2016
+	local script='set -e
+ls -- "$1" >/dev/null
+probe="$(mktemp -p "$1" .potocolom-access-probe.XXXXXX)"
+trap "rm -f -- \"\$probe\"" EXIT
+: >"$probe"'
+	# config --images also lists the dependencies of the service, so only the worker image line is taken.
+	if ! images="$(POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" config --images "$service")" \
+		|| ! image="$(grep -F '/potocolom-worker:' <<<"$images" | head -n 1)" || [[ -z "$image" ]]; then
+		echo "error: the release Compose file names no worker image for $service; nothing was changed" >&2
+		exit 1
+	fi
+	if output="$(docker run --rm --network none --user "$uid:$gid" \
+		--mount "type=bind,src=$path,dst=$path" --entrypoint sh "$image" -c "$script" sh "$path" 2>&1)"; then
+		return 0
+	fi
+	# One docker info call names the likely cause. Its failure is tolerated.
+	info="$(docker info --format '{{json .}}' 2>/dev/null || true)"
+	# The captured output always comes first. The causes below are guesses from
+	# docker info: SELinux being on does not prove that SELinux caused this failure.
+	echo "error: the worker container, running as user $uid, cannot read and write $path" >&2
+	echo "  Probe output:" >&2
+	printf '%s\n' "$output" | sed 's/^/    /' >&2
+	if [[ "$info" == *'name=selinux'* ]]; then
+		echo "  Possible cause: SELinux blocks the mount. Relabel the directory, then run this again:" >&2
+		echo "    sudo chcon -R -t container_file_t $(printf '%q' "$path")" >&2
+		echo "  A full relabel can reset that label. semanage fcontext makes it permanent." >&2
+	elif [[ "$info" == *'"DockerRootDir":"/var/snap/docker'* ]]; then
+		echo "  Possible cause: Snap Docker cannot mount hidden folders or most paths outside /home." >&2
+		echo "  Move the cache to a folder under /home that is not hidden, or install Docker from your distribution or docker.com." >&2
+	elif [[ "$info" == *'"OperatingSystem":"Docker Desktop"'* || "$info" == *'name=userns'* ]]; then
+		echo "  Possible cause: this Docker has remapped user ids, so the worker cannot own the cache files." >&2
+		echo "  Use Docker Engine without userns-remap." >&2
+	fi
+	echo "  Nothing was changed." >&2
+	exit 1
+}
+
 # Checks that the database's Alembic revision is known to the release being
 # installed. The release's own Alembic scripts answer, so no database connection
 # is made. backend/tests/test_install_revision_probe.py runs it.
@@ -623,7 +672,7 @@ main() {
 	# Until POTOCOLOM_HF_CACHE is named, a host cache that is not shared is only
 	# mentioned. Nothing is asked and nothing is saved.
 	if [[ "${POTOCOLOM_HF_CACHE+x}" != x ]] && ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?HF_CACHE_DIR[[:space:]]*[:=]' "$ENV_FILE" 2>/dev/null; then
-		hub="${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}"
+		hub="${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}"
 		if resolved="$(realpath -e -- "$hub" 2>/dev/null)"; then hub="$resolved"; fi
 		repos=0
 		if [[ -d "$hub" ]]; then
@@ -715,6 +764,26 @@ main() {
 	done <<<"$images"
 	if [[ "$missing_images" == true ]]; then
 		POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" pull
+	fi
+
+	# A shared host cache is probed as its owner before anything changes. The
+	# staged .env holds the saved keys, so a share from this run and a share kept
+	# by an upgrade are both checked. Profile api has no worker to probe.
+	worker_service=""
+	case "$profile" in
+	gpu) worker_service=worker ;;
+	rocm) worker_service=worker-rocm ;;
+	esac
+	if [[ -n "$worker_service" && -f "$STAGE_ENV" ]]; then
+		if ! shared_path="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" HF_CACHE_DIR)" \
+			|| ! shared_uid="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" WORKER_UID)" \
+			|| ! shared_gid="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" WORKER_GID)"; then
+			echo "error: Compose could not read $STAGE_ENV; nothing was changed" >&2
+			exit 1
+		fi
+		if [[ -n "$shared_path" ]]; then
+			probe_host_cache "$worker_service" "$shared_path" "$shared_uid" "$shared_gid"
+		fi
 	fi
 
 	# The live install changes from here. A database that already exists is

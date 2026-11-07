@@ -20,6 +20,7 @@ tmp="$(cd "$raw_tmp" && pwd -P)" || { echo 'error: cannot enter the temporary di
 [[ -n "$tmp" && "$tmp" != / && -d "$tmp" ]] || { echo "error: bad temporary directory: $tmp" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 RELEASE_TEST_AWK="$(type -P awk)"
+REAL_ID="$(type -P id)"
 failures=0
 
 pass_case() { printf 'ok %s\n' "$1"; }
@@ -76,9 +77,27 @@ else
 fi
 STUB
 
+# GPU=1 makes nvidia-smi see a GPU, so the gpu profile passes preflight.
 cat >"$tmp/stubs/nvidia-smi" <<'STUB'
 #!/usr/bin/env bash
-exit 9
+if [[ "${GPU:-0}" != 1 ]]; then exit 9; fi
+case "$*" in
+	*--query-gpu=name,memory.total,driver_version*) printf 'NVIDIA Test GPU, 8192 MiB, 595.91.07\n' ;;
+	*--query-gpu=name*) printf 'NVIDIA Test GPU\n' ;;
+	*) printf 'CUDA Version: 13.2\n' ;;
+esac
+STUB
+
+cat >"$tmp/stubs/nvidia-ctk" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+
+# Preflight reads the groups of the user for the rocm profile; the stub answers video and render.
+cat >"$tmp/stubs/id" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == -nG ]]; then printf 'video render\n'; exit 0; fi
+exec "${REAL_ID:?}" "$@"
 STUB
 
 cat >"$tmp/stubs/hostname" <<'STUB'
@@ -127,6 +146,18 @@ compose_cmd() {
 			if [[ -z "$version" && -f "$env_file" ]]; then
 				version="$(sed -n 's/^POTOCOLOM_VERSION=//p' "$env_file" | tail -n 1)"
 			fi
+			# config --images SERVICE lists the service's dependencies too. NO_WORKER_IMAGE=1
+			# drops the worker line, as a release whose compose file names no worker would.
+			if [[ "${1:-}" == --images && -n "${2:-}" ]]; then
+				flavour=cuda
+				if [[ "$2" == worker-rocm ]]; then flavour=rocm; fi
+				printf 'postgres:16\n'
+				if [[ "${NO_WORKER_IMAGE:-0}" != 1 ]]; then
+					printf 'ghcr.io/portocolom-studio/potocolom-worker:%s-%s\n' "${version:-dev}" "$flavour"
+				fi
+				printf 'ghcr.io/portocolom-studio/potocolom-api:%s\n' "${version:-dev}"
+				return 0
+			fi
 			printf 'postgres:16\nghcr.io/portocolom-studio/potocolom-api:%s\n' "${version:-dev}"
 			;;
 		exec) printf 'http://192.168.1.10:8080/setup#installer-fixture-token\n' ;;
@@ -134,13 +165,62 @@ compose_cmd() {
 	return 0
 }
 
+# Runs the probe script the way a container would run it: sh -c SCRIPT sh PATH. With
+# unshare, the shell is PID 1 in its own PID namespace, as the container shell is.
+run_probe_on_host() {
+	local args=("$@") i script="" path=""
+	for ((i = 0; i < ${#args[@]}; i++)); do
+		if [[ "${args[i]}" == -c ]]; then
+			script="${args[i + 1]}"
+			path="${args[i + 3]}"
+			break
+		fi
+	done
+	if [[ -z "$script" ]]; then
+		echo "stub: no probe script in docker run" >&2
+		return 2
+	fi
+	if unshare --user --map-current-user --pid --fork true >/dev/null 2>&1; then
+		unshare --user --map-current-user --pid --fork sh -c "$script" sh "$path"
+	else
+		sh -c "$script" sh "$path"
+	fi
+}
+
 case "${1:-}" in
 	--version) printf 'Docker version 28.0.0, build test\n' ;;
 	info)
-		# SecurityOptions names rootless mode when the case asks for it.
-		if [[ "$*" == *SecurityOptions* ]]; then
-			if [[ "${ROOTLESS:-0}" == 1 ]]; then printf '[name=seccomp name=rootless]\n'; else printf '[name=seccomp]\n'; fi
+		# The probe reads {{json .}}: SecurityOptions, DockerRootDir and OperatingSystem
+		# come from the SELINUX, USERNS, DOCKER_ROOT and DOCKER_OS knobs.
+		if [[ "$*" == *'{{json .}}'* ]]; then
+			opts='"name=seccomp,profile=builtin"'
+			if [[ "${ROOTLESS:-0}" == 1 ]]; then opts+=',"name=rootless"'; fi
+			if [[ "${SELINUX:-0}" == 1 ]]; then opts+=',"name=selinux"'; fi
+			if [[ "${USERNS:-0}" == 1 ]]; then opts+=',"name=userns"'; fi
+			printf '{"SecurityOptions":[%s],"DockerRootDir":"%s","OperatingSystem":"%s"}\n' \
+				"$opts" "${DOCKER_ROOT:-/var/lib/docker}" "${DOCKER_OS:-Debian GNU/Linux 12 (bookworm)}"
+		# SecurityOptions names rootless mode, SELinux or user namespaces when a case asks for it.
+		elif [[ "$*" == *SecurityOptions* ]]; then
+			list="name=seccomp"
+			if [[ "${ROOTLESS:-0}" == 1 ]]; then list+=" name=rootless"; fi
+			if [[ "${SELINUX:-0}" == 1 ]]; then list+=" name=selinux"; fi
+			if [[ "${USERNS:-0}" == 1 ]]; then list+=" name=userns"; fi
+			printf '[%s]\n' "$list"
 		fi
+		;;
+	run)
+		# The worker access probe is a docker run with --entrypoint sh. PROBE_FAIL=1
+		# forces the failure a real container would print. Otherwise the real probe
+		# script runs on the host as the test user, with the cache path as the path.
+		if [[ "$*" == *'--entrypoint sh'* ]]; then
+			if [[ "${PROBE_FAIL:-0}" == 1 ]]; then
+				printf 'mktemp: failed to create file via template /cache/.potocolom-access-probe.XXXXXX: Permission denied\n' >&2
+				exit 1
+			fi
+			run_probe_on_host "$@"
+			exit $?
+		fi
+		exit 0
 		;;
 	image) exit 1 ;;
 	compose)
@@ -160,12 +240,15 @@ new_case() {
 	case_dir="$tmp/$1"
 	mkdir -p "$case_dir/bin" "$case_dir/state" "$case_dir/source" "$case_dir/tmp" \
 		"$case_dir/hub/models--stabilityai--sd" "$case_dir/hub/models--black-forest-labs--flux" \
-		"$case_dir/hub-empty" "$case_dir/dri" "$case_dir/pci"
+		"$case_dir/hub-empty" "$case_dir/dri" "$case_dir/pci" "$case_dir/kfd/0"
 	: >"$case_dir/docker.log"
 	: >"$case_dir/curl.log"
 	: >"$case_dir/state/containers"
+	# The rocm profile reads one kfd node with a gfx11 target; kfd-dev stands for /dev/kfd.
+	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
+	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi hostname rocm-smi sleep docker; do
+	for name in curl awk df nvidia-smi nvidia-ctk id hostname rocm-smi sleep docker; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 }
@@ -212,7 +295,7 @@ run_install() {
 		-u POTOCOLOM_HF_CACHE -u HF_CACHE_DIR -u WORKER_UID -u WORKER_GID -u HF_HOME \
 		PATH="$case_dir/bin:$PATH" TMPDIR="$case_dir/tmp" STATE_DIR="$case_dir/state" \
 		DOCKER_LOG="$case_dir/docker.log" CURL_LOG="$case_dir/curl.log" BUNDLE_DIR="$case_dir/source" \
-		READY_COUNT_FILE="$case_dir/ready-count" RELEASE_TEST_AWK="$RELEASE_TEST_AWK" \
+		READY_COUNT_FILE="$case_dir/ready-count" RELEASE_TEST_AWK="$RELEASE_TEST_AWK" REAL_ID="$REAL_ID" \
 		POTOCOLOM_SKIP_GPU_TEST=1 HF_HUB_CACHE="$case_dir/hub-empty" \
 		POTOCOLOM_KFD="$case_dir/no-kfd" POTOCOLOM_KFD_TOPOLOGY="$case_dir/kfd" \
 		POTOCOLOM_DRI="$case_dir/dri" POTOCOLOM_PCI_DEVICES="$case_dir/pci" \
@@ -505,6 +588,162 @@ print(json.dumps({"cache": env.get("HF_HUB_CACHE"), "mounts": mounts, "uid": env
 	done
 else
 	printf 'skip compose render: docker compose is not installed\n'
+fi
+
+# 17. The access probe refuses SELinux before any change: the message names SELinux and the chcon command.
+new_case probe-refuses-selinux
+seed_live "$case_dir" v8.8.8
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu SELINUX=1 PROBE_FAIL=1 POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$before" == "$after" && "$output" == *'Probe output:'* && "$output" == *'Permission denied'* && "$output" == *'Possible cause: SELinux blocks the mount'* \
+	&& "$output" == *"chcon -R -t container_file_t $case_dir/hub"* && "$(grep -c 'up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	pass_case probe-refuses-selinux
+else
+	fail_case probe-refuses-selinux "rc=$rc $output"
+fi
+
+# 18. The access probe refuses Snap Docker before any change: the message names Snap.
+new_case probe-refuses-snap
+seed_live "$case_dir" v8.8.8
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu DOCKER_ROOT=/var/snap/docker/common/var-lib-docker PROBE_FAIL=1 POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$before" == "$after" && "$output" == *'Probe output:'* && "$output" == *'Possible cause: Snap Docker cannot mount hidden folders'* \
+	&& "$(grep -c 'up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	pass_case probe-refuses-snap
+else
+	fail_case probe-refuses-snap "rc=$rc $output"
+fi
+
+# 19. The access probe refuses Docker Desktop before any change: the message names remapped user ids.
+new_case probe-refuses-remapped
+seed_live "$case_dir" v8.8.8
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu DOCKER_OS="Docker Desktop" PROBE_FAIL=1 POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$before" == "$after" && "$output" == *'Probe output:'* && "$output" == *'Possible cause: this Docker has remapped user ids'* \
+	&& "$(grep -c 'up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	pass_case probe-refuses-remapped
+else
+	fail_case probe-refuses-remapped "rc=$rc $output"
+fi
+
+# 20. The probe runs as the cache owner against the worker of each profile, and the install completes.
+probe_owner_ok=true
+for pair in gpu:cuda rocm:rocm; do
+	profile="${pair%%:*}"
+	flavour="${pair#*:}"
+	new_case "probe-runs-as-owner-$profile"
+	make_bundle "$case_dir" v9.9.9
+	output="$(run_install "$case_dir" GPU=1 POTOCOLOM_KFD="$case_dir/kfd-dev" POTOCOLOM_PROFILE="$profile" POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+	probe_run="run --rm --network none --user $(id -u):$(id -g) --mount type=bind,src=$case_dir/hub,dst=$case_dir/hub --entrypoint sh ghcr.io/portocolom-studio/potocolom-worker:v9.9.9-$flavour -c"
+	if [[ "$rc" -eq 0 && "$(grep -c -F -- "$probe_run" "$case_dir/docker.log")" -eq 1 \
+		&& "$(grep -c -E '^compose .* run ' "$case_dir/docker.log")" -eq 0 \
+		&& "$(grep -c 'up -d --no-build' "$case_dir/docker.log")" -eq 1 ]]; then
+		:
+	else
+		probe_owner_ok=false
+		fail_case "probe-runs-as-owner-$profile" "rc=$rc $output"
+	fi
+done
+if [[ "$probe_owner_ok" == true ]]; then pass_case probe-runs-as-owner; fi
+
+# 21. Without a shared cache the probe never runs, even for a GPU profile.
+new_case probe-skipped-without-share
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(grep -c -- '--entrypoint sh' "$case_dir/docker.log")" -eq 0 ]]; then
+	pass_case probe-skipped-without-share
+else
+	fail_case probe-skipped-without-share "rc=$rc $output"
+fi
+
+# 22. An upgrade that keeps a saved share probes it, because the staged .env still names the cache.
+new_case upgrade-with-saved-share-probes
+seed_live "$case_dir" v8.8.8 "$(printf 'HF_CACHE_DIR=%s\nWORKER_UID=%s\nWORKER_GID=%s\nCOMPOSE_PROFILES=gpu' "$case_dir/hub" "$(id -u)" "$(id -g)")"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" GPU=1)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(grep -c -F -- "run --rm --network none --user $(id -u):$(id -g) --mount type=bind,src=$case_dir/hub,dst=$case_dir/hub --entrypoint sh ghcr.io/portocolom-studio/potocolom-worker:v9.9.9-cuda -c" "$case_dir/docker.log")" -eq 1 ]]; then
+	pass_case upgrade-with-saved-share-probes
+else
+	fail_case upgrade-with-saved-share-probes "rc=$rc $output"
+fi
+
+# 22b. Without a worker image line in the release compose file the install refuses before any change.
+new_case probe-refuses-without-worker-image
+seed_live "$case_dir" v8.8.8
+make_bundle "$case_dir" v9.9.9
+before="$(tree_hash "$case_dir/install")"
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu NO_WORKER_IMAGE=1 POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+after="$(tree_hash "$case_dir/install")"
+if [[ "$rc" -ne 0 && "$before" == "$after" && "$output" == *'names no worker image for worker'* \
+	&& "$(grep -c -- '--entrypoint sh' "$case_dir/docker.log")" -eq 0 && "$(grep -c 'up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+	pass_case probe-refuses-without-worker-image
+else
+	fail_case probe-refuses-without-worker-image "rc=$rc $output"
+fi
+
+# 22c. The real probe refuses a hub the owner cannot write: its own error is shown first, and nothing changes.
+if [[ "$(id -u)" -eq 0 ]]; then
+	printf 'skip probe-refuses-unwritable: root writes to a read-only directory\n'
+else
+	new_case probe-refuses-unwritable
+	seed_live "$case_dir" v8.8.8
+	make_bundle "$case_dir" v9.9.9
+	before="$(tree_hash "$case_dir/install")"
+	chmod 555 "$case_dir/hub"
+	output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+	chmod 755 "$case_dir/hub"
+	after="$(tree_hash "$case_dir/install")"
+	if [[ "$rc" -ne 0 && "$before" == "$after" && "$output" == *'Probe output:'* && "$output" == *'Permission denied'* \
+		&& "$output" == *'Nothing was changed.'* && "$(grep -c 'up -d' "$case_dir/docker.log")" -eq 0 ]]; then
+		pass_case probe-refuses-unwritable
+	else
+		fail_case probe-refuses-unwritable "rc=$rc $output"
+	fi
+fi
+
+# 22d. A successful probe leaves no probe file in the cache.
+new_case probe-leaves-no-file
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+leftover="$(find "$case_dir/hub" -maxdepth 1 -name '.potocolom-access-probe.*' | wc -l | tr -d ' ')"
+if [[ "$rc" -eq 0 && "$(grep -c -F -- "run --rm --network none" "$case_dir/docker.log")" -eq 1 && "$leftover" == 0 ]]; then
+	pass_case probe-leaves-no-file
+else
+	fail_case probe-leaves-no-file "rc=$rc leftover=$leftover $output"
+fi
+
+# 22e. A link planted at the name a PID 1 shell would use is never followed: the blob keeps its bytes.
+if ! unshare --user --map-current-user --pid --fork true >/dev/null 2>&1; then
+	printf 'skip probe-does-not-follow-symlink: needs unshare with user namespaces, so the probe shell can be PID 1\n'
+else
+	new_case probe-does-not-follow-symlink
+	make_bundle "$case_dir" v9.9.9
+	printf 'keep this blob\n' >"$case_dir/blob"
+	ln -s "$case_dir/blob" "$case_dir/hub/.potocolom-access-probe.1"
+	output="$(run_install "$case_dir" GPU=1 POTOCOLOM_PROFILE=gpu POTOCOLOM_HF_CACHE="$case_dir/hub")" && rc=0 || rc=$?
+	if [[ "$rc" -eq 0 && "$(grep -c -F -- "run --rm --network none" "$case_dir/docker.log")" -eq 1 \
+		&& "$(cat "$case_dir/blob")" == 'keep this blob' ]]; then
+		pass_case probe-does-not-follow-symlink
+	else
+		fail_case probe-does-not-follow-symlink "rc=$rc blob=$(cat "$case_dir/blob") $output"
+	fi
+fi
+
+# 23. The hint follows XDG_CACHE_HOME when HF_HOME and HF_HUB_CACHE are unset.
+new_case hint-honours-xdg
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/xdg/huggingface/hub/models--a--b"
+output="$(run_install "$case_dir" HF_HUB_CACHE= XDG_CACHE_HOME="$case_dir/xdg")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *"Found 1 Hugging Face model repositories in $case_dir/xdg/huggingface/hub."* ]]; then
+	pass_case hint-honours-xdg
+else
+	fail_case hint-honours-xdg "rc=$rc $output"
 fi
 
 if ((failures > 0)); then

@@ -561,6 +561,8 @@ The installer checks the directory before it changes anything in the install:
 - The installer refuses to run as root, because the cache must belong to the
   user who owns it.
 
+Before it changes anything, the installer also tests the mount once: it runs the worker image as your user and checks that the container can list and write the directory. Host checks cannot see SELinux labels, Snap confinement or remapped user ids, so this container test decides. When it fails, the installer names the likely cause and the fix for SELinux, Snap Docker, or Docker with remapped user ids (Docker Desktop, or a daemon with `userns-remap`), and it changes nothing.
+
 When the checks pass, the installer saves three keys in `deploy/compose/.env`:
 `HF_CACHE_DIR` (the directory), `WORKER_UID` and `WORKER_GID` (your user and
 group). The worker mounts the directory at the same path inside the container
