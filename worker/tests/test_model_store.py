@@ -3599,3 +3599,18 @@ def test_an_unread_gated_vae_does_not_ask_for_a_token(monkeypatch):
     monkeypatch.setattr(model_store, "hub_listing",
                         lambda repo, revision: ([], repo == kromoss.vae, {}))
     assert model_store._gate_known(kromoss) is False
+
+
+def test_a_candidate_keeps_a_companion_that_shares_the_vae_repository(monkeypatch):
+    # The unread VAE is dropped by its role, not by its repository name: an Iris worker
+    # repository at its own pin stays in the plan when the manifest's vae names it too.
+    _real_plan(monkeypatch)
+    iris = _bundled("iris-3b")
+    qwen = iris.worker_repos[0]
+    shared = iris.model_copy(update={"vae": qwen.repo, "vae_revision": "0" * 40})
+    items, _gated = model_store.plan_items(shared, "models", "cuda")
+    planned = {(item.repo, item.revision) for item in items}
+    assert (qwen.repo, qwen.revision) in planned
+    assert (qwen.repo, "0" * 40) not in planned
+    assert planned == {(item.repo, item.revision)
+                       for item in model_store.plan_items(iris, "models", "cuda")[0]}

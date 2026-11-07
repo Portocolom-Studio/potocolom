@@ -93,6 +93,9 @@ class RepoRef:
     kind: str
     variant: str = ""
     filename: str = ""
+    # True for the manifest's replacement VAE. Equality and the fingerprint ignore it, so a
+    # ref stays the same value whatever role it plays.
+    replacement_vae: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -199,7 +202,8 @@ def repo_refs(manifest: Manifest, device: str = "cuda") -> list[RepoRef]:
                 "modular_pipeline" if manifest.pipeline == "Flux3Distilled" else "pipeline")
         refs.append(RepoRef(manifest.source, manifest.source_revision, kind, variant))
     if manifest.vae:
-        refs.append(RepoRef(manifest.vae, manifest.vae_revision, "component"))
+        refs.append(RepoRef(manifest.vae, manifest.vae_revision, "component",
+                            replacement_vae=True))
     if manifest.lora:
         repo, _, name = manifest.lora.rpartition("/")
         refs.append(RepoRef(repo, manifest.lora_revision, "adapter", filename=name))
@@ -221,7 +225,7 @@ def _read_refs(manifest: Manifest, device: str = "cuda") -> list[RepoRef]:
     """The repositories a load reads: repo_refs without a replacement VAE that a candidate
     pipeline's loader ignores. repo_refs keeps it, since the fingerprint hashes it."""
     return [ref for ref in repo_refs(manifest, device)
-            if not (ref.repo == manifest.vae and manifest.pipeline in CANDIDATE_PIPELINES)]
+            if not (ref.replacement_vae and manifest.pipeline in CANDIDATE_PIPELINES)]
 
 
 def _upscale_dir(manifest: Manifest, models_dir: str) -> Path:
@@ -730,7 +734,7 @@ def plan_items(manifest: Manifest, models_dir: str,
             custom = CUSTOM_PIPELINES.get(manifest.pipeline, "")
             chosen = select_pipeline_plan(files, index, ref.variant, passed=passed,
                                           custom_pipeline=custom)
-        elif ref.repo == manifest.vae:
+        elif ref.replacement_vae:
             chosen = select_vae_plan(files)
         elif (patterns := plain_repo_patterns(manifest, ref.repo)) is not None:
             chosen = select_plain_plan(files, patterns)
