@@ -344,7 +344,8 @@ install_exit() {
 		rm -rf -- "$BUNDLE_EXTRACT"
 	fi
 	if [[ -n "$BUNDLE_TEMP" ]]; then
-		rm -rf -- "$BUNDLE_TEMP"
+		# A file temp only: never recursive, so no directory is removed by its name.
+		rm -f -- "$BUNDLE_TEMP"
 	fi
 	if [[ "$BACKUPS_CREATED" == 1 ]]; then
 		rmdir -- "$DIR/backups" 2>/dev/null || true
@@ -407,13 +408,6 @@ stage_bundle() {
 		echo "error: could not list the bundle; nothing was changed" >&2
 		exit 1
 	fi
-	# A kill during the swap can leave a temp file named for a bundle entry. Only
-	# that exact name is removed, and only when it is a regular file.
-	while IFS= read -r -d '' rel; do
-		rel="${rel#./}"
-		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
-		if [[ -f "$temp" && ! -L "$temp" ]]; then rm -f -- "$temp"; fi
-	done <"$BUNDLE_FILES_LIST"
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
 		if [[ "$rel" != . ]] && bundle_conflict "$rel" dir; then
@@ -423,10 +417,19 @@ stage_bundle() {
 	done <"$BUNDLE_DIRS_LIST"
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
-		if bundle_conflict "$rel" file; then
+		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
+		if bundle_conflict "$rel" file || [[ -d "$temp" ]]; then
 			echo "error: the bundle file $rel conflicts with the live tree in $DIR; nothing was changed" >&2
 			exit 1
 		fi
+	done <"$BUNDLE_FILES_LIST"
+	# Only after every path is checked, so no parent is a symlink out of $DIR: a kill
+	# during the swap can leave a temp file named for a bundle entry. Only that exact
+	# name is removed, and only when it is a regular file.
+	while IFS= read -r -d '' rel; do
+		rel="${rel#./}"
+		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
+		if [[ -f "$temp" && ! -L "$temp" ]]; then rm -f -- "$temp"; fi
 	done <"$BUNDLE_FILES_LIST"
 }
 
@@ -456,7 +459,7 @@ swap_in_bundle() {
 		# Whatever sits at the temp name goes first. A symlink there would otherwise
 		# take the copy of a file on another filesystem.
 		rm -f -- "$temp"
-		if ! mv -f -- "$BUNDLE_EXTRACT/$rel" "$temp"; then
+		if ! mv -fT -- "$BUNDLE_EXTRACT/$rel" "$temp"; then
 			echo "error: could not stage $rel in $DIR; run this again to finish the upgrade" >&2
 			exit 1
 		fi
@@ -585,7 +588,7 @@ main() {
 	fi
 
 	TMP="$(mktemp -d)"
-	trap 'rm -rf "$TMP" ${BUNDLE_EXTRACT:+"$BUNDLE_EXTRACT"} ${BUNDLE_TEMP:+"$BUNDLE_TEMP"}' EXIT
+	trap 'rm -rf "$TMP" ${BUNDLE_EXTRACT:+"$BUNDLE_EXTRACT"}; if [[ -n "$BUNDLE_TEMP" ]]; then rm -f -- "$BUNDLE_TEMP"; fi' EXIT
 
 	BASE_URL="https://github.com/Portocolom-Studio/potocolom/releases/download/$VERSION"
 	BUNDLE="potocolom-$VERSION-selfhost.tar.gz"

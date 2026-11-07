@@ -154,11 +154,14 @@ if [[ -n "${MV_FAIL_BUNDLE_AT:-}" ]]; then
 		fi
 	done
 fi
-# MV_FAIL_FINAL=1 fails every move onto a live path, the -T move that ends a swap.
+# MV_FAIL_FINAL=1 fails the final -T move of each file, the one onto its live path.
 if [[ -n "${MV_FAIL_FINAL:-}" ]]; then
+	fails_final=no from_bundle=no
 	for arg in "$@"; do
-		if [[ "$arg" == -fT ]]; then exit 1; fi
+		if [[ "$arg" == -fT ]]; then fails_final=yes; fi
+		if [[ "$arg" == */.bundle.* ]]; then from_bundle=yes; fi
 	done
+	if [[ "$fails_final" == yes && "$from_bundle" == no ]]; then exit 1; fi
 fi
 if [[ -n "${MV_LOG:-}" ]]; then printf '%s\n' "$*" >>"$MV_LOG"; fi
 exec "${REAL_MV:?}" "$@"
@@ -327,7 +330,8 @@ postgres_exec() {
 				return 1
 			fi
 			if [[ "${BACKUP_FAIL:-0}" == 1 ]]; then return 1; fi
-			printf 'DATABASE-DUMP\n'
+			if [[ -n "${PLANT_DIR:-}" ]]; then mkdir -p "$PLANT_DIR"; printf 'KEEP\n' >"$PLANT_DIR/keep"; fi
+printf 'DATABASE-DUMP\n'
 			;;
 		pg_restore) cat >/dev/null ;;
 	esac
@@ -487,6 +491,14 @@ case "${1:-}" in
 				exit $?
 				;;
 			ls)
+				# PLANT_DIR_ON_LS=N makes the Nth listing create the PLANT_DIR directory.
+				if [[ -n "${PLANT_DIR_ON_LS:-}" ]]; then
+					n=0
+					if [[ -f "$state/ls.count" ]]; then n="$(cat "$state/ls.count")"; fi
+					n=$((n + 1))
+					printf '%s\n' "$n" >"$state/ls.count"
+					if ((n == PLANT_DIR_ON_LS)); then mkdir -p "$PLANT_DIR"; printf 'KEEP\n' >"$PLANT_DIR/keep"; fi
+				fi
 				# Lists every volume: the database when $state/pgdata exists, the assets
 				# volume unless $state/no_assets exists, and a name that only contains the
 				# database name when DECOY_VOLUME is set.
@@ -1746,23 +1758,28 @@ seed_running "$case_dir"
 make_bundle "$case_dir" v9.9.9
 output="$(run_install "$case_dir" MV_LOG="$case_dir/mv.log" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
 finals=0
+stages=0
 same_dir=yes
 while read -r line; do
 	read -r -a words <<<"$line"
 	if [[ "${words[0]}" != -fT ]]; then continue; fi
-	finals=$((finals + 1))
 	src="${words[-2]}" dst="${words[-1]}"
+	if [[ "$src" == */.bundle.* ]]; then
+		stages=$((stages + 1))
+		continue
+	fi
+	finals=$((finals + 1))
 	if [[ "$(dirname -- "$src")" != "$(dirname -- "$dst")" ]]; then same_dir=no; fi
 done <"$case_dir/mv.log"
 files="$(cd "$case_dir/bundle-src" && find . -type f | wc -l)"
-if [[ "$rc" -eq 0 && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
+if [[ "$rc" -eq 0 && "$stages" -eq "$files" && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
 	pass_case moves-rename-within-destination-dir
 else
-	fail_case moves-rename-within-destination-dir "rc=$rc finals=$finals files=$files same_dir=$same_dir $output"
+	fail_case moves-rename-within-destination-dir "rc=$rc stages=$stages finals=$finals files=$files same_dir=$same_dir $output"
 fi
 
-# 57. A temp file left by a killed swap is removed by the next run, even when that run refuses
-# before the swap; an operator file with another name is not touched.
+# 57. A temp file left by a killed swap survives a refused run, and the next successful run
+# removes it; an operator file with another name is not touched.
 new_case stale-new-temps-removed
 seed_live "$case_dir" v8.8.8
 seed_db "$case_dir" r1
@@ -1773,11 +1790,11 @@ printf 'KEEP\n' >"$case_dir/install/deploy/compose/.notes.potocolom-new"
 rm -f "$case_dir/install/scripts/restore.sh"
 mkdir "$case_dir/install/scripts/restore.sh"
 output1="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc1=0 || rc1=$?
-temp_after_refusal=yes
-if [[ ! -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" ]]; then temp_after_refusal=no; fi
+temp_after_refusal=no
+if [[ -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" ]]; then temp_after_refusal=yes; fi
 rm -rf "$case_dir/install/scripts/restore.sh"
 output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
-if [[ "$rc1" -ne 0 && "$output1" == *'conflicts with the live tree'* && "$temp_after_refusal" == no \
+if [[ "$rc1" -ne 0 && "$output1" == *'conflicts with the live tree'* && "$temp_after_refusal" == yes \
 	&& "$rc" -eq 0 && ! -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" \
 	&& "$(cat "$case_dir/install/deploy/compose/.notes.potocolom-new")" == KEEP \
 	&& -z "$(bundle_mismatches "$case_dir")" ]]; then
@@ -1799,6 +1816,67 @@ if [[ "$rc" -ne 0 && "$output" == *'could not move'* \
 	pass_case failed-move-leaves-no-temp
 else
 	fail_case failed-move-leaves-no-temp "rc=$rc $output"
+fi
+
+# 59. A directory at a bundle file's temp name refuses before anything stops, and it survives.
+new_case temp-dir-collision-refuses-and-survives
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/install/scripts/.backup.sh.potocolom-new"
+printf 'KEEP\n' >"$case_dir/install/scripts/.backup.sh.potocolom-new/keep"
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* \
+	&& "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP \
+	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
+	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case temp-dir-collision-refuses-and-survives
+else
+	fail_case temp-dir-collision-refuses-and-survives "rc=$rc $output"
+fi
+
+# 60. A symlinked parent refuses, and a file of the same temp name outside $DIR is not removed.
+new_case parent-symlink-temp-outside-survives
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$case_dir/outside"
+printf 'KEEP\n' >"$case_dir/outside/.backup.sh.potocolom-new"
+rm -rf "$case_dir/install/scripts"
+ln -s "$case_dir/outside" "$case_dir/install/scripts"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* \
+	&& "$(cat "$case_dir/outside/.backup.sh.potocolom-new")" == KEEP && -L "$case_dir/install/scripts" \
+	&& ! -e "$case_dir/install/backups" && "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
+	pass_case parent-symlink-temp-outside-survives
+else
+	fail_case parent-symlink-temp-outside-survives "rc=$rc $output"
+fi
+
+# 61. A directory that appears at a temp name after staging, during the backup, survives the failed swap.
+new_case temp-dir-appearing-mid-run-survives
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" PLANT_DIR="$case_dir/install/scripts/.backup.sh.potocolom-new")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP ]]; then
+	pass_case temp-dir-appearing-mid-run-survives
+else
+	fail_case temp-dir-appearing-mid-run-survives "rc=$rc $output"
+fi
+
+# 62. A directory that appears at a temp name after staging, on a fresh install, survives the failed swap.
+new_case temp-dir-appearing-fresh-install-survives
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="" PLANT_DIR="$case_dir/install/scripts/.backup.sh.potocolom-new" PLANT_DIR_ON_LS=2)" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP ]]; then
+	pass_case temp-dir-appearing-fresh-install-survives
+else
+	fail_case temp-dir-appearing-fresh-install-survives "rc=$rc $output"
 fi
 
 if ((failures > 0)); then
