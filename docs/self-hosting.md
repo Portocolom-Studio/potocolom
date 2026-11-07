@@ -528,9 +528,70 @@ The worker finds complete models already in its Hugging Face cache at the pinned
 revision, including downloads from older potocolom installs, the `hf` CLI, and
 other apps using the standard cache. A different revision of the same model is
 not reused. To share another app's cache, set `HF_HOME` to that cache when
-running natively, or replace the `hf-cache` volume in `deploy/compose/compose.yml`
-with the host cache mount shown in the file. If another app removes files, the
-model shows as not installed and can be installed again.
+running natively, or share the cache with a release install as described in
+[Share an existing model cache](#share-an-existing-model-cache). If another app
+removes files, the model shows as not installed and can be installed again.
+
+## Share an existing model cache
+
+A release install can use a Hugging Face cache that already exists on this
+machine, so models downloaded earlier are not downloaded again. Give the
+installer the hub directory of that cache, the `hub` folder inside it:
+
+```bash
+curl -fsSL https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh | POTOCOLOM_HF_CACHE="$HOME/.cache/huggingface/hub" bash
+```
+
+The installer checks the directory before it changes anything in the install:
+
+- It must be an absolute path to an existing directory. A link is followed, and
+  the directory it points to is the one that is saved. Use only letters, digits
+  and `. _ / @ + -` in the path, because the value is saved without quotes, so a
+  space, a dollar sign or a new line is refused.
+- It must not be a Hugging Face home directory: one that holds a `token` or
+  `stored_tokens` file, or one called `huggingface` with a `hub` folder inside.
+  Sharing it would expose the token. The installer names the `hub` folder to pass.
+- It must not be `/models` or `/tmp/worker-home`, or a path inside or above
+  either. Those are the worker's own paths.
+- Docker must not run rootless.
+- Every file in it must belong to your user. A root process, such as an older
+  release worker, may have written files there. The installer then stops and
+  prints a `sudo chown -R` command for your user and group. Run that command,
+  then run the installer again.
+- The installer refuses to run as root, because the cache must belong to the
+  user who owns it.
+
+Before it changes anything, the installer also tests the mount once: it runs the worker image as your user and checks that the container can list and write the directory. Host checks cannot see SELinux labels, Snap confinement or remapped user ids, so this container test decides. When it fails, the installer names the likely cause and the fix for SELinux, Snap Docker, or Docker with remapped user ids (Docker Desktop, or a daemon with `userns-remap`), and it changes nothing.
+
+When the checks pass, the installer saves three keys in `deploy/compose/.env`:
+`HF_CACHE_DIR` (the directory), `WORKER_UID` and `WORKER_GID` (your user and
+group). The worker mounts the directory at the same path inside the container
+and runs as your user. Only the hub directory is mounted, so the Hugging Face
+token file in your home directory is never shared. Because the path is the same
+inside and outside the container, the model markers match what a source
+checkout (`make dev`) writes. Later upgrades keep these keys. The models the
+worker finds there are listed in [Models you already have](#models-you-already-have).
+
+Without `POTOCOLOM_HF_CACHE`, the installer prints how many model repositories
+it found in the default cache, with the command that shares them. It asks
+nothing and saves nothing. A default install keeps the `hf-cache` volume and
+runs the worker as root, as before.
+
+To stop sharing, run the installer with `POTOCOLOM_HF_CACHE` set to an empty
+value. It removes the three keys, and the worker uses its own `hf-cache` volume
+again. The host cache is left as it is.
+
+What sharing costs:
+
+- Removing a model in the studio deletes its pinned files in the shared cache,
+  including files that other tools on this machine read.
+- Upscaler weights stay in the `models` volume and are not shared. Their markers
+  can change between a host `make dev` worker and the container, because the
+  paths differ. Each marker is rebuilt on the next model scan.
+- Rootless Docker cannot share a host cache. The worker must drop to your user,
+  and rootless Docker maps that user to one that cannot write the cache.
+
+`scripts/preflight.sh` names the cache path in use and its free space.
 
 ## Gated models
 
@@ -731,6 +792,6 @@ Legacy model caches are adopted from the Hub pins bundled with the worker, so an
 Going back to an earlier release is not automatic. Install scripts from releases after v0.1.3 refuse to run an older release on a database that a newer release migrated. The scripts of v0.1.3 and earlier have no such check: they start the older release on the migrated database. Either way, running an older install script does not undo an upgrade. Two routes remain:
 
 - Rerun the install script of the newer release. This is the forward fix, and it also works after a failed upgrade.
-- Restore a backup into a new project. The installer prints the restore command only when a backup in `backups/` has a database revision that the release being installed knows. The command runs `scripts/restore.sh` from the install directory with that backup's compose file. It sets `POTOCOLOM_VERSION` to the release being installed, and `COMPOSE_PROFILES` so that the worker starts. If no backup qualifies, the forward fix is the route. Stop the broken project first, because it holds port 8080. The backup does not hold the `models` volume, so the restored project starts without the model cache, custom manifests or files in `overrides/`. Copy the files you need from the old project's `models` volume into the new one.
+- Restore a backup into a new project. The installer prints the restore command only when a backup in `backups/` has a database revision that the release being installed knows. The command runs `scripts/restore.sh` from the install directory with that backup's compose file. It sets `POTOCOLOM_VERSION` to the release being installed, and `COMPOSE_PROFILES` so that the worker starts. If no backup qualifies, the forward fix is the route. Stop the broken project first, because it holds port 8080. The backup does not hold the `models` volume, so the restored project starts without the model cache, custom manifests or files in `overrides/`. Copy the files you need from the old project's `models` volume into the new one. If the backup's env file names `HF_CACHE_DIR`, the restored project shares that host cache again, so removing a model there deletes its files in that cache.
 
 Backups are kept in the install directory's `backups/` folder. Each one is named by the old version, the database revision and the UTC time. Old backups are kept, and there is no retention policy: delete them by hand when you no longer need them. See [Backup and restore](#backup-and-restore) for what a backup holds.

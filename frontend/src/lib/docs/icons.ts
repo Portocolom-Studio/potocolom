@@ -57,6 +57,7 @@ const PAGE_ICONS: Record<string, IconName> = {
 	'self-hosting/gated-models': 'eye',
 	'self-hosting/backup-and-restore': 'database',
 	'self-hosting/what-persists-where': 'hard-drive',
+	'self-hosting/share-model-cache': 'share',
 	'self-hosting/logs': 'list',
 	'self-hosting/updating': 'refresh',
 	'api/overview': 'code',

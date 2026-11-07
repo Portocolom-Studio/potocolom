@@ -85,12 +85,17 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       FLEET_TOKEN: ${FLEET_SECRET}
       CUDA_VISIBLE_DEVICES:
+      # Shared host cache (docs/self-hosting.md "Share an existing model cache").
+      # Empty: the worker runs as root. Set by the installer, the worker drops to
+      # this uid and gid (deploy/docker/worker-entrypoint.sh).
+      WORKER_UID: ${WORKER_UID:-}
+      WORKER_GID: ${WORKER_GID:-}
+      HF_HUB_CACHE: ${HF_CACHE_DIR:-/root/.cache/huggingface/hub}
     volumes:
       - models:/models
-      # Downloaded model weights survive container recreation.
-      # Replace the named volume with your host cache to share existing models:
-      # - /path/to/huggingface:/root/.cache/huggingface
-      - hf-cache:/root/.cache/huggingface
+      # Downloaded model weights survive container recreation. HF_CACHE_DIR in
+      # .env names a host hub directory, mounted at the same path.
+      - ${HF_CACHE_DIR:-hf-cache}:${HF_CACHE_DIR:-/root/.cache/huggingface}
     deploy:
       resources:
         reservations:
@@ -122,11 +127,13 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       FLEET_TOKEN: ${FLEET_SECRET}
       HIP_VISIBLE_DEVICES:
+      # Shared host cache: see the worker service above.
+      WORKER_UID: ${WORKER_UID:-}
+      WORKER_GID: ${WORKER_GID:-}
+      HF_HUB_CACHE: ${HF_CACHE_DIR:-/root/.cache/huggingface/hub}
     volumes:
       - models:/models
-      # Replace the named volume with your host cache to share existing models:
-      # - /path/to/huggingface:/root/.cache/huggingface
-      - hf-cache:/root/.cache/huggingface
+      - ${HF_CACHE_DIR:-hf-cache}:${HF_CACHE_DIR:-/root/.cache/huggingface}
     devices:
       - /dev/kfd
       - /dev/dri

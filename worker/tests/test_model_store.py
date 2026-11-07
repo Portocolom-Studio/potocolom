@@ -3561,3 +3561,56 @@ def test_a_candidate_pipeline_keeps_its_stock_vae_even_when_the_manifest_names_o
     assert any(item.repo == kromoss.source and item.name.startswith("vae/") for item in items)
     items, _gated = model_store.plan_items(sdxl, "models", "cuda")
     assert not any(item.repo == sdxl.source and item.name.startswith("vae/") for item in items)
+
+
+def _kromoss_naming_sdxl_vae():
+    sdxl = _bundled("sdxl-base")
+    return _bundled("kromoss").model_copy(
+        update={"vae": sdxl.vae, "vae_revision": sdxl.vae_revision})
+
+
+def test_a_candidate_plan_never_reads_the_vae_it_names(monkeypatch):
+    # The MOSS loader ignores manifest.vae, so no planned item may come from that repository.
+    _real_plan(monkeypatch)
+    kromoss = _kromoss_naming_sdxl_vae()
+    items, gated = model_store.plan_items(kromoss, "models", "cuda")
+    assert not any(item.repo == kromoss.vae for item in items)
+    assert kromoss.vae not in gated
+
+
+def test_a_candidate_fingerprint_still_names_the_vae_it_does_not_read():
+    # Pinned from the code before the plan stopped reading the VAE. Fingerprints are frozen,
+    # so markers written before that change keep matching.
+    assert model_store._fingerprint(_kromoss_naming_sdxl_vae(), "cuda") == (
+        "40baed75a04cce925312f4bd49aaee3eeab17e781713ccb5fb5e206b86f765e6")
+
+
+def test_a_candidate_adopts_when_only_the_files_its_loader_reads_are_on_disk(monkeypatch):
+    _real_plan(monkeypatch)
+    kromoss = _kromoss_naming_sdxl_vae()
+    _fixture_cache([kromoss])
+    assert not snapshot_dir(kromoss.vae, kromoss.vae_revision).exists()
+    assert model_store.adopt_legacy(kromoss, "models") is True
+    assert model_store.is_installed(kromoss, "models")
+
+
+def test_an_unread_gated_vae_does_not_ask_for_a_token(monkeypatch):
+    kromoss = _kromoss_naming_sdxl_vae()
+    monkeypatch.setattr(model_store, "hub_listing",
+                        lambda repo, revision: ([], repo == kromoss.vae, {}))
+    assert model_store._gate_known(kromoss) is False
+
+
+def test_a_candidate_keeps_a_companion_that_shares_the_vae_repository(monkeypatch):
+    # The unread VAE is dropped by its role, not by its repository name: an Iris worker
+    # repository at its own pin stays in the plan when the manifest's vae names it too.
+    _real_plan(monkeypatch)
+    iris = _bundled("iris-3b")
+    qwen = iris.worker_repos[0]
+    shared = iris.model_copy(update={"vae": qwen.repo, "vae_revision": "0" * 40})
+    items, _gated = model_store.plan_items(shared, "models", "cuda")
+    planned = {(item.repo, item.revision) for item in items}
+    assert (qwen.repo, qwen.revision) in planned
+    assert (qwen.repo, "0" * 40) not in planned
+    assert planned == {(item.repo, item.revision)
+                       for item in model_store.plan_items(iris, "models", "cuda")[0]}

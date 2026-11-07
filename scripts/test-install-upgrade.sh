@@ -1101,6 +1101,49 @@ else
 	fail_case printed-restore-command-starts-installing-release "rc=$rc restore_rc=$restore_rc line=$line $output $restore_out"
 fi
 
+# 26b. A refused downgrade names the shared host cache when the backup's env names
+# HF_CACHE_DIR, and says the models volume is empty when the env does not name it.
+seed_qualifying_backup() {  # CASE_DIR EXTRA_ENV_LINE
+	local bdir="$1/install/backups/v8.8.8-r1-20260101T000000Z"
+	mkdir -p "$bdir"
+	printf 'DATABASE-DUMP\n' >"$bdir/database.dump"
+	printf 'ASSETS-TAR\n' >"$bdir/assets.tar"
+	printf 'POTOCOLOM_VERSION=v8.8.8\nPOSTGRES_PASSWORD=keep-db\nFLEET_SECRET=keep-fleet\n' >"$bdir/env"
+	if [[ -n "$2" ]]; then printf '%s\n' "$2" >>"$bdir/env"; fi
+	cp "$repo/deploy/compose/compose.yml" "$bdir/compose.yml"
+	(cd "$bdir" && sha256sum database.dump assets.tar env >SHA256SUMS)
+}
+
+new_case restore-message-names-shared-cache
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+seed_qualifying_backup "$case_dir" "HF_CACHE_DIR=$case_dir/hub"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'    COMPOSE_PROFILES='*'restore.sh'* \
+	&& "$output" == *"The restored project shares the host model cache $case_dir/hub again, so removing a model there deletes its files in that cache."* \
+	&& "$output" != *'empty models volume'* ]]; then
+	pass_case restore-message-names-shared-cache
+else
+	fail_case restore-message-names-shared-cache "rc=$rc $output"
+fi
+
+new_case restore-message-without-shared-cache
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+seed_qualifying_backup "$case_dir" ""
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'    COMPOSE_PROFILES='*'restore.sh'* \
+	&& "$output" == *'The restored project starts with an empty models volume.'* \
+	&& "$output" != *'shares the host model cache'* ]]; then
+	pass_case restore-message-without-shared-cache
+else
+	fail_case restore-message-without-shared-cache "rc=$rc $output"
+fi
+
 # 27. Preflight takes the disk it measures from the install directory it is given.
 new_case preflight-measures-the-install-dir
 seed_live "$case_dir" v8.8.8

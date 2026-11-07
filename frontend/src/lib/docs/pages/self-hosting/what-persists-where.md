@@ -34,7 +34,7 @@ To remove an old SDXL Turbo manifest from an existing install, remove `/models/s
 
 The worker finds complete models already in its Hugging Face cache at the pinned revision. This includes downloads from older potocolom installs, the `hf` CLI, and other apps that use the standard cache. A different revision of the same model is not reused.
 
-To share another app's cache, set `HF_HOME` to that cache when you run natively. In a container, replace the `hf-cache` volume in `deploy/compose/compose.yml` with the host cache mount shown in the file. If another app removes files, the model shows as not installed, and you can install it again. The worker adopts such a cache offline, from the Hub pins it ships. See [Updating](/docs/self-hosting/updating).
+To share another app's cache, set `HF_HOME` to that cache when you run natively. In a release install, share it with the installer as described in [Share an existing model cache](/docs/self-hosting/share-model-cache). If another app removes files, the model shows as not installed, and you can install it again. The worker adopts such a cache offline, from the Hub pins it ships. See [Updating](/docs/self-hosting/updating).
 
 ## Separate installs keep separate data
 

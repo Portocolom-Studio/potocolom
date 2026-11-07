@@ -173,6 +173,20 @@ else
   fail "Disk ${disk_gb} GB free is below the 20 GB minimum"
 fi
 
+# The model cache the workers use: a host directory when HF_CACHE_DIR is saved
+# in the env file (POTOCOLOM_HF_CACHE in install.sh), else the hf-cache volume.
+hf_cache="$(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?HF_CACHE_DIR[[:space:]]*[:=][[:space:]]*["'"'"']?([^"'"'"'#[:space:]]*).*/\2/p' "$ENV_FILE" 2>/dev/null | tail -n 1)"
+if [[ -n "$hf_cache" ]]; then
+  cache_gb="$(df -BG --output=avail "$hf_cache" 2>/dev/null | tail -n1 | tr -dc '0-9')"
+  if [[ -n "$cache_gb" ]]; then
+    pass "model cache ${hf_cache} (host directory, ${cache_gb} GB free)"
+  else
+    warn "model cache ${hf_cache} (host directory) cannot be read; check that the path exists"
+  fi
+else
+  pass "model cache: the hf-cache Docker volume (set POTOCOLOM_HF_CACHE to share a host cache)"
+fi
+
 if [[ "$contributor" != true ]]; then
   if ! (echo >"/dev/tcp/127.0.0.1/${PORT}") 2>/dev/null; then
     pass "port ${PORT} free"
