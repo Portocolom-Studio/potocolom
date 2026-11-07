@@ -79,6 +79,7 @@ PG_STARTED=0
 PG_CREATED=0
 BACKUP_PARTIAL=""
 BACKUPS_CREATED=0
+BUNDLE_EXTRACT=""
 
 live_compose() {
 	docker compose -p "$PROJECT" --env-file "$ENV_FILE" -f "$DIR/deploy/compose/compose.yml" "$@"
@@ -246,11 +247,16 @@ refuse_newer_database() {
 # the saved version and the database revision, so a restore can pick a backup
 # that the release it is restored with knows.
 take_backup() {
-	local revision="$1" db_bytes assets_bytes avail need stamp old dest
+	local revision="$1" db_bytes assets_bytes avail need stamp old dest partial
 	if [[ "${POTOCOLOM_SKIP_BACKUP:-0}" == 1 ]]; then
 		echo "warning: POTOCOLOM_SKIP_BACKUP=1, so this upgrade takes no backup and has no recovery point" >&2
 		return 0
 	fi
+	# A killed run leaves its partial backup behind, and that space counts against
+	# the check below. The install lock is held here, so no other run owns it.
+	for stale in "$DIR"/backups/.*.partial; do
+		if [[ -d "$stale" && ! -L "$stale" ]]; then rm -rf -- "$stale"; fi
+	done
 	db_bytes="$(live_psql "SELECT pg_database_size('potocolom')")" || db_bytes=""
 	# A missing assets volume measures as 0. The check comes first because a
 	# docker run with a --mount of a missing volume would create that volume.
@@ -279,22 +285,27 @@ take_backup() {
 	fi
 	dest="$DIR/backups/$old-$revision-$stamp"
 	# An existing destination is an earlier recovery point. It is refused before
-	# BACKUP_PARTIAL names it, so install_exit never removes it.
+	# BACKUP_PARTIAL names anything, so install_exit never removes it.
 	if [[ -e "$dest" ]]; then
 		echo "error: the backup $dest already exists; nothing was changed" >&2
 		exit 1
 	fi
-	BACKUP_PARTIAL="$dest"
+	# The backup is written under a dot name that the restore selection never
+	# matches, and renamed to $dest only after backup.sh succeeds. A killed run
+	# leaves only the dot name, never a directory that looks finished.
+	partial="$DIR/backups/.$old-$revision-$stamp.partial"
+	BACKUP_PARTIAL="$partial"
 	echo "backing up $PROJECT to $dest"
 	if ! ENV_FILE="$ENV_FILE" COMPOSE_FILE="$DIR/deploy/compose/compose.yml" COMPOSE_PROJECT_NAME="$PROJECT" \
-		bash "$STAGE/scripts/backup.sh" "$dest"; then
+		bash "$STAGE/scripts/backup.sh" "$partial"; then
 		echo "error: the backup failed; nothing was changed" >&2
 		exit 1
 	fi
 	# restore.sh takes its compose file from its own release, which the swap
 	# replaces, so the backup keeps the compose file it was made with.
-	cp "$DIR/deploy/compose/compose.yml" "$dest/compose.yml"
-	chmod 600 "$dest/compose.yml"
+	cp "$DIR/deploy/compose/compose.yml" "$partial/compose.yml"
+	chmod 600 "$partial/compose.yml"
+	mv -- "$partial" "$dest"
 	BACKUP_PARTIAL=""
 	echo "backup kept at $dest ($(du -sh "$dest" | cut -f1))"
 }
@@ -306,6 +317,9 @@ install_exit() {
 	trap - EXIT INT TERM
 	if [[ -n "$BACKUP_PARTIAL" ]]; then
 		rm -rf -- "$BACKUP_PARTIAL"
+	fi
+	if [[ -n "$BUNDLE_EXTRACT" ]]; then
+		rm -rf -- "$BUNDLE_EXTRACT"
 	fi
 	if [[ "$BACKUPS_CREATED" == 1 ]]; then
 		rmdir -- "$DIR/backups" 2>/dev/null || true
@@ -322,10 +336,32 @@ install_exit() {
 # readiness check passes, so a rerun knows the last upgrade did not finish. The
 # recovery trap stays set: nothing has migrated until the up that main runs next.
 swap_in_bundle() {
-	local env_tmp
+	local env_tmp src rel
 	mkdir -p "$DIR"
 	: >"$DIR/.upgrade-incomplete"
-	tar -xzf "$TMP/$BUNDLE" -C "$DIR"
+	# The bundle extracts beside the live files, so each move below is one rename
+	# on the same filesystem. A live file is then either the old one or the new
+	# one, never a partial copy, and a failed extraction leaves the live files alone.
+	# A killed run leaves its extraction directory behind. The install lock is held
+	# here, so no other run owns it.
+	for stale in "$DIR"/.bundle.*; do
+		if [[ -d "$stale" && ! -L "$stale" ]]; then rm -rf -- "$stale"; fi
+	done
+	BUNDLE_EXTRACT="$(mktemp -d "$DIR/.bundle.XXXXXX")"
+	if ! tar -xzf "$TMP/$BUNDLE" -C "$BUNDLE_EXTRACT"; then
+		echo "error: could not extract $BUNDLE; the live files were not replaced" >&2
+		exit 1
+	fi
+	(cd "$BUNDLE_EXTRACT" && find . -type d -exec mkdir -p -- "$DIR/{}" \;)
+	while IFS= read -r -d '' src; do
+		rel="${src#"$BUNDLE_EXTRACT"/}"
+		if ! mv -f -- "$src" "$DIR/$rel"; then
+			echo "error: could not move $rel into $DIR; run this again to finish the upgrade" >&2
+			exit 1
+		fi
+	done < <(find "$BUNDLE_EXTRACT" \( -type f -o -type l \) -print0)
+	rm -rf -- "$BUNDLE_EXTRACT"
+	BUNDLE_EXTRACT=""
 	env_tmp="$(mktemp "$DIR/deploy/compose/.env.XXXXXX")"
 	chmod 600 "$env_tmp"
 	# Pin release metadata and apply an explicit public URL in one write.
@@ -438,7 +474,7 @@ main() {
 	fi
 
 	TMP="$(mktemp -d)"
-	trap 'rm -rf "$TMP"' EXIT
+	trap 'rm -rf "$TMP" ${BUNDLE_EXTRACT:+"$BUNDLE_EXTRACT"}' EXIT
 
 	BASE_URL="https://github.com/Portocolom-Studio/potocolom/releases/download/$VERSION"
 	BUNDLE="potocolom-$VERSION-selfhost.tar.gz"

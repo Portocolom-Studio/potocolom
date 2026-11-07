@@ -15,6 +15,9 @@ REAL_CURL="$(command -v curl)"
 REAL_ID="$(command -v id)"
 REAL_DATE="$(command -v date)"
 RELEASE_TEST_AWK="$(type -P awk)"
+REAL_MV="$(command -v mv)"
+REAL_TAR="$(command -v tar)"
+export REAL_MV REAL_TAR
 failures=0
 
 
@@ -134,6 +137,46 @@ if [[ -n "${FAKE_STAMP:-}" && "$*" == '-u +%Y%m%dT%H%M%SZ' ]]; then printf '%s\n
 exec "${REAL_DATE:?}" "$@"
 EOF
 
+# MV_FAIL_BUNDLE_AT=N fails the Nth move out of a bundle extraction directory,
+# so the swap stops after some files have moved. Other moves pass through.
+cat >"$tmp/stubs/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${MV_FAIL_BUNDLE_AT:-}" ]]; then
+	for arg in "$@"; do
+		if [[ "$arg" == */.bundle.* ]]; then
+			count=0
+			if [[ -f "${STATE_DIR:?}/mv.count" ]]; then count="$(cat "$STATE_DIR/mv.count")"; fi
+			count=$((count + 1))
+			printf '%s\n' "$count" >"$STATE_DIR/mv.count"
+			if ((count == MV_FAIL_BUNDLE_AT)); then exit 1; fi
+			break
+		fi
+	done
+fi
+exec "${REAL_MV:?}" "$@"
+EOF
+
+# TAR_TRUNCATE=1 extracts the bundle for real, truncates the file that the
+# swap must not damage (deploy/compose/compose.yml) in the target directory, then
+# fails: a write error in the middle of the extraction. The installer's own
+# extraction into its stage directory is passed through untouched.
+cat >"$tmp/stubs/tar" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${TAR_TRUNCATE:-0}" == 1 ]]; then
+	dest="" prev=""
+	for arg in "$@"; do
+		if [[ "$prev" == -C ]]; then dest="$arg"; fi
+		prev="$arg"
+	done
+	if [[ -n "$dest" && "$dest" != */stage ]]; then
+		"${REAL_TAR:?}" "$@" || exit $?
+		: >"$dest/deploy/compose/compose.yml"
+		exit 1
+	fi
+fi
+exec "${REAL_TAR:?}" "$@"
+EOF
+
 # The docker state machine. Containers are "ID SERVICE STATE" lines in
 # $STATE_DIR/containers. The database exists when $STATE_DIR/pgdata exists, and
 # its Alembic revision is the content of $STATE_DIR/revision (absent means no
@@ -177,11 +220,11 @@ remove_container() {
 
 kill_installer() {
 	# backup.sh is this process's parent and install.sh is backup.sh's parent.
-	local stat rest ppid
+	local signal="${1:-TERM}" stat rest ppid
 	read -r stat </proc/"$PPID"/stat
 	rest="${stat##*) }"
 	read -r _ ppid _ <<<"$rest"
-	kill -TERM "$ppid"
+	kill -"$signal" "$ppid"
 }
 
 psql_stub() {
@@ -257,6 +300,11 @@ postgres_exec() {
 		pg_dump)
 			if [[ "${BACKUP_KILL:-0}" == 1 ]]; then
 				kill_installer
+				return 1
+			fi
+			# BACKUP_HARD_KILL=1 is a SIGKILL: no trap runs, so the backup is left as it was.
+			if [[ "${BACKUP_HARD_KILL:-0}" == 1 ]]; then
+				kill_installer KILL
 				return 1
 			fi
 			if [[ "${BACKUP_FAIL:-0}" == 1 ]]; then return 1; fi
@@ -464,7 +512,7 @@ new_case() {
 	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
 	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker; do
+	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 	# Each case gets its own bundle directory, so SHA256SUMS can name any version.
@@ -550,6 +598,22 @@ run_install() {
 # Line number of the first docker call whose text contains $1, or 0.
 log_line() {
 	grep -n -F -- "$1" "$2/docker.log" | head -n 1 | cut -d: -f1
+}
+
+# Prints each bundle file that is in the live install neither as the bundle's
+# version nor as the version it had before the run. An absent file counts as
+# whole only when the old install did not have it either.
+whole_files_problems() {  # CASE_DIR
+	local case_dir="$1" rel live old
+	while IFS= read -r rel; do
+		rel="${rel#./}"
+		live="$case_dir/install/$rel"
+		old="$case_dir/old-install/$rel"
+		if [[ ! -e "$live" && ! -e "$old" ]]; then continue; fi
+		if [[ -e "$live" ]] && cmp -s "$live" "$case_dir/bundle-src/$rel"; then continue; fi
+		if [[ -e "$live" && -e "$old" ]] && cmp -s "$live" "$old"; then continue; fi
+		echo "$rel"
+	done < <(cd "$case_dir/bundle-src" && find . -type f)
 }
 
 backup_dirs() {  # CASE_DIR PATTERN: names of backups matching PATTERN
@@ -1349,6 +1413,138 @@ if [[ "$rc" -eq 0 ]] && grep -qxF -- "$expected" <<<"$output"; then
 	pass_case stop-line-names-project-and-env-file
 else
 	fail_case stop-line-names-project-and-env-file "rc=$rc expected=$expected $output"
+fi
+
+# 42. A swap that fails after some files moved leaves each live file whole, and a rerun finishes.
+new_case interrupted-swap-keeps-whole-files
+seed_live "$case_dir" v8.8.8
+printf '# old release\n' >>"$case_dir/install/deploy/compose/compose.yml"
+printf '# old release\n' >>"$case_dir/install/scripts/backup.sh"
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+cp -a "$case_dir/install" "$case_dir/old-install"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" MV_FAIL_BUNDLE_AT=4 FAKE_STAMP=20260101T000000Z)" && rc=0 || rc=$?
+whole="$(whole_files_problems "$case_dir")"
+moves="$(cat "$case_dir/state/mv.count" 2>/dev/null)"
+# Parsing is checked by shape: a services key, and the bytes of the old or the new file.
+parses=no
+if grep -q '^services:' "$case_dir/install/deploy/compose/compose.yml"; then parses=yes; fi
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+new_compose=no
+if cmp -s "$case_dir/install/deploy/compose/compose.yml" "$case_dir/bundle-src/deploy/compose/compose.yml"; then new_compose=yes; fi
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* && "$moves" == 4 && -z "$whole" && "$parses" == yes \
+	&& "$rc2" -eq 0 && "$output2" == *'Upgrading v8.8.8 to v9.9.9'* \
+	&& -z "$(whole_files_problems "$case_dir")" && "$new_compose" == yes \
+	&& ! -e "$case_dir/install/.upgrade-incomplete" && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case interrupted-swap-keeps-whole-files
+else
+	fail_case interrupted-swap-keeps-whole-files "rc=$rc/$rc2 moves=$moves whole=$whole $output $output2"
+fi
+
+# 43. A bundle that fails to extract leaves the live files as they were, and a rerun finishes.
+new_case interrupted-extraction-keeps-live-files
+seed_live "$case_dir" v8.8.8
+printf '# old release\n' >>"$case_dir/install/deploy/compose/compose.yml"
+printf '# old release\n' >>"$case_dir/install/scripts/backup.sh"
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+cp -a "$case_dir/install" "$case_dir/old-install"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" TAR_TRUNCATE=1 FAKE_STAMP=20260102T000000Z)" && rc=0 || rc=$?
+whole="$(whole_files_problems "$case_dir")"
+leftover="$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')"
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc2=0 || rc2=$?
+if [[ "$rc" -ne 0 && "$output" == *'could not extract'* && -z "$whole" && -z "$leftover" \
+	&& "$rc2" -eq 0 && "$output2" == *'Upgrading v8.8.8 to v9.9.9'* && ! -e "$case_dir/install/.upgrade-incomplete" ]]; then
+	pass_case interrupted-extraction-keeps-live-files
+else
+	fail_case interrupted-extraction-keeps-live-files "rc=$rc/$rc2 whole=$whole leftover=$leftover $output $output2"
+fi
+
+# 44. A normal upgrade leaves no extraction directory behind.
+new_case swap-leaves-no-extraction-dir
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$output" == *'Upgrading v8.8.8 to v9.9.9'* && -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
+	pass_case swap-leaves-no-extraction-dir
+else
+	fail_case swap-leaves-no-extraction-dir "rc=$rc $output"
+fi
+
+# 45. A restore selection never offers a backup that a killed run left unfinished.
+new_case unfinished-backup-is-never-offered
+bdir="$case_dir/install/backups"
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+mkdir -p "$bdir/.v8.8.8-r1-20260101T000000Z.partial" "$bdir/v8.8.8-r1-20260102T000000Z"
+: >"$bdir/.v8.8.8-r1-20260101T000000Z.partial/database.dump"
+: >"$bdir/v8.8.8-r1-20260102T000000Z/database.dump"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc=0 || rc=$?
+planted_ok=no
+if [[ "$rc" -ne 0 && "$output" == *'backups/v8.8.8-r1-20260102T000000Z'* \
+	&& "$output" != *'20260101T000000Z'* ]]; then
+	planted_ok=yes
+fi
+# A real SIGKILL during the backup, then a refusal: the restore command must not name the killed run.
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+output2="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" BACKUP_HARD_KILL=1 FAKE_STAMP=20260103T000000Z)" && rc2=0 || rc2=$?
+killed_final=no
+if [[ -e "$bdir/v8.8.8-r1-20260103T000000Z" ]]; then killed_final=yes; fi
+seed_live "$case_dir" v10.0.0
+seed_db "$case_dir" r2
+seed_running "$case_dir"
+output3="$(run_install "$case_dir" TARGET_KNOWN="r1")" && rc3=0 || rc3=$?
+if [[ "$planted_ok" == yes && "$rc2" -ne 0 && "$killed_final" == no && "$rc3" -ne 0 \
+	&& "$output3" == *'backups/v8.8.8-r1-20260102T000000Z'* && "$output3" != *'20260103T000000Z'* \
+	&& "$output3" != *'.partial'* ]]; then
+	pass_case unfinished-backup-is-never-offered
+else
+	fail_case unfinished-backup-is-never-offered "planted=$planted_ok rc=$rc/$rc2/$rc3 killed_final=$killed_final $output $output2 $output3"
+fi
+
+# 46. A finished backup carries its final name, and no partial directory remains.
+new_case backup-renamed-after-success
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260104T000000Z)" && rc=0 || rc=$?
+final="$case_dir/install/backups/v8.8.8-r1-20260104T000000Z"
+if [[ "$rc" -eq 0 && -f "$final/database.dump" && -f "$final/compose.yml" \
+	&& -z "$(find "$case_dir/install/backups" -name '*partial*')" ]]; then
+	pass_case backup-renamed-after-success
+else
+	fail_case backup-renamed-after-success "rc=$rc $output"
+fi
+
+# 47. Leftovers of a killed run are removed; finished backups are not touched.
+new_case stale-partials-removed
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
+make_bundle "$case_dir" v9.9.9
+bdir="$case_dir/install/backups"
+mkdir -p "$bdir/.v8.8.8-r1-20260101T000000Z.partial" "$bdir/v8.8.8-r1-20260102T000000Z" \
+	"$case_dir/install/.bundle.STALE01"
+printf 'PARTIAL\n' >"$bdir/.v8.8.8-r1-20260101T000000Z.partial/database.dump"
+printf 'FINISHED\n' >"$bdir/v8.8.8-r1-20260102T000000Z/database.dump"
+printf 'STALE\n' >"$case_dir/install/.bundle.STALE01/file"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" FAKE_STAMP=20260105T000000Z)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && ! -e "$bdir/.v8.8.8-r1-20260101T000000Z.partial" \
+	&& ! -e "$case_dir/install/.bundle.STALE01" \
+	&& "$(cat "$bdir/v8.8.8-r1-20260102T000000Z/database.dump")" == FINISHED \
+	&& -f "$bdir/v8.8.8-r1-20260105T000000Z/database.dump" ]]; then
+	pass_case stale-partials-removed
+else
+	fail_case stale-partials-removed "rc=$rc $output"
 fi
 
 if ((failures > 0)); then
