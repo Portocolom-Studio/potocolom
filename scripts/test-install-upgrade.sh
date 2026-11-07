@@ -18,7 +18,8 @@ RELEASE_TEST_AWK="$(type -P awk)"
 REAL_MV="$(command -v mv)"
 REAL_TAR="$(command -v tar)"
 REAL_FIND="$(command -v find)"
-export REAL_MV REAL_TAR REAL_FIND
+REAL_RM="$(command -v rm)"
+export REAL_MV REAL_TAR REAL_FIND REAL_RM
 failures=0
 
 
@@ -199,6 +200,19 @@ fi
 exec "${REAL_FIND:?}" "$@"
 EOF
 
+# RM_FAIL_GLOB=PATTERN makes rm fail on any argument that matches PATTERN.
+cat >"$tmp/stubs/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${RM_FAIL_GLOB:-}" ]]; then
+	for arg in "$@"; do
+		case "$arg" in
+		$RM_FAIL_GLOB) exit 1 ;;
+		esac
+	done
+fi
+exec "${REAL_RM:?}" "$@"
+EOF
+
 # The docker state machine. Containers are "ID SERVICE STATE" lines in
 # $STATE_DIR/containers. The database exists when $STATE_DIR/pgdata exists, and
 # its Alembic revision is the content of $STATE_DIR/revision (absent means no
@@ -330,8 +344,7 @@ postgres_exec() {
 				return 1
 			fi
 			if [[ "${BACKUP_FAIL:-0}" == 1 ]]; then return 1; fi
-			if [[ -n "${PLANT_DIR:-}" ]]; then mkdir -p "$PLANT_DIR"; printf 'KEEP\n' >"$PLANT_DIR/keep"; fi
-printf 'DATABASE-DUMP\n'
+			printf 'DATABASE-DUMP\n'
 			;;
 		pg_restore) cat >/dev/null ;;
 	esac
@@ -491,14 +504,6 @@ case "${1:-}" in
 				exit $?
 				;;
 			ls)
-				# PLANT_DIR_ON_LS=N makes the Nth listing create the PLANT_DIR directory.
-				if [[ -n "${PLANT_DIR_ON_LS:-}" ]]; then
-					n=0
-					if [[ -f "$state/ls.count" ]]; then n="$(cat "$state/ls.count")"; fi
-					n=$((n + 1))
-					printf '%s\n' "$n" >"$state/ls.count"
-					if ((n == PLANT_DIR_ON_LS)); then mkdir -p "$PLANT_DIR"; printf 'KEEP\n' >"$PLANT_DIR/keep"; fi
-				fi
 				# Lists every volume: the database when $state/pgdata exists, the assets
 				# volume unless $state/no_assets exists, and a name that only contains the
 				# database name when DECOY_VOLUME is set.
@@ -543,7 +548,7 @@ new_case() {
 	printf 'gfx_target_version 110002\n' >"$case_dir/kfd/0/properties"
 	: >"$case_dir/kfd-dev"
 	local name
-	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar find; do
+	for name in curl awk df nvidia-smi nvidia-ctk hostname rocm-smi sleep id date docker mv tar find rm; do
 		ln -s "$tmp/stubs/$name" "$case_dir/bin/$name"
 	done
 	# Each case gets its own bundle directory, so SHA256SUMS can name any version.
@@ -1765,11 +1770,15 @@ while read -r line; do
 	if [[ "${words[0]}" != -fT ]]; then continue; fi
 	src="${words[-2]}" dst="${words[-1]}"
 	if [[ "$src" == */.bundle.* ]]; then
+		# The stage move: the temp is a random name beside the live path.
+		if [[ "$(dirname -- "$dst")" == */ || "$(basename -- "$dst")" != .?* ]]; then same_dir=no; fi
 		stages=$((stages + 1))
 		continue
 	fi
+	# The final move: the temp, with a random name, renames onto the live path in the same directory.
 	finals=$((finals + 1))
 	if [[ "$(dirname -- "$src")" != "$(dirname -- "$dst")" ]]; then same_dir=no; fi
+	if [[ "$(basename -- "$src")" != ".$(basename -- "$dst")."?????? ]]; then same_dir=no; fi
 done <"$case_dir/mv.log"
 files="$(cd "$case_dir/bundle-src" && find . -type f | wc -l)"
 if [[ "$rc" -eq 0 && "$stages" -eq "$files" && "$finals" -eq "$files" && "$files" -gt 0 && "$same_dir" == yes ]]; then
@@ -1778,63 +1787,23 @@ else
 	fail_case moves-rename-within-destination-dir "rc=$rc stages=$stages finals=$finals files=$files same_dir=$same_dir $output"
 fi
 
-# 57. A temp file left by a killed swap survives a refused run, and the next successful run
-# removes it; an operator file with another name is not touched.
-new_case stale-new-temps-removed
-seed_live "$case_dir" v8.8.8
-seed_db "$case_dir" r1
-seed_running "$case_dir"
-make_bundle "$case_dir" v9.9.9
-printf 'PARTIAL\n' >"$case_dir/install/deploy/compose/.compose.yml.potocolom-new"
-printf 'KEEP\n' >"$case_dir/install/deploy/compose/.notes.potocolom-new"
-rm -f "$case_dir/install/scripts/restore.sh"
-mkdir "$case_dir/install/scripts/restore.sh"
-output1="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc1=0 || rc1=$?
-temp_after_refusal=no
-if [[ -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" ]]; then temp_after_refusal=yes; fi
-rm -rf "$case_dir/install/scripts/restore.sh"
-output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
-if [[ "$rc1" -ne 0 && "$output1" == *'conflicts with the live tree'* && "$temp_after_refusal" == yes \
-	&& "$rc" -eq 0 && ! -e "$case_dir/install/deploy/compose/.compose.yml.potocolom-new" \
-	&& "$(cat "$case_dir/install/deploy/compose/.notes.potocolom-new")" == KEEP \
-	&& -z "$(bundle_mismatches "$case_dir")" ]]; then
-	pass_case stale-new-temps-removed
-else
-	fail_case stale-new-temps-removed "rc=$rc1/$rc $output1 $output"
-fi
-
-# 58. A failed move onto a live path leaves no temp file behind: the exit cleanup removes it.
+# 58. A failed final move leaves no temp file for that bundle file: the exit cleanup removes it.
 new_case failed-move-leaves-no-temp
 seed_live "$case_dir" v8.8.8
 seed_db "$case_dir" r1
 seed_running "$case_dir"
 make_bundle "$case_dir" v9.9.9
 output="$(run_install "$case_dir" MV_FAIL_FINAL=1 TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
-if [[ "$rc" -ne 0 && "$output" == *'could not move'* \
-	&& -z "$(find "$case_dir/install" -name '*.potocolom-new')" \
+leftovers=""
+while IFS= read -r rel; do
+	base="$(basename -- "$rel")"
+	leftovers+="$(find "$case_dir/install" -name ".$base.??????")"
+done < <(cd "$case_dir/bundle-src" && find . -type f)
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* && -z "$leftovers" \
 	&& -z "$(find "$case_dir/install" -maxdepth 1 -name '.bundle.*')" ]]; then
 	pass_case failed-move-leaves-no-temp
 else
-	fail_case failed-move-leaves-no-temp "rc=$rc $output"
-fi
-
-# 59. A directory at a bundle file's temp name refuses before anything stops, and it survives.
-new_case temp-dir-collision-refuses-and-survives
-seed_live "$case_dir" v8.8.8
-seed_db "$case_dir" r1
-seed_running "$case_dir"
-make_bundle "$case_dir" v9.9.9
-mkdir -p "$case_dir/install/scripts/.backup.sh.potocolom-new"
-printf 'KEEP\n' >"$case_dir/install/scripts/.backup.sh.potocolom-new/keep"
-states_before="$(container_states "$case_dir")"
-output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
-if [[ "$rc" -ne 0 && "$output" == *'conflicts with the live tree'* \
-	&& "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP \
-	&& "$states_before" == "$(container_states "$case_dir")" && ! -e "$case_dir/install/backups" \
-	&& "$(log_line 'stop api1 wk1' "$case_dir")" -eq 0 ]]; then
-	pass_case temp-dir-collision-refuses-and-survives
-else
-	fail_case temp-dir-collision-refuses-and-survives "rc=$rc $output"
+	fail_case failed-move-leaves-no-temp "rc=$rc leftovers=$leftovers $output"
 fi
 
 # 60. A symlinked parent refuses, and a file of the same temp name outside $DIR is not removed.
@@ -1856,27 +1825,36 @@ else
 	fail_case parent-symlink-temp-outside-survives "rc=$rc $output"
 fi
 
-# 61. A directory that appears at a temp name after staging, during the backup, survives the failed swap.
-new_case temp-dir-appearing-mid-run-survives
+# 57. Operator files at temp-like names in the bundle's directory are never touched.
+new_case operator-file-at-any-temp-like-name-survives
 seed_live "$case_dir" v8.8.8
 seed_db "$case_dir" r1
 seed_running "$case_dir"
 make_bundle "$case_dir" v9.9.9
-output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2" PLANT_DIR="$case_dir/install/scripts/.backup.sh.potocolom-new")" && rc=0 || rc=$?
-if [[ "$rc" -ne 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP ]]; then
-	pass_case temp-dir-appearing-mid-run-survives
+printf 'KEEP-A\n' >"$case_dir/install/scripts/.backup.sh.potocolom-new"
+printf 'KEEP-B\n' >"$case_dir/install/scripts/.backup.sh.ABCDEF"
+output="$(run_install "$case_dir" TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new")" == KEEP-A \
+	&& "$(cat "$case_dir/install/scripts/.backup.sh.ABCDEF")" == KEEP-B \
+	&& -z "$(bundle_mismatches "$case_dir")" ]]; then
+	pass_case operator-file-at-any-temp-like-name-survives
 else
-	fail_case temp-dir-appearing-mid-run-survives "rc=$rc $output"
+	fail_case operator-file-at-any-temp-like-name-survives "rc=$rc $output"
 fi
 
-# 62. A directory that appears at a temp name after staging, on a fresh install, survives the failed swap.
-new_case temp-dir-appearing-fresh-install-survives
+# 61. A failed removal of the temp during the exit cleanup does not stop the services from being restored.
+new_case failed-cleanup-still-restores-services
+seed_live "$case_dir" v8.8.8
+seed_db "$case_dir" r1
+seed_running "$case_dir"
 make_bundle "$case_dir" v9.9.9
-output="$(run_install "$case_dir" TARGET_KNOWN="" PLANT_DIR="$case_dir/install/scripts/.backup.sh.potocolom-new" PLANT_DIR_ON_LS=2)" && rc=0 || rc=$?
-if [[ "$rc" -ne 0 && "$(cat "$case_dir/install/scripts/.backup.sh.potocolom-new/keep")" == KEEP ]]; then
-	pass_case temp-dir-appearing-fresh-install-survives
+states_before="$(container_states "$case_dir")"
+output="$(run_install "$case_dir" MV_FAIL_FINAL=1 RM_FAIL_GLOB='*/.*.??????' TARGET_KNOWN="r1 r2")" && rc=0 || rc=$?
+if [[ "$rc" -ne 0 && "$output" == *'could not move'* && "$states_before" == "$(container_states "$case_dir")" \
+	&& "$(grep -c '^api1 api running$' "$case_dir/state/containers")" -eq 1 ]]; then
+	pass_case failed-cleanup-still-restores-services
 else
-	fail_case temp-dir-appearing-fresh-install-survives "rc=$rc $output"
+	fail_case failed-cleanup-still-restores-services "rc=$rc $output"
 fi
 
 if ((failures > 0)); then

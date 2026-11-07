@@ -337,15 +337,16 @@ take_backup() {
 install_exit() {
 	local status=$?
 	trap - EXIT INT TERM
+	# A failed removal must not stop the services from being put back below.
 	if [[ -n "$BACKUP_PARTIAL" ]]; then
-		rm -rf -- "$BACKUP_PARTIAL"
+		rm -rf -- "$BACKUP_PARTIAL" || true
 	fi
 	if [[ -n "$BUNDLE_EXTRACT" ]]; then
-		rm -rf -- "$BUNDLE_EXTRACT"
+		rm -rf -- "$BUNDLE_EXTRACT" || true
 	fi
 	if [[ -n "$BUNDLE_TEMP" ]]; then
-		# A file temp only: never recursive, so no directory is removed by its name.
-		rm -f -- "$BUNDLE_TEMP"
+		# The installer's own mktemp file: never recursive.
+		rm -f -- "$BUNDLE_TEMP" || true
 	fi
 	if [[ "$BACKUPS_CREATED" == 1 ]]; then
 		rmdir -- "$DIR/backups" 2>/dev/null || true
@@ -417,19 +418,10 @@ stage_bundle() {
 	done <"$BUNDLE_DIRS_LIST"
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
-		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
-		if bundle_conflict "$rel" file || [[ -d "$temp" ]]; then
+		if bundle_conflict "$rel" file; then
 			echo "error: the bundle file $rel conflicts with the live tree in $DIR; nothing was changed" >&2
 			exit 1
 		fi
-	done <"$BUNDLE_FILES_LIST"
-	# Only after every path is checked, so no parent is a symlink out of $DIR: a kill
-	# during the swap can leave a temp file named for a bundle entry. Only that exact
-	# name is removed, and only when it is a regular file.
-	while IFS= read -r -d '' rel; do
-		rel="${rel#./}"
-		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
-		if [[ -f "$temp" && ! -L "$temp" ]]; then rm -f -- "$temp"; fi
 	done <"$BUNDLE_FILES_LIST"
 }
 
@@ -449,16 +441,18 @@ swap_in_bundle() {
 			exit 1
 		fi
 	done <"$BUNDLE_DIRS_LIST"
-	# A file is first moved to a temp name beside its live path. Across filesystems
+	# A file is first moved onto a temp file beside its live path. Across filesystems
 	# that move is a copy, which a kill can cut short, so the live path changes only
-	# by the second move: a rename within its own directory.
+	# by the second move: a rename within its own directory. mktemp creates the temp
+	# exclusively under a random name, so no existing file is ever taken or removed;
+	# a temp that a kill leaves behind is a stray copy of a bundle file, and is kept.
 	while IFS= read -r -d '' rel; do
 		rel="${rel#./}"
-		temp="$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").potocolom-new"
+		if ! temp="$(mktemp "$(dirname -- "$DIR/$rel")/.$(basename -- "$rel").XXXXXX")"; then
+			echo "error: could not stage $rel in $DIR; run this again to finish the upgrade" >&2
+			exit 1
+		fi
 		BUNDLE_TEMP="$temp"
-		# Whatever sits at the temp name goes first. A symlink there would otherwise
-		# take the copy of a file on another filesystem.
-		rm -f -- "$temp"
 		if ! mv -fT -- "$BUNDLE_EXTRACT/$rel" "$temp"; then
 			echo "error: could not stage $rel in $DIR; run this again to finish the upgrade" >&2
 			exit 1
