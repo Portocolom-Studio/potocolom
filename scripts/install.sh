@@ -56,6 +56,93 @@ project_worker_profile() {
 	return 0
 }
 
+# Replaces the three keys that share a host Hugging Face cache in an env file.
+# An empty DIR removes them. Every other line is kept as it is.
+write_hf_cache_keys() {  # ENV_FILE DIR UID GID
+	local env_file="$1" dir="$2" uid="$3" gid="$4" tmp
+	tmp="$(mktemp "$(dirname "$env_file")/.env.XXXXXX")"
+	chmod 600 "$tmp"
+	awk -v dir="$dir" -v uid="$uid" -v gid="$gid" '
+		/^[[:space:]]*(export[[:space:]]+)?(HF_CACHE_DIR|WORKER_UID|WORKER_GID)[[:space:]]*[:=]/ { next }
+		{ print }
+		END {
+			if (dir != "") {
+				print "HF_CACHE_DIR=" dir
+				print "WORKER_UID=" uid
+				print "WORKER_GID=" gid
+			}
+		}
+	' "$env_file" >"$tmp"
+	mv "$tmp" "$env_file"
+}
+
+# True when one of two absolute paths is the other or lies inside it.
+paths_overlap() {  # PATH_A PATH_B
+	[[ "$2/" == "${1%/}/"* || "$1/" == "${2%/}/"* ]]
+}
+
+# Shares a host Hugging Face hub directory with the release workers. It runs
+# before the live install changes, so a refusal leaves $DIR as it was. The
+# path is resolved first, and the resolved path is what every check and the
+# saved value use. The worker runs as the owner of the directory, so every file
+# in it must belong to that owner; a root worker that wrote there before needs
+# a chown first.
+share_host_hf_cache() {  # PATH
+	local path="$1" resolved uid gid offender
+	if [[ "$path" != /* ]]; then
+		echo "error: POTOCOLOM_HF_CACHE must be an absolute path, the hub directory of a Hugging Face cache; nothing was changed" >&2
+		exit 1
+	fi
+	# realpath -m also resolves a path that does not exist yet, so the overlap
+	# refusal does not depend on the directory being there.
+	resolved="$(realpath -m -- "$path")"
+	if paths_overlap "$resolved" /models || paths_overlap "$resolved" /tmp/worker-home; then
+		echo "error: POTOCOLOM_HF_CACHE $resolved is, or is inside or above, /models or /tmp/worker-home, the worker's own paths; choose another directory; nothing was changed" >&2
+		exit 1
+	fi
+	if [[ ! -d "$resolved" ]]; then
+		echo "error: POTOCOLOM_HF_CACHE $resolved is not a directory; nothing was changed" >&2
+		exit 1
+	fi
+	path="$resolved"
+	# The value is saved without quoting, so only these characters are allowed.
+	if [[ "$path" == *[!A-Za-z0-9._/@+-]* ]]; then
+		echo "error: POTOCOLOM_HF_CACHE $path has a character that is not allowed; use only letters, digits and . _ / @ + - in the path (no spaces, quotes, dollar signs or new lines); nothing was changed" >&2
+		exit 1
+	fi
+	# The token file lives beside the hub directory. Sharing a Hugging Face home
+	# would mount that token, so the hub child is the directory to pass.
+	if [[ -e "$path/token" || -e "$path/stored_tokens" || ( "$(basename "$path")" == huggingface && -d "$path/hub" ) ]]; then
+		echo "error: $path is a Hugging Face home directory, and sharing it would expose its token; pass its hub child instead: $path/hub; nothing was changed" >&2
+		exit 1
+	fi
+	if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'; then
+		echo "error: Docker runs rootless here, so the worker cannot drop to the cache owner; the host cache cannot be shared. Nothing was changed." >&2
+		exit 1
+	fi
+	uid="$(id -u)"
+	gid="$(id -g)"
+	if [[ "$uid" == 0 ]]; then
+		echo "error: run the installer as the user that owns the Hugging Face cache, not as root; nothing was changed" >&2
+		exit 1
+	fi
+	# A subtree that cannot be read cannot be shown to belong to the owner, so
+	# a failed search refuses too. -H follows a link given as the path itself.
+	if ! offender="$(find -H "$path" ! -uid "$uid" -print -quit 2>/dev/null)"; then
+		echo "error: could not check the owners of the files in $path; nothing was changed" >&2
+		exit 1
+	fi
+	if [[ -n "$offender" ]]; then
+		echo "error: $path has files that user $uid does not own, for example $offender" >&2
+		echo "  A root worker wrote there before. Give the cache back to your user, then run this again:" >&2
+		echo "    sudo chown -R $uid:$gid $(printf '%q' "$path")" >&2
+		echo "  Nothing was changed." >&2
+		exit 1
+	fi
+	write_hf_cache_keys "$STAGE_ENV" "$path" "$uid" "$gid"
+	echo "The release workers will share the host cache $path, as user $uid."
+}
+
 # Checks that the database's Alembic revision is known to the release being
 # installed. The release's own Alembic scripts answer, so no database connection
 # is made. backend/tests/test_install_revision_probe.py runs it.
@@ -415,6 +502,9 @@ main() {
 	# The same holds for COMPOSE_PROFILES: an inherited value would pick the
 	# worker. The profile this install runs is saved in .env instead.
 	unset COMPOSE_PROFILES
+	# The same holds for the shared-cache keys: an inherited value would replace
+	# the one .env saves. POTOCOLOM_HF_CACHE is the only way to set them here.
+	unset HF_CACHE_DIR WORKER_UID WORKER_GID
 
 	DIR="${POTOCOLOM_DIR:-$HOME/potocolom}"
 
@@ -530,6 +620,20 @@ main() {
 		echo "Upgrading $saved_version to $VERSION"
 	fi
 
+	# Until POTOCOLOM_HF_CACHE is named, a host cache that is not shared is only
+	# mentioned. Nothing is asked and nothing is saved.
+	if [[ "${POTOCOLOM_HF_CACHE+x}" != x ]] && ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?HF_CACHE_DIR[[:space:]]*[:=]' "$ENV_FILE" 2>/dev/null; then
+		hub="${HF_HUB_CACHE:-${HF_HOME:-$HOME/.cache/huggingface}/hub}"
+		if resolved="$(realpath -e -- "$hub" 2>/dev/null)"; then hub="$resolved"; fi
+		repos=0
+		if [[ -d "$hub" ]]; then
+			repos="$(find -H "$hub" -mindepth 1 -maxdepth 1 -name 'models--*' -type d 2>/dev/null | wc -l | tr -d ' ')" || repos=0
+		fi
+		if ((repos > 0)); then
+			echo "Found $repos Hugging Face model repositories in $hub. To share them with the workers, run: curl -fsSL $BASE_URL/install.sh | POTOCOLOM_HF_CACHE=$(printf '%q' "$hub") bash. Removing a model in the studio then deletes its pinned files there, which other tools on this host may read."
+		fi
+	fi
+
 	# Profile precedence: POTOCOLOM_PROFILE in the shell, then the profile saved
 	# in .env, then the worker containers of this project, then detection. Only
 	# an explicit POTOCOLOM_PROFILE may change the profile of a running install.
@@ -571,6 +675,22 @@ main() {
 	# The shell value of COMPOSE_PROFILES beats the staged .env, so the staged
 	# commands see the resolved profile and nothing the old .env adds.
 	stage_compose=(env COMPOSE_PROFILES="$profile" docker compose -p "$PROJECT" --env-file "$STAGE_ENV" -f "$STAGE_COMPOSE" --profile "$profile")
+
+	# Sharing a host cache is staged before preflight, so the cache report shows
+	# the new choice. Nothing in $DIR changes here: the keys go into the staged
+	# .env, which the swap publishes. A fresh install has no staged .env until
+	# ensure-env writes one, so it runs first; preflight then keeps that .env.
+	if [[ "${POTOCOLOM_HF_CACHE+x}" == x ]]; then
+		if [[ ! -f "$STAGE_ENV" ]]; then
+			ENV_FILE="$STAGE_ENV" bash "$STAGE/scripts/ensure-env.sh"
+		fi
+		if [[ -z "$POTOCOLOM_HF_CACHE" ]]; then
+			write_hf_cache_keys "$STAGE_ENV" "" "" ""
+			echo "The release workers use their own model volume again; the host cache is no longer shared."
+		else
+			share_host_hf_cache "$POTOCOLOM_HF_CACHE"
+		fi
+	fi
 
 	disk_probe="$DIR"
 	while [[ ! -e "$disk_probe" ]]; do disk_probe="$(dirname "$disk_probe")"; done
