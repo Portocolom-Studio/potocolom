@@ -33,9 +33,11 @@ import time
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
+from worker.candidate_pipelines import CANDIDATE_PIPELINES, CUSTOM_PIPELINES, plain_repo_patterns
 from worker.categorize import SOURCE as CATEGORIZER_SOURCE, SOURCE_REVISION as CATEGORIZER_REVISION
 from worker.gpu_device import weight_config
 from worker.manifests import Manifest
@@ -396,22 +398,174 @@ def _weight_group(name: str) -> tuple[str, str, str, str] | None:
     return directory, root, variant, f".{extension}"
 
 
-def select_pipeline_plan(files: list[tuple[str, int]], index: dict,
-                         variant: str) -> list[tuple[str, int]]:
-    """Only what DiffusionPipeline.from_pretrained reads: model_index.json, every component
-    folder the index names, and the root-level Python modules a custom pipeline imports
-    (for example pipeline_moss_image.py). Root weights (single-file checkpoints, LoRAs) are
-    never read by a pipeline load, so they are not planned."""
-    components = [
-        name for name, value in index.items()
-        if not name.startswith("_") and isinstance(value, list) and value and value[0] is not None
-    ]
-    plan = [(name, size) for name, size in files
-            if name == "model_index.json" or ("/" not in name and name.endswith(".py"))]
-    for component in components:
-        folder = [(name, size) for name, size in files if name.startswith(component + "/")]
-        plan.extend(select_plan(folder, variant))
-    return sorted(plan)
+# What diffusers' download (pipeline_utils.DiffusionPipeline.download) selects. A weight file is
+# <prefix>[.<variant>][-NNNNN-of-NNNNN].<suffix>; its index is <prefix>.<suffix>.index.json.
+_WEIGHT_PREFIXES = ("diffusion_pytorch_model", "model", "pytorch_model")
+_WEIGHT_SUFFIXES = ("bin", "safetensors")
+# The weight prefix a VAE repository's load reads (AutoencoderKL.from_pretrained).
+_VAE_PREFIXES = ("diffusion_pytorch_model",)
+# Endings that make a folder a model folder (filter_model_files).
+_MODEL_FILE_ENDINGS = (".bin", ".safetensors", ".onnx", ".onnx_data")
+# The ignore patterns _get_ignore_patterns returns for the engine's defaults (no onnx). The
+# .bin patterns apply only when the safetensors set is complete; otherwise safetensors are ignored.
+_IGNORED_WHEN_COMPLETE = ("*.bin", "*.msgpack", "*.onnx", "*.pb")
+_IGNORED_WHEN_INCOMPLETE = ("*.safetensors", "*.msgpack", "*.onnx", "*.pb")
+# Root files a pipeline load reads when they exist (diffusers' root allow list).
+_ROOT_FILES = frozenset({
+    "model_index.json", "config.json", "scheduler_config.json", "pipeline.py",
+    "chat_template.jinja", "generation_config.json", "preprocessor_config.json",
+    "processor_config.json", "tokenizer.json", "tokenizer_config.json",
+})
+
+
+def _diffusers_ignored(name: str, complete: bool) -> bool:
+    """True when diffusers' ignore patterns drop the file, its index included."""
+    patterns = _IGNORED_WHEN_COMPLETE if complete else _IGNORED_WHEN_INCOMPLETE
+    return any(fnmatchcase(name, pattern) or fnmatchcase(name, f"{pattern}.index.*json")
+               for pattern in patterns)
+
+
+def _weight_names(names: list[str], variant: str,
+                  prefixes: tuple[str, ...] = _WEIGHT_PREFIXES,
+                  legacy: bool = False) -> tuple[set[str], int]:
+    """The weight and index names one load reads, chosen the way diffusers chooses them
+    (variant_compatible_siblings). Each folder takes its variant files when it has any, and
+    its default files otherwise; the root counts as one folder. `legacy` adds the older
+    shard layout diffusers reads for a variant (name-NNNNN-of-NNNNN.<variant>.<ext>, indexed
+    by name.<ext>.<variant>.index.json); diffusers' is_safetensors_compatible does not read
+    it, so that check passes legacy=False. Returns the names and how many variant files were
+    found, so a caller can fall back to the default."""
+    prefix_re = "|".join(prefixes)
+    suffix_re = "|".join(_WEIGHT_SUFFIXES)
+    default_file = re.compile(rf"({prefix_re})(-\d{{5}}-of-\d{{5}})?\.({suffix_re})$")
+    default_index = re.compile(rf"({prefix_re})\.({suffix_re})\.index\.json")
+    folders: dict[str, list[str]] = {}
+    for name in names:
+        parts = name.split("/")
+        folders.setdefault(parts[0] if len(parts) == 2 else "", []).append(name)
+    chosen: set[str] = set()
+    variant_hits = 0
+    for folder_names in folders.values():
+        if variant:
+            variant_file = re.compile(
+                rf"({prefix_re})\.({variant}|{variant}-\d{{5}}-of-\d{{5}})\.({suffix_re})$")
+            variant_index = re.compile(rf"({prefix_re})\.({suffix_re})\.index\.{variant}\.json$")
+            found = {name for name in folder_names
+                     if variant_file.match(name.rsplit("/", 1)[-1])}
+            if found:
+                variant_hits += len(found)
+                chosen.update(found | {name for name in folder_names
+                                       if variant_index.match(name.rsplit("/", 1)[-1])})
+                continue
+            if legacy:
+                legacy_file = re.compile(rf".*-\d{{5}}-of-\d{{5}}\.{variant}\.[a-z]+$")
+                legacy_index = re.compile(
+                    rf"({prefix_re})\.({suffix_re})\.{variant}\.index\.json$")
+                found = {name for name in folder_names
+                         if legacy_file.match(name.rsplit("/", 1)[-1])}
+                if found:
+                    variant_hits += len(found)
+                    chosen.update(found | {name for name in folder_names
+                                           if legacy_index.match(name.rsplit("/", 1)[-1])})
+                    continue
+        chosen.update(name for name in folder_names
+                      if default_file.match(name.rsplit("/", 1)[-1])
+                      or default_index.match(name.rsplit("/", 1)[-1]))
+    return chosen, variant_hits
+
+
+def _model_folders(names: list[str], folders: set[str]) -> set[str]:
+    """The component folders that hold weights (filter_model_files and folder_names)."""
+    return {name.split("/")[0] for name in names
+            if name.count("/") == 1 and name.endswith(_MODEL_FILE_ENDINGS)
+            and name.split("/")[0] in folders}
+
+
+def _safetensors_complete(names: list[str], folders: set[str], passed: frozenset[str],
+                          variant: str, prefixes: tuple[str, ...] = _WEIGHT_PREFIXES) -> bool:
+    """diffusers' is_safetensors_compatible: every component folder that holds weights, other
+    than the passed ones, has a safetensors file among the weights a load reads. When there
+    are model folders only those are checked; with no component folder, the root decides."""
+    model = _model_folders(names, folders)
+    scope = [name for name in names if name.endswith(_MODEL_FILE_ENDINGS)
+             and (not model or (name.count("/") == 1 and name.split("/")[0] in model))]
+    chosen, _hits = _weight_names(scope, variant, prefixes)
+    components = {name.split("/")[0] for name in scope
+                  if name.count("/") == 1 and name.split("/")[0] not in passed}
+    if not components:
+        return any(name.endswith(".safetensors") for name in chosen)
+    return all(any(name.startswith(folder + "/") and name.endswith(".safetensors")
+                   for name in chosen)
+               for folder in components)
+
+
+def _selected(names: list[str], folders: set[str], passed: frozenset[str],
+              variant: str) -> tuple[set[str], set[str], int]:
+    """The weight names one pipeline load reads for this variant, the names diffusers' ignore
+    patterns keep, and how many variant files exist. The patterns depend on whether the
+    safetensors set is complete for this variant."""
+    complete = _safetensors_complete(names, folders, passed, variant)
+    kept = {name for name in names if not _diffusers_ignored(name, complete)}
+    chosen, hits = _weight_names(sorted(kept), variant, legacy=True)
+    return chosen, kept, hits
+
+
+def select_pipeline_plan(files: list[tuple[str, int]], index: dict, variant: str, *,
+                         passed: frozenset[str] = frozenset(),
+                         custom_pipeline: str = "") -> list[tuple[str, int]]:
+    """The files DiffusionPipeline.from_pretrained reads, as the download plans them.
+
+    model_index.json and the root files a load reads. The `_ignore_files` the index lists are
+    dropped first. Each component folder the index names that is not `passed` (a component
+    the caller hands in, such as the VAE): a folder with weights keeps its selected weights and
+    config.json, and nothing else (a generation config it ships is not read); any other folder
+    keeps every file. Also the custom pipeline module (`custom_pipeline`.py) and each
+    component's own module (`<folder>/<module>.py`). A variant the repository lacks falls back
+    to the default files, as the loader does."""
+    sizes = dict(files)
+    ignored = set(index.get("_ignore_files", []))
+    names = [name for name in sizes if name not in ignored]
+    folders = {key for key, value in index.items()
+               if key not in ("_class_name", "_ignore_files") and isinstance(value, list)}
+    chosen, kept, hits = _selected(names, folders, passed, variant)
+    if variant and not hits:
+        chosen, kept, _hits = _selected(names, folders, passed, "")
+    model_folders = _model_folders(names, folders)
+    wanted = set(chosen) | {name for name in _ROOT_FILES if name in kept}
+    for folder in folders - passed:
+        if folder in model_folders:
+            wanted.add(f"{folder}/config.json")
+        else:
+            wanted.update(name for name in kept if name.startswith(folder + "/"))
+        value = index[folder]
+        if value and isinstance(value[0], str) and f"{folder}/{value[0]}.py" in sizes:
+            wanted.add(f"{folder}/{value[0]}.py")
+    if custom_pipeline and f"{custom_pipeline}.py" in kept:
+        wanted.add(f"{custom_pipeline}.py")
+    return sorted((name, sizes[name]) for name in wanted
+                  if name in kept and not (name.count("/") == 1
+                                           and name.split("/")[0] in passed))
+
+
+def select_vae_plan(files: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """The files AutoencoderKL.from_pretrained reads from a VAE repository: config.json and
+    its diffusion weights at the root (the engine passes no variant). Safetensors when they
+    are complete, else the pickle weights (ModelMixin's fallback). Weights under another
+    prefix, such as a stray model.safetensors, are not read and are not planned."""
+    sizes = dict(files)
+    root = [name for name in sizes if "/" not in name]
+    complete = _safetensors_complete(root, set(), frozenset(), "", _VAE_PREFIXES)
+    kept = [name for name in root if not _diffusers_ignored(name, complete)]
+    chosen, _hits = _weight_names(kept, "", _VAE_PREFIXES)
+    keep = chosen | ({"config.json"} & set(kept))
+    return sorted((name, sizes[name]) for name in keep)
+
+
+def select_plain_plan(files: list[tuple[str, int]],
+                      patterns: tuple[str, ...]) -> list[tuple[str, int]]:
+    """The files a plain repository load reads: the names `patterns` lists, by fnmatch."""
+    return sorted((name, size) for name, size in files
+                  if any(fnmatchcase(name, pattern) for pattern in patterns))
 
 
 def select_plan(files: list[tuple[str, int]], variant: str) -> list[tuple[str, int]]:
@@ -509,16 +663,18 @@ def bundled_hub_metadata() -> dict:
     return json.loads(Path(__file__).with_name("hub_lock.json").read_text())
 
 
-def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tuple[list[Item], bool]:
-    """Every file a full install of the manifest produces, and whether a token is needed."""
+def plan_items(manifest: Manifest, models_dir: str,
+               device: str = "cuda") -> tuple[list[Item], frozenset[str]]:
+    """Every file a full install of the manifest produces, and the gated repositories among
+    the repositories it reads (a repository is gated when its files need a token)."""
     if "upscale" in manifest.capabilities:
         cache = _upscale_dir(manifest, models_dir)
         weights = [Item(path=path, size=(bundled_hub_metadata()["urls"][url]
                                 if url in bundled_hub_metadata()["urls"] else url_size(url)),
                         url=url, root=cache)
                    for url, path in upscale_targets(manifest, models_dir)]
-        return _dedupe(weights), False
-    gated = False
+        return _dedupe(weights), frozenset()
+    gated: set[str] = set()
     items: list[Item] = []
     for ref in repo_refs(manifest, device):
         locked = bundled_hub_metadata()["repos"].get(f"{ref.repo}@{ref.revision}")
@@ -526,7 +682,8 @@ def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tup
             files, ref_gated, blob_keys = hub_listing(ref.repo, ref.revision)
         else:
             files, ref_gated, blob_keys = locked["files"], locked["gated"], locked["blobs"]
-        gated = gated or ref_gated
+        if ref_gated:
+            gated.add(ref.repo)
         if ref.kind == "adapter":
             chosen = [(name, size) for name, size in files if name == ref.filename]
             if not chosen:
@@ -559,7 +716,17 @@ def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tup
             if index_text is None:
                 raise ModelStoreError("unavailable")
             index = json.loads(index_text)
-            chosen = select_pipeline_plan(files, index, ref.variant)
+            # Only the engine's own loads hand in a replacement VAE; a candidate pipeline's
+            # loader ignores `manifest.vae` and reads the stock one.
+            passed = (frozenset({"vae"}) if manifest.vae
+                      and manifest.pipeline not in CANDIDATE_PIPELINES else frozenset())
+            custom = CUSTOM_PIPELINES.get(manifest.pipeline, "")
+            chosen = select_pipeline_plan(files, index, ref.variant, passed=passed,
+                                          custom_pipeline=custom)
+        elif ref.repo == manifest.vae:
+            chosen = select_vae_plan(files)
+        elif (patterns := plain_repo_patterns(manifest, ref.repo)) is not None:
+            chosen = select_plain_plan(files, patterns)
         else:
             chosen = select_plan(files, ref.variant)
         root = snapshot_dir(ref.repo, ref.revision)
@@ -569,7 +736,15 @@ def plan_items(manifest: Manifest, models_dir: str, device: str = "cuda") -> tup
                  blob_key=blob_keys.get(name, ""))
             for name, size in chosen
         )
-    return _dedupe(items), gated
+    return _dedupe(items), frozenset(gated)
+
+
+def _needs_token(items: list[Item], gated: frozenset[str]) -> bool:
+    """True when a file the install still has to fetch comes from a gated repository. A
+    complete gated cache links without a fetch, and a gated model whose only missing files
+    come from ungated companions installs without a token."""
+    return any(item.repo in gated and not _size_ok(item.path, item.size)
+               and not _blob_ready(item) for item in items)
 
 
 def _gate_known(manifest: Manifest) -> bool | None:
@@ -593,13 +768,14 @@ def probe_model(manifest: Manifest, models_dir: str, device: str = "cuda") -> tu
     try:
         items, gated = plan_items(manifest, models_dir, device)
         size: int | None = remaining_bytes(items)
+        needs = _needs_token(items, gated)
     except (ModelStoreError, OSError, ValueError):
         size = None
         known = _gate_known(manifest)
         if known is None:
             return None
-        gated = known
-    return size, gated and not token
+        needs = known
+    return size, needs and not token
 
 
 def _is_gated_error(error: Exception) -> bool:
@@ -830,7 +1006,7 @@ def install_blocking(manifest: Manifest, models_dir: str, *,
         if (_read_marker(manifest.id) or {}).get("state") == "removed":
             _write_marker(manifest.id, {"state": "installing"})
         items, gated = plan_items(manifest, models_dir, device)
-        if gated and not os.environ.get("HF_TOKEN"):
+        if _needs_token(items, gated) and not os.environ.get("HF_TOKEN"):
             raise ModelStoreError("needs_token")
         missing = [item for item in items if not _size_ok(item.path, item.size)]
         linkable = [item for item in missing if _blob_ready(item)]
