@@ -87,15 +87,13 @@ raise SystemExit(getattr(check, "cli", check.main)())
                         (compose / "compose.yml").write_text('services:\n  worker-rocm:\n    image: postgres:16\n    profiles: [rocm]\n    entrypoint: ["sh", "-c", "exec sleep 120"]\n')
                         check.compose_owned(root / "install", project, ["down", "--timeout", "0", "-v", "--remove-orphans"])
 
-    def test_legacy_model_selection_restores_exact_manifest_bytes(self):
+    def test_seeding_writes_exact_manifest_bytes_into_the_models_volume(self):
         project = f"release-check-{secrets.token_hex(8)}"
         with tempfile.TemporaryDirectory(prefix="release-models-") as tmp:
             root = Path(tmp)
             models = root / "models"
             models.mkdir()
-            before = {check.MODEL + ".json": b"selected", "vega-rt.json": b"realtime", "custom.json": b"operator"}
-            for name, data in before.items():
-                (models / name).write_bytes(data)
+            (models / "custom.json").write_bytes(b"operator")
             compose = root / "deploy/compose"
             compose.mkdir(parents=True)
             (compose / ".env").write_text(f"COMPOSE_PROJECT_NAME={project}\n")
@@ -104,14 +102,12 @@ raise SystemExit(getattr(check, "cli", check.main)())
                 '    entrypoint: ["sh", "-c", "exec sleep 120"]\n'
                 f'    volumes: ["{models}:/models"]\n'
             )
+            seeded = {"ssd-1b-lightning.json": '{"id": "ssd-1b-lightning"}\n', "quote.json": "it's \"a\" $HOME\n"}
             try:
                 check.compose_owned(root, project, ["up", "-d", "--no-build", "worker-rocm"])
-                check.legacy_model_config(root, project, "rocm")
-                self.assertEqual({p.name for p in models.glob("*.json")}, {check.MODEL + ".json"})
-                check.legacy_model_config(root, project, "rocm", restore=True)
-                self.assertEqual({p.name: p.read_bytes() for p in models.glob("*.json")}, before)
-                self.assertFalse((models / ".release-check-manifests").exists())
-                check.legacy_model_config(root, project, "rocm", restore=True)
+                check.seed_models_volume(root, project, "rocm", seeded)
+                self.assertEqual({p.name: p.read_text() for p in models.glob("*.json")},
+                                 {"custom.json": "operator", **seeded})
             finally:
                 check.compose_owned(root, project, ["down", "--timeout", "0", "-v", "--remove-orphans"])
 

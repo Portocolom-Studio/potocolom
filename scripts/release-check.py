@@ -478,30 +478,172 @@ def prepare_fresh(directory: Path, project: str, release_dir: Path, version: str
     (compose / ".env").chmod(0o600)
 
 
-def legacy_model_config(install_dir: Path, project: str, profile: str, *, restore: bool = False) -> None:
+def bundle_manifests(release_dir: Path, version: str) -> dict[str, str]:
+    """The worker/models/*.json files of a verified release bundle, by file name."""
+    _, bundle = verify_release(release_dir, version)
+    prefix = "worker/models/"
+    manifests: dict[str, str] = {}
+    try:
+        with tarfile.open(bundle, "r:gz") as archive:
+            for member in archive.getmembers():
+                if not (member.name.startswith(prefix) and member.name.endswith(".json")):
+                    continue
+                name = member.name[len(prefix):]
+                if (not re.fullmatch(r"[A-Za-z0-9_.-]+\.json", name) or not member.isfile()
+                        or member.size > 128 * 1024):
+                    raise CheckError("release bundle has an unsafe worker/models manifest")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise CheckError("release bundle has an unreadable worker/models manifest")
+                manifests[name] = stream.read(128 * 1024 + 1).decode("utf-8")
+    except (tarfile.TarError, UnicodeError, OSError) as exc:
+        raise CheckError("cannot read worker/models from verified release bundle") from exc
+    if not manifests:
+        raise CheckError("release bundle has no worker/models manifests")
+    return manifests
+
+
+def seed_models_volume(install_dir: Path, project: str, profile: str,
+                       manifests: dict[str, str]) -> None:
+    """Write manifests into the worker's models volume through a one-off container, so a
+    stopped worker's volume takes them too. An earlier release reads its manifests from
+    that volume, so its image needs them there."""
     script = r'''set -eu
-models="${MODELS_DIR:-/models}"
-stash="$models/.release-check-manifests"
-if [ "$2" = restore ]; then
-    [ -d "$stash" ] || exit 0
-    for file in "$stash"/*.json; do
-        if [ -f "$file" ]; then mv "$file" "$models/"; fi
-    done
-    rmdir "$stash"
-else
-    test -f "$models/$1.json"
-    mkdir -p "$stash"
-    for file in "$models"/*.json; do
-        if [ "${file##*/}" != "$1.json" ]; then mv "$file" "$stash/"; fi
-    done
-fi
+while [ "$#" -ge 2 ]; do
+    printf '%s' "$2" > "/models/$1"
+    shift 2
+done
 '''
     compose = install_dir / "deploy/compose/compose.yml"
     env_file = compose.with_name(".env")
     service = "worker-rocm" if profile == "rocm" else "worker"
+    args = [item for name, text in sorted(manifests.items()) for item in (name, text)]
     run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
-         "--profile", profile, "exec", "-T", service, "sh", "-c", script,
-         "sh", MODEL, "restore" if restore else "select"], timeout=30)
+         "--profile", profile, "run", "--rm", "-T", "--no-deps", "--entrypoint", "sh", service,
+         "-c", script, "sh", *args], timeout=60)
+
+
+def request_model_install(base: str, model_id: str, safety_check=None) -> None:
+    """A fresh model cache holds no model, and the API lists only installed ones, so
+    ask the worker to install the model before the first generation waits for it."""
+    deadline = time.monotonic() + 1800
+    while True:
+        if safety_check is not None:
+            safety_check()
+        workers = http_json(base, "/api/v1/admin/models")
+        for worker in (workers if isinstance(workers, list) else []):
+            if not isinstance(worker, dict) or not worker.get("manageable"):
+                continue
+            entry = next((m for m in worker.get("models", [])
+                          if isinstance(m, dict) and m.get("id") == model_id), None)
+            if entry is None:
+                continue
+            if not entry.get("installed"):
+                http_json(base, f"/api/v1/admin/workers/{worker['worker_id']}/models/{model_id}/install",
+                          method="POST", body={})
+            return
+        if time.monotonic() >= deadline:
+            raise CheckError(f"no real worker offered {model_id} to install within 30 minutes")
+        time.sleep(5)
+
+
+def bundled_bodies(manifests: dict[str, str]) -> dict[str, dict]:
+    """The parsed manifest of each release bundle file, by model id."""
+    bodies: dict[str, dict] = {}
+    for text in manifests.values():
+        try:
+            body = json.loads(text)
+        except ValueError as exc:
+            raise CheckError("release bundle has an unparseable worker/models manifest") from exc
+        if not isinstance(body, dict) or not isinstance(body.get("id"), str):
+            raise CheckError("release bundle has a worker/models manifest without an id")
+        if body["id"] in bodies:
+            raise CheckError("release bundle repeats a model id")
+        bodies[body["id"]] = body
+    return bodies
+
+
+MANIFEST_HISTORY = Path(__file__).resolve().parents[1] / "worker/worker/manifest_history.json"
+
+
+def stale_seeds(previous: dict[str, str], candidate: dict[str, str],
+                history: dict[str, dict] | None = None) -> dict[str, str]:
+    """Earlier copies of manifests the candidate still bundles, with different bytes (a
+    moved pin). Seeded once the previous worker stops, the upgraded worker must ignore them.
+    The previous release's own copies come first; when none of them changed, an older
+    version from the manifest history stands in, so every release can run the check."""
+    stale = {name: text for name, text in previous.items()
+             if name in candidate and text != candidate[name]}
+    if stale:
+        return stale
+    if history is None:
+        history = json.loads(MANIFEST_HISTORY.read_text())
+    for entry in sorted(history.values(), key=lambda item: (str(item.get("id")), item["body"])):
+        name = f"{entry.get('id')}.json"
+        if name in candidate and entry["body"] != candidate[name]:
+            return {name: entry["body"]}
+    raise CheckError("no earlier version of a bundled manifest exists to test stale seeds with")
+
+
+FLEET_MARK = "POTOCOLOM_FLEET "
+# The announced catalog omits the pinned revisions, so the manifests are read in the
+# worker itself, with the loader it runs.
+FLEET_PROBE = r'''import json
+from worker.manifests import load_fleet_manifests
+from worker.settings import get_settings
+settings = get_settings()
+fleet = load_fleet_manifests(settings.models_dir, bundled_on=settings.bundled_manifests)
+print("POTOCOLOM_FLEET " + json.dumps({m.id: m.model_dump(mode="json") for m in fleet}, sort_keys=True))
+'''
+
+
+def worker_fleet(install_dir: Path, project: str, profile: str) -> dict[str, dict]:
+    """The manifests the running worker loaded, by id, as its loader parsed them."""
+    compose = install_dir / "deploy/compose/compose.yml"
+    env_file = install_dir / "deploy/compose/.env"
+    service = "worker-rocm" if profile == "rocm" else "worker"
+    output = run(["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(compose),
+                  "--profile", profile, "exec", "-T", service, "python", "-c", FLEET_PROBE], timeout=120)
+    lines = [line[len(FLEET_MARK):] for line in output.splitlines() if line.startswith(FLEET_MARK)]
+    if len(lines) != 1:
+        raise CheckError("worker did not report the manifests it loaded")
+    try:
+        fleet = json.loads(lines[0])
+    except ValueError as exc:
+        raise CheckError("worker reported unreadable manifests") from exc
+    if not isinstance(fleet, dict):
+        raise CheckError("worker reported unreadable manifests")
+    return fleet
+
+
+def assert_upgraded_fleet(base: str, install_dir: Path, project: str, profile: str,
+                          bundle: dict[str, str], safety_check=None) -> None:
+    """After the upgrade the worker must announce and load exactly the candidate bundle:
+    the same model ids, and every field the bundle sets, pinned revisions included.
+    A stale seed or an old pin would otherwise pass the generation check."""
+    expected = bundled_bodies(bundle)
+    deadline = time.monotonic() + 1800
+    while True:
+        if safety_check is not None:
+            safety_check()
+        workers = http_json(base, "/api/v1/admin/models")
+        offered = [w for w in (workers if isinstance(workers, list) else [])
+                   if isinstance(w, dict) and w.get("manageable")]
+        if offered:
+            break
+        if time.monotonic() >= deadline:
+            raise CheckError("no real worker announced its model catalog within 30 minutes")
+        time.sleep(5)
+    announced = {m.get("id") for w in offered for m in (w.get("models") or []) if isinstance(m, dict)}
+    if announced != set(expected):
+        raise CheckError("upgraded worker announces a different model set than the candidate bundle")
+    fleet = worker_fleet(install_dir, project, profile)
+    if set(fleet) != set(expected):
+        raise CheckError("upgraded worker loads a different model set than the candidate bundle")
+    for model_id, body in expected.items():
+        for field, value in body.items():
+            if fleet[model_id].get(field) != value:
+                raise CheckError(f"upgraded worker does not load {model_id} as the candidate bundle ({field})")
 
 
 def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
@@ -532,8 +674,17 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
                 raise CheckError("fresh install does not own API port 8080")
             api = api_base(candidate_dir)
             wait_ready(api)
+            request_model_install(api, MODEL, guard.check)
             generate(api, "a red house on a green hill under a blue sky, clear illustration", guard.check)
-            legacy_model_config(candidate_dir, project, args.profile)
+            previous = bundle_manifests(args.previous_release_dir, args.previous_version)
+            if f"{MODEL}.json" not in previous:
+                raise CheckError(f"previous release bundle has no {MODEL} manifest")
+            candidate_bundle = bundle_manifests(args.release_dir, args.version)
+            stale = stale_seeds(previous, candidate_bundle)
+            # Only the model the rehearsal generates with: the other bundled models of
+            # the previous release would warm up at its startup. No check reads them.
+            seed_models_volume(candidate_dir, project, args.profile,
+                               {f"{MODEL}.json": previous[f"{MODEL}.json"]})
             compose_owned(candidate_dir, project, ["down", "--remove-orphans"])
             remove_owned_data_volumes(project)
             run_installer(previous_installer, args.previous_version, candidate_dir,
@@ -542,9 +693,11 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
             wait_ready(api)
             saved_id, saved = generate(api, "a yellow boat on a calm blue lake, clear illustration", guard.check)
             env_before = parse_env(candidate_dir / "deploy/compose/.env")
-            legacy_model_config(candidate_dir, project, args.profile, restore=True)
             service = "worker-rocm" if args.profile == "rocm" else "worker"
             compose_owned(candidate_dir, project, ["stop", "--timeout", "0", service])
+            # The previous worker is stopped. Its moved-pin manifests seed the volume the
+            # upgrade reads, and the upgraded worker must ignore them as stale seeds.
+            seed_models_volume(candidate_dir, project, args.profile, stale)
             run_installer(candidate, args.version, candidate_dir, args.release_dir, args.profile, logs, abort=guard.failed)
             env_after = parse_env(candidate_dir / "deploy/compose/.env")
             assert_env_preserved(env_before, env_after)
@@ -552,6 +705,8 @@ def fresh_rehearsal(args: argparse.Namespace, candidate: Path) -> None:
                 raise CheckError("upgraded install does not own API port 8080")
             after = api_base(candidate_dir)
             wait_ready(after)
+            assert_upgraded_fleet(after, candidate_dir, project, args.profile,
+                                  candidate_bundle, guard.check)
             verify_assets(after, {saved_id: hashlib.sha256(saved).hexdigest()})
             generate(after, "a red lighthouse beside the sea, clear illustration", guard.check)
             passed = True
@@ -901,6 +1056,7 @@ def fresh_keep_install(args: argparse.Namespace, candidate: Path) -> None:
                 raise CheckError("fresh install does not own API port 8080")
             base = api_base(install_dir)
             wait_ready(base)
+            request_model_install(base, MODEL, guard.check)
             generate(base, "a red house on a green hill under a blue sky, clear illustration", guard.check)
             passed = True
         finally:

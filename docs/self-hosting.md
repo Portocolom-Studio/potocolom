@@ -37,10 +37,14 @@ upscalers at 1-4 GB.
 
 This source catalog has no bundled realtime model. Still-image generation
 remains available. Live drawing needs an operator-provided compatible manifest.
-Existing model volumes keep their files across image upgrades. To remove an
-old SDXL Turbo manifest from an existing install, remove `/models/sdxl-turbo.json`
-from that worker's model volume and restart the worker. Saved images and
-cached weights do not need removal.
+Bundled manifests come from the worker image and update with each release.
+Existing model volumes keep their files across image upgrades. To change a
+bundled model, put the edited manifest in the volume's `overrides/` directory:
+it wins over the bundled manifest with the same id. A model dropped from the
+bundle keeps working from its old file. To remove an old SDXL Turbo manifest
+from an existing install, remove `/models/sdxl-turbo.json` from that worker's
+model volume and restart the worker. Saved images and cached weights do not
+need removal.
 
 Manifests marked `benchmark_only` are excluded from `GET /api/v1/models`.
 They do not appear in the studio. Current candidates include `flux2-klein-4b`,
@@ -308,9 +312,10 @@ docker compose -f deploy/compose/compose.yml --profile "$profile" up -d --build
 - Give `FLEET_SECRET` only to machines you would trust with every user's
   prompts: any worker holding it is dispatched jobs for the models it
   announces, with their prompts and source images.
-- Models are JSON manifests in the `models` volume, seeded from
-  `worker/models/` on first boot. Add or edit manifests in the volume (or
-  rebuild the image) and restart the worker; see
+- Bundled model manifests come from the worker image (`worker/models/`), so a
+  release updates them. Operator manifests go in the `models` volume, and a
+  file in its `overrides/` directory wins over a bundled model with the same
+  id. Restart the worker after a change; see
   [third-party-models.md](third-party-models.md) for licensing notes.
 
 ## Upgrading
@@ -578,12 +583,14 @@ upgrade an initial plain-HTTP connection.
 |---|---|---|
 | `pgdata` | users, jobs (prompts, params, seeds), asset records | history and gallery are gone |
 | `assets` | generated PNG masters and WebP thumbnails | images are gone; rows point at nothing |
-| `models` | model manifests (JSON) | re-seeded from the image on next boot |
+| `models` | operator manifests (JSON) and `overrides/` | operator manifests are gone; bundled ones come back from the image |
 | `hf-cache` | downloaded model weights | re-downloaded on next use (2-7 GB per model) |
 
 Back up `pgdata` and `assets` together (see Backup and restore below): jobs
 and asset rows reference files by storage key, so restoring one without the
-other leaves dangling references. `hf-cache` and `models` are reproducible.
+other leaves dangling references. `hf-cache` is reproducible. Back up `models`
+too if it holds operator manifests or `overrides/` files, because the image
+does not hold those.
 
 The API deletes what a failed or retried job left behind, and a delete it
 cannot make is recorded and retried every five minutes rather than logged and

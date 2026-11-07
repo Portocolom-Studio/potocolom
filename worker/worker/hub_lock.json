@@ -274,6 +274,197 @@
       ],
       "gated": false
     },
+    "Efficient-Large-Model/Sana_Sprint_0.6B_1024px_diffusers@aa76e7f4f4928f378716b6716a2130fba3caf5b1": {
+      "blobs": {
+        ".gitattributes": "f1ca65ce6a5b0774360fde1ec05157d9f937aaa2",
+        "LICENSE": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+        "README.md": "ca75553ce2d02bed329c94e8eeaf36634e70dba8",
+        "model_index.json": "795d41a9eaf524bb0d84fbac6a325609d4f737d1",
+        "scheduler/scheduler_config.json": "6d3081b117d2ea1c4db209edf5914a80c9ed754e",
+        "text_encoder/config.json": "b9834570dc12b608f336a00e3f81658d17a85b6c",
+        "text_encoder/model-00001-of-00002.safetensors": "e909230aabafad02d097c7dc02f2ae062b4e6b0593477c1f07679d277e09ce71",
+        "text_encoder/model-00002-of-00002.safetensors": "48e14f6b7a917e54cabc4ff2047ac2bfe0dae663e771eed3a8acf4ea27dcac18",
+        "text_encoder/model.safetensors.index.json": "36d550130eb056ee9c28e438c0e3d1b28fddab84",
+        "tokenizer/special_tokens_map.json": "8d6368f7e735fbe4781bf6e956b7c6ad0586df80",
+        "tokenizer/tokenizer.json": "5f7eee611703c5ce5d1eee32d9cdcfe465647b8aff0c1dfb3bed7ad7dbb05060",
+        "tokenizer/tokenizer.model": "61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2",
+        "tokenizer/tokenizer_config.json": "36ba12877e7efaba5252f7b17ab337a59d953563",
+        "transformer/config.json": "e0d55e9165c1992b9c98e16afeb397548e705f57",
+        "transformer/diffusion_pytorch_model.safetensors": "9069dd697395b96a59d1f74837461f7aeb3d95e55b67fa85c9f31c9106b65e87",
+        "vae/config.json": "e265030c18bc640fa24267beb2a92c3a187cba5b",
+        "vae/diffusion_pytorch_model.safetensors": "dfd991d1b54ffabf22745c5885589d8f2a7bc59930d95d92bd741c4fc64454bb"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1580
+        ],
+        [
+          "LICENSE",
+          11358
+        ],
+        [
+          "README.md",
+          6543
+        ],
+        [
+          "model_index.json",
+          392
+        ],
+        [
+          "scheduler/scheduler_config.json",
+          160
+        ],
+        [
+          "text_encoder/config.json",
+          890
+        ],
+        [
+          "text_encoder/model-00001-of-00002.safetensors",
+          4988024144
+        ],
+        [
+          "text_encoder/model-00002-of-00002.safetensors",
+          240691624
+        ],
+        [
+          "text_encoder/model.safetensors.index.json",
+          22495
+        ],
+        [
+          "tokenizer/special_tokens_map.json",
+          636
+        ],
+        [
+          "tokenizer/tokenizer.json",
+          34362873
+        ],
+        [
+          "tokenizer/tokenizer.model",
+          4241003
+        ],
+        [
+          "tokenizer/tokenizer_config.json",
+          46996
+        ],
+        [
+          "transformer/config.json",
+          648
+        ],
+        [
+          "transformer/diffusion_pytorch_model.safetensors",
+          1187078584
+        ],
+        [
+          "vae/config.json",
+          1280
+        ],
+        [
+          "vae/diffusion_pytorch_model.safetensors",
+          1249044836
+        ]
+      ],
+      "gated": false,
+      "model_index": "{\n  \"_class_name\": \"SanaSprintPipeline\",\n  \"_diffusers_version\": \"0.33.0.dev0\",\n  \"scheduler\": [\n    \"diffusers\",\n    \"SCMScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"Gemma2Model\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"GemmaTokenizerFast\"\n  ],\n  \"transformer\": [\n    \"diffusers\",\n    \"SanaTransformer2DModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderDC\"\n  ]\n}\n"
+    },
+    "Lykon/dreamshaper-8-lcm@4645d8bc6a8e6b106d21606d63e8460cdad4f1a6": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "DreamShaper8_LCM.safetensors": "a4f3e1526c5dc4fcbe342f5c410d83ae202c7a415fcefcbb92e0f93fcd0a87c3",
+        "README.md": "ad11f3b15ee91c6585f0fcef58f4b840101889a4",
+        "feature_extractor/preprocessor_config.json": "f114e264445597299ded37bac3c3535a14b2dbf0",
+        "model_index.json": "0852343b1e271023ee229e3b83df30e8daee19a9",
+        "safety_checker/config.json": "5d5d3abd29d06294fec8c4b28459636ae76cbea2",
+        "safety_checker/model.safetensors": "fb351a5ded815c3ff744968ad9c6b218d071b9d313d04f35e813b84b4c0ffde8",
+        "scheduler/scheduler_config.json": "2a50ebda2676b32e672c2eb76707708b3bc5f407",
+        "text_encoder/config.json": "dab7b40e8bfeca71ba1390646e9a6e5f7151c8a1",
+        "text_encoder/model.safetensors": "557fd4e4149790a7c409eccc24aab99825b85257b81eeb23c26b2521ed281b05",
+        "tokenizer/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer/special_tokens_map.json": "1f467f3b057c46a21f88d9ab2f1070af9916c78c",
+        "tokenizer/tokenizer_config.json": "1bf819b6621086dc92428e2c9c8bbab39211fd55",
+        "tokenizer/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "unet/config.json": "dd05e821a5c4f5386af14b64231dbbbc8116c355",
+        "unet/diffusion_pytorch_model.safetensors": "7cb0780cd0ee8d9ad2761f2b21c1c6c1a35ef9b620c49c1cd10b0abd1d96d476",
+        "vae/config.json": "076f554dcb1a27dccf9f35ddba59f895912f16b4",
+        "vae/diffusion_pytorch_model.safetensors": "a1a2d24a0b96eb5985b33938dc00f73c056cb219f7e1f4c61f67653208479033"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "DreamShaper8_LCM.safetensors",
+          2133804992
+        ],
+        [
+          "README.md",
+          2422
+        ],
+        [
+          "feature_extractor/preprocessor_config.json",
+          548
+        ],
+        [
+          "model_index.json",
+          624
+        ],
+        [
+          "safety_checker/config.json",
+          692
+        ],
+        [
+          "safety_checker/model.safetensors",
+          1215979664
+        ],
+        [
+          "scheduler/scheduler_config.json",
+          374
+        ],
+        [
+          "text_encoder/config.json",
+          560
+        ],
+        [
+          "text_encoder/model.safetensors",
+          492265168
+        ],
+        [
+          "tokenizer/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer/special_tokens_map.json",
+          586
+        ],
+        [
+          "tokenizer/tokenizer_config.json",
+          704
+        ],
+        [
+          "tokenizer/vocab.json",
+          1059962
+        ],
+        [
+          "unet/config.json",
+          1778
+        ],
+        [
+          "unet/diffusion_pytorch_model.safetensors",
+          3438167536
+        ],
+        [
+          "vae/config.json",
+          601
+        ],
+        [
+          "vae/diffusion_pytorch_model.safetensors",
+          334643268
+        ]
+      ],
+      "gated": false,
+      "model_index": "{\n  \"_class_name\": \"StableDiffusionPipeline\",\n  \"_diffusers_version\": \"0.24.0\",\n  \"feature_extractor\": [\n    \"transformers\",\n    \"CLIPFeatureExtractor\"\n  ],\n  \"image_encoder\": [\n    null,\n    null\n  ],\n  \"requires_safety_checker\": true,\n  \"safety_checker\": [\n    \"stable_diffusion\",\n    \"StableDiffusionSafetyChecker\"\n  ],\n  \"scheduler\": [\n    \"diffusers\",\n    \"PNDMScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"CLIPTextModel\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"unet\": [\n    \"diffusers\",\n    \"UNet2DConditionModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderKL\"\n  ]\n}\n"
+    },
     "OpenMOSS-Team/MOSS-Image-SFT@f972bd4b4b9e3852133cc5da954d87bc32cd8fb9": {
       "blobs": {
         ".gitattributes": "8616a0640af640df6f924caacf83058f62b4a403",
@@ -540,6 +731,38 @@
         [
           "vocab.json",
           2776833
+        ]
+      ],
+      "gated": false
+    },
+    "TencentARC/t2i-adapter-sketch-sdxl-1.0@cc3c4e3362296c6825c370b83838306723ece983": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "README.md": "f04b1e5caf1879969802e5aedfe5dc52378490f1",
+        "config.json": "9c52d4e6065a2b2ab9253e251e71d0f72d094999",
+        "diffusion_pytorch_model.fp16.safetensors": "9f88c53368d53bec6b70fc9d797ec12b88a512d2a7e9068d11fbf621917d9fdd",
+        "diffusion_pytorch_model.safetensors": "95ffaafde9e0a13061205c1d701dd22326be75884b1adfc0c1a1626dfa72d0a4"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "README.md",
+          9207
+        ],
+        [
+          "config.json",
+          279
+        ],
+        [
+          "diffusion_pytorch_model.fp16.safetensors",
+          158060440
+        ],
+        [
+          "diffusion_pytorch_model.safetensors",
+          316116778
         ]
       ],
       "gated": false
@@ -1375,6 +1598,48 @@
       ],
       "gated": false
     },
+    "madebyollin/taesdxl@b20258aaef75ef61e659c1e0f14f251cf0ad153e": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "README.md": "9bf5d46ca23db35fc0d099cc689fd9720cb8cd66",
+        "config.json": "accadb8be0fabedda0082b4d83b698f4835a8a80",
+        "diffusion_pytorch_model.bin": "1625815ec7e8c3b63a9fa045fe00be825ed7cdf1691a04f24130a69ac057a70e",
+        "diffusion_pytorch_model.safetensors": "ff4824aca94dd6111e0340fa749347fb74101060d9712cb5ef1ca8f1cf17502f",
+        "taesdxl_decoder.safetensors": "f6013131e7eb412ef20113f1acc2ea7d3e47e53196ca0530fa65d9b61d814b61",
+        "taesdxl_encoder.safetensors": "9f37c0b28f72ec4ca835dc7dbf05255bdf323cde8cf12a304674f106466c98ef"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "README.md",
+          1377
+        ],
+        [
+          "config.json",
+          597
+        ],
+        [
+          "diffusion_pytorch_model.bin",
+          9823878
+        ],
+        [
+          "diffusion_pytorch_model.safetensors",
+          9793292
+        ],
+        [
+          "taesdxl_decoder.safetensors",
+          4895612
+        ],
+        [
+          "taesdxl_encoder.safetensors",
+          4895600
+        ]
+      ],
+      "gated": false
+    },
     "segmind/SSD-1B@60987f37e94cd59c36b1cba832b9f97b57395a10": {
       "blobs": {
         ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
@@ -1517,6 +1782,161 @@
       ],
       "gated": false,
       "model_index": "{\n  \"_class_name\": \"StableDiffusionXLPipeline\",\n  \"_diffusers_version\": \"0.19.0\",\n  \"force_zeros_for_empty_prompt\": true,\n  \"scheduler\": [\n    \"diffusers\",\n    \"EulerDiscreteScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"CLIPTextModel\"\n  ],\n  \"text_encoder_2\": [\n    \"transformers\",\n    \"CLIPTextModelWithProjection\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"tokenizer_2\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"unet\": [\n    \"diffusers\",\n    \"UNet2DConditionModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderKL\"\n  ]\n}\n"
+    },
+    "segmind/Segmind-Vega@7714c4363e5856ff974a4f4b068e8691f26d0b40": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "README.md": "793b0d3c29afb0e9ab016c30a963cf4741db5b5d",
+        "model_index.json": "a8fbb0b62a57e68e41ade5c2edef07447018d297",
+        "scheduler/scheduler_config.json": "fc4edcd4dd07f98451c8e760a64e386006e3a6ae",
+        "segmind-vega.safetensors": "94762e983e5942056be73c5c1d4464b8ffa1ada500b4fef1267550e2447953ce",
+        "text_encoder/config.json": "2abbff533096f62f84a9ab5610e4ef02efe4eedd",
+        "text_encoder/model.fp16.safetensors": "1e090d6a828fd92401be5f83e615fd7b4fb1f4a22e9af9040a38f602e839317c",
+        "text_encoder/model.safetensors": "92b998a9a64549bfa05c019bde114be6681549a0c79caee903fe30c9444d08b9",
+        "text_encoder_2/config.json": "6595a69e7176d546ef8d8c941873ab8cb77a27d0",
+        "text_encoder_2/model.fp16.safetensors": "5b98e4a57a9292eeb819d67e2d2100f66f17db723cde4ecea27a7c3741160d0c",
+        "text_encoder_2/model.safetensors": "943a2924ee888295a156dd47089d67181d633b782337890af11ef4b15af17ec5",
+        "tokenizer/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer/special_tokens_map.json": "cf0682d6de72c1547f41b4f6d7c59f62deffef94",
+        "tokenizer/tokenizer_config.json": "e054f014a77d3eed6279e77654fdef81e48088f7",
+        "tokenizer/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "tokenizer_2/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer_2/special_tokens_map.json": "b3b93aa8e7fd8552501067e63e04e2958298c2b2",
+        "tokenizer_2/tokenizer_config.json": "1e1ad0ce950332361d3dd15980999d449fb400f4",
+        "tokenizer_2/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "unet/config.json": "6dda1a8bc3057ebd9b60d0ba301446937e442df9",
+        "unet/diffusion_pytorch_model.fp16.safetensors": "8cfa375669b1222d6fecf470f41b2abb370c76a90ab9568964c4bb15b34ec8a2",
+        "unet/diffusion_pytorch_model.safetensors": "1ab33e37fbb2566c55cd729e4ab79cc2f99cd9d0a578fabc7a2cf4ee47968be1",
+        "vae/config.json": "0b8ef7138eabc3b49f155532d54d019931fd69bf",
+        "vae/diffusion_pytorch_model.fp16.safetensors": "bcb60880a46b63dea58e9bc591abe15f8350bde47b405f9c38f4be70c6161e68",
+        "vae/diffusion_pytorch_model.safetensors": "1598f3d24932bcfe6634e8b618ea1e30ab1d57f5aad13a6d2de446d2199f2341"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "README.md",
+          10060
+        ],
+        [
+          "model_index.json",
+          707
+        ],
+        [
+          "scheduler/scheduler_config.json",
+          479
+        ],
+        [
+          "segmind-vega.safetensors",
+          3293395670
+        ],
+        [
+          "text_encoder/config.json",
+          604
+        ],
+        [
+          "text_encoder/model.fp16.safetensors",
+          246144152
+        ],
+        [
+          "text_encoder/model.safetensors",
+          492265168
+        ],
+        [
+          "text_encoder_2/config.json",
+          616
+        ],
+        [
+          "text_encoder_2/model.fp16.safetensors",
+          1389382176
+        ],
+        [
+          "text_encoder_2/model.safetensors",
+          2778702264
+        ],
+        [
+          "tokenizer/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer/special_tokens_map.json",
+          588
+        ],
+        [
+          "tokenizer/tokenizer_config.json",
+          740
+        ],
+        [
+          "tokenizer/vocab.json",
+          1059962
+        ],
+        [
+          "tokenizer_2/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer_2/special_tokens_map.json",
+          576
+        ],
+        [
+          "tokenizer_2/tokenizer_config.json",
+          891
+        ],
+        [
+          "tokenizer_2/vocab.json",
+          1059962
+        ],
+        [
+          "unet/config.json",
+          1762
+        ],
+        [
+          "unet/diffusion_pytorch_model.fp16.safetensors",
+          1490520736
+        ],
+        [
+          "unet/diffusion_pytorch_model.safetensors",
+          2980972328
+        ],
+        [
+          "vae/config.json",
+          642
+        ],
+        [
+          "vae/diffusion_pytorch_model.fp16.safetensors",
+          167335342
+        ],
+        [
+          "vae/diffusion_pytorch_model.safetensors",
+          334643268
+        ]
+      ],
+      "gated": false,
+      "model_index": "{\n  \"_class_name\": \"StableDiffusionXLPipeline\",\n  \"_diffusers_version\": \"0.24.0.dev0\",\n  \"_name_or_path\": \"SSD-Tiny\",\n  \"feature_extractor\": [\n    null,\n    null\n  ],\n  \"force_zeros_for_empty_prompt\": true,\n  \"image_encoder\": [\n    null,\n    null\n  ],\n  \"scheduler\": [\n    \"diffusers\",\n    \"EulerDiscreteScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"CLIPTextModel\"\n  ],\n  \"text_encoder_2\": [\n    \"transformers\",\n    \"CLIPTextModelWithProjection\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"tokenizer_2\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"unet\": [\n    \"diffusers\",\n    \"UNet2DConditionModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderKL\"\n  ]\n}\n"
+    },
+    "segmind/Segmind-VegaRT@3162e917016cef536fa040ceeeeadd9e09d93e7a": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "README.md": "a3f1cebd927d16ecc9f5d2b0b5d6a168b4e12511",
+        "pytorch_lora_weights.safetensors": "9b6e8cd833fa205eaeeed391ca623a6f2546e447470bd1c5dcce3fa8d2f26afb"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "README.md",
+          3362
+        ],
+        [
+          "pytorch_lora_weights.safetensors",
+          239224692
+        ]
+      ],
+      "gated": false
     },
     "speridlabs/iris-3b@adc05b909fb05d4276d26aae5a52b36406b2ef26": {
       "blobs": {
@@ -1694,6 +2114,327 @@
         ]
       ],
       "gated": false
+    },
+    "stabilityai/sd-turbo@b261bac6fd2cf515557d5d0707481eafa0485ec2": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "LICENSE.md": "1d9ce2ee1067327543544de197291726e4fc57a4",
+        "README.md": "a016be12ea42e3d836e86565c02d78efcfc2f47b",
+        "image_quality_one_step.png": "7c1f01436114b26f7a5c577186f0e3da51e8abc7",
+        "model_index.json": "f74ca1646745f23bd748f47468afd60f73951da9",
+        "output_tile.jpg": "3a0713b763100a3f16f4fb180774aed5ba1e86a4",
+        "prompt_alignment_one_step.png": "10f3f959edd89da113c24e61587ef35d9a84c5a1",
+        "scheduler/scheduler_config.json": "d1cbb1cb9d43687fd217cdbb65a03065b2855375",
+        "sd_turbo.safetensors": "3f067a1b943cf162f2b8f8588f6cf5824bd5b4c7d1d88d87164b9ca123616549",
+        "text_encoder/config.json": "97ea68ede5facd8fc42ac4947694c9000016b83f",
+        "text_encoder/model.fp16.safetensors": "bc1827c465450322616f06dea41596eac7d493f4e95904dcb51f0fc745c4e13f",
+        "text_encoder/model.safetensors": "67e013543d4fac905c882e2993d86a2d454ee69dc9e8f37c0c23d33a48959d15",
+        "tokenizer/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer/special_tokens_map.json": "eaf8780e3c90b1af01a8574bf8596a9acebe6858",
+        "tokenizer/tokenizer_config.json": "bd2abe19377557ff5771584921f9b65fa041fef0",
+        "tokenizer/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "unet/config.json": "de5b42a487ee4dddb17df5092e4c4a7b3da24a4e",
+        "unet/diffusion_pytorch_model.fp16.safetensors": "40ec400881e27d1376c7c95c5bd495f407b33756e80eb6365e301c33a07af6e5",
+        "unet/diffusion_pytorch_model.safetensors": "438da6db739c8651ec4152341b8133d6896db452ea27afdb6b9b0344f0c40532",
+        "vae/config.json": "c4ee4e6c26ec43107d0684bf5ad1d6d60424f791",
+        "vae/diffusion_pytorch_model.fp16.safetensors": "3e4c08995484ee61270175e9e7a072b66a6e4eeb5f0c266667fe1f45b90daf9a",
+        "vae/diffusion_pytorch_model.safetensors": "2aa1f43011b553a4cba7f37456465cdbd48aab7b54b9348b890e8058ea7683ec"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "LICENSE.md",
+          11852
+        ],
+        [
+          "README.md",
+          5900
+        ],
+        [
+          "image_quality_one_step.png",
+          196141
+        ],
+        [
+          "model_index.json",
+          616
+        ],
+        [
+          "output_tile.jpg",
+          741155
+        ],
+        [
+          "prompt_alignment_one_step.png",
+          196578
+        ],
+        [
+          "scheduler/scheduler_config.json",
+          553
+        ],
+        [
+          "sd_turbo.safetensors",
+          5214561328
+        ],
+        [
+          "text_encoder/config.json",
+          618
+        ],
+        [
+          "text_encoder/model.fp16.safetensors",
+          680820392
+        ],
+        [
+          "text_encoder/model.safetensors",
+          1361596304
+        ],
+        [
+          "tokenizer/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer/special_tokens_map.json",
+          574
+        ],
+        [
+          "tokenizer/tokenizer_config.json",
+          855
+        ],
+        [
+          "tokenizer/vocab.json",
+          1059962
+        ],
+        [
+          "unet/config.json",
+          1867
+        ],
+        [
+          "unet/diffusion_pytorch_model.fp16.safetensors",
+          1731904736
+        ],
+        [
+          "unet/diffusion_pytorch_model.safetensors",
+          3463726504
+        ],
+        [
+          "vae/config.json",
+          655
+        ],
+        [
+          "vae/diffusion_pytorch_model.fp16.safetensors",
+          167335342
+        ],
+        [
+          "vae/diffusion_pytorch_model.safetensors",
+          334643268
+        ]
+      ],
+      "gated": false,
+      "model_index": "{\n  \"_class_name\": \"StableDiffusionPipeline\",\n  \"_diffusers_version\": \"0.24.0.dev0\",\n  \"_name_or_path\": \"/home/patrick/sd-turbo/\",\n  \"feature_extractor\": [\n    null,\n    null\n  ],\n  \"image_encoder\": [\n    null,\n    null\n  ],\n  \"requires_safety_checker\": true,\n  \"safety_checker\": [\n    null,\n    null\n  ],\n  \"scheduler\": [\n    \"diffusers\",\n    \"EulerDiscreteScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"CLIPTextModel\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"unet\": [\n    \"diffusers\",\n    \"UNet2DConditionModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderKL\"\n  ]\n}\n"
+    },
+    "stabilityai/sdxl-turbo@71153311d3dbb46851df1931d3ca6e939de83304": {
+      "blobs": {
+        ".gitattributes": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "LICENSE.md": "1d9ce2ee1067327543544de197291726e4fc57a4",
+        "README.md": "fc4ec2bdac39edd491815f89a853a3895d36f1ca",
+        "image_quality_one_step.png": "13cb17a7934a33001f393d08f98504cbb2bc914f",
+        "model_index.json": "f857cf2f828fff2ee319b1a47e6ce820e8affb9d",
+        "output_tile.jpg": "d5fce5ecd2ef568d689419271d9ffabfb0856c36",
+        "prompt_alignment_one_step.png": "3490b19d78d804b8273b93e803f23a3b04689be3",
+        "scheduler/scheduler_config.json": "0359d7abb0b9c7b4a433be2db87cefea03c06ea5",
+        "sd_xl_turbo_1.0.safetensors": "2e58e3704b4c0831bf848e0507c9b5ff2cd8d007b8d0719dba3874156f631050",
+        "sd_xl_turbo_1.0_fp16.safetensors": "e869ac7d6942cb327d68d5ed83a40447aadf20e0c3358d98b2cc9e270db0da26",
+        "text_encoder/config.json": "8e91c97936ad0b2c1356f03de8d47589b5232704",
+        "text_encoder/model.fp16.safetensors": "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd",
+        "text_encoder/model.onnx": "5522ae5f760e4864c20424c514cfa585cb4afb672b71b962f29a97c4f457383c",
+        "text_encoder/model.safetensors": "778d02eb9e707c3fbaae0b67b79ea0d1399b52e624fb634f2f19375ae7c047c3",
+        "text_encoder_2/config.json": "f9e084535c55110233f44ccc6c7f9d0e1540f8be",
+        "text_encoder_2/model.fp16.safetensors": "ec310df2af79c318e24d20511b601a591ca8cd4f1fce1d8dff822a356bcdb1f4",
+        "text_encoder_2/model.onnx": "03856bf14b5d23b17eae141648ef98652e0a6d01b37c2fbb3fc0af5e9a1aff34",
+        "text_encoder_2/model.onnx_data": "0c29d6ace4f348ccbcd302ab0d858994e64240a5b54d7c5ef431a88f2f287e2c",
+        "text_encoder_2/model.safetensors": "fa5b2e6f4c2efc2d82e4b8312faec1a5540eabfc6415126c9a05c8436a530ef4",
+        "tokenizer/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer/special_tokens_map.json": "1f467f3b057c46a21f88d9ab2f1070af9916c78c",
+        "tokenizer/tokenizer_config.json": "1bf819b6621086dc92428e2c9c8bbab39211fd55",
+        "tokenizer/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "tokenizer_2/merges.txt": "76e821f1b6f0a9709293c3b6b51ed90980b3166b",
+        "tokenizer_2/special_tokens_map.json": "ae0c5be6f35217e51c4c000fd325d8de0294e99c",
+        "tokenizer_2/tokenizer_config.json": "bd2abe19377557ff5771584921f9b65fa041fef0",
+        "tokenizer_2/vocab.json": "469be27c5c010538f845f518c4f5e8574c78f7c8",
+        "unet/config.json": "220d7ae3e59ce3484c7eeb47ef2ac9db5097e29a",
+        "unet/diffusion_pytorch_model.fp16.safetensors": "48fa46161a745f48d4054df3fe13804ee255486bca893403b60373c188fd1bdb",
+        "unet/diffusion_pytorch_model.safetensors": "1968fc61aa8449ab3d3f9b9a05bce88c611760c01e0c4a7a3785911b546fe582",
+        "unet/model.onnx": "3771e8ac1315aab02b2c0183d3d10406ec4b1399414149751ee67b420fbc3a6d",
+        "unet/model.onnx_data": "479e70b02ced4312debca3a12506ac928f80b2ce95ad48755c9c789bd8e80ac2",
+        "vae/config.json": "ae14cf90e29b12134a53383691c98c73dee5d422",
+        "vae/diffusion_pytorch_model.fp16.safetensors": "02ee4bd18e5d16e7fe5fc5b85b4aefa2cba6db28897f674226c9d6ddd2f34f06",
+        "vae/diffusion_pytorch_model.safetensors": "716971093e3428c9156906fcbcc5500abf005317c5f4d3a5bb3fa28c45e1e071",
+        "vae_decoder/config.json": "ae14cf90e29b12134a53383691c98c73dee5d422",
+        "vae_decoder/model.onnx": "558225daaa98ae7e67594d10a1ac3e546c67b12094836f8788036aaba652e159",
+        "vae_encoder/config.json": "ae14cf90e29b12134a53383691c98c73dee5d422",
+        "vae_encoder/model.onnx": "6be23fdf564e179787f66056a0fa94d489a1d88528d48d1bbef875166d1bd0bb"
+      },
+      "files": [
+        [
+          ".gitattributes",
+          1519
+        ],
+        [
+          "LICENSE.md",
+          11852
+        ],
+        [
+          "README.md",
+          5883
+        ],
+        [
+          "image_quality_one_step.png",
+          203741
+        ],
+        [
+          "model_index.json",
+          685
+        ],
+        [
+          "output_tile.jpg",
+          744087
+        ],
+        [
+          "prompt_alignment_one_step.png",
+          204304
+        ],
+        [
+          "scheduler/scheduler_config.json",
+          459
+        ],
+        [
+          "sd_xl_turbo_1.0.safetensors",
+          13875761366
+        ],
+        [
+          "sd_xl_turbo_1.0_fp16.safetensors",
+          6938081905
+        ],
+        [
+          "text_encoder/config.json",
+          565
+        ],
+        [
+          "text_encoder/model.fp16.safetensors",
+          246144152
+        ],
+        [
+          "text_encoder/model.onnx",
+          492587458
+        ],
+        [
+          "text_encoder/model.safetensors",
+          492265168
+        ],
+        [
+          "text_encoder_2/config.json",
+          575
+        ],
+        [
+          "text_encoder_2/model.fp16.safetensors",
+          1389382176
+        ],
+        [
+          "text_encoder_2/model.onnx",
+          1042018
+        ],
+        [
+          "text_encoder_2/model.onnx_data",
+          2778639360
+        ],
+        [
+          "text_encoder_2/model.safetensors",
+          2778702264
+        ],
+        [
+          "tokenizer/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer/special_tokens_map.json",
+          586
+        ],
+        [
+          "tokenizer/tokenizer_config.json",
+          704
+        ],
+        [
+          "tokenizer/vocab.json",
+          1059962
+        ],
+        [
+          "tokenizer_2/merges.txt",
+          524619
+        ],
+        [
+          "tokenizer_2/special_tokens_map.json",
+          460
+        ],
+        [
+          "tokenizer_2/tokenizer_config.json",
+          855
+        ],
+        [
+          "tokenizer_2/vocab.json",
+          1059962
+        ],
+        [
+          "unet/config.json",
+          1776
+        ],
+        [
+          "unet/diffusion_pytorch_model.fp16.safetensors",
+          5135149760
+        ],
+        [
+          "unet/diffusion_pytorch_model.safetensors",
+          10270077736
+        ],
+        [
+          "unet/model.onnx",
+          7291775
+        ],
+        [
+          "unet/model.onnx_data",
+          10269854720
+        ],
+        [
+          "vae/config.json",
+          607
+        ],
+        [
+          "vae/diffusion_pytorch_model.fp16.safetensors",
+          167335342
+        ],
+        [
+          "vae/diffusion_pytorch_model.safetensors",
+          334643268
+        ],
+        [
+          "vae_decoder/config.json",
+          607
+        ],
+        [
+          "vae_decoder/model.onnx",
+          198093688
+        ],
+        [
+          "vae_encoder/config.json",
+          607
+        ],
+        [
+          "vae_encoder/model.onnx",
+          136775724
+        ]
+      ],
+      "gated": false,
+      "model_index": "{\n  \"_class_name\": \"StableDiffusionXLPipeline\",\n  \"_diffusers_version\": \"0.24.0.dev0\",\n  \"feature_extractor\": [\n    null,\n    null\n  ],\n  \"force_zeros_for_empty_prompt\": true,\n  \"image_encoder\": [\n    null,\n    null\n  ],\n  \"scheduler\": [\n    \"diffusers\",\n    \"EulerAncestralDiscreteScheduler\"\n  ],\n  \"text_encoder\": [\n    \"transformers\",\n    \"CLIPTextModel\"\n  ],\n  \"text_encoder_2\": [\n    \"transformers\",\n    \"CLIPTextModelWithProjection\"\n  ],\n  \"tokenizer\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"tokenizer_2\": [\n    \"transformers\",\n    \"CLIPTokenizer\"\n  ],\n  \"unet\": [\n    \"diffusers\",\n    \"UNet2DConditionModel\"\n  ],\n  \"vae\": [\n    \"diffusers\",\n    \"AutoencoderKL\"\n  ]\n}\n"
     },
     "stabilityai/stable-diffusion-3.5-medium@b940f670f0eda2d07fbb75229e779da1ad11eb80": {
       "blobs": {

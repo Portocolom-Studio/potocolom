@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     realtime_slots: int = 4  # upper bound; DiffusersEngine calibrates down at warmup
     heartbeat_seconds: float = 30.0
     models_dir: str = ""  # manifests directory; empty runs the simulated engine
+    # false: serve only the operator manifests in models_dir (an upscale-only worker).
+    bundled_manifests: bool = True
     # Exclusive flock path for a single local worker (make dev-start sets this).
     worker_lock: str = ""
     inference_seconds: float = 0.15  # simulated engine only
