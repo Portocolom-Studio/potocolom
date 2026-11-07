@@ -56,6 +56,142 @@ project_worker_profile() {
 	return 0
 }
 
+# Replaces the three keys that share a host Hugging Face cache in an env file.
+# An empty DIR removes them. Every other line is kept as it is.
+write_hf_cache_keys() {  # ENV_FILE DIR UID GID
+	local env_file="$1" dir="$2" uid="$3" gid="$4" tmp
+	tmp="$(mktemp "$(dirname "$env_file")/.env.XXXXXX")"
+	chmod 600 "$tmp"
+	awk -v dir="$dir" -v uid="$uid" -v gid="$gid" '
+		/^[[:space:]]*(export[[:space:]]+)?(HF_CACHE_DIR|WORKER_UID|WORKER_GID)[[:space:]]*[:=]/ { next }
+		{ print }
+		END {
+			if (dir != "") {
+				print "HF_CACHE_DIR=" dir
+				print "WORKER_UID=" uid
+				print "WORKER_GID=" gid
+			}
+		}
+	' "$env_file" >"$tmp"
+	mv "$tmp" "$env_file"
+}
+
+# True when one of two absolute paths is the other or lies inside it.
+paths_overlap() {  # PATH_A PATH_B
+	[[ "$2/" == "${1%/}/"* || "$1/" == "${2%/}/"* ]]
+}
+
+# Shares a host Hugging Face hub directory with the release workers. It runs
+# before the live install changes, so a refusal leaves $DIR as it was. The
+# path is resolved first, and the resolved path is what every check and the
+# saved value use. The worker runs as the owner of the directory, so every file
+# in it must belong to that owner; a root worker that wrote there before needs
+# a chown first.
+share_host_hf_cache() {  # PATH
+	local path="$1" resolved uid gid offender
+	if [[ "$path" != /* ]]; then
+		echo "error: POTOCOLOM_HF_CACHE must be an absolute path, the hub directory of a Hugging Face cache; nothing was changed" >&2
+		exit 1
+	fi
+	# realpath -m also resolves a path that does not exist yet, so the overlap
+	# refusal does not depend on the directory being there.
+	resolved="$(realpath -m -- "$path")"
+	if paths_overlap "$resolved" /models || paths_overlap "$resolved" /tmp/worker-home; then
+		echo "error: POTOCOLOM_HF_CACHE $resolved is, or is inside or above, /models or /tmp/worker-home, the worker's own paths; choose another directory; nothing was changed" >&2
+		exit 1
+	fi
+	if [[ ! -d "$resolved" ]]; then
+		echo "error: POTOCOLOM_HF_CACHE $resolved is not a directory; nothing was changed" >&2
+		exit 1
+	fi
+	path="$resolved"
+	# The value is saved without quoting, so only these characters are allowed.
+	if [[ "$path" == *[!A-Za-z0-9._/@+-]* ]]; then
+		echo "error: POTOCOLOM_HF_CACHE $path has a character that is not allowed; use only letters, digits and . _ / @ + - in the path (no spaces, quotes, dollar signs or new lines); nothing was changed" >&2
+		exit 1
+	fi
+	# The token file lives beside the hub directory. Sharing a Hugging Face home
+	# would mount that token, so the hub child is the directory to pass.
+	if [[ -e "$path/token" || -e "$path/stored_tokens" || ( "$(basename "$path")" == huggingface && -d "$path/hub" ) ]]; then
+		echo "error: $path is a Hugging Face home directory, and sharing it would expose its token; pass its hub child instead: $path/hub; nothing was changed" >&2
+		exit 1
+	fi
+	if docker info --format '{{.SecurityOptions}}' 2>/dev/null | grep -q 'name=rootless'; then
+		echo "error: Docker runs rootless here, so the worker cannot drop to the cache owner; the host cache cannot be shared. Nothing was changed." >&2
+		exit 1
+	fi
+	uid="$(id -u)"
+	gid="$(id -g)"
+	if [[ "$uid" == 0 ]]; then
+		echo "error: run the installer as the user that owns the Hugging Face cache, not as root; nothing was changed" >&2
+		exit 1
+	fi
+	# A subtree that cannot be read cannot be shown to belong to the owner, so
+	# a failed search refuses too. -H follows a link given as the path itself.
+	if ! offender="$(find -H "$path" ! -uid "$uid" -print -quit 2>/dev/null)"; then
+		echo "error: could not check the owners of the files in $path; nothing was changed" >&2
+		exit 1
+	fi
+	if [[ -n "$offender" ]]; then
+		echo "error: $path has files that user $uid does not own, for example $offender" >&2
+		echo "  A root worker wrote there before. Give the cache back to your user, then run this again:" >&2
+		echo "    sudo chown -R $uid:$gid $(printf '%q' "$path")" >&2
+		echo "  Nothing was changed." >&2
+		exit 1
+	fi
+	write_hf_cache_keys "$STAGE_ENV" "$path" "$uid" "$gid"
+	echo "The release workers will share the host cache $path, as user $uid."
+}
+
+# Checks, as the cache owner, that a worker container can list and write the
+# shared directory. Host checks cannot see SELinux labels, Snap confinement or
+# uid remapping, so one real container access answers for every distribution.
+# The probe is a plain docker run of the worker image with the entrypoint
+# replaced and no network. It creates no Compose project resources and asks for
+# no GPU, so a GPU fault is never reported as a cache fault. Nothing is chowned
+# and no worker starts. It runs before the live install changes.
+probe_host_cache() {  # SERVICE PATH UID GID
+	local service="$1" path="$2" uid="$3" gid="$4" output info images image
+	# mktemp creates the probe file with O_EXCL under a random name, so a planted
+	# link at a guessable name is never followed or truncated. The trap removes it.
+	# shellcheck disable=SC2016
+	local script='set -e
+ls -- "$1" >/dev/null
+probe="$(mktemp -p "$1" .potocolom-access-probe.XXXXXX)"
+trap "rm -f -- \"\$probe\"" EXIT
+: >"$probe"'
+	# config --images also lists the dependencies of the service, so only the worker image line is taken.
+	if ! images="$(POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" config --images "$service")" \
+		|| ! image="$(grep -F '/potocolom-worker:' <<<"$images" | head -n 1)" || [[ -z "$image" ]]; then
+		echo "error: the release Compose file names no worker image for $service; nothing was changed" >&2
+		exit 1
+	fi
+	if output="$(docker run --rm --network none --user "$uid:$gid" \
+		--mount "type=bind,src=$path,dst=$path" --entrypoint sh "$image" -c "$script" sh "$path" 2>&1)"; then
+		return 0
+	fi
+	# One docker info call names the likely cause. Its failure is tolerated.
+	info="$(docker info --format '{{json .}}' 2>/dev/null || true)"
+	# The captured output always comes first. The causes below are guesses from
+	# docker info: SELinux being on does not prove that SELinux caused this failure.
+	echo "error: the worker container, running as user $uid, cannot read and write $path" >&2
+	echo "  Probe output:" >&2
+	printf '%s\n' "$output" | sed 's/^/    /' >&2
+	if [[ "$info" == *'name=selinux'* ]]; then
+		echo "  Possible cause: SELinux blocks the mount. Relabel the directory, then run this again:" >&2
+		echo "    sudo chcon -R -t container_file_t $(printf '%q' "$path")" >&2
+		echo "  A full relabel can reset that label. semanage fcontext makes it permanent." >&2
+	elif [[ "$info" == *'"DockerRootDir":"/var/snap/docker'* ]]; then
+		echo "  Possible cause: Snap Docker cannot mount hidden folders or most paths outside /home." >&2
+		echo "  Move the cache to a folder under /home that is not hidden, or install Docker from your distribution or docker.com." >&2
+	elif [[ "$info" == *'"OperatingSystem":"Docker Desktop"'* || "$info" == *'name=userns'* ]]; then
+		echo "  Possible cause: this Docker has remapped user ids, so the worker cannot own the cache files." >&2
+		echo "  Use Docker Engine without userns-remap." >&2
+	fi
+	echo "  Nothing was changed." >&2
+	exit 1
+}
+
 # Checks that the database's Alembic revision is known to the release being
 # installed. The release's own Alembic scripts answer, so no database connection
 # is made. backend/tests/test_install_revision_probe.py runs it.
@@ -225,7 +361,7 @@ target_revision_verdict() {
 # the restore command for the newest backup this release knows, when there is one.
 # That restore runs the release being installed, which knows the backup's revision.
 refuse_newer_database() {
-	local revision="$1" name rev newest="" verdict
+	local revision="$1" name rev newest="" verdict hf_cache=""
 	local pattern='^(v[0-9]+\.[0-9]+\.[0-9]+|source)-([A-Za-z0-9_]+)-[0-9]{8}T[0-9]{6}Z$'
 	echo "error: the database is at Alembic revision $revision, which release $VERSION does not know." >&2
 	echo "  A newer release migrated it. Running $VERSION on it could damage data, so the upgrade is refused." >&2
@@ -244,7 +380,13 @@ refuse_newer_database() {
 		echo "  Or restore the newest backup that $VERSION knows, into a new project:" >&2
 		echo "    docker compose -p $(printf '%q' "$PROJECT") --env-file $(printf '%q' "$ENV_FILE") -f $(printf '%q' "$DIR/deploy/compose/compose.yml") down" >&2
 		echo "    COMPOSE_PROFILES=$(printf '%q' "$profile") POTOCOLOM_VERSION=$(printf '%q' "$VERSION") COMPOSE_FILE=$(printf '%q' "$newest/compose.yml") COMPOSE_PROJECT_NAME=$(printf '%q' "${PROJECT}-restored") $(printf '%q' "$DIR/scripts/restore.sh") $(printf '%q' "$newest")" >&2
-		echo "  The restored project starts with an empty model cache." >&2
+		# The backup env file is a copy of .env, so a shared cache key is restored with it.
+		hf_cache="$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}HF_CACHE_DIR[[:space:]]*=[[:space:]]*//p' "$newest/env" 2>/dev/null | tail -n 1)" || true
+		if [[ -n "$hf_cache" ]]; then
+			echo "  The restored project shares the host model cache $hf_cache again, so removing a model there deletes its files in that cache." >&2
+		else
+			echo "  The restored project starts with an empty models volume." >&2
+		fi
 	fi
 	exit 1
 }
@@ -571,6 +713,9 @@ main() {
 	# The same holds for COMPOSE_PROFILES: an inherited value would pick the
 	# worker. The profile this install runs is saved in .env instead.
 	unset COMPOSE_PROFILES
+	# The same holds for the shared-cache keys: an inherited value would replace
+	# the one .env saves. POTOCOLOM_HF_CACHE is the only way to set them here.
+	unset HF_CACHE_DIR WORKER_UID WORKER_GID
 
 	DIR="${POTOCOLOM_DIR:-$HOME/potocolom}"
 	# A relative path would break once the bundle is extracted from inside DIR.
@@ -689,6 +834,25 @@ main() {
 		echo "Upgrading $saved_version to $VERSION"
 	fi
 
+	# Until POTOCOLOM_HF_CACHE is named, a host cache that is not shared is only
+	# mentioned. Nothing is asked and nothing is saved.
+	if [[ "${POTOCOLOM_HF_CACHE+x}" != x ]] && ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?HF_CACHE_DIR[[:space:]]*[:=]' "$ENV_FILE" 2>/dev/null; then
+		hub="${HF_HUB_CACHE:-${HF_HOME:-${XDG_CACHE_HOME:-$HOME/.cache}/huggingface}/hub}"
+		if resolved="$(realpath -e -- "$hub" 2>/dev/null)"; then hub="$resolved"; fi
+		repos=0
+		if [[ -d "$hub" ]]; then
+			repos="$(find -H "$hub" -mindepth 1 -maxdepth 1 -name 'models--*' -type d 2>/dev/null | wc -l | tr -d ' ')" || repos=0
+		fi
+		if ((repos > 0)); then
+			# The hint names the install directory when it is not the default, as the public URL hint does.
+			hint_prefix=""
+			if [[ "$DIR" != "$HOME/potocolom" ]]; then
+				hint_prefix="POTOCOLOM_DIR=$(printf '%q' "$DIR") "
+			fi
+			echo "Found $repos Hugging Face model repositories in $hub. To share them with the workers, run: curl -fsSL $BASE_URL/install.sh | ${hint_prefix}POTOCOLOM_HF_CACHE=$(printf '%q' "$hub") bash. Removing a model in the studio then deletes its pinned files there, which other tools on this host may read."
+		fi
+	fi
+
 	# Profile precedence: POTOCOLOM_PROFILE in the shell, then the profile saved
 	# in .env, then the worker containers of this project, then detection. Only
 	# an explicit POTOCOLOM_PROFILE may change the profile of a running install.
@@ -731,6 +895,22 @@ main() {
 	# commands see the resolved profile and nothing the old .env adds.
 	stage_compose=(env COMPOSE_PROFILES="$profile" docker compose -p "$PROJECT" --env-file "$STAGE_ENV" -f "$STAGE_COMPOSE" --profile "$profile")
 
+	# Sharing a host cache is staged before preflight, so the cache report shows
+	# the new choice. Nothing in $DIR changes here: the keys go into the staged
+	# .env, which the swap publishes. A fresh install has no staged .env until
+	# ensure-env writes one, so it runs first; preflight then keeps that .env.
+	if [[ "${POTOCOLOM_HF_CACHE+x}" == x ]]; then
+		if [[ ! -f "$STAGE_ENV" ]]; then
+			ENV_FILE="$STAGE_ENV" bash "$STAGE/scripts/ensure-env.sh"
+		fi
+		if [[ -z "$POTOCOLOM_HF_CACHE" ]]; then
+			write_hf_cache_keys "$STAGE_ENV" "" "" ""
+			echo "The release workers use their own model volume again; the host cache is no longer shared."
+		else
+			share_host_hf_cache "$POTOCOLOM_HF_CACHE"
+		fi
+	fi
+
 	disk_probe="$DIR"
 	while [[ ! -e "$disk_probe" ]]; do disk_probe="$(dirname "$disk_probe")"; done
 	if ! ENV_FILE="$STAGE_ENV" POTOCOLOM_PROFILE="$profile" POTOCOLOM_DISK_PATH="$disk_probe" bash "$STAGE/scripts/preflight.sh"; then
@@ -754,6 +934,26 @@ main() {
 	done <<<"$images"
 	if [[ "$missing_images" == true ]]; then
 		POTOCOLOM_VERSION="$VERSION" "${stage_compose[@]}" pull
+	fi
+
+	# A shared host cache is probed as its owner before anything changes. The
+	# staged .env holds the saved keys, so a share from this run and a share kept
+	# by an upgrade are both checked. Profile api has no worker to probe.
+	worker_service=""
+	case "$profile" in
+	gpu) worker_service=worker ;;
+	rocm) worker_service=worker-rocm ;;
+	esac
+	if [[ -n "$worker_service" && -f "$STAGE_ENV" ]]; then
+		if ! shared_path="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" HF_CACHE_DIR)" \
+			|| ! shared_uid="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" WORKER_UID)" \
+			|| ! shared_gid="$(install_compose_value "$STAGE_ENV" "$STAGE_COMPOSE" WORKER_GID)"; then
+			echo "error: Compose could not read $STAGE_ENV; nothing was changed" >&2
+			exit 1
+		fi
+		if [[ -n "$shared_path" ]]; then
+			probe_host_cache "$worker_service" "$shared_path" "$shared_uid" "$shared_gid"
+		fi
 	fi
 
 	# The bundle is checked against the live tree before the install is stopped or
