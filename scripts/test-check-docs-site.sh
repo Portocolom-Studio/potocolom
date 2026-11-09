@@ -17,6 +17,7 @@ printf 'a\n' >docs/other.md
 printf -- '---\nsource: docs/self-hosting.md "First run"\n---\na\n' >frontend/src/lib/docs/pages/guide/start.md
 printf -- '---\nsource: README.md\n---\na\n' >frontend/src/lib/docs/pages/guide/intro.md
 printf -- '---\nsource: docs/README.md\n---\na\n' >frontend/src/lib/docs/pages/guide/notes.md
+printf "const PAGE_ICONS = {\n\t'guide/start': 'book',\n\t'guide/intro': 'book',\n\t'guide/notes': 'book'\n};\n" >frontend/src/lib/docs/icons.ts
 git add -A && git commit -qm base
 base=$(git rev-parse HEAD)
 
@@ -47,5 +48,16 @@ expect fail "README.md is matched as its own path"
 printf 'b\n' >>README.md
 printf 'b\n' >>frontend/src/lib/docs/pages/guide/notes.md && git commit -qam wrong-page
 expect fail "a page that mirrors docs/README.md does not cover README.md"
+
+printf 'a\n' >frontend/src/lib/docs/pages/guide/new.md && git add -A && git commit -qm new-page
+expect fail "a new page with no icon"
+
+printf 'a\n' >frontend/src/lib/docs/pages/guide/new.md && git add -A && git commit -qm new-page -m 'Docs-site: no icon'
+expect fail "a Docs-site trailer does not skip the icon check"
+
+printf 'a\n' >frontend/src/lib/docs/pages/guide/new.md
+sed -i "s|'guide/notes': 'book'|'guide/notes': 'book',\\n\\t'guide/new': 'book'|" frontend/src/lib/docs/icons.ts
+git add -A && git commit -qm new-page-icon
+expect pass "a new page with its icon"
 
 echo "check-docs-site: all cases pass"
