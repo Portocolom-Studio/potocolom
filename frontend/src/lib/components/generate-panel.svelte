@@ -194,8 +194,10 @@
 		pendingResultIds = new Set([...pendingResultIds].filter((id) => !finishedIds.includes(id)));
 		if (!revealResult || stageEl === null || !window.matchMedia('(max-width: 1023px)').matches)
 			return;
+		// Only a stage fully in view counts: its top edge alone can peek above the
+		// fold while the result itself sits below it.
 		const bounds = stageEl.getBoundingClientRect();
-		if (bounds.bottom > 0 && bounds.top < window.innerHeight) return;
+		if (bounds.top >= 0 && bounds.bottom <= window.innerHeight) return;
 		stageEl.scrollIntoView({
 			block: 'start',
 			behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
@@ -252,12 +254,6 @@
 			shown.assets.length > 0 &&
 			imageToImageModels.length > 0
 	);
-	const canUpscale = $derived(
-		worker.online !== false &&
-			upscaleModel != null &&
-			(sourceAsset !== null ||
-				(shown !== null && shown.assets.length > 0 && shown.state === 'succeeded'))
-	);
 	const stepsRange = $derived(stepsSpec(selectedModel));
 	const guidanceRange = $derived(guidanceSpec(selectedModel));
 	const strengthRange = $derived(strengthSpec(selectedModel));
@@ -297,6 +293,9 @@
 			shown?.assets[0] ??
 			knownAssets.find((asset) => asset.id === shown?.source_asset_id) ??
 			null
+	);
+	const canUpscale = $derived(
+		worker.online !== false && upscaleModel != null && upscaleSourceAsset !== null
 	);
 	const upscaleSource = $derived(
 		upscaleSourceAsset !== null

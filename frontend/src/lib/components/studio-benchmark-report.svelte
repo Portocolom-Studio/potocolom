@@ -44,7 +44,7 @@
 		</Button>
 	</div>
 
-	<StudioBenchmarkChart stats={report.model_stats} {report} />
+	<StudioBenchmarkChart stats={report.model_stats} />
 
 	<StudioBenchmarkRunTimeline {report} />
 
@@ -67,9 +67,7 @@
 				{#each benchmarkRows as row (row.model_id)}
 					<tr class="border-border border-t">
 						<td class="px-3 py-2 tabular-nums">{row.rank}</td>
-						<td class="px-3 py-2 font-medium"
-							>{benchmarkModelName(row.model_id, report, studio.models)}</td
-						>
+						<td class="px-3 py-2 font-medium">{benchmarkModelName(row.model_id, studio.models)}</td>
 						<td class="px-3 py-2 tabular-nums">{row.gpu_display}</td>
 						<td class="px-3 py-2 tabular-nums">{row.wall_display}</td>
 					</tr>

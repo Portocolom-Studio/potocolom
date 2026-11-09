@@ -590,6 +590,7 @@
 	"app.images.created": "Creada",
 	"app.images.parameters": "Parámetros",
 	"app.images.action_upscale": "Ampliar esta imagen",
+	"app.images.action_edit": "Editar esta imagen",
 	"app.images.action_generate_prompt": "Generar desde este prompt",
 	"app.images.delta_action": "acción",
 	"app.images.delta_added": "añadido",

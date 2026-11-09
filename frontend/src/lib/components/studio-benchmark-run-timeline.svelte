@@ -39,7 +39,7 @@
 			.filter((modelId) => byModel.has(modelId))
 			.map((modelId, index) => ({
 				key: modelId,
-				label: benchmarkModelName(modelId, report, studio.models),
+				label: benchmarkModelName(modelId, studio.models),
 				color: chartColor(index),
 				data: byModel.get(modelId)
 			}))

@@ -13,6 +13,7 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import ScanLineIcon from '@lucide/svelte/icons/scan-line';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import StarIcon from '@lucide/svelte/icons/star';
@@ -1204,6 +1205,7 @@
 	const canGenerateFromPrompt = $derived(
 		mayCreate && selectedPrompt !== '' && textToImageModels.length > 0
 	);
+	const canEditSelected = $derived(mayCreate && selectedHasBytes && imageToImageModels.length > 0);
 	const canUpscaleSelected = $derived(mayCreate && selectedHasBytes && upscaleModels.length > 0);
 	const selectedPathEdgeIds = $derived.by(() => {
 		if (studio.lineageSelectedAssetId === null) return new Set<string>();
@@ -1937,6 +1939,9 @@
 			);
 			if (!covered) return candidate;
 		}
+		// Accepted overlap: below the card band the cards turn into tiles
+		// and lose their text anyway, so a crowded short viewport keeps full size and
+		// the user pans the last card out from under the floating toolbar.
 		return 1;
 	}
 
@@ -3372,13 +3377,25 @@
 				<Button
 					variant="outline"
 					size="sm"
-					class="col-span-2"
+					class={imageToImageModels.length > 0 ? '' : 'col-span-2'}
 					disabled={!canUpscaleSelected}
 					onclick={() => openFromSelection('upscale')}
 				>
 					<ScanLineIcon />
 					{t('app.images.action_upscale')}
 				</Button>
+				<!-- Shown only where the install can edit at all; a dead button reads as a missing feature. -->
+				{#if imageToImageModels.length > 0}
+					<Button
+						variant="outline"
+						size="sm"
+						disabled={!canEditSelected}
+						onclick={() => openFromSelection('image_to_image')}
+					>
+						<PencilIcon />
+						{t('app.images.action_edit')}
+					</Button>
+				{/if}
 				<Button
 					variant="brand"
 					size="sm"

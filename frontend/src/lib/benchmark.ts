@@ -30,8 +30,6 @@ export type ModelStats = {
 
 export type BenchmarkReport = {
 	created_at: string;
-	/** The manifests the run measured; they name models that are no longer installed. */
-	manifests?: { id: string; name?: string }[];
 	target_vram_gb?: number;
 	prompt_count: number;
 	models: string[];
@@ -256,16 +254,10 @@ export function mayReadSessions({
 	return role === 'admin';
 }
 
-/** Names a benchmarked model: from the report's own manifests, then the models
- * connected now, then its id. */
+/** Names a benchmarked model from the models connected now, else its id. */
 export function benchmarkModelName(
 	id: string,
-	report: Pick<BenchmarkReport, 'manifests'> | null,
 	models: readonly { id: string; name: string }[]
 ): string {
-	return (
-		report?.manifests?.find((manifest) => manifest.id === id)?.name ??
-		models.find((model) => model.id === id)?.name ??
-		id
-	);
+	return models.find((model) => model.id === id)?.name ?? id;
 }

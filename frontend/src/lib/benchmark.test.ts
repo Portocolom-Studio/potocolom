@@ -91,10 +91,8 @@ test('a failed config probe does not ask', () => {
 	assert.equal(mayReadSessions({ authMethods: null, hasCsrf: false, role: null }), false);
 });
 
-test('benchmarkModelName prefers the report manifest, then live models, then the id', () => {
-	const report = { manifests: [{ id: 'kromoss', name: 'Kromoss' }] };
+test('benchmarkModelName names a connected model and falls back to its id', () => {
 	const models = [{ id: 'ssd-1b', name: 'SSD-1B' }];
-	assert.equal(benchmarkModelName('kromoss', report, models), 'Kromoss');
-	assert.equal(benchmarkModelName('ssd-1b', report, models), 'SSD-1B');
-	assert.equal(benchmarkModelName('sd-sim', null, models), 'sd-sim');
+	assert.equal(benchmarkModelName('ssd-1b', models), 'SSD-1B');
+	assert.equal(benchmarkModelName('sd-sim', models), 'sd-sim');
 });
