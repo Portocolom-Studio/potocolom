@@ -123,12 +123,15 @@ test('view preferences follow UUID owners and role changes advance the epoch', a
 	const ownerB = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440001' };
 	studio.activateViewOwner(ownerA, 'admin');
 	const epoch = studio.viewOwnerEpoch();
-	studio.saveMetricsPreferences({
-		tab: 'benchmarks',
-		usageRange: '24h',
-		mineRange: '7d',
-		selectedSessionId: '2026-10-27T12:00:00Z'
-	});
+	studio.saveMetricsPreferences(
+		{
+			tab: 'benchmarks',
+			usageRange: '24h',
+			mineRange: '7d',
+			selectedSessionId: '2026-10-27T12:00:00Z'
+		},
+		studio.viewOwnerEpoch()
+	);
 	studio.activateViewOwner(ownerB, 'user');
 	assert.ok(studio.viewOwnerEpoch() > epoch);
 	assert.equal(studio.getMetricsPreferences().tab, 'usage');
@@ -156,25 +159,31 @@ test('openImages resets collection resume state only when All or Starred changes
 	);
 	const allAnchor = '550e8400-e29b-41d4-a716-446655440010';
 	const allAsset = '550e8400-e29b-41d4-a716-446655440011';
-	studio.saveImagesPreferences({
-		...studio.getImagesPreferences(),
-		mode: 'grid',
-		action: 'upscale',
-		search: 'keep this search',
-		filters: { ...studio.getImagesPreferences().filters, models: ['model-a'], range: 'last7' },
-		gridAnchor: { id: allAnchor, beforeCursor: null, offset: 23 },
-		gridSelectionId: allAsset,
-		lineageSelection: { rootId: allAnchor, assetId: allAsset }
-	});
-	studio.saveLineageViewport({
-		translateX: 12,
-		translateY: 34,
-		scale: 1.25,
-		rootId: allAnchor,
-		anchorX: 4,
-		anchorY: 5
-	});
-	studio.saveLineageTreeOffsets({ [allAnchor]: { x: 56, y: 78 } });
+	studio.saveImagesPreferences(
+		{
+			...studio.getImagesPreferences(),
+			mode: 'grid',
+			action: 'upscale',
+			search: 'keep this search',
+			filters: { ...studio.getImagesPreferences().filters, models: ['model-a'], range: 'last7' },
+			gridAnchor: { id: allAnchor, beforeCursor: null, offset: 23 },
+			gridSelectionId: allAsset,
+			lineageSelection: { rootId: allAnchor, assetId: allAsset }
+		},
+		studio.viewOwnerEpoch()
+	);
+	studio.saveLineageViewport(
+		{
+			translateX: 12,
+			translateY: 34,
+			scale: 1.25,
+			rootId: allAnchor,
+			anchorX: 4,
+			anchorY: 5
+		},
+		studio.viewOwnerEpoch()
+	);
+	studio.saveLineageTreeOffsets({ [allAnchor]: { x: 56, y: 78 } }, studio.viewOwnerEpoch());
 
 	studio.openImages(true);
 	let prefs = studio.getImagesPreferences();
@@ -199,12 +208,15 @@ test('openImages resets collection resume state only when All or Starred changes
 
 	const starredAnchor = '550e8400-e29b-41d4-a716-446655440020';
 	const starredAsset = '550e8400-e29b-41d4-a716-446655440021';
-	studio.saveImagesPreferences({
-		...prefs,
-		gridAnchor: { id: starredAnchor, beforeCursor: allAnchor, offset: 17 },
-		gridSelectionId: starredAsset,
-		lineageSelection: { rootId: starredAnchor, assetId: starredAsset }
-	});
+	studio.saveImagesPreferences(
+		{
+			...prefs,
+			gridAnchor: { id: starredAnchor, beforeCursor: allAnchor, offset: 17 },
+			gridSelectionId: starredAsset,
+			lineageSelection: { rootId: starredAnchor, assetId: starredAsset }
+		},
+		studio.viewOwnerEpoch()
+	);
 	studio.openImages(true);
 	prefs = studio.getImagesPreferences();
 	assert.deepEqual(prefs.gridAnchor, { id: starredAnchor, beforeCursor: allAnchor, offset: 17 });
@@ -595,17 +607,160 @@ test('moving an old tree offset preserves it during bounded eviction', async () 
 			{ x: index, y: -index }
 		])
 	);
-	studio.saveLineageTreeOffsets(offsets);
+	studio.saveLineageTreeOffsets(offsets, studio.viewOwnerEpoch());
 	const movedOld = {
 		...offsets,
 		'550e8400-e29b-41d4-a716-000000000000': { x: 9999, y: 9999 }
 	};
-	studio.saveLineageTreeOffsets(movedOld);
+	studio.saveLineageTreeOffsets(movedOld, studio.viewOwnerEpoch());
 	assert.equal(Object.keys(studio.studio.lineageTreeOffsets).length, 1024);
 	assert.deepEqual(studio.studio.lineageTreeOffsets['550e8400-e29b-41d4-a716-000000000000'], {
 		x: 9999,
 		y: 9999
 	});
+});
+
+// Each save below is captured while owner A is active, then owner B takes over.
+// The stale save must leave memory and storage alone; the same save made with
+// the current epoch must take effect.
+test('stale metrics preference saves from an earlier owner are dropped', async () => {
+	const values = new Map<string, string>();
+	stub('localStorage', storage(values));
+	const studio = await freshStudio();
+	const ownerA = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440000' };
+	const ownerB = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440001' };
+	studio.activateViewOwner(ownerA, 'admin');
+	const staleEpoch = studio.viewOwnerEpoch();
+	studio.activateViewOwner(ownerB, 'user');
+	const written = new Map(values);
+
+	studio.saveMetricsPreferences(
+		{ ...studio.getMetricsPreferences(), tab: 'benchmarks' },
+		staleEpoch
+	);
+	assert.equal(studio.getMetricsPreferences().tab, 'usage');
+	assert.deepEqual(values, written);
+
+	studio.saveMetricsPreferences(
+		{ ...studio.getMetricsPreferences(), tab: 'benchmarks' },
+		studio.viewOwnerEpoch()
+	);
+	assert.equal(studio.getMetricsPreferences().tab, 'benchmarks');
+	assert.notDeepEqual(values, written);
+});
+
+test('stale images preference saves from an earlier owner are dropped', async () => {
+	const values = new Map<string, string>();
+	stub('localStorage', storage(values));
+	const studio = await freshStudio();
+	const ownerA = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440000' };
+	const ownerB = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440001' };
+	studio.activateViewOwner(ownerA, 'admin');
+	const staleEpoch = studio.viewOwnerEpoch();
+	studio.activateViewOwner(ownerB, 'user');
+	const written = new Map(values);
+
+	studio.saveImagesPreferences(
+		{ ...studio.getImagesPreferences(), starredOnly: true, search: 'stale search' },
+		staleEpoch
+	);
+	assert.equal(studio.getImagesPreferences().search, '');
+	assert.equal(studio.getImagesPreferences().starredOnly, false);
+	assert.equal(studio.studio.imagesStarredOnly, false);
+	assert.deepEqual(values, written);
+
+	studio.saveImagesPreferences(
+		{ ...studio.getImagesPreferences(), starredOnly: true, search: 'fresh search' },
+		studio.viewOwnerEpoch()
+	);
+	assert.equal(studio.getImagesPreferences().search, 'fresh search');
+	assert.equal(studio.studio.imagesStarredOnly, true);
+	assert.notDeepEqual(values, written);
+});
+
+test('stale lineage viewport saves from an earlier owner are dropped', async () => {
+	const values = new Map<string, string>();
+	stub('localStorage', storage(values));
+	const studio = await freshStudio();
+	const ownerA = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440000' };
+	const ownerB = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440001' };
+	studio.activateViewOwner(ownerA, 'admin');
+	const staleEpoch = studio.viewOwnerEpoch();
+	studio.activateViewOwner(ownerB, 'user');
+	const written = new Map(values);
+	const before = studio.studio.lineageViewport;
+	const viewport = {
+		translateX: 12,
+		translateY: 34,
+		scale: 1.25,
+		rootId: '550e8400-e29b-41d4-a716-446655440010',
+		anchorX: 4,
+		anchorY: 5
+	};
+
+	studio.saveLineageViewport(viewport, staleEpoch);
+	assert.deepEqual(studio.studio.lineageViewport, before);
+	assert.deepEqual(values, written);
+
+	studio.saveLineageViewport(viewport, studio.viewOwnerEpoch());
+	assert.deepEqual(studio.studio.lineageViewport, viewport);
+	assert.notDeepEqual(values, written);
+});
+
+test('stale lineage tree offset saves from an earlier owner are dropped', async () => {
+	const values = new Map<string, string>();
+	stub('localStorage', storage(values));
+	const studio = await freshStudio();
+	const ownerA = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440000' };
+	const ownerB = { kind: 'account' as const, id: '550e8400-e29b-41d4-a716-446655440001' };
+	studio.activateViewOwner(ownerA, 'admin');
+	const staleEpoch = studio.viewOwnerEpoch();
+	studio.activateViewOwner(ownerB, 'user');
+	const written = new Map(values);
+	const before = studio.studio.lineageTreeOffsets;
+	const offsets = { '550e8400-e29b-41d4-a716-446655440010': { x: 56, y: 78 } };
+
+	studio.saveLineageTreeOffsets(offsets, staleEpoch);
+	assert.deepEqual(studio.studio.lineageTreeOffsets, before);
+	assert.deepEqual(values, written);
+
+	studio.saveLineageTreeOffsets(offsets, studio.viewOwnerEpoch());
+	assert.deepEqual(studio.studio.lineageTreeOffsets, offsets);
+	assert.notDeepEqual(values, written);
+});
+
+test('a preference save captured before resetViewOwner does nothing', async () => {
+	const studio = await freshStudio();
+	studio.activateViewOwner({ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440000' }, 'user');
+	const capturedEpoch = studio.viewOwnerEpoch();
+	studio.resetViewOwner();
+	const defaults = studio.getImagesPreferences();
+
+	// The reset owner is null, and writeViewPrefs writes nothing for a null owner,
+	// so this check covers memory only.
+	studio.saveImagesPreferences(
+		{ ...defaults, starredOnly: true, search: 'reset search' },
+		capturedEpoch
+	);
+	assert.deepEqual(studio.getImagesPreferences(), defaults);
+	assert.equal(studio.studio.imagesStarredOnly, false);
+});
+
+test('a lineage viewport save with an epoch that does not exist yet does nothing', async () => {
+	const studio = await freshStudio();
+	studio.activateViewOwner({ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440000' }, 'user');
+	const before = studio.studio.lineageViewport;
+	const viewport = {
+		translateX: 12,
+		translateY: 34,
+		scale: 1.25,
+		rootId: '550e8400-e29b-41d4-a716-446655440010',
+		anchorX: 4,
+		anchorY: 5
+	};
+
+	studio.saveLineageViewport(viewport, studio.viewOwnerEpoch() + 1);
+	assert.deepEqual(studio.studio.lineageViewport, before);
 });
 
 test('toggleStarred moves the list before the star request and rolls it back on failure', async () => {

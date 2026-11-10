@@ -154,20 +154,17 @@
 
 	$effect(() => {
 		const tab = studio.metricsTab;
-		if (ownerEpoch !== viewOwnerEpoch()) return;
-		saveMetricsPreferences({ ...getMetricsPreferences(), tab });
+		saveMetricsPreferences({ ...getMetricsPreferences(), tab }, ownerEpoch);
 	});
 
 	$effect(() => {
 		const range = metricsRange;
-		if (ownerEpoch !== viewOwnerEpoch()) return;
-		saveMetricsPreferences({ ...getMetricsPreferences(), usageRange: range });
+		saveMetricsPreferences({ ...getMetricsPreferences(), usageRange: range }, ownerEpoch);
 	});
 
 	$effect(() => {
 		const selected = selectedSessionId;
-		if (ownerEpoch !== viewOwnerEpoch()) return;
-		saveMetricsPreferences({ ...getMetricsPreferences(), selectedSessionId: selected });
+		saveMetricsPreferences({ ...getMetricsPreferences(), selectedSessionId: selected }, ownerEpoch);
 	});
 	const selectedSession = $derived(
 		sessions.find((entry) => entry.id === selectedSessionId) ??
@@ -273,10 +270,13 @@
 			sessions = merged.sessions;
 			if (merged.selectedSessionId !== currentSelectedId) {
 				selectedSessionId = merged.selectedSessionId;
-				saveMetricsPreferences({
-					...getMetricsPreferences(),
-					selectedSessionId: merged.selectedSessionId
-				});
+				saveMetricsPreferences(
+					{
+						...getMetricsPreferences(),
+						selectedSessionId: merged.selectedSessionId
+					},
+					requestEpoch
+				);
 			}
 			studioCache.write(cacheKey, sessions);
 		} catch {

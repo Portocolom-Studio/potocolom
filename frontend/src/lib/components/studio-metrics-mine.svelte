@@ -61,8 +61,7 @@
 
 	$effect(() => {
 		const currentRange = range;
-		if (ownerEpoch !== viewOwnerEpoch()) return;
-		saveMetricsPreferences({ ...getMetricsPreferences(), mineRange: currentRange });
+		saveMetricsPreferences({ ...getMetricsPreferences(), mineRange: currentRange }, ownerEpoch);
 	});
 
 	// Usage rows carry ids; show the names people chose from. A model no longer
