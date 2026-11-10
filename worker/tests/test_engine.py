@@ -1702,6 +1702,24 @@ def test_pipeline_refuses_zero_floor_manifest_at_zero_usable_vram():
     assert engine.model_rung(manifest.id) is None
 
 
+def test_refused_load_of_a_non_resident_model_clears_its_recorded_rung():
+    # load_model and an out-of-memory demotion both record a rung before the
+    # pipeline is loaded, so a refusal can find a rung with nothing resident.
+    engine = _admission_engine([1 * 1024**3])
+    engine._rungs["stale"] = "full"
+    manifest = Manifest(
+        id="stale",
+        name="Stale",
+        capabilities=["text_to_image"],
+        min_vram_gb=8,
+    )
+
+    with pytest.raises(ValueError, match="usable VRAM"):
+        engine._ensure_vram(manifest)
+
+    assert engine.model_rung("stale") is None
+
+
 def test_pipeline_admits_group_offload_at_exact_floor():
     engine = _admission_engine([2 * 1024**3])
     pipeline = object()
