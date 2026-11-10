@@ -7,19 +7,15 @@
 
 	let {
 		fieldSide,
-		kicker,
 		heading,
 		headingTail,
-		body,
 		children
 	}: {
 		/** Which side of the page the animated field sits on. */
 		fieldSide: 'start' | 'end';
-		kicker?: string;
 		heading: string;
 		/** A second heading line, set in the muted tone. */
 		headingTail?: string;
-		body?: string;
 		children: Snippet;
 	} = $props();
 </script>
@@ -37,12 +33,10 @@
 	<div class="field">
 		<ParticleSea variant="field" />
 		<div class="overlay">
-			{#if kicker}<p class="kicker">{kicker}</p>{/if}
 			<h2 class="heading">
 				<span>{heading}</span>
 				{#if headingTail}<span class="tail">{headingTail}</span>{/if}
 			</h2>
-			{#if body}<p class="body">{body}</p>{/if}
 		</div>
 	</div>
 </main>
@@ -113,15 +107,6 @@
 		pointer-events: none;
 	}
 
-	.kicker {
-		margin: 0 0 1rem;
-		color: #a9b9ff;
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		letter-spacing: 0.02em;
-	}
-
 	.heading {
 		margin: 0;
 		color: #f4f6fb;
@@ -137,14 +122,6 @@
 
 	.heading .tail {
 		color: #9aa4bd;
-	}
-
-	.body {
-		max-inline-size: 26rem;
-		margin: 1rem 0 0;
-		color: #9aa4bd;
-		font-size: 0.9375rem;
-		line-height: 1.6;
 	}
 
 	/* Form controls. The primitives keep their markup; these set the colours,
@@ -241,8 +218,8 @@
 		outline-offset: 2px;
 	}
 
-	/* Below 56rem the field is a band above the form. The brand row moves to
-	   the top of the page and the overlay keeps only the optional kicker. */
+	/* Below 56rem the field is a short band above the form. The brand row moves
+	   to the top of the page and the text overlay is hidden. */
 	@media (max-width: 55.99rem) {
 		.split,
 		.split.field-start {
@@ -260,7 +237,7 @@
 
 		.field {
 			order: -1;
-			flex: 0 0 12rem;
+			flex: 0 0 8rem;
 			border-inline-start: 0;
 			border-block-end: 1px solid #1c2440;
 		}
@@ -271,15 +248,15 @@
 
 		.form-wrap {
 			order: 0;
-			padding: 0 1.25rem 2.5rem;
+			justify-content: flex-start;
+			padding: 1.5rem 1.25rem 2.5rem;
 		}
 
 		.overlay {
 			inset: 1.5rem 1.25rem auto;
 		}
 
-		.heading,
-		.body {
+		.heading {
 			display: none;
 		}
 	}

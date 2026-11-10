@@ -86,12 +86,7 @@
 
 <Seo titleKey="seo.join_title" descriptionKey="seo.join_description" path="/join" noindex />
 
-<AuthSplit
-	fieldSide="start"
-	kicker={t('wl.kicker')}
-	heading={t('wl.title')}
-	body={t('split.cloud_p3')}
->
+<AuthSplit fieldSide="end" heading={t('hero.title1')} headingTail={t('hero.title2')}>
 	{#if landing}
 		<Card.Root>
 			<Card.Header>

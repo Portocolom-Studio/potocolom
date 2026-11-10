@@ -1,8 +1,6 @@
 <script lang="ts">
-	import MailPlusIcon from '@lucide/svelte/icons/mail-plus';
 	import { t } from '$lib/i18n.svelte';
 	import { account } from '$lib/account.svelte';
-	import { Button } from '$lib/components/ui/button';
 	import StudioAdminAudit from '$lib/components/studio-admin-audit.svelte';
 	import StudioAdminBanner from '$lib/components/studio-admin-banner.svelte';
 	import StudioAdminFleet from '$lib/components/studio-admin-fleet.svelte';
@@ -35,21 +33,7 @@
 			openAdmin('models');
 	});
 	const title = $derived(tabs.find((tab) => tab.value === studio.adminTab)?.label ?? '');
-	const description = $derived(
-		studio.adminTab === 'models'
-			? t('app.model_management.description')
-			: studio.adminTab === 'users'
-				? t('app.admin.users_sub')
-				: studio.adminTab === 'audit'
-					? t('app.admin.audit_search_sub')
-					: studio.adminTab === 'fleet'
-						? t('app.admin.fleet_history_sub')
-						: studio.adminTab === 'banner'
-							? t('app.admin.banner_sub')
-							: t('app.admin.invitations_sub')
-	);
-
-	useStudioHeader(() => ({ center: headerTabs, actions: headerActions }));
+	useStudioHeader(() => ({ center: headerTabs }));
 </script>
 
 {#snippet headerTabs()}
@@ -61,25 +45,16 @@
 	/>
 {/snippet}
 
-{#snippet headerActions()}
-	{#if !account.localModeConfirmed && studio.adminTab !== 'invitations'}
-		<Button size="sm" onclick={() => openAdmin('invitations')}>
-			<MailPlusIcon />
-			{t('app.admin.invite_someone')}
-		</Button>
-	{/if}
-{/snippet}
-
 <div class="flex h-full min-h-0 flex-col">
-	<header class="px-4 pt-4 md:sr-only">
-		<h1 class="text-xl font-semibold tracking-[-0.02em]">{title}</h1>
-		<p class="text-muted-foreground mt-1 text-[12.5px]">{description}</p>
-	</header>
-	<nav class="flex flex-wrap gap-1 px-4 pt-3 md:hidden" aria-label={t('app.admin.title')}>
+	<h1 class="sr-only">{title}</h1>
+	<nav
+		class="no-scrollbar flex gap-1 overflow-x-auto border-b border-border px-4 py-3 [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] after:shrink-0 after:basis-4 after:content-[''] md:hidden"
+		aria-label={t('app.admin.title')}
+	>
 		{#each tabs as tab (tab.value)}
 			<button
 				type="button"
-				class={'rounded-md px-2.5 py-1 text-xs font-medium ' +
+				class={'shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ' +
 					(studio.adminTab === tab.value ? 'bg-hover text-foreground' : 'text-muted-foreground')}
 				aria-current={studio.adminTab === tab.value ? 'page' : undefined}
 				onclick={() => openAdmin(tab.value)}>{tab.label}</button

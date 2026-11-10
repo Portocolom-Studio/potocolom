@@ -700,7 +700,7 @@
 
 <div class="flex h-full min-h-0 flex-col md:flex-row">
 	<nav
-		class="border-border flex shrink-0 gap-1 overflow-x-auto border-b px-3 py-2 md:w-[244px] md:flex-col md:gap-0.5 md:overflow-visible md:border-e md:border-b-0 md:px-3 md:py-5"
+		class="border-border no-scrollbar flex shrink-0 [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] gap-1 overflow-x-auto border-b px-4 py-2 md:w-[244px] md:[mask-image:none] md:flex-col md:gap-0.5 md:overflow-visible md:border-e md:border-b-0 md:px-3 md:py-5"
 		aria-label={t('app.account.title')}
 	>
 		<p class="text-dim hidden px-2 pb-2 text-[11px] font-medium md:block">
@@ -720,6 +720,7 @@
 				{entry.label}
 			</button>
 		{/each}
+		<span class="w-6 shrink-0 md:hidden" aria-hidden="true"></span>
 	</nav>
 	<div class="no-scrollbar min-h-0 flex-1 overflow-y-auto">
 		<div class="flex w-full max-w-[760px] flex-col gap-4 px-4 py-8 md:px-12">
@@ -732,9 +733,6 @@
 				<div role="status" class="flex flex-col gap-4">
 					<span class="sr-only">{t('app.account.loading')}</span>
 					<div class="bg-card border-border rounded-[10px] border" aria-hidden="true">
-						<div class="border-border border-b px-4 py-3">
-							<Skeleton class="h-4 w-24 rounded" />
-						</div>
 						<div class="grid gap-3 p-4 sm:grid-cols-2">
 							{#each [0, 1] as index (index)}
 								<div class="flex flex-col gap-2">
@@ -752,9 +750,6 @@
 				{/if}
 				{#if section === 'profile'}
 					<Card.Root class={cardClass}>
-						<Card.Header class="border-border border-b px-4 py-3">
-							<Card.Title class="text-base">{t('app.account.profile')}</Card.Title>
-						</Card.Header>
 						<Card.Content class="flex flex-col gap-3 p-4">
 							<dl class="grid gap-3 text-sm sm:grid-cols-2">
 								<div>
@@ -775,10 +770,6 @@
 
 				{#if section === 'sessions'}
 					<Card.Root class={cardClass}>
-						<Card.Header class="border-border border-b px-4 py-3">
-							<Card.Title class="text-base">{t('app.account.sessions')}</Card.Title>
-							<Card.Description>{t('app.account.sessions_sub')}</Card.Description>
-						</Card.Header>
 						<Card.Content class="p-4">
 							{#if sessionError}
 								<p role="alert" class="text-destructive mb-3 text-sm">{sessionError}</p>
@@ -794,7 +785,7 @@
 													{#if session.current}
 														{t('app.account.this_device')}
 													{:else}
-														<span class="font-mono text-xs break-all">{session.id}</span>
+														{t('app.account.other_session')}
 													{/if}
 												</p>
 												<p class="text-muted-foreground flex flex-wrap gap-x-3 text-xs">
@@ -1060,10 +1051,6 @@
 
 				{#if section === 'signin'}
 					<Card.Root class={cardClass}>
-						<Card.Header class="border-border border-b px-4 py-3">
-							<Card.Title class="text-base">{t('app.account.identities')}</Card.Title>
-							<Card.Description>{t('app.account.identities_sub')}</Card.Description>
-						</Card.Header>
 						<Card.Content class="flex flex-col gap-3 p-4">
 							{@render freshSignIn('app.account.recent_auth_needed')}
 							{#if identityError}
@@ -1108,31 +1095,19 @@
 
 				{#if section === 'data'}
 					<Card.Root class={cardClass}>
-						<Card.Header class="border-border border-b px-4 py-3">
-							<div class="flex flex-wrap items-center justify-between gap-3">
-								<div>
-									<Card.Title class="text-base">{t('app.account.your_data')}</Card.Title>
-									<Card.Description>{t('app.account.your_data_sub')}</Card.Description>
-								</div>
-								<Button variant="outline" size="sm" disabled={exporting} onclick={exportAccount}>
-									{t('app.account.download')}
-								</Button>
-							</div>
-						</Card.Header>
-						{#if exportError}
-							<Card.Content class="p-4">
+						<Card.Content class="flex flex-col items-start gap-3 p-4">
+							<Button variant="outline" size="sm" disabled={exporting} onclick={exportAccount}>
+								{t('app.account.download')}
+							</Button>
+							{#if exportError}
 								<p role="alert" class="text-destructive text-sm">{exportError}</p>
-							</Card.Content>
-						{/if}
+							{/if}
+						</Card.Content>
 					</Card.Root>
 				{/if}
 
 				{#if section === 'delete'}
 					<Card.Root class={cardClass}>
-						<Card.Header class="border-border border-b px-4 py-3">
-							<Card.Title class="text-base">{t('app.account.delete_title')}</Card.Title>
-							<Card.Description>{t('app.account.delete_sub')}</Card.Description>
-						</Card.Header>
 						<Card.Content class="p-4">
 							<Button variant="destructive" onclick={openDeleteDialog}>
 								{t('app.account.delete_button')}

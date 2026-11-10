@@ -121,11 +121,11 @@
 	</div>
 
 	{#if rows.length === 0}
-		<div class="text-muted-foreground flex h-[160px] items-center justify-center text-xs">
+		<div class="text-muted-foreground flex h-[120px] items-center justify-center text-xs">
 			{emptyHint ?? '-'}
 		</div>
 	{:else}
-		<Chart.Container config={chartConfig} class="h-[160px] w-full">
+		<Chart.Container config={chartConfig} class="h-[120px] w-full">
 			<AreaChart
 				data={rows}
 				x={(d: Row) => d.ts}

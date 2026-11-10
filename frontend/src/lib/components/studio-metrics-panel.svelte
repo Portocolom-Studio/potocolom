@@ -391,7 +391,7 @@
 </script>
 
 {#snippet stat(label: string, value: string, sub?: string)}
-	<div class="bg-card border-border rounded-xl border px-4 py-4">
+	<div class="bg-card border-border min-w-0 rounded-xl border p-3 sm:p-4">
 		<p class="text-muted-foreground text-xs">{label}</p>
 		<p class="mt-1.5 text-[22px] leading-tight font-medium tabular-nums">{value}</p>
 		{#if sub}
@@ -421,7 +421,7 @@
 		     arrives the demo data would flash in, so show the layout instead. -->
 		<div role="status" class="flex flex-col gap-4">
 			<span class="sr-only">{t('app.metrics.loading')}</span>
-			<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-hidden="true">
+			<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4" aria-hidden="true">
 				{#each [0, 1, 2, 3] as index (index)}
 					<Skeleton class="h-[86px] rounded-xl" />
 				{/each}
@@ -435,7 +435,7 @@
 		{#if demoMode}
 			<span class="tag tag-warning w-fit">{t('app.metrics.demo_data')}</span>
 		{/if}
-		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+		<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
 			{@render stat(
 				t('app.metrics.images_count'),
 				String(session.count),
@@ -479,7 +479,7 @@
 			<StudioJobStatusChart breakdown={jobStatus} />
 		</div>
 
-		<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+		<div class="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
 			{@render stat(t('app.metrics.avg_gpu'), formatMs(session.avgGpuMs))}
 			{@render stat(
 				t('app.metrics.postprocess_share'),

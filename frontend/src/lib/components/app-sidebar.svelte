@@ -1,19 +1,13 @@
 <script lang="ts">
 	import type { ComponentProps } from 'svelte';
-	import BookOpenIcon from '@lucide/svelte/icons/book-open';
-	import CircleQuestionMarkIcon from '@lucide/svelte/icons/circle-question-mark';
-	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
-	import MapIcon from '@lucide/svelte/icons/map';
 	import PanelLeftIcon from '@lucide/svelte/icons/panel-left';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import { resolve } from '$app/paths';
 	import { account } from '$lib/account.svelte';
-	import { sectionNeeds } from '$lib/account-display';
 	import { t } from '$lib/i18n.svelte';
 	import { shortcutLabel } from '$lib/platform.svelte';
-	import { PUBLIC_SITE_MODE } from '$env/static/public';
-	import { openAccount, studio } from '$lib/studio.svelte';
+	import { openAccount } from '$lib/studio.svelte';
 	import { closeOnHistoryStep, popOverlay, pushOverlay } from '$lib/overlay-history';
 	import { Kbd } from '$lib/components/ui/kbd';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
@@ -26,8 +20,6 @@
 	let { ref = $bindable(null), ...restProps }: ComponentProps<typeof Sidebar.Root> = $props();
 
 	const sidebar = Sidebar.useSidebar();
-	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
-	const landing = PUBLIC_SITE_MODE === 'landing';
 	let commandOpen = $state(false);
 
 	// Back closes the mobile sidebar sheet before it leaves the view. A close
@@ -143,10 +135,10 @@
 	<Sidebar.Content class="gap-0 pt-1">
 		<NavStudio navigate={navigateFromSidebar} />
 	</Sidebar.Content>
-	<Sidebar.Footer class="gap-0 p-0">
+	<Sidebar.Footer class="border-sidebar-border shrink-0 gap-0 border-t p-0 pt-2">
 		<StudioWorkerStatus />
-		<Sidebar.Menu class="gap-0 px-2 pt-1 pb-1.5">
-			{#if account.localModeConfirmed}
+		{#if account.localModeConfirmed}
+			<Sidebar.Menu class="gap-0 px-2 pt-1">
 				<Sidebar.MenuItem>
 					<Sidebar.MenuButton
 						class={footerItemClass}
@@ -157,51 +149,11 @@
 						<span>{t('app.shell.settings')}</span>
 					</Sidebar.MenuButton>
 				</Sidebar.MenuItem>
-			{/if}
-			<!-- Replays the studio tour. Sits with the help links below it. The landing
-			     preview renders this sidebar too, but it has no tour to replay. -->
-			{#if !landing && sectionNeeds('generate', account.current?.role ?? null) === null}
-				<Sidebar.MenuItem>
-					<Sidebar.MenuButton
-						class={footerItemClass}
-						tooltipContent={t('app.shell.show_tour')}
-						onclick={() =>
-							navigateFromSidebar(() => {
-								studio.tourRequest = 'explicit';
-							})}
-					>
-						<MapIcon />
-						<span>{t('app.shell.show_tour')}</span>
-					</Sidebar.MenuButton>
-				</Sidebar.MenuItem>
-			{/if}
-			<Sidebar.MenuItem>
-				<Sidebar.MenuButton class={footerItemClass} tooltipContent={t('app.shell.documentation')}>
-					{#snippet child({ props })}
-						<a href={`${repoUrl}/tree/main/docs`} target="_blank" rel="noopener" {...props}>
-							<BookOpenIcon />
-							<span class="flex-none!">{t('app.shell.documentation')}</span>
-							<ExternalLinkIcon class="size-3! group-data-[collapsible=icon]:hidden" />
-						</a>
-					{/snippet}
-				</Sidebar.MenuButton>
-			</Sidebar.MenuItem>
-			<Sidebar.MenuItem>
-				<Sidebar.MenuButton class={footerItemClass} tooltipContent={t('app.shell.support')}>
-					{#snippet child({ props })}
-						<a href={`${repoUrl}/issues`} target="_blank" rel="noopener" {...props}>
-							<CircleQuestionMarkIcon />
-							<span>{t('app.shell.support')}</span>
-						</a>
-					{/snippet}
-				</Sidebar.MenuButton>
-			</Sidebar.MenuItem>
-		</Sidebar.Menu>
-		{#if account.current}
-			<div class="border-sidebar-border border-t px-2 py-1.5">
-				<NavUser account={account.current} navigate={navigateFromSidebar} />
-			</div>
+			</Sidebar.Menu>
 		{/if}
+		<div class="px-2 py-1.5">
+			<NavUser account={account.current} navigate={navigateFromSidebar} />
+		</div>
 	</Sidebar.Footer>
 </Sidebar.Root>
 

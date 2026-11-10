@@ -253,3 +253,11 @@ export function mayReadSessions({
 	if (!hasCsrf) return false;
 	return role === 'admin';
 }
+
+/** Names a benchmarked model from the models connected now, else its id. */
+export function benchmarkModelName(
+	id: string,
+	models: readonly { id: string; name: string }[]
+): string {
+	return models.find((model) => model.id === id)?.name ?? id;
+}

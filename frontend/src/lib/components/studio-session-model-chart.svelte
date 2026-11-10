@@ -2,6 +2,7 @@
 	import { BarChart } from 'layerchart';
 	import { formatMs } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import type { ModelRuntimeRow } from '$lib/studio-session-metrics';
 	import * as Card from '$lib/components/ui/card';
 	import * as Chart from '$lib/components/ui/chart';
@@ -10,7 +11,7 @@
 
 	type DisplayRow = {
 		key: string;
-		modelId: string;
+		name: string;
 		count: number;
 		avgGpuMs: number;
 	};
@@ -19,7 +20,7 @@
 		if (rows.length <= 6) {
 			return rows.map((row) => ({
 				key: row.modelId,
-				modelId: row.modelId,
+				name: studio.models.find((model) => model.id === row.modelId)?.name ?? row.modelId,
 				count: row.count,
 				avgGpuMs: row.avgGpuMs
 			}));
@@ -31,18 +32,21 @@
 		return [
 			...head.map((row) => ({
 				key: row.modelId,
-				modelId: row.modelId,
+				name: studio.models.find((model) => model.id === row.modelId)?.name ?? row.modelId,
 				count: row.count,
 				avgGpuMs: row.avgGpuMs
 			})),
 			{
 				key: '__other__',
-				modelId: t('app.metrics.other_models'),
+				name: t('app.metrics.other_models'),
 				count: tailCount,
 				avgGpuMs: tailCount > 0 ? tailTotal / tailCount : 0
 			}
 		];
 	});
+
+	// The bars key on the unique row key; two models can share a display name.
+	const nameOf = (key: string) => displayRows.find((row) => row.key === key)?.name ?? key;
 
 	const chartConfig = {
 		avgGpuMs: { label: 'GPU', color: 'var(--chart-1)' }
@@ -61,7 +65,7 @@
 			<BarChart
 				data={displayRows}
 				orientation="horizontal"
-				y={(d: DisplayRow) => d.modelId}
+				y={(d: DisplayRow) => d.key}
 				x={(d: DisplayRow) => d.avgGpuMs}
 				bandPadding={0.35}
 				padding={{ left: 132, bottom: 24 }}
@@ -77,13 +81,16 @@
 					bars: { motion: 'tween', 'stroke-width': 0 },
 					xAxis: { format: (v: number) => formatMs(v) },
 					yAxis: {
-						format: (label: string) => (label.length > 16 ? `${label.slice(0, 15)}…` : label)
+						format: (key: string) => {
+							const label = nameOf(key);
+							return label.length > 16 ? `${label.slice(0, 15)}...` : label;
+						}
 					},
 					grid: { class: 'stroke-border/50' }
 				}}
 			>
 				{#snippet tooltip()}
-					<Chart.Tooltip labelFormatter={(label: string) => label} indicator="line" />
+					<Chart.Tooltip labelFormatter={nameOf} indicator="line" />
 				{/snippet}
 			</BarChart>
 		</Chart.Container>

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { LineChart } from 'layerchart';
-	import { chartColor, formatMs, type BenchmarkReport } from '$lib/benchmark';
+	import { benchmarkModelName, chartColor, formatMs, type BenchmarkReport } from '$lib/benchmark';
 	import { t } from '$lib/i18n.svelte';
+	import { studio } from '$lib/studio.svelte';
 	import * as Card from '$lib/components/ui/card';
 	import * as Chart from '$lib/components/ui/chart';
 
@@ -38,7 +39,7 @@
 			.filter((modelId) => byModel.has(modelId))
 			.map((modelId, index) => ({
 				key: modelId,
-				label: modelId,
+				label: benchmarkModelName(modelId, studio.models),
 				color: chartColor(index),
 				data: byModel.get(modelId)
 			}))

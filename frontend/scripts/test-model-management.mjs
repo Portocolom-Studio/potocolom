@@ -608,11 +608,15 @@ test('model management selection, disk margin, progress, cancel and removal', as
 					`first selection stays visible at ${viewport.width}px`
 				);
 				const count = await page.evaluate(() => {
+					// A closed Details section hides its links from Tab; its summary stays reachable.
 					const controls = [
 						...document.querySelectorAll(
-							'[data-model] input:not(:disabled), [data-model] button:not(:disabled), [data-model] a[href]'
+							'[data-model] input:not(:disabled), [data-model] button:not(:disabled), [data-model] a[href], [data-model] summary'
 						)
-					];
+					].filter(
+						(control) =>
+							control.tagName === 'SUMMARY' || control.closest('details:not([open])') === null
+					);
 					controls.forEach((control, index) =>
 						control.setAttribute('data-test-focus-index', String(index))
 					);
