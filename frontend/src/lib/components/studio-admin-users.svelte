@@ -2,11 +2,10 @@
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import {
-		adminErrorMessage,
+		adminApiError,
 		buildAdminConfirmation,
 		buildUsersQuery,
-		needsAdminAttestation,
-		recheckAdminAccess
+		needsAdminAttestation
 	} from '$lib/studio-admin-logic';
 	import { formatDateTime, t } from '$lib/i18n.svelte';
 	import SearchIcon from '@lucide/svelte/icons/search';
@@ -114,12 +113,6 @@
 		return '';
 	}
 
-	async function apiError(response: Response): Promise<string> {
-		if (response.status === 403) void recheckAdminAccess();
-		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
 	async function loadUsers(
 		options: { cursor?: string | null; append?: boolean } = {}
 	): Promise<void> {
@@ -141,7 +134,7 @@
 					void loadUsers();
 					return;
 				}
-				const message = await apiError(response);
+				const message = await adminApiError(response);
 				if (epoch !== usersLoadEpoch) return;
 				if (append) loadMoreError = message;
 				else {
@@ -190,7 +183,7 @@
 			]);
 			if (epoch !== selectionEpoch) return;
 			if (!detailResponse.ok) {
-				detailError = await apiError(detailResponse);
+				detailError = await adminApiError(detailResponse);
 				detail = null;
 				generations = [];
 				return;
@@ -199,7 +192,7 @@
 			selectedRole = detail.role;
 			selectedState = detail.state === 'purging' ? 'active' : detail.state;
 			if (!generationsResponse.ok) {
-				detailError = await apiError(generationsResponse);
+				detailError = await adminApiError(generationsResponse);
 				generations = [];
 				return;
 			}
@@ -269,7 +262,7 @@
 				response = await apiFetch(`${path}/restore`, { method: 'POST' });
 			}
 			if (!response.ok) {
-				actionError = await apiError(response);
+				actionError = await adminApiError(response);
 				return;
 			}
 			confirmationOpen = false;

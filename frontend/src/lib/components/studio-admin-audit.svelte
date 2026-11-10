@@ -1,12 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
-	import {
-		adminErrorMessage,
-		buildAuditQuery,
-		recheckAdminAccess,
-		type AuditFilters
-	} from '$lib/studio-admin-logic';
+	import { adminApiError, buildAuditQuery, type AuditFilters } from '$lib/studio-admin-logic';
 	import { formatDateTime, t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -58,19 +53,13 @@
 		summary === null ? 0 : summary.gaps.reduce((total, gap) => total + gap.events, 0)
 	);
 
-	async function apiError(response: Response): Promise<string> {
-		if (response.status === 403) void recheckAdminAccess();
-		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
 	async function loadSummary(): Promise<void> {
 		summaryLoading = true;
 		summaryError = '';
 		try {
 			const response = await apiFetch('/api/v1/audit/summary');
 			if (!response.ok) {
-				summaryError = await apiError(response);
+				summaryError = await adminApiError(response);
 				summary = null;
 				return;
 			}
@@ -88,7 +77,7 @@
 		try {
 			const response = await apiFetch('/api/v1/audit/anomalies');
 			if (!response.ok) {
-				anomaliesError = await apiError(response);
+				anomaliesError = await adminApiError(response);
 				anomalies = [];
 				return;
 			}
@@ -110,7 +99,7 @@
 				`/api/v1/audit${activeQuery === '' ? '' : `?${activeQuery}`}`
 			);
 			if (!response.ok) {
-				eventsError = await apiError(response);
+				eventsError = await adminApiError(response);
 				events = [];
 				return;
 			}
@@ -130,7 +119,7 @@
 				`/api/v1/audit/export${activeQuery === '' ? '' : `?${activeQuery}`}`
 			);
 			if (!response.ok) {
-				exportError = await apiError(response);
+				exportError = await adminApiError(response);
 				return;
 			}
 			const blob = await response.blob();

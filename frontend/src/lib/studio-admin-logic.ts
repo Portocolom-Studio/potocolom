@@ -109,3 +109,11 @@ export async function recheckAdminAccess(): Promise<void> {
 		current?.role ?? null
 	);
 }
+
+// An admin route's failed response becomes its message here; a 403 also starts
+// the access recheck, because the account may have been demoted while the view stayed open.
+export async function adminApiError(response: Response): Promise<string> {
+	if (response.status === 403) void recheckAdminAccess();
+	const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+	return adminErrorMessage(body?.detail, response.statusText);
+}

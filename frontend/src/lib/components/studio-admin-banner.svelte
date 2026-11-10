@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import { adminBannerPutBody, type BannerConfig } from '$lib/status-banner-logic';
-	import { adminErrorMessage, recheckAdminAccess } from '$lib/studio-admin-logic';
+	import { adminApiError } from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Card from '$lib/components/ui/card';
@@ -23,19 +23,13 @@
 	let actionError = $state('');
 	let actionSubmitting = $state(false);
 
-	async function apiError(response: Response): Promise<string> {
-		if (response.status === 403) void recheckAdminAccess();
-		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
 	async function loadCurrent(): Promise<void> {
 		loading = true;
 		loadError = '';
 		try {
 			const response = await apiFetch('/api/v1/config');
 			if (!response.ok) {
-				loadError = await apiError(response);
+				loadError = await adminApiError(response);
 				return;
 			}
 			const body = (await response.json()) as { banner?: BannerConfig };
@@ -85,7 +79,7 @@
 						})
 					: await apiFetch('/api/v1/admin/banner', { method: 'DELETE' });
 			if (!response.ok) {
-				actionError = await apiError(response);
+				actionError = await adminApiError(response);
 				return;
 			}
 			confirmationOpen = false;
