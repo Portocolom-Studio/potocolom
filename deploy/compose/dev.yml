@@ -37,7 +37,13 @@ services:
   # development machines often run other services on them.
   minio:
     profiles: ["cloud-sim"]
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # MinIO publishes no pullable community image any more (Docker Hub denies the
+    # pull, quay.io has no tags). Chainguard builds MinIO from source; its free
+    # tier offers only latest, so this pins a digest (MinIO RELEASE.2026-11-09T00-10-40Z).
+    image: cgr.dev/chainguard/minio@sha256:fb893e36fc369d41e92f678b17ec27378fa5bf0576aeef7ac15460c13629ab5a
+    # The image runs as a non-root user; root keeps the volume the old image
+    # (which ran as root) wrote readable, so existing dev data still opens.
+    user: "0:0"
     command: server /data --console-address ":9001"
     ports:
       - "9100:9000" # S3 API
