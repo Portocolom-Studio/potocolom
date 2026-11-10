@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { apiFetch } from '$lib/api';
 	import {
+		adminApiError,
 		adminErrorMessage,
 		invitationExpired,
 		inviteRequestBody,
@@ -56,19 +57,13 @@
 		return 'app.admin.role_user';
 	}
 
-	async function apiError(response: Response): Promise<string> {
-		if (response.status === 403) void recheckAdminAccess();
-		const body = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-		return adminErrorMessage(body?.detail, response.statusText);
-	}
-
 	async function loadInvitations(): Promise<void> {
 		listLoading = true;
 		listError = '';
 		try {
 			const response = await apiFetch('/api/v1/invitations');
 			if (!response.ok) {
-				listError = await apiError(response);
+				listError = await adminApiError(response);
 				return;
 			}
 			invitations = (await response.json()) as OpenInvitation[];
@@ -181,7 +176,7 @@
 					await loadInvitations();
 					return;
 				}
-				confirmationError = await apiError(response);
+				confirmationError = await adminApiError(response);
 				return;
 			}
 			confirmationOpen = false;
