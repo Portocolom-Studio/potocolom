@@ -5,7 +5,7 @@ fits, or the rung pinned by MEMORY_MODE. Only full residency advertises the
 realtime capability.
 """
 
-from typing import Literal
+from typing import Literal, Protocol
 
 from worker.manifests import Manifest
 
@@ -145,3 +145,85 @@ def rung_vram_bytes(
     if rung == "model_offload":
         return model_offload_bytes(min_vram_gb, model_offload_vram_gb)
     return group_offload_bytes()
+
+
+class VRAMCapacityError(ValueError):
+    """The selected model rung cannot fit while preserving the VRAM reserve."""
+
+
+class AdmissionGpu(Protocol):
+    def free_bytes(self) -> int:
+        """Usable VRAM right now, after the reserve. Measured fresh on every call."""
+
+    def reclaim_cache(self) -> None:
+        """Return the allocator cache to the device."""
+
+    def evict_cold(self, required_bytes: int) -> None:
+        """Evict the coldest other models until free_bytes() >= required_bytes or none are left."""
+
+
+def admit(
+    manifest: Manifest,
+    memory_mode: MemoryMode,
+    gpu: AdmissionGpu,
+    *,
+    on_cpu: bool,
+    resident: bool,
+    pinned_rung: MemoryRung | None,
+) -> MemoryRung | None:
+    """Return the rung to load at, reclaiming or evicting as needed.
+
+    Returns None when the load shares weights that are already resident.
+    Raises VRAMCapacityError when the load cannot fit after the reserve.
+    """
+    upscale = "upscale" in manifest.capabilities
+    shared = resident and not upscale
+    target_rung: MemoryRung = "full" if memory_mode == "auto" or upscale else memory_mode
+    target = 1 if shared else max(1, rung_vram_bytes(
+        manifest.min_vram_gb, target_rung, manifest.model_offload_vram_gb,
+    ))
+    if gpu.free_bytes() < target:
+        gpu.reclaim_cache()
+    if shared:
+        # A new mode may add a small adapter or decoder while sharing the
+        # resident model weights. Do not charge the whole model rung again,
+        # but require some usable VRAM before starting that allocation.
+        if gpu.free_bytes() <= 0:
+            gpu.evict_cold(1)
+        if gpu.free_bytes() <= 0:
+            raise VRAMCapacityError(
+                f"cannot load another pipeline mode for {manifest.id}: "
+                "no usable VRAM remains after reserve"
+            )
+        return None
+    if memory_mode == "auto" and pinned_rung is None:
+        # Prefer evicting cold residents over degrading the new model to
+        # an offload rung: make room for full residency before picking.
+        wanted = rung_vram_bytes(manifest.min_vram_gb, "full", manifest.model_offload_vram_gb)
+        if gpu.free_bytes() < wanted:
+            gpu.evict_cold(wanted)
+    rung: MemoryRung
+    if pinned_rung is not None:
+        rung = pinned_rung
+    elif upscale:
+        # Upscalers are plain nn.Modules run tiled; the offload rungs are
+        # diffusers pipeline mechanics, so they always load fully resident.
+        rung = "full"
+    else:
+        rung = select_rung(
+            manifest.min_vram_gb, gpu.free_bytes(), memory_mode, on_cpu=on_cpu,
+            model_offload_vram_gb=manifest.model_offload_vram_gb,
+        )
+    required = max(1, rung_vram_bytes(
+        manifest.min_vram_gb, rung, manifest.model_offload_vram_gb,
+    ))
+    if gpu.free_bytes() < required:
+        gpu.evict_cold(required)
+    available = gpu.free_bytes()
+    if available < required:
+        raise VRAMCapacityError(
+            f"cannot load {manifest.id} on the {rung} rung: "
+            f"requires {required} bytes of usable VRAM, "
+            f"but only {available} are available after reserve"
+        )
+    return rung

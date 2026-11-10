@@ -35,9 +35,10 @@ from worker.memory_ladder import (
     MemoryMode,
     MemoryRung,
     REALTIME_BAR_MS,
+    VRAMCapacityError,
+    admit,
     measured_wire_manifest,
     measured_wire_manifests,
-    rung_vram_bytes,
     select_rung,
     slots_from_batch_curve,
     slots_from_frame_ms,
@@ -148,10 +149,6 @@ class GeneratedFrame:
 
 class NotResidentError(ValueError):
     """The model is not on the full realtime rung, so a frame cannot run."""
-
-
-class VRAMCapacityError(ValueError):
-    """The selected model rung cannot fit while preserving the VRAM reserve."""
 
 
 class Cancelled(Exception):
@@ -516,6 +513,23 @@ class SimulatedEngine:
         )
 
 
+class _AdmissionGpu:
+    """The engine's side of memory_ladder.AdmissionGpu for one model."""
+
+    def __init__(self, engine: "DiffusersEngine", model_id: str) -> None:
+        self._engine = engine
+        self._model_id = model_id
+
+    def free_bytes(self) -> int:
+        return self._engine._free_vram_bytes()
+
+    def reclaim_cache(self) -> None:
+        self._engine._free_gpu_cache()
+
+    def evict_cold(self, required_bytes: int) -> None:
+        self._engine._evict_cold(except_model_id=self._model_id, required_bytes=required_bytes)
+
+
 class DiffusersEngine:
     """Hugging Face diffusers pipelines, one GPU, all inference serialized."""
 
@@ -625,52 +639,18 @@ class DiffusersEngine:
 
     def _ensure_vram(self, manifest: Manifest) -> None:
         resident = any(key[0] == manifest.id for key in self._pipelines)
-        shared = resident and "upscale" not in manifest.capabilities
-        target_rung: MemoryRung = (
-            "full" if self.memory_mode == "auto" or "upscale" in manifest.capabilities
-            else self.memory_mode
-        )
-        target = 1 if shared else max(1, rung_vram_bytes(
-            manifest.min_vram_gb, target_rung, manifest.model_offload_vram_gb,
-        ))
-        if self._free_vram_bytes() < target:
-            self._free_gpu_cache()
-        if shared:
-            # A new mode may add a small adapter or decoder while sharing the
-            # resident model weights. Do not charge the whole model rung again,
-            # but require some usable VRAM before starting that allocation.
-            if self._free_vram_bytes() <= 0:
-                self._evict_cold(except_model_id=manifest.id, required_bytes=1)
-            available = self._free_vram_bytes()
-            if available <= 0:
-                raise VRAMCapacityError(
-                    f"cannot load another pipeline mode for {manifest.id}: "
-                    "no usable VRAM remains after reserve"
-                )
-            return
-        if self.memory_mode == "auto" and manifest.id not in self._rungs:
-            # Prefer evicting cold residents over degrading the new model to
-            # an offload rung: make room for full residency before picking.
-            wanted = rung_vram_bytes(
-                manifest.min_vram_gb, "full", manifest.model_offload_vram_gb,
+        try:
+            rung = admit(
+                manifest, self.memory_mode, _AdmissionGpu(self, manifest.id),
+                on_cpu=not self.device.startswith("cuda"),
+                resident=resident, pinned_rung=self._rungs.get(manifest.id),
             )
-            if self._free_vram_bytes() < wanted:
-                self._evict_cold(except_model_id=manifest.id, required_bytes=wanted)
-        rung = self._pick_rung(manifest)
-        required = max(1, rung_vram_bytes(
-            manifest.min_vram_gb, rung, manifest.model_offload_vram_gb,
-        ))
-        if self._free_vram_bytes() < required:
-            self._evict_cold(except_model_id=manifest.id, required_bytes=required)
-        available = self._free_vram_bytes()
-        if available < required:
+        except VRAMCapacityError:
             if not any(key[0] == manifest.id for key in self._pipelines):
                 self._rungs.pop(manifest.id, None)
-            raise VRAMCapacityError(
-                f"cannot load {manifest.id} on the {rung} rung: "
-                f"requires {required} bytes of usable VRAM, "
-                f"but only {available} are available after reserve"
-            )
+            raise
+        if rung is not None:
+            self._rungs[manifest.id] = rung
 
     def _pipeline(
         self, manifest: Manifest, mode: str, *, allow_demotion: bool = True,
