@@ -1229,6 +1229,45 @@ def test_a_reported_failure_does_not_leave_its_upload_behind():
 
 
 @pytest.mark.db
+def test_a_refused_failure_report_keeps_the_uploads_and_names_its_attempt(monkeypatch):
+    """A refused write means the keys belong to whoever won (issue #312), so
+    the uploads must be left alone. The write must also name this attempt, so
+    a requeue that got the row lock first is not failed by the old attempt's
+    report."""
+    named: list = []
+
+    async def refuse(job_id, reason, expected_attempt=None):
+        named.append(expected_attempt)
+        return False
+
+    monkeypatch.setattr(jobs, "mark_failed", refuse)
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-refused-upload")
+            job_id = client.post(
+                "/api/v1/generations",
+                json={"model_id": "sd-test", "params": {"prompt": "refused"}},
+            ).json()["job_id"]
+            dispatch = worker.receive_json()
+            upload_path = urlsplit(dispatch["upload"]["url"]).path
+            key = upload_path.rsplit("/api/v1/files/", 1)[-1]
+            assert put_upload(client, dispatch["upload"], png_bytes()).status_code == 200
+            storage = jobs.get_storage()
+            assert storage.path(key).exists()
+
+            worker.send_json({"type": "job_failed", "job_id": job_id,
+                              "reason": "worker said no",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and uuid.UUID(job_id) in jobs.inflight:
+                time.sleep(0.05)
+            assert uuid.UUID(job_id) not in jobs.inflight
+            time.sleep(0.3)  # a wrongly scheduled cleanup would have run by now
+            assert named == [1]
+            assert storage.path(key).exists()
+
+
+@pytest.mark.db
 def test_a_failed_thumbnail_promote_does_not_leave_the_library_master(monkeypatch):
     """Promote copies the master before the thumbnail. If the thumbnail copy
     fails, the master would otherwise stay in the library with no asset row."""

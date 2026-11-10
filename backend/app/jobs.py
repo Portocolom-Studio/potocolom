@@ -44,7 +44,7 @@ from app.auth import current_user, require_role
 from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
-from app.storage import get_storage
+from app.storage import ImageInfo, get_storage
 from app.tables import Asset, Job, Model, PendingDelete, User
 
 logger = logging.getLogger("potocolom.jobs")
@@ -1924,6 +1924,56 @@ def clear_if_current(worker: realtime.Worker, job_id: uuid.UUID, current: InFlig
     release_job_slot(worker)
 
 
+async def _fail_attempt(worker: realtime.Worker, job_id: uuid.UUID, current: InFlight,
+                        reason: str, what: str) -> None:
+    """Fail the attempt behind a worker verdict, then let go of it.
+
+    A write that raises keeps the entry, so the stall sweeper or the
+    worker-loss handler recovers the job. A refused write still clears: a
+    requeue or another verdict owns the row, and this attempt is finished with
+    either way. clear_if_current only touches the entry this attempt still
+    owns, so a requeue that replaced it keeps its own; a cancellation, which
+    is terminal and leaves no later attempt, would otherwise hold a dispatch
+    slot on this worker until the stall sweeper ran. The uploads are collected
+    only when the write happened: after a refusal they are not this verdict's
+    to delete (issue #312).
+    """
+    try:
+        committed = await mark_failed(job_id, reason, expected_attempt=current.attempt)
+    except Exception:
+        logger.exception("could not mark job %s failed", job_id)
+        return
+    clear_if_current(worker, job_id, current)
+    if committed:
+        schedule_blob_cleanup(
+            purge_attempt_blobs(current.user_id, job_id, current.attempt), what=what,
+        )
+
+
+async def _add_output_assets(session: AsyncSession, job: Job, user_id: uuid.UUID,
+                             library_key: str, library_thumb_key: str, width: int, height: int,
+                             thumb: ImageInfo | None) -> Asset:
+    """The library rows for one finished job: the PNG master, and the WebP
+    thumbnail under it when one was accepted. The live verdict and the receipt
+    recovery must write the same rows, so both call this."""
+    full = Asset(
+        user_id=user_id, job_id=job.id, parent_asset_id=job.source_asset_id,
+        storage_key=library_key, mime="image/png", width=width, height=height,
+    )
+    session.add(full)
+    await session.flush()
+    if thumb is not None:
+        # The inspected dimensions are the truth: the edge cap has already
+        # admitted them, and the master's scaled-down numbers would only
+        # contradict what the object is.
+        session.add(Asset(
+            user_id=user_id, job_id=job.id, parent_asset_id=full.id,
+            storage_key=library_thumb_key, mime="image/webp",
+            width=thumb.width, height=thumb.height,
+        ))
+    return full
+
+
 async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
     job_id = realtime.peer_uuid(control["job_id"])
     # Only the worker recorded for the attempt may speak for the job: after a
@@ -2013,30 +2063,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             return
         if (image is None or image.size <= 0
                 or image.content_type != "image/png"):
-            try:
-                committed = await mark_failed(
-                    job_id, "worker output was missing or invalid",
-                    expected_attempt=current.attempt,
-                )
-            except Exception:
-                # Nothing was committed and the entry stays tracked, so the
-                # stall sweeper or the worker-loss handler recovers the job.
-                logger.exception("could not mark job %s failed", job_id)
-                return
-            if not committed:
-                # A requeue or another verdict owns the row now, and this
-                # attempt is finished with either way. clear_if_current only
-                # touches the entry this verdict still owns, so a requeue that
-                # replaced it keeps its own; a cancellation, which is terminal
-                # and leaves no later attempt, would otherwise hold a dispatch
-                # slot on this worker until it reconnected.
-                clear_if_current(worker, job_id, current)
-                return
-            clear_if_current(worker, job_id, current)
-            schedule_blob_cleanup(
-                purge_attempt_blobs(current.user_id, job_id, current.attempt),
-                what=f"invalid output for job {job_id}",
-            )
+            await _fail_attempt(worker, job_id, current,
+                                "worker output was missing or invalid",
+                                f"invalid output for job {job_id}")
             return
         image_dimensions = (image.width, image.height)
         if has_thumbnail:
@@ -2079,22 +2108,9 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 await storage.promote(current.thumb_storage_key, library_thumb_key)
                 promoted.append(library_thumb_key)
         except Exception:
-            try:
-                committed = await mark_failed(
-                    job_id, "could not commit output to the library",
-                    expected_attempt=current.attempt,
-                )
-            except Exception:
-                logger.exception("could not mark job %s failed after promote", job_id)
-                return
-            if not committed:
-                clear_if_current(worker, job_id, current)
-                return
-            clear_if_current(worker, job_id, current)
-            schedule_blob_cleanup(
-                purge_attempt_blobs(current.user_id, job_id, current.attempt),
-                what=f"promote failure for job {job_id}",
-            )
+            await _fail_attempt(worker, job_id, current,
+                                "could not commit output to the library",
+                                f"promote failure for job {job_id}")
             return
         if inflight.get(job_id) is not current:
             # A requeue replaced this attempt after the copy. No asset row
@@ -2151,31 +2167,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
                 for field, value in phase_ms.items():
                     setattr(job, field, value)
                 job.finished_at = datetime.now(timezone.utc)
-                width, height = image_dimensions
-                full = Asset(
-                    user_id=current.user_id,
-                    job_id=job_id,
-                    parent_asset_id=job.source_asset_id,
-                    storage_key=library_key,
-                    mime="image/png",
-                    width=width,
-                    height=height,
+                full = await _add_output_assets(
+                    session, job, current.user_id, library_key, library_thumb_key,
+                    *image_dimensions, thumb,
                 )
-                session.add(full)
-                await session.flush()
-                if thumb is not None:
-                    # The inspected dimensions are the truth: the edge cap above
-                    # has already admitted them, and the master's scaled-down
-                    # numbers would only contradict what the object is.
-                    session.add(Asset(
-                        user_id=current.user_id,
-                        job_id=job_id,
-                        parent_asset_id=full.id,
-                        storage_key=library_thumb_key,
-                        mime="image/webp",
-                        width=thumb.width,
-                        height=thumb.height,
-                    ))
                 await session.commit()
         except Exception:
             # Nothing was committed and the entry stays tracked, so the stall
@@ -2200,23 +2195,10 @@ async def on_worker_message(worker: realtime.Worker, control: dict) -> None:
             logger.warning("worker %s sent an unstorable failure reason for job %s; "
                            "storing the default", worker.id, job_id)
             reason = "worker reported failure"
-        try:
-            committed = await mark_failed(job_id, reason,
-                                          expected_attempt=current.attempt)
-        except Exception:
-            # Nothing was committed and the entry stays tracked, so the stall
-            # sweeper or the worker-loss handler recovers the job.
-            logger.exception("could not mark job %s failed", job_id)
-            return
-        if not committed:
-            return  # a requeue or another verdict owns the row now
-        clear_if_current(worker, job_id, current)
         # A reported failure can still have uploaded: nothing downstream names
         # those objects, so this is their only collector.
-        schedule_blob_cleanup(
-            purge_attempt_blobs(current.user_id, job_id, current.attempt),
-            what=f"failed attempt for job {job_id}",
-        )
+        await _fail_attempt(worker, job_id, current, reason,
+                            f"failed attempt for job {job_id}")
 
 
 _blob_cleanup_tasks: set[asyncio.Task] = set()
@@ -2429,8 +2411,9 @@ async def mark_failed(job_id: uuid.UUID, reason: str,
     """Transition to failed and report whether it happened.
 
     False means the row is gone, already terminal, or - when expected_attempt
-    is given - owned by a later attempt: the caller's in-memory state then
-    belongs to whoever won and must not be cleared.
+    is given - owned by a later attempt: the caller may then clear in-memory
+    state only if it is still its own (clear_if_current), because a requeue
+    that replaced the entry owns what is there now.
     """
     assert db.session_factory is not None
     from app import command_store
@@ -2636,39 +2619,8 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
     sequence = snapshot["dispatch_sequence"]
     user_id = snapshot["user_id"]
     job_attempt = snapshot["job_attempt_number"]
-    if snapshot["attempt_state"] == "failed":
-        reason = ("generation failed" if snapshot["terminal_failure_code"] == "generation_failed"
-                  else "input image invalid" if snapshot["terminal_failure_code"] == "input_image_invalid"
-                  else "worker reported failure")
-        async with session_factory() as session:
-            async with session.begin():
-                await hold_the_account(session, user_id, wait=True)
-                job = await locked_job(session, job_id)
-                attempt_state = await session.scalar(
-                    text("SELECT state FROM job_attempts WHERE job_id = :job_id "
-                         "AND dispatch_sequence = :sequence FOR UPDATE"),
-                    {"job_id": job_id, "sequence": sequence},
-                )
-                if (job is not None and job.state == "running"
-                        and job.current_dispatch_sequence == sequence
-                        and attempt_state == "failed"):
-                    from app import command_store
 
-                    await command_store.erase_subject_commands(
-                        session, user_id, kind="job", subject_id=job_id,
-                        subject_sequence=sequence,
-                    )
-                    job.state = "failed"
-                    job.failure_reason = reason
-                    job.finished_at = snapshot["terminal_at"]
-                    await session.flush()
-                else:
-                    return True
-        publish(job_id, {"state": "failed", "reason": reason})
-        await purge_attempt_blobs(user_id, job_id, job_attempt)
-        return True
-
-    async def fail_output(reason: str) -> bool:
+    async def fail_from_receipt(reason: str, attempt_state: str) -> None:
         async with session_factory() as session:
             async with session.begin():
                 await hold_the_account(session, user_id, wait=True)
@@ -2679,8 +2631,8 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
                     {"job_id": job_id, "sequence": sequence},
                 )
                 if (job is None or job.state != "running"
-                        or job.current_dispatch_sequence != sequence or state != "completed"):
-                    return False
+                        or job.current_dispatch_sequence != sequence or state != attempt_state):
+                    return
                 from app import command_store
 
                 await command_store.erase_subject_commands(
@@ -2692,6 +2644,12 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
                 job.finished_at = snapshot["terminal_at"]
         publish(job_id, {"state": "failed", "reason": reason})
         await purge_attempt_blobs(user_id, job_id, job_attempt)
+
+    if snapshot["attempt_state"] == "failed":
+        reason = ("generation failed" if snapshot["terminal_failure_code"] == "generation_failed"
+                  else "input image invalid" if snapshot["terminal_failure_code"] == "input_image_invalid"
+                  else "worker reported failure")
+        await fail_from_receipt(reason, "failed")
         return True
 
     dispatch_key, dispatch_thumb_key = dispatch_keys_for_attempt(user_id, job_id, job_attempt)
@@ -2699,7 +2657,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
     storage = get_storage()
     image = await storage.image_info(dispatch_key)
     if image is None or image.size <= 0 or image.content_type != "image/png":
-        await fail_output("worker output was missing or invalid")
+        await fail_from_receipt("worker output was missing or invalid", "completed")
         return True
     thumb = None
     if snapshot["terminal_has_thumbnail"]:
@@ -2717,7 +2675,7 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
             promoted.append(library_thumb_key)
     except Exception:
         logger.exception("could not recover output for job %s", job_id)
-        await fail_output("could not commit output to the library")
+        await fail_from_receipt("could not commit output to the library", "completed")
         return True
 
     asset_id = None
@@ -2769,27 +2727,10 @@ async def _recover_receipted_attempt(job_id: uuid.UUID) -> bool:
                     .order_by(Asset.id).limit(1).with_for_update()
             )
             if existing is None:
-                full = Asset(
-                    user_id=user_id,
-                    job_id=job_id,
-                    parent_asset_id=job.source_asset_id,
-                    storage_key=library_key,
-                    mime="image/png",
-                    width=image.width,
-                    height=image.height,
+                full = await _add_output_assets(
+                    session, job, user_id, library_key, library_thumb_key,
+                    image.width, image.height, thumb,
                 )
-                session.add(full)
-                await session.flush()
-                if thumb is not None:
-                    session.add(Asset(
-                        user_id=user_id,
-                        job_id=job_id,
-                        parent_asset_id=full.id,
-                        storage_key=library_thumb_key,
-                        mime="image/webp",
-                        width=thumb.width,
-                        height=thumb.height,
-                    ))
                 asset_id = full.id
             else:
                 asset_id = existing.id
