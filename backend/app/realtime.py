@@ -847,6 +847,11 @@ class Worker:
 
     @property
     def has_current_work_grant(self) -> bool:
+        """A worker is given jobs and realtime sessions, and its models are
+        listed, only while this is true. Protocol 4 and 5 workers always hold
+        a grant; a protocol 6 worker holds one only while the grant it renews
+        with grant_request is current (decision "Protocol 6 workers register
+        under a PostgreSQL scheduler lease")."""
         return (
             self.protocol_version != 6
             or self.admission_ready
@@ -1176,15 +1181,13 @@ def forget_worker(worker: Worker) -> None:
         del workers[worker.id]
 
 
-def takes_work(worker: Worker) -> bool:
-    """A worker registered through the durable protocol 6 path gets no work
-    yet. Every other worker, including one ahead of this API that speaks the
-    older dialect, keeps the N-1 behavior in docs/connection-handling.md."""
+def accepts_plain_gpu_commands(worker: Worker) -> bool:
+    """The studio and benchmark GPU commands are sent as plain JSON through
+    gpu_command. A protocol 6 worker validates every control against its
+    closed shape and takes its commands through the command journal, so only
+    a worker without an incarnation (protocol 4 or 5, or one that fell back
+    to protocol 5) can be picked for them."""
     return worker.incarnation is None
-
-
-def takes_sessions(worker: Worker) -> bool:
-    return takes_work(worker) or worker.has_current_work_grant
 
 
 def connected_workers() -> Iterator[Worker]:
@@ -1203,12 +1206,13 @@ def connected_workers() -> Iterator[Worker]:
 
 
 def pick_any_worker() -> Worker | None:
-    return next((worker for worker in connected_workers() if takes_work(worker)), None)
+    return next((worker for worker in connected_workers()
+                 if accepts_plain_gpu_commands(worker)), None)
 
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
     for worker in workers.values():
-        if not takes_work(worker):
+        if not accepts_plain_gpu_commands(worker):
             continue
         if model_id in worker.models:
             return worker
@@ -1290,11 +1294,9 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
     for worker in workers.values():
         if exclude_ids is not None and worker.id in exclude_ids:
             continue
-        if not takes_sessions(worker):
+        if not worker.has_current_work_grant:
             continue
         if model_id not in worker.models:
-            continue
-        if not worker.has_current_work_grant:
             continue
         if worker.admission_p95_ms is None:
             if worker.free_slots > 0:
@@ -1311,7 +1313,7 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
 
 
 def model_known(model_id: str) -> bool:
-    return any(model_id in w.models and takes_sessions(w) for w in workers.values())
+    return any(model_id in w.models and w.has_current_work_grant for w in workers.values())
 
 
 async def close_abandoned_session(worker: Worker, session: Session,

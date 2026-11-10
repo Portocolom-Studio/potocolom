@@ -535,9 +535,8 @@ def test_v6_worker_without_grant_is_not_picked_for_sessions(monkeypatch):
             ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
             ws.receive_json()
             worker = realtime.workers[worker_id]
-            assert realtime.takes_work(worker) is False
+            assert realtime.accepts_plain_gpu_commands(worker) is False
             assert worker.has_current_work_grant is False
-            assert realtime.takes_sessions(worker) is False
             assert realtime.pick_worker(model_id) is None
 
 
