@@ -385,7 +385,13 @@ export function getMetricsPreferences(): MetricsPreferences {
 	return { ...metricsPreferences };
 }
 
-export function saveMetricsPreferences(next: MetricsPreferences): void {
+/**
+ * The caller passes the owner epoch it captured when its view started. A save
+ * from a view of an earlier account does nothing, so one account's view state
+ * cannot be written into the next account's preferences.
+ */
+export function saveMetricsPreferences(next: MetricsPreferences, callerOwnerEpoch: number): void {
+	if (callerOwnerEpoch !== ownerEpoch) return;
 	metricsPreferences = normalizeViewPrefs('metrics', { ...metricsPreferences, ...next });
 	writeViewPrefs(activeViewOwner, 'metrics', metricsPreferences);
 }
@@ -394,7 +400,9 @@ export function getImagesPreferences(): ImagesPreferences {
 	return structuredClone(imagesPreferences);
 }
 
-export function saveImagesPreferences(next: ImagesPreferences): void {
+/** Same owner-epoch rule as saveMetricsPreferences: a stale caller's save is a no-op. */
+export function saveImagesPreferences(next: ImagesPreferences, callerOwnerEpoch: number): void {
+	if (callerOwnerEpoch !== ownerEpoch) return;
 	imagesPreferences = normalizeViewPrefs('images', { ...imagesPreferences, ...next });
 	studio.imagesStarredOnly = imagesPreferences.starredOnly;
 	writeViewPrefs(activeViewOwner, 'images', imagesPreferences);
@@ -415,7 +423,9 @@ export function recentPrompts(limit = 10): string[] {
 	return recent;
 }
 
-export function saveLineageViewport(viewport: LineageViewport): void {
+/** Same owner-epoch rule as saveMetricsPreferences: a stale caller's save is a no-op. */
+export function saveLineageViewport(viewport: LineageViewport, callerOwnerEpoch: number): void {
+	if (callerOwnerEpoch !== ownerEpoch) return;
 	const bounded = {
 		...viewport,
 		translateX: clampLineageCoordinate(viewport.translateX),
@@ -427,7 +437,12 @@ export function saveLineageViewport(viewport: LineageViewport): void {
 	writeViewPrefs(activeViewOwner, 'lineage-viewport', bounded);
 }
 
-export function saveLineageTreeOffsets(offsets: Record<string, LineageTreeOffset>): void {
+/** Same owner-epoch rule as saveMetricsPreferences: a stale caller's save is a no-op. */
+export function saveLineageTreeOffsets(
+	offsets: Record<string, LineageTreeOffset>,
+	callerOwnerEpoch: number
+): void {
+	if (callerOwnerEpoch !== ownerEpoch) return;
 	const validEntries = Object.entries(offsets).filter(
 		([id, offset]) =>
 			LINEAGE_ROOT_ID_PATTERN.test(id) && Number.isFinite(offset.x) && Number.isFinite(offset.y)

@@ -390,26 +390,20 @@
 	} | null = null;
 
 	function persistImagesPreferences(): void {
-		if (viewOwnerEpoch() !== componentOwnerEpoch) return;
-		saveImagesPreferences({
-			...getImagesPreferences(),
-			mode: imagesMode,
-			filters: persistedImageFilters,
-			action: gridFilter,
-			search: searchQuery,
-			starredOnly,
-			gridAnchor: pendingGridResumeAnchor,
-			gridSelectionId: gridSelectedId ?? requestedGridSelectionId,
-			lineageSelection: pendingLineageSelection
-		});
-	}
-
-	function saveViewportForOwner(viewport: ReturnType<typeof lineageViewport>): void {
-		if (viewOwnerEpoch() === componentOwnerEpoch) saveLineageViewport(viewport);
-	}
-
-	function saveTreeOffsetsForOwner(offsets: Record<string, { x: number; y: number }>): void {
-		if (viewOwnerEpoch() === componentOwnerEpoch) saveLineageTreeOffsets(offsets);
+		saveImagesPreferences(
+			{
+				...getImagesPreferences(),
+				mode: imagesMode,
+				filters: persistedImageFilters,
+				action: gridFilter,
+				search: searchQuery,
+				starredOnly,
+				gridAnchor: pendingGridResumeAnchor,
+				gridSelectionId: gridSelectedId ?? requestedGridSelectionId,
+				lineageSelection: pendingLineageSelection
+			},
+			componentOwnerEpoch
+		);
 	}
 
 	function capturePersistedGridAnchor(): GridResumeAnchor | null {
@@ -1616,7 +1610,7 @@
 		);
 		if (Object.keys(bounded).length !== Object.keys(treeOffsets).length) {
 			treeOffsets = bounded;
-			saveTreeOffsetsForOwner(bounded);
+			saveLineageTreeOffsets(bounded, componentOwnerEpoch);
 		}
 	});
 
@@ -1668,7 +1662,10 @@
 		const viewport = lineageViewport();
 		if (!viewportReady) return;
 		if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
-		viewportSaveTimer = setTimeout(() => saveViewportForOwner(viewport), VIEWPORT_SAVE_DELAY);
+		viewportSaveTimer = setTimeout(
+			() => saveLineageViewport(viewport, componentOwnerEpoch),
+			VIEWPORT_SAVE_DELAY
+		);
 		return () => {
 			if (viewportSaveTimer) clearTimeout(viewportSaveTimer);
 		};
@@ -1817,7 +1814,7 @@
 				setTimeout(() => {
 					if (suppressTreeClick === rootId) suppressTreeClick = null;
 				});
-				saveTreeOffsetsForOwner(treeOffsets);
+				saveLineageTreeOffsets(treeOffsets, componentOwnerEpoch);
 			}
 			dragMoved = false;
 			return;
@@ -1869,19 +1866,19 @@
 				y: clampLineageCoordinate(current.y + direction.y * step)
 			}
 		};
-		saveTreeOffsetsForOwner(treeOffsets);
+		saveLineageTreeOffsets(treeOffsets, componentOwnerEpoch);
 	}
 
 	function resetTreePosition(rootId: string): void {
 		const { [rootId]: removed, ...remaining } = treeOffsets;
 		void removed;
 		treeOffsets = remaining;
-		saveTreeOffsetsForOwner(treeOffsets);
+		saveLineageTreeOffsets(treeOffsets, componentOwnerEpoch);
 	}
 
 	function resetAllTreePositions(): void {
 		treeOffsets = {};
-		saveTreeOffsetsForOwner(treeOffsets);
+		saveLineageTreeOffsets(treeOffsets, componentOwnerEpoch);
 	}
 
 	function recenterNewest(animate = true): { rootId: string; x: number; y: number } | null {
@@ -2383,7 +2380,7 @@
 	}
 
 	function saveViewport(): void {
-		saveViewportForOwner(lineageViewport());
+		saveLineageViewport(lineageViewport(), componentOwnerEpoch);
 	}
 
 	function openFromNode(
@@ -2592,7 +2589,7 @@
 		const anchor = captureGridAnchorBeforeExit();
 		if (anchor !== null) pendingGridResumeAnchor = anchor;
 		persistImagesPreferences();
-		if (viewportReady) saveViewportForOwner(lineageViewport());
+		if (viewportReady) saveLineageViewport(lineageViewport(), componentOwnerEpoch);
 		canvasActive = false;
 		for (const controller of requestControllers) controller.abort();
 		requestControllers.clear();
