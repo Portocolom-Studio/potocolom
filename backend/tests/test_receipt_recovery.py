@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import pytest
 from sqlalchemy import text
@@ -232,6 +233,41 @@ def test_recover_receipted_job_failed(monkeypatch):
         assert job["state"] == "failed"
         assert job["attempt"] == 1
         assert client.portal.call(queue_contains_job, job_id) is False
+
+
+@pytest.mark.db
+def test_recover_receipted_job_failed_collects_its_uploads(monkeypatch):
+    """A worker can upload and then report failure. The receipt recovery of
+    that failure must collect the upload, as the live failure path does."""
+    uploaded: dict = {}
+
+    def before_report(client, command):
+        assert put_upload(client, command["upload"], png_bytes()).status_code == 200
+        uploaded["key"] = urlsplit(command["upload"]["url"]).path.rsplit("/api/v1/files/", 1)[-1]
+        assert jobs.get_storage().path(uploaded["key"]).exists()
+
+    def send_report(worker, command, grant):
+        worker.send_json(job_failed_from_dispatch(command, grant["grant_nonce"]))
+        receive_report_ack(worker, command["worker_id"], uuid.UUID(command["incarnation"]))
+
+    worker_id = f"done-{uuid.uuid4()}"
+    with protocol6_client(worker_id) as client:
+        job_id, _command = v6_crash_after_receipt(
+            client,
+            monkeypatch,
+            worker_id,
+            attempt_terminal_state="failed",
+            before_report=before_report,
+            send_report=send_report,
+        )
+
+        job = client.get(f"/api/v1/generations/{job_id}").json()
+        assert job["state"] == "failed"
+        storage = jobs.get_storage()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and storage.path(uploaded["key"]).exists():
+            time.sleep(0.05)
+        assert not storage.path(uploaded["key"]).exists(), "a recovered failure kept its upload"
 
 
 @pytest.mark.db

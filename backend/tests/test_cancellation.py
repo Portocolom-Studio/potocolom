@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from app import db, jobs
+from app import db, jobs, realtime
 from app.main import app
 from app.tables import Asset, Job, UsageEvent
 from tests.test_jobs import (
@@ -179,6 +179,34 @@ def test_a_cancelled_job_gives_its_slot_back():
                     break
                 time.sleep(0.05)
     assert uuid.UUID(job_id) not in jobs.inflight
+
+
+@pytest.mark.db
+def test_a_refused_failure_report_gives_its_slot_back():
+    """A cancelled job takes no later verdict, so a worker's job_failed that
+    arrives after the cancellation is refused by mark_failed. The refusal must
+    still let go of the attempt, or the slot stays held until the stall sweeper
+    runs and the next job cannot dispatch to this worker."""
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-refused")
+            job_id = _create(client)
+            dispatch = _wait_dispatch(worker)
+            poll_until(client, job_id, "running")
+            assert client.post(f"/api/v1/generations/{job_id}/cancel").status_code == 204
+            assert worker.receive_json()["type"] == "cancel_job"
+            worker.send_json({"type": "job_failed", "job_id": job_id, "reason": "boom",
+                              "dispatch_token": dispatch["dispatch_token"]})
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if uuid.UUID(job_id) not in jobs.inflight:
+                    break
+                time.sleep(0.05)
+            assert client.get(f"/api/v1/generations/{job_id}").json()["state"] == "cancelled"
+            # Checked while the worker is still connected: a disconnect clears
+            # the entry on its own and would hide the leak.
+            assert uuid.UUID(job_id) not in jobs.inflight
+            assert realtime.workers["w-refused"].jobs_in_flight == 0
 
 
 @pytest.mark.db
