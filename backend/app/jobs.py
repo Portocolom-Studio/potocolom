@@ -1506,10 +1506,6 @@ async def generation_events(
     )
 
 
-def takes_jobs(worker: realtime.Worker) -> bool:
-    return realtime.takes_work(worker) or worker.has_current_work_grant
-
-
 def job_dispatch_depth(worker: realtime.Worker) -> int:
     # Sessions-first: while a realtime slot is live, do not stack a second
     # queued job behind the one already waiting on the GPU lock.
@@ -1521,7 +1517,7 @@ def job_dispatch_depth(worker: realtime.Worker) -> int:
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     candidates = [
         worker for worker in realtime.workers.values()
-        if takes_jobs(worker)
+        if worker.has_current_work_grant
         and model_id in worker.models
         and worker.jobs_in_flight < job_dispatch_depth(worker)
     ]
@@ -1605,7 +1601,7 @@ async def _dispatch_step_body() -> None:
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
-            if not any(takes_jobs(w)
+            if not any(w.has_current_work_grant
                        and w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break

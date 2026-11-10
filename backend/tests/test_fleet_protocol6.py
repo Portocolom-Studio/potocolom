@@ -229,7 +229,7 @@ def test_v6_hello_registers_grants_heartbeats_and_closes_on_disconnect(monkeypat
                 worker = realtime.workers[worker_id]
                 assert worker.protocol_version == 6
                 assert worker.incarnation == incarnation
-                assert realtime.takes_work(worker) is False
+                assert realtime.accepts_plain_gpu_commands(worker) is False
 
                 renewal_nonce = uuid.uuid4()
                 ws.send_json({
@@ -297,7 +297,7 @@ def test_v6_hello_without_root_keys_falls_back_to_protocol5(monkeypatch):
                 assert worker.protocol_version == 5
                 assert worker.incarnation is None
                 assert worker.grant_nonce is None
-                assert realtime.takes_work(worker)
+                assert realtime.accepts_plain_gpu_commands(worker)
                 assert realtime.model_known(model_id)
                 assert realtime.pick_worker(model_id) is worker
                 assert model_id in registry.available()
@@ -468,7 +468,7 @@ def test_a_v6_hello_without_durable_authority_registers_as_protocol5(monkeypatch
             worker = realtime.workers[worker_id]
             assert worker.protocol_version == 5
             assert worker.incarnation is None
-            assert realtime.takes_work(worker)
+            assert realtime.accepts_plain_gpu_commands(worker)
     finally:
         get_settings.cache_clear()
 
