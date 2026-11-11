@@ -234,7 +234,7 @@ async def member_for_credential(credential: str):
         raise RuntimeError("database unavailable")
     async with db.session_factory() as session:
         return (await session.execute(
-            select(FleetMember.id, FleetMember.worker_id).where(
+            select(FleetMember.id, FleetMember.worker_id, FleetMember.base_url).where(
                 FleetMember.credential_hash == sessions.token_hash(credential),
                 FleetMember.revoked_at.is_(None),
             )

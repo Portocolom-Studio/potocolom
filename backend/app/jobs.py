@@ -1699,8 +1699,10 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             return None
         storage_key, thumb_storage_key = dispatch_keys_for_attempt(user_id, job_id, attempt)
         dispatch_token = secrets.token_urlsafe(16)
-        target = await get_storage().upload_target(storage_key, dispatch_token)
-        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
+        target = await get_storage().upload_target(storage_key, dispatch_token,
+                                                   base_url=worker.base_url)
+        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token,
+                                                         base_url=worker.base_url)
         fields = {
             "job_id": str(job_id),
             "model_id": model_id,
@@ -1717,7 +1719,8 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
         }
         if source_storage_key is not None:
             fields["input"] = {
-                "url": await get_storage().worker_fetch_url(source_storage_key),
+                "url": await get_storage().worker_fetch_url(
+                    source_storage_key, base_url=worker.base_url),
             }
         from app import command_store
 
@@ -1842,8 +1845,10 @@ async def dispatch(job_id: uuid.UUID) -> bool:
             job.user_id, job.id, job.attempt
         )
         dispatch_token = secrets.token_urlsafe(16)
-        target = await get_storage().upload_target(storage_key, dispatch_token)
-        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token)
+        target = await get_storage().upload_target(storage_key, dispatch_token,
+                                                   base_url=worker.base_url)
+        thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token,
+                                                         base_url=worker.base_url)
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.jobs_in_flight += 1
@@ -1875,7 +1880,8 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                 logger.warning("job %s failed: source asset not found", job_id)
                 return True
             dispatch_msg["input"] = {
-                "url": await get_storage().worker_fetch_url(source.storage_key),
+                "url": await get_storage().worker_fetch_url(
+                    source.storage_key, base_url=worker.base_url),
             }
         if epoch != _dispatch_epoch:
             inflight.pop(job.id, None)

@@ -12,7 +12,7 @@ Use this layout when the machine that runs the studio has no GPU, or when the GP
 - The **API host** runs the API and PostgreSQL with the `api` profile. It has no local worker.
 - The **GPU host** runs only the worker container. The worker opens a WebSocket to `/api/v1/fleet` on the API host, and it takes jobs from there.
 
-For image jobs, the worker also talks to the API over HTTP. It uploads results and fetches source images, using the address in `INTERNAL_URL`. The worker and the API must be able to reach each other at the addresses that the two settings name. SSH is not part of this setup.
+For image jobs, the worker also talks to the API over HTTP. It uploads results and fetches source images, using the address in `INTERNAL_URL`. A worker that joined with a join token uses the origin of its own `API_URL` instead. With S3 storage, every worker uploads to presigned bucket addresses and must reach the bucket. The worker and the API must be able to reach each other at the addresses that the two settings name. SSH is not part of this setup.
 
 ## Secrets
 
@@ -47,7 +47,7 @@ These are the secrets in this setup. Their values never appear in this guide, so
    env -u INTERNAL_URL docker compose --env-file deploy/compose/.env -f deploy/compose/compose.yml --profile api up -d --no-build
    ```
 
-   `PUBLIC_URL` and `INTERNAL_URL` must both use addresses that the remote worker can reach. The default `INTERNAL_URL`, `http://api:8080`, works only on the local Compose network.
+   `PUBLIC_URL` and `INTERNAL_URL` must both use addresses that the remote worker can reach. The default `INTERNAL_URL`, `http://api:8080`, works only on the local Compose network. An enrolled fleet member does not depend on `INTERNAL_URL`: with local storage, its addresses use the origin of its own `API_URL`.
 
    The installer prints a one-use setup link. Spend it in a browser on the API host before you use the studio. The fleet socket answers before setup, so a worker can report its hardware while the install is still unclaimed.
 
