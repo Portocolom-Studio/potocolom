@@ -264,7 +264,7 @@
         <mxCell id="dev_compose" value="deploy/compose/dev.yml:&#10;PostgreSQL 5432, Redis 6379&#10;MinIO 9100/9101, Mailpit 1125/8125&#10;(host ports offset, defaults occupied)" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
           <mxGeometry x="70" y="220" width="360" height="110" as="geometry" />
         </mxCell>
-        <mxCell id="dev_make" value="make setup | deps | verify | simulate&#10;verify runs exactly what CI runs" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+        <mxCell id="dev_make" value="make setup | deps | verify | simulate&#10;verify runs the backend, worker and frontend gates" style="rounded=1;whiteSpace=wrap;html=1;align=left;spacingLeft=8;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
           <mxGeometry x="70" y="350" width="360" height="70" as="geometry" />
         </mxCell>
         <mxCell id="ci" value="GitHub Actions, one workflow per component, path triggered (issue 13)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fillColor=none;strokeColor=#9673a6;fontStyle=1;" vertex="1" parent="1">

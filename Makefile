@@ -1,4 +1,4 @@
-# Development entry points. `make verify` runs exactly what CI runs.
+# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference` and the secret scan.
 # First time on a machine:
 #   make init                  # host preflight, venvs, GPU extras, secrets, postgres
 #   make dev                   # native studio on :5173 (or make selfhost for :8080)
@@ -246,6 +246,7 @@ deps-down:
 # main checkout, so a bare make verify in a linked worktree would test main's code.
 verify-backend:
 	cd backend && export PYTHONPATH=$(CURDIR)/backend$(if $(PYTHONPATH),:$(PYTHONPATH)) && .venv/bin/ruff check . ../scripts && .venv/bin/mypy && .venv/bin/pytest --cov=app --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/backend/coverage.xml --junitxml=../.local/reports/backend/tests.xml
+	python3 -m unittest discover -s scripts/tests -p 'test_release_check_gpu.py'
 
 verify-worker:
 	cd worker && export PYTHONPATH=$(CURDIR)/worker$(if $(PYTHONPATH),:$(PYTHONPATH)) && .venv/bin/ruff check . && .venv/bin/mypy && .venv/bin/pytest --cov=worker --cov-branch --cov-report=term:skip-covered --cov-report=xml:../.local/reports/worker/coverage.xml --junitxml=../.local/reports/worker/tests.xml
@@ -302,7 +303,7 @@ lint: ## the lint steps of verify only: ruff on backend, scripts and worker, the
 	cd worker && .venv/bin/ruff check .
 	cd frontend && npm run lint
 
-verify: verify-backend verify-worker verify-frontend ## everything CI runs, locally, except the secret scan (make verify-secrets)
+verify: verify-backend verify-worker verify-frontend ## backend, worker and frontend gates; CI also runs verify-guards, verify-compose, verify-mermaid, verify-worker-inference and the secret scan (verify-secrets)
 
 # Deliberately not part of verify: it needs the Docker daemon and starts and
 # removes compose projects and volumes of its own (docs/self-hosting.md).

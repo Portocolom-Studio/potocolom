@@ -39,7 +39,7 @@ A new entry follows the same path as any other change. The steps below come from
 1. Open an issue that describes the change and the reason for it.
 2. Make a short-lived branch from main.
 3. Add the entry to docs/decisions.md. State the decision, the reasons, and the main alternative you rejected. If the change replaces an older entry, add a Superseded or Partly superseded note under its heading that names the new one.
-4. Run `make verify` locally. It runs what CI runs.
+4. Run `make verify` locally. It runs the backend, worker and frontend gates. CI runs more checks, which CONTRIBUTING.md lists.
 5. Open a PR into main. Commit with `git commit -s`, so each commit carries a `Signed-off-by` line. A PR without the sign-off cannot be merged.
 
 ## Read the record
