@@ -1275,11 +1275,17 @@ def test_shutdown_stops_a_running_download_and_keeps_what_it_completed(monkeypat
     monkeypatch.setattr(model_store, "plan_items", fake_plan(*B_ENTRIES, *CATEGORIZER_ENTRIES))
     monkeypatch.setattr(model_store, "free_bytes", lambda _p: (10**12, 10**12))
 
+    # Set when the first file is on disk and the second is held. "downloading" is
+    # set before the download thread starts, so a shutdown on that state alone can
+    # stop the attempt before any file is fetched.
+    holding = threading.Event()
+
     def held_fetch(item: Item, on_bytes) -> None:
         if item.name == "model_index.json":
             put_snapshot_file(item.repo, item.revision, item.name, item.size)
             on_bytes(item.size)
             return
+        holding.set()
         deadline = time.monotonic() + 10
         while True:  # held until the process stops the attempt, or the deadline
             if time.monotonic() > deadline:
@@ -1299,6 +1305,7 @@ def test_shutdown_stops_a_running_download_and_keeps_what_it_completed(monkeypat
         store.attach(send, lambda _m: False)
         store.handle({"type": "install_model", "model_id": "model-b"})
         await wait_for_op(store, "model-b", ("downloading",))
+        assert await asyncio.to_thread(holding.wait, 5)
         await asyncio.wait_for(store.shutdown(), timeout=5)
         return store._ops["model-b"]
 
