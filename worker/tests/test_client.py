@@ -2768,6 +2768,46 @@ def test_protocol6_heartbeat_samples_engine_device(monkeypatch, sample_delay):
     assert all(item == ("rocm", "cuda:1") for item in sampled)
 
 
+def test_protocol6_heartbeat_survives_a_failed_sample(monkeypatch, caplog):
+    # A one-off failure inside the protocol 6 heartbeat must not end the task
+    # for good: the worker stays connected and would go silent (issue #853).
+    samples = 0
+
+    def flaky_gpu(device, _selected_device):
+        nonlocal samples
+        samples += 1
+        if samples == 1:
+            raise RuntimeError("collector exploded")
+        # Protocol 6 validates the observation shape, so return a real one.
+        return {"device": device, "available": False}
+
+    monkeypatch.setattr("worker.client.sample_gpu", flaky_gpu)
+    worker_id = "w-p6-hb-retry"
+
+    async def scenario():
+        socket = Protocol6ApiSocket(worker_id, [], hold_open_seconds=3.5)
+        task = asyncio.create_task(serve_connection(
+            socket, Settings(worker_id=worker_id, heartbeat_seconds=0.01),
+            [SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+        deadline = time.monotonic() + 3
+        try:
+            while time.monotonic() < deadline:
+                beats = [m for m in _worker_controls(socket) if m["type"] == "heartbeat"]
+                if len(beats) >= 2:
+                    break
+                await asyncio.sleep(0.005)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        return socket
+
+    socket = asyncio.run(scenario())
+    beats = [m for m in _worker_controls(socket) if m["type"] == "heartbeat"]
+    assert len(beats) >= 2, "no second heartbeat after the failed sample"
+    assert "heartbeat failed; the next one retries" in caplog.text
+
+
 def test_protocol6_session_refused_validates():
     worker_id = "w-p6-refused"
     lease = _lease_fields(worker_id)

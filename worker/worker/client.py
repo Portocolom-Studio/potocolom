@@ -15,6 +15,7 @@ import random
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
 
@@ -1132,6 +1133,40 @@ def model_busy(sessions: SessionManager, jobs: dict[asyncio.Task, JobRun]):
     return busy
 
 
+async def _heartbeat_loop(
+    settings: Settings,
+    engine: Engine,
+    sessions: SessionManager,
+    send: Callable[[dict[str, Any]], Awaitable[Any]],
+    *,
+    closed: Callable[[], bool],
+    extra: dict[str, Any] | None = None,
+) -> None:
+    # One failed sample or send must not end the heartbeat for good: the worker
+    # would stay connected and go silent. A closed socket ends it quietly.
+    while True:
+        await asyncio.sleep(settings.heartbeat_seconds)
+        try:
+            selected_device = getattr(engine, "device", settings.device)
+            gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
+            await send({
+                "type": "heartbeat",
+                **(extra or {}),
+                "slots_in_use": sessions.active_count,
+                "loaded_models": engine.loaded_models(),
+                "gpu": gpu,
+                "frame_p95_ms": frame_p95_payload(engine),
+            })
+        except asyncio.CancelledError:
+            raise
+        except websockets.ConnectionClosed:
+            raise
+        except Exception:
+            if closed():
+                return
+            logger.exception("heartbeat failed; the next one retries")
+
+
 async def _serve_protocol5(
     ws,
     settings: Settings,
@@ -1153,29 +1188,13 @@ async def _serve_protocol5(
     def forget(task: asyncio.Task) -> None:
         jobs.pop(task, None)
 
-    async def heartbeats() -> None:
-        while True:
-            await asyncio.sleep(settings.heartbeat_seconds)
-            try:
-                selected_device = getattr(engine, "device", settings.device)
-                gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
-                await ws.send(json.dumps({
-                    "type": "heartbeat",
-                    "slots_in_use": sessions.active_count,
-                    "loaded_models": engine.loaded_models(),
-                    "gpu": gpu,
-                    "frame_p95_ms": frame_p95_payload(engine),
-                }))
-            except asyncio.CancelledError:
-                raise
-            except websockets.ConnectionClosed:
-                raise
-            except Exception:
-                if getattr(ws, "close_code", None) is not None:
-                    return
-                logger.exception("heartbeat failed; the next one retries")
+    async def send_heartbeat(message: dict[str, Any]) -> None:
+        await ws.send(json.dumps(message))
 
-    heartbeat_task = asyncio.create_task(heartbeats())
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(
+        settings, engine, sessions, send_heartbeat,
+        closed=lambda: getattr(ws, "close_code", None) is not None,
+    ))
     try:
         async for message in ws:
             try:
@@ -1307,23 +1326,6 @@ async def _serve_protocol6(
             await asyncio.sleep(delay)
             await send_grant_request()
 
-    async def heartbeats() -> None:
-        while True:
-            await asyncio.sleep(settings.heartbeat_seconds)
-            selected_device = getattr(engine, "device", settings.device)
-            gpu = await asyncio.to_thread(sample_gpu, settings.device, selected_device)
-            message = {
-                "type": "heartbeat",
-                "worker_id": worker_id,
-                "incarnation": incarnation,
-                "region": region,
-                "slots_in_use": sessions.active_count,
-                "loaded_models": engine.loaded_models(),
-                "gpu": gpu,
-                "frame_p95_ms": frame_p95_payload(engine),
-            }
-            await output.send_message(message)
-
     async def apply_command(command: dict[str, Any]) -> tuple[str, str | None]:
         kind = command["type"]
         if store is not None and kind in {"open_session", "dispatch_job"}:
@@ -1376,7 +1378,11 @@ async def _serve_protocol6(
         return "refused", "unsupported_control"
 
     grant_task = asyncio.create_task(grant_renewal())
-    heartbeat_task = asyncio.create_task(heartbeats())
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(
+        settings, engine, sessions, output.send_message,
+        closed=lambda: getattr(transport, "close_code", None) is not None,
+        extra={"worker_id": worker_id, "incarnation": incarnation, "region": region},
+    ))
     await send_grant_request()
     try:
         async for message in transport:
