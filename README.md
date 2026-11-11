@@ -125,7 +125,7 @@ stops on a blocking problem before installing anything or starting postgres.
 ```
 make init            # first time: Python 3.11+, Node 24+, Docker Compose v2, GPU driver check; then setup
 make dev             # native studio on :5173; make selfhost is the Docker product on :8080
-make verify          # lint, test and build: exactly what CI runs (optional after init)
+make verify          # backend and worker lint, types and tests, plus the frontend build and checks; CI runs more, see CONTRIBUTING.md
 make simulate        # live connection handling demo (API + workers + simulated browser)
 ```
 
