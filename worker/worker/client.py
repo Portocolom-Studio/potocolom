@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 import websockets
+from websockets.exceptions import SecurityError
 
 from worker.protocol6 import (
     Protocol6Error,
@@ -1547,6 +1548,26 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     await _serve_protocol5(ws, settings, manifests, engine, store, store_supported)
 
 
+def fleet_connect(allow_insecure: bool):
+    """websockets.connect with the fleet URL policy applied to redirect targets.
+
+    The client follows a redirect and sends the same headers again, so a
+    permitted address that answers with a redirect to a remote plain ws:// host
+    would carry the fleet token there in clear text.
+    """
+
+    class Connect(websockets.connect):
+        def process_redirect(self, exc: Exception) -> Exception | str:
+            target = super().process_redirect(exc)
+            if isinstance(target, str):
+                error = fleet_url_error(target, allow_insecure)
+                if error is not None:
+                    return SecurityError(error)
+            return target
+
+    return Connect
+
+
 async def run() -> None:
     settings = get_settings()
     # Checked before build_runtime so a refused worker loads nothing and dials nothing.
@@ -1560,12 +1581,13 @@ async def run() -> None:
         store = ModelStore(manifests, engine, settings.models_dir)
         await store.scan()
     delay = BACKOFF_INITIAL
+    connect = fleet_connect(settings.allow_insecure_fleet)
     try:
         while True:
             try:
                 warm = list(store.installed.values()) if store is not None else manifests
                 await warmup_realtime(engine, warm, settings.realtime_slots)
-                async with websockets.connect(
+                async with connect(
                     settings.api_url,
                     # Lowercase: header names are case-insensitive, but not every
                     # ASGI stack normalises them before the application looks.

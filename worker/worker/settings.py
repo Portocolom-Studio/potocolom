@@ -55,8 +55,11 @@ def fleet_url_error(api_url: str, allow_insecure: bool) -> str | None:
             return None
     except ValueError:
         # A label that starts with a digit is refused: the resolver reads
-        # "134744072" and "0x08080808" as the address 8.8.8.8.
-        if host == "localhost" or (host and "." not in host and not host[0].isdigit()):
+        # "134744072" and "0x08080808" as the address 8.8.8.8. So is a host that
+        # is not ASCII: the client applies IDNA before it connects, which reads
+        # U+3002 and U+FF0E as a period, so such a host is not one label.
+        if host == "localhost" or (
+                host and host.isascii() and "." not in host and not host[0].isdigit()):
             return None
     return (
         f"refusing plain ws:// to remote host {host!r}: the fleet token would be sent "

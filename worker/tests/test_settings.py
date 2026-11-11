@@ -80,3 +80,12 @@ def test_allow_insecure_fleet_defaults_off_and_reads_env(monkeypatch):
 ])
 def test_ws_to_a_numeric_single_label_host_is_refused(url):
     assert fleet_url_error(url, allow_insecure=False) is not None
+
+
+@pytest.mark.parametrize("url", [
+    # IDNA, which the client applies before it connects, reads both as a period.
+    "ws://fleet\u3002example\u3002com:8000/api/v1/fleet",
+    "ws://fleet\uff0eexample\uff0ecom:8000/api/v1/fleet",
+])
+def test_ws_to_a_host_with_unicode_label_separators_is_refused(url):
+    assert fleet_url_error(url, allow_insecure=False) is not None

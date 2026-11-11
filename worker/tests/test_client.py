@@ -19,6 +19,7 @@ from worker.client import (
     PROTOCOL_VERSION,
     RegistrationRejected,
     SEED_BOUND,
+    fleet_connect,
     SessionRunner,
     build_runtime,
     ensure_seed,
@@ -3038,3 +3039,57 @@ def test_run_connects_to_plain_ws_remote_host_when_opted_in(monkeypatch):
         asyncio.run(run())
 
     assert calls == ["ws://fleet.example.com:8000/api/v1/fleet"]
+
+
+def _redirect_to(location):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(302, "Found", Headers(Location=location)))
+
+
+def test_a_redirect_to_a_remote_plain_ws_host_is_refused():
+    from websockets.exceptions import SecurityError
+
+    connector = fleet_connect(allow_insecure=False)("ws://api:8080/api/v1/fleet")
+    refused = connector.process_redirect(_redirect_to("ws://fleet.example.com/api/v1/fleet"))
+
+    assert isinstance(refused, SecurityError)
+    assert "ALLOW_INSECURE_FLEET" in str(refused)
+
+
+def test_a_redirect_inside_the_url_policy_is_followed():
+    local = fleet_connect(allow_insecure=False)("ws://api:8080/api/v1/fleet")
+    assert local.process_redirect(_redirect_to("/api/v1/fleet/")) == "ws://api:8080/api/v1/fleet/"
+    opted_in = fleet_connect(allow_insecure=True)("ws://api:8080/api/v1/fleet")
+    assert (opted_in.process_redirect(_redirect_to("ws://fleet.example.com/api/v1/fleet"))
+            == "ws://fleet.example.com/api/v1/fleet")
+
+
+def test_the_fleet_token_is_not_sent_to_a_redirect_target_outside_the_policy():
+    from websockets.exceptions import SecurityError
+
+    async def scenario():
+        async def redirecting(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            # 192.0.2.1 is TEST-NET-1: never routable, so a followed redirect cannot succeed.
+            writer.write(b"HTTP/1.1 302 Found\r\nLocation: ws://192.0.2.1/api/v1/fleet\r\n"
+                         b"Content-Length: 0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(redirecting, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async with fleet_connect(allow_insecure=False)(
+                    f"ws://127.0.0.1:{port}/api/v1/fleet",
+                    additional_headers={"x-fleet-token": "fleet-secret"}, open_timeout=3):
+                pass
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    with pytest.raises(SecurityError) as error:
+        asyncio.run(scenario())
+    assert "fleet-secret" not in str(error.value)
