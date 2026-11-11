@@ -135,14 +135,17 @@ async def _reserve(session: AsyncSession, address: str) -> float | None:
     return waiting
 
 
-async def charge_address(http: Request) -> None:
-    """Charge one password-reset ask against the caller's address.
+async def charge_address(http: Request, bucket: str = "reset") -> None:
+    """Charge one ask against the caller's address, in the route's own bucket.
 
     The reset route returns the same answer whether it found an account or
     not, so the address it was asked about cannot be charged without turning
     the answer into an enumeration signal; an identifier ceiling on it would
     also let anybody who knows an address lock its owner out of resetting by
     asking ten times for it. The caller's address is all that is left.
+
+    Each route names its own bucket, so one route's queue never delays another
+    route's callers behind the same address.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -158,7 +161,7 @@ async def charge_address(http: Request) -> None:
     async with db.session_factory() as session:
         # Its own row, not the peer's login row: sharing one queue let a flood
         # of either route shut the other for everyone behind the same address.
-        queued = await _reserve(session, f"reset:{peer}")
+        queued = await _reserve(session, f"{bucket}:{peer}")
         await session.commit()
     if queued is None:
         raise BUSY

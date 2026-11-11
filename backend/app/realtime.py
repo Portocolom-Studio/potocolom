@@ -27,6 +27,7 @@ from anyio import CancelScope
 from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from app.auth import origin_listed
 from app.manifests import (
     FRAME_P95_MAX_MS,
     Manifest,
@@ -143,14 +144,7 @@ def origin_allowed(ws: WebSocket) -> bool:
     origin = ws.headers.get("origin")
     if origin is None:
         return True
-    settings = get_settings()
-    allowed = {settings.public_url.rstrip("/")}
-    allowed.update(
-        candidate.strip().rstrip("/")
-        for candidate in settings.allowed_origins.split(",")
-        if candidate.strip()
-    )
-    return origin.rstrip("/") in allowed
+    return origin_listed(origin)
 
 
 # Classified non-global, but reachable from the public internet through relays,

@@ -45,6 +45,11 @@ def _allowed_origins() -> set[str]:
     return allowed
 
 
+def origin_listed(origin: str) -> bool:
+    """Whether a present Origin is this install's own address or a configured extra."""
+    return origin.rstrip("/") in _allowed_origins()
+
+
 def check_origin(request: Request) -> None:
     """An unsafe request must come from an allowed origin.
 
@@ -52,7 +57,7 @@ def check_origin(request: Request) -> None:
     one on every unsafe request and only a non-browser caller can omit it.
     """
     origin = request.headers.get("origin")
-    if origin is None or origin.rstrip("/") not in _allowed_origins():
+    if origin is None or not origin_listed(origin):
         raise HTTPException(status_code=403, detail="origin not allowed")
 
 

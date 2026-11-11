@@ -4,7 +4,7 @@ subtitle: Every endpoint that ships, grouped by purpose.
 tab: api
 group: Endpoints
 order: 3
-source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration", "Worker models", "Authentication (shipped, kept here for the exact shapes)"; docs/connection-handling.md "Model store"; backend/app/worker_models.py, backend/app/enable.py
+source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration", "Worker models", "Fleet members", "Authentication (shipped, kept here for the exact shapes)"; docs/connection-handling.md "Model store"; backend/app/worker_models.py, backend/app/enable.py
 ---
 
 > [!PLANNED]
@@ -89,6 +89,22 @@ These routes are for admins. They install, cancel and remove the model weights o
 - Other refusals: `404` for an unknown worker or a model that is not in the worker's catalog, and `503` when the worker drops the connection as the command is sent.
 - Operation IDs are a 20-digit time stamp, a hyphen and eight hex digits. They sort in the order they were issued.
 - The POST and DELETE routes are audited like other admin changes. The GET is a read and is not audited.
+
+## Fleet members
+
+These routes are for admins, except enroll. An administrator adds a GPU on another machine, and that machine spends the one-hour join token it is given for a credential of its own. The API keeps only a hash of each secret.
+
+| Method | Path                               | Purpose                                                                                      |
+| ------ | ---------------------------------- | -------------------------------------------------------------------------------------------- |
+| POST   | `/api/v1/admin/fleet/members`      | Create a member for a `cuda` or `rocm` GPU. The join token is returned once.                 |
+| GET    | `/api/v1/admin/fleet/members`      | List the members and their state: `waiting`, `expired`, `connected`, `offline` or `revoked`. |
+| DELETE | `/api/v1/admin/fleet/members/{id}` | Revoke a member. The row stays as the record.                                                |
+| POST   | `/api/v1/fleet/enroll`             | Spend a join token once. Needs no session. Answers the worker id and its credential.         |
+
+- Create and delete need an allowed origin. In accounts mode, create also needs a recent sign-in.
+- A join token is refused once it is spent, expired or revoked. Every one of those refusals gets the same `403`.
+- `base_url` must be a bare `http` or `https` origin. A path, a query, a fragment or a user name is refused with `422`, and the token stays usable.
+- The fleet socket does not accept these credentials yet, so an enrolled member cannot connect until that change ships.
 
 ## Benchmark
 

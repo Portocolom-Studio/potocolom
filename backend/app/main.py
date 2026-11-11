@@ -39,6 +39,7 @@ from app.credentials import router as credentials_router
 from app.deletion import purge_loop
 from app.deletion import router as deletion_router
 from app.enable import router as enable_router
+from app.fleet_members import router as fleet_members_router
 from app.factors import router as factors_router
 from app.invitations import router as invitations_router
 from app.oauth import check_configuration as check_oauth_configuration
@@ -212,6 +213,7 @@ app.include_router(oauth_router)
 app.include_router(recovery_router)
 app.include_router(roles_router)
 app.include_router(worker_models_router)
+app.include_router(fleet_members_router)
 app.include_router(states_router)
 app.include_router(mail_router)
 app.include_router(ses_feedback_router)

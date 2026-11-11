@@ -85,6 +85,10 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation (404 once it is revoked or accepted); records `invitation.revoked` with the invitation id, address and role; admin only |
 | POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; returns the same shape as create, `link` included; records `invitation.revealed` with the invitation id, address and role, high severity for an administrator invitation; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
+| POST `/api/v1/admin/fleet/members` | implemented (#885) | create a GPU member for another machine; returns `{id, label, device, join_token, expires_at}` once, with a one-hour join token; admin only; accounts mode also needs recent authentication |
+| GET `/api/v1/admin/fleet/members` | implemented (#885) | the fleet members and each one's state (`waiting`, `expired`, `connected`, `offline`, `revoked`); never a token or a credential; admin only |
+| DELETE `/api/v1/admin/fleet/members/{id}` | implemented (#885) | revoke a member; the row stays; `404` for an unknown id; admin only |
+| POST `/api/v1/fleet/enroll` | implemented (#885) | spend a join token once for a worker id and a credential; no session; every refused token gets the same `403` |
 | POST `/api/v1/users/{id}/state` | implemented | suspend, disable, or mark an account for deletion; admin only |
 | POST `/api/v1/generations/{id}/cancel` | implemented | stop a queued or running job |
 | POST `/api/v1/auth/totp` | implemented | answer a sign-in challenge with a TOTP code or a recovery code |
@@ -551,6 +555,27 @@ DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refuse
 - Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
 - A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.
 - The `POST` and `DELETE` routes are audited by the administrator role check, as other unsafe admin routes are. `GET /api/v1/admin/models` is a read and is not audited.
+
+## Fleet members
+
+An administrator connects a GPU on another machine in two steps (issue #885). The administrator creates a member and gets a join token once. The machine spends that token once at the enroll route, and the answer is a worker id and a credential that belong to that machine alone. The API stores only the SHA-256 of each secret.
+
+```text
+POST   /api/v1/admin/fleet/members          {"label", "device": "cuda" | "rocm"}   201
+GET    /api/v1/admin/fleet/members                                                  list
+DELETE /api/v1/admin/fleet/members/{id}                                             204
+POST   /api/v1/fleet/enroll                 {"join_token", "base_url"}             200 {"worker_id", "credential"}
+```
+
+- The join token lives one hour and is refused once spent. `worker_id` is `m-` followed by the 32 hex characters of the member id.
+- Each list entry has `id`, `worker_id`, `label`, `device`, `state`, `created_at`, `enrolled_at`, `last_seen_at` and `join_expires_at`. `state` is `revoked` once revoked. Otherwise it is `waiting` (not enrolled, join still valid), `expired` (not enrolled, join past its hour), `connected` (a fleet socket for that worker id is open on this API process) or `offline`.
+- Create and delete need an allowed `Origin`, as `POST /api/v1/auth/enable` does. In accounts mode, create also needs recent authentication and is refused with `403` otherwise. These routes work in none mode and in accounts mode.
+- Delete keeps the row and clears the join token's hash. A repeated delete also answers `204`. Closing a live socket on revoke is a later change.
+- Enroll needs no session. A request with no `Origin` header is accepted, as a worker sends none. A present `Origin` must be on the allowlist. Every refusal of the join token (unknown, spent, expired or revoked) is the same `403` with the same body. Two requests that race with one token: one succeeds.
+- `base_url` must be an `http` or `https` origin: a scheme, a host and an optional port. Userinfo, a path other than `/`, a query, a fragment, or more than 255 characters is refused with `422`, and that refusal does not spend the token. The stored value has no trailing slash.
+- Enroll is charged to the caller's address in its own rate-limit bucket, so it does not share a queue with password reset. It answers `503 setup_required` until the installation is claimed.
+- The audit trail records `fleet.member_created` (member id), `fleet.member_enrolled` (member id and peer address) and `fleet.member_revoked` (member id). No event holds a join token or a credential.
+- The fleet socket does not accept these credentials yet, so an enrolled member cannot connect until that change ships.
 
 ## Account states
 
