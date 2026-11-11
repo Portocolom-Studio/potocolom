@@ -48,6 +48,7 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - run: python3 -m unittest discover -s scripts/tests -p 'test_release_check*.py'

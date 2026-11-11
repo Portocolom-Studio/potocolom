@@ -35,6 +35,7 @@ jobs:
       queue: max
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:16

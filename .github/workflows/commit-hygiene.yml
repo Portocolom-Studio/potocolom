@@ -15,6 +15,7 @@ jobs:
   commit-hygiene:
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 10
     steps:
       # Full history so the base..head range below resolves every commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

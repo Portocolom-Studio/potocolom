@@ -31,6 +31,7 @@ jobs:
     # Self-hosted on the reference desktop when GitHub-hosted minutes are exhausted.
     # Switch back to ubuntu-latest when hosted quota is available (docs/self-hosted-runner.md).
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: backend

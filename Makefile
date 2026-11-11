@@ -410,6 +410,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-frontend-verify-graph.sh
 	@bash scripts/test-check-docs-site.sh
 	@bash scripts/test-backup-guards.sh
+	@python3 scripts/check-workflow-timeouts.py && python3 -m unittest discover -s scripts/tests -p 'test_check_workflow_timeouts.py'
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \

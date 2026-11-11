@@ -48,6 +48,7 @@ jobs:
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (venv avoids Debian PEP 668).
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: worker
