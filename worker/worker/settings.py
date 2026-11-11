@@ -1,6 +1,8 @@
+import ipaddress
 import uuid
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field
 from pydantic_settings import BaseSettings
@@ -18,6 +20,8 @@ class Settings(BaseSettings):
     vram_reserve_mb: int = Field(default=1536, ge=0)
     api_url: str = "ws://localhost:8000/api/v1/fleet"
     fleet_token: str = ""
+    # Opt-in for a private test network: allow plain ws:// to a remote host.
+    allow_insecure_fleet: bool = False
     log_format: Literal["plain", "json"] = "plain"
     worker_id: str = Field(default_factory=lambda: f"worker-{uuid.uuid4().hex[:8]}")
     realtime_slots: int = 4  # upper bound; DiffusersEngine calibrates down at warmup
@@ -33,6 +37,31 @@ class Settings(BaseSettings):
     torch_compile: bool = False
     # Diffusers set_attention_backend name; empty string skips the call.
     attention_backend: str = ""
+
+
+def fleet_url_error(api_url: str, allow_insecure: bool) -> str | None:
+    """Return why the fleet URL must not be dialed, or None when it may be.
+
+    The fleet token is sent in clear text over ws://, so a plain ws:// address
+    is accepted only for a loopback address, localhost, or a single-label name
+    such as the compose service "api", unless allow_insecure is set.
+    """
+    parts = urlsplit(api_url)
+    if parts.scheme != "ws" or allow_insecure:
+        return None
+    host = parts.hostname or ""
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        # A label that starts with a digit is refused: the resolver reads
+        # "134744072" and "0x08080808" as the address 8.8.8.8.
+        if host == "localhost" or (host and "." not in host and not host[0].isdigit()):
+            return None
+    return (
+        f"refusing plain ws:// to remote host {host!r}: the fleet token would be sent "
+        "in clear text; use wss:// or set ALLOW_INSECURE_FLEET=true for a private network"
+    )
 
 
 @lru_cache

@@ -2983,3 +2983,58 @@ def test_recovery_unavailable_is_a_reconnect_not_an_exit():
 
     asyncio.run(scenario())
     assert closed
+
+
+def _stub_run_until_connect(monkeypatch, settings):
+    calls = []
+    built = []
+
+    class Connection:
+        def __init__(self, url, **kwargs):
+            calls.append(url)
+
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *exc):
+            return None
+
+    monkeypatch.setattr("worker.client.get_settings", lambda: settings)
+    monkeypatch.setattr("worker.client.build_runtime",
+                        lambda _settings: built.append(1) or ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    monkeypatch.setattr("worker.client.websockets.connect", Connection)
+    return calls, built
+
+
+def test_run_refuses_plain_ws_to_remote_host_before_connecting(monkeypatch):
+    settings = Settings(worker_id="w-insecure", fleet_token="fleet-secret",
+                        api_url="ws://fleet.example.com:8000/api/v1/fleet")
+    calls, built = _stub_run_until_connect(monkeypatch, settings)
+
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(run())
+
+    assert "ALLOW_INSECURE_FLEET" in str(error.value)
+    assert "fleet-secret" not in str(error.value)
+    assert calls == []
+    assert built == []
+
+
+def test_run_connects_to_plain_ws_remote_host_when_opted_in(monkeypatch):
+    class StopReconnect(Exception):
+        pass
+
+    async def stop_sleep(_delay):
+        raise StopReconnect
+
+    settings = Settings(worker_id="w-opt-in", fleet_token="fleet-secret",
+                        api_url="ws://fleet.example.com:8000/api/v1/fleet",
+                        allow_insecure_fleet=True)
+    calls, _built = _stub_run_until_connect(monkeypatch, settings)
+    monkeypatch.setattr("worker.client.serve_connection", lambda *_args: asyncio.sleep(0))
+    monkeypatch.setattr("worker.client.asyncio.sleep", stop_sleep)
+
+    with pytest.raises(StopReconnect):
+        asyncio.run(run())
+
+    assert calls == ["ws://fleet.example.com:8000/api/v1/fleet"]

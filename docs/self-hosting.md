@@ -257,6 +257,13 @@ MODELS_DIR=/models
 VRAM_RESERVE_MB=1536
 ```
 
+The worker refuses a plain `ws://` address to a remote host, because it would send
+the fleet token in clear text. It accepts `ws://` only for `localhost`, a loopback
+address, or a single-label name such as the compose service `api`. Keep `API_URL`
+on `wss://`. On a private test network without TLS, set `ALLOW_INSECURE_FLEET=true`
+in `worker.env` to allow `ws://` to another host. Without that setting the worker
+stops at startup, before it connects, and the error names `ALLOW_INSECURE_FLEET`.
+
 Replace `vX.Y.Z` with the API host's release tag, then start the NVIDIA worker:
 
 ```bash

@@ -42,7 +42,7 @@ from worker.categorize import categorize_output, enable_categorizer
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_fleet_manifests
 from worker.model_store import CAPABILITY as MODEL_STORE_CAPABILITY, ModelStore
 from worker.gpu_metrics import sample_gpu
-from worker.settings import Settings, get_settings
+from worker.settings import Settings, fleet_url_error, get_settings
 
 logger = logging.getLogger("potocolom.worker")
 
@@ -1549,6 +1549,10 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
 
 async def run() -> None:
     settings = get_settings()
+    # Checked before build_runtime so a refused worker loads nothing and dials nothing.
+    url_error = fleet_url_error(settings.api_url, settings.allow_insecure_fleet)
+    if url_error is not None:
+        raise RuntimeError(url_error)
     manifests, engine = build_runtime(settings)
     store = None
     if settings.models_dir:
