@@ -28,8 +28,15 @@ jobs:
   frontend:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
+    # Job-level, so a pull request that skips this job does not queue here.
+    # One group for both workflows: the browser checks share one runner host
+    # and time out when they run at the same moment (issues #750, #726).
+    concurrency:
+      group: host-browser
+      queue: max
     # Self-hosted: docs/self-hosted-runner.md (system node 24, not setup-node).
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 30
     services:
       # The sign-in gate (scripts/test-signin-cookie.mjs) boots the real API
       # against a throwaway database made from this container.

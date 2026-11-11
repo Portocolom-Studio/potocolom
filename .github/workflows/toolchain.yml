@@ -29,7 +29,9 @@ on:
       - "**/pyproject.toml"
       - "frontend/package.json"
       - "frontend/.npmrc"
-      - ".github/workflows/toolchain.yml"
+      - ".github/workflows/**"
+      - "scripts/check-workflow-timeouts.py"
+      - "scripts/tests/test_check_workflow_timeouts.py"
 
 permissions:
   contents: read
@@ -61,12 +63,15 @@ jobs:
         **/pyproject.toml
         frontend/package.json
         frontend/.npmrc
-        .github/workflows/toolchain.yml
+        .github/workflows/**
+        scripts/check-workflow-timeouts.py
+        scripts/tests/test_check_workflow_timeouts.py
   toolchain:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       # Fails if a too-old toolchain would be accepted instead of refused.

@@ -37,15 +37,22 @@ jobs:
   docs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
+    # Job-level, so a pull request that skips this job does not queue here.
+    # One group for both workflows: the browser checks share one runner host
+    # and time out when they run at the same moment (issues #750, #726).
+    concurrency:
+      group: host-browser
+      queue: max
     # Self-hosted: docs/self-hosted-runner.md
     runs-on: [self-hosted, Linux, X64, potocolom]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
       # The Makefile target is the single definition of what the job checks.
       # Bounded because it drives headless Chrome, and a hung browser would
-      # hold the single self-hosted runner against every other job. The real
+      # hold one self-hosted runner, and the jobs queued behind it. The real
       # run takes about 25 seconds for 35 diagrams.
       - run: make verify-mermaid
         timeout-minutes: 5
