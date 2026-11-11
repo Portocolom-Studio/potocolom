@@ -63,6 +63,7 @@ This does not prove production readiness.
 |---|---|---|
 | Validation | Request models and size limits ship. Model parameter schemas fail closed ([#708](https://github.com/Portocolom-Studio/potocolom/pull/708)). | Regression checks above |
 | First-run decision (#792) | A new install is unclaimed. Until the one-use setup link is spent, every API route except config, health, ready, the setup route and the fleet socket answers 503 `setup_required` before it reads data. The link lasts one hour and is stored only as a hash; every bad link gets the same 403. Both choices, and every refusal, run in one transaction with the link spend. Concurrent claims serialize on SETUP_LOCK, and a claim refuses a database that already says none. The runtime enable needs an allowed Origin, refuses an explicit `AUTH_MODE=none` override and a mode that was already switched elsewhere, and closes canvas sockets opened without a session; a socket withholding its first open is refused after the switch. The installer writes ROOT_KEYS once. `make setup-link` and the installer mint the link inside the running compose API, and refuse rather than mint in another database when that API is stopped or Docker cannot answer, `make setup-link` is the compose install only, and `make dev-setup-link` is the native dev stack only; neither guesses ([`test-setup-link.sh`](../scripts/test-setup-link.sh)). Evidence: [`test_installation_decision.py`](../backend/tests/test_installation_decision.py) (startup matrix, gate, both choices, two-link races, runtime switch with socket close, offline link), [`test_migration_0035.py`](../backend/tests/test_migration_0035.py), [`test-ensure-env-root-keys.sh`](../scripts/test-ensure-env-root-keys.sh), and the mutation check below. | Not proved: the installer printing the link against a live docker stack (only the stubbed installer tests run), and the browser setup page (#795). The anonymous setup route and the runtime enable have no rate limit; the one-hour, one-use link is the only limit. A request authorized as the implicit administrator before the switch and still running when it completes is accepted, because every caller of a none install is that administrator (see decisions.md). Tracked in [#686](https://github.com/Portocolom-Studio/potocolom/issues/686). |
+| Fleet members (#885) | A worker on another machine has its own credential. An administrator creates a member and gets a join token one time; it lives one hour and is stored only as a SHA-256. One conditional `UPDATE` spends it for a credential, also stored only as a SHA-256, so two requests cannot both win, and every refused token gets the same 403. Create and delete need an allowed Origin, and create needs recent authentication in accounts mode. Enroll has its own address rate-limit bucket and is closed until setup. On the fleet socket a removed member is refused with HTTP 403 before accept, a lookup the database cannot answer closes 1013, a member may send only its own worker id, the shared secret may not use an `m-` id, and a removal closes the live socket; the credential is read again after registration. An enrolled worker still reads what it is dispatched: this is identity and removal, not a sandbox. Evidence: [`test_fleet_members.py`](../backend/tests/test_fleet_members.py), [`test_fleet_member_socket.py`](../backend/tests/test_fleet_member_socket.py) and the mutation check below. | Worker-side join ([#886](https://github.com/Portocolom-Studio/potocolom/issues/886)); with more than one API process a removal closes only the socket its own process holds |
 | Passwords, accounts, login/reset, CORS and ownership | Core controls ship in their stated profiles. Keep their negative tests for each affected path. | Regression checks above |
 | Secrets | Runtime values use ignored files or environment settings. Candidate [#767](https://github.com/Portocolom-Studio/potocolom/pull/767) serializes account setup with upgrades, preserves effective Compose root keys, and replaces the env file through private destination-local files; `scripts/test-auth-enable-locking.sh` covers these guards. CI scans pull requests and main for committed secrets ([#707](https://github.com/Portocolom-Studio/potocolom/pull/707)). | Regression checks above |
 | Deadlines | Key HTTP and SMTP calls have limits. Serving database calls have connect, pool-wait and statement bounds; offline commands and migrations have no statement bound on purpose. S3 calls have connect, read and retry bounds, and the image read has a total bound ([#710](https://github.com/Portocolom-Studio/potocolom/pull/710)). | Regression checks above |
@@ -78,6 +79,29 @@ Before closing an item, record the exact source, commands, result, skips and
 environment. Keep the [release checks](release-checklist.md) and the routed
 internal security notes current. A local fixture pass and a cloud restore
 drill prove different things; record each where it applies.
+
+### Mutation check for #885
+
+The method is the one described for #792 below: one guard broken at a time,
+the two test files run, the files restored byte for byte.
+
+| Guard broken on purpose | Test that must fail | Result |
+|---|---|---|
+| Spend does not require an unenrolled row | `test_a_row_already_enrolled_is_not_spent_again_by_a_join_hash_it_still_holds` | killed |
+| Spend does not check `revoked_at` | `test_a_revoked_row_is_not_spent_even_with_its_join_hash_still_set` | killed |
+| Spend does not check the expiry | `test_every_refusal_of_a_join_token_gets_the_same_answer` | killed |
+| Join hash kept after the spend | `test_a_valid_join_token_enrolls_once_and_stores_only_the_credential_hash` | killed |
+| Create does not check the Origin | `test_in_none_mode_create_and_delete_refuse_a_foreign_origin_and_accept_the_allowed_one` | killed |
+| Create does not need recent authentication | `test_create_needs_recent_authentication` | killed |
+| Enroll ignores a foreign Origin | `test_a_foreign_origin_is_refused_and_an_absent_one_is_accepted` | killed |
+| Enroll charged to the password-reset bucket | `test_enrolment_is_charged_to_its_own_rate_limit_bucket` | killed |
+| Handshake lookup ignores `revoked_at` | `test_a_live_credential_is_admitted_and_a_revoked_one_refused_before_accept` | killed |
+| Member may send any worker id | `test_a_member_hello_with_another_worker_id_is_closed_4000` | killed |
+| Shared secret may use an `m-` id | `test_a_shared_secret_hello_with_a_member_id_is_closed_4000_as_reserved` | killed |
+| Failed lookup before accept answered as a refusal | `test_a_database_failure_during_the_lookup_accepts_then_closes_1013` | killed |
+| Removed member not closed after its hello | `test_a_member_revoked_between_the_handshake_and_the_hello_is_not_kept` | killed |
+| Failed lookup after the hello not handled | `test_a_database_failure_after_the_hello_closes_1013_and_cleans_up` | killed |
+| Removal does not close the live socket | `test_revoking_a_connected_member_closes_its_socket_and_removes_the_worker` | killed |
 
 ### Mutation check for #792
 

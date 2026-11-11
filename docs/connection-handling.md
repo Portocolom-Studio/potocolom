@@ -344,24 +344,36 @@ This is a boundary control, not authentication. WebSocket handshakes ignore the 
 
 ## Fleet authentication
 
-A worker presents the shared secret as an `X-Fleet-Token` request header on the upgrade. The API compares it against `FLEET_TOKEN_KEY` before accepting, so a missing or wrong token fails the handshake with HTTP 403 and no close code applies. Header names are case-insensitive; send it however you like.
+A worker presents its credential as an `X-Fleet-Token` request header on the upgrade. Header names are case-insensitive; send it however you like. The API reads exactly one such header; two or more are refused.
 
-When `FLEET_TOKEN_KEY` is unset the handshake is refused with HTTP 403. The API also refuses to start, with a message that names `scripts/preflight.sh`. Issues #245 and #260 are the implementation. The secret is ASCII: it travels in an HTTP header.
+The API accepts one of two kinds of value, decided from the single header value before the socket is accepted:
 
-Signed short-lived tokens are the cloud shape and are not implemented here; their minting side lives in the private repository (`docs/repository-boundary.md`).
+- The shared secret, `FLEET_TOKEN_KEY`. The API compares it without touching the database. The bundled worker on the API host and any worker set up with the secret use it.
+- A member credential, which starts with `ptc_fleet_`. The API looks up the SHA-256 of the value in `fleet_members` where `revoked_at` is null, in its own short session that holds no scheduler lock. The credential is issued once, when an administrator's join token is spent at `POST /api/v1/fleet/enroll` (docs/api.md, "Fleet members").
+
+A value that is neither, a credential that is unknown or revoked, or a missing header fails the handshake with HTTP 403 before accept, so no close code applies. A refusal writes no audit event. If the credential lookup cannot be answered (no database, or the query fails), the socket is accepted and closed with 1013, which tells the worker to retry; a refusal would tell it the credential is gone.
+
+Worker ids follow the credential. A member's `hello` must name its own `worker_id`, which is `m-` followed by the 32 hex characters of the member id. Any other id is closed 4000 with the reason `worker id does not match the credential`. A shared-secret `hello` whose `worker_id` starts with `m-` is closed 4000 with the reason `worker id is reserved`.
+
+When `FLEET_TOKEN_KEY` is unset the handshake is refused with HTTP 403. The API also refuses to start, with a message that names `scripts/preflight.sh`. Issues #245 and #260 are the implementation. The shared secret is ASCII: it travels in an HTTP header, and so does a credential.
+
+Revoking a member closes its live socket on the API process that holds it. The close then runs the same cleanup as any socket that ends. A member that is revoked after its credential was read and before its `hello` is registered has no socket for that revoke to close, so the API reads the credential again once the worker is registered: a member that is gone by then is closed 4403 with the reason `fleet member removed`, and a lookup that cannot be answered is closed 1013.
+
+Signed short-lived tokens were the earlier plan for the cloud fleet and are not built. The cloud fleet uses the same enrollment: see "Fleet workers enroll for a per-worker credential; signed tokens are not built" in `docs/decisions.md`.
 
 ## Close codes
 
 | Code | Meaning | Sent to |
 |---|---|---|
 | 1000 | normal close | either |
-| 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse, a `frame_header` that is not 1 or 2, a frame shorter than the header this socket declared) | either |
+| 1013 | try again later: a fleet socket that presented a member credential was accepted, then closed because the credential lookup could not be answered (database unavailable); the worker retries, and the credential is not treated as removed | worker |
+| 4000 | protocol violation (first message was not hello or open, malformed JSON, a manifest the API cannot parse, a `frame_header` that is not 1 or 2, a frame shorter than the header this socket declared, a fleet `hello` whose worker id is not the one its credential names, or a shared-secret fleet `hello` using an `m-` id) | either |
 | 4002 | unsupported protocol version | worker |
 | 4003 | the account already holds its two realtime sessions (a full pool queues instead) | browser |
 | 4004 | unknown model | browser |
 | 4005 | canvas frame over the 1 MiB payload cap; sent as a non-terminal `error` message while the session stays open, never as a close | browser |
 | 4401 | authentication required or no longer valid | browser |
-| 4403 | authenticated, but not permitted to open a realtime session | browser |
+| 4403 | authenticated, but not permitted to open a realtime session; on the fleet socket, a member that was revoked between its handshake and its registration (`fleet member removed`) | either |
 
 > Shipped status (2026-07-30, corrected 2026-09-26): code 4003 refuses a session only when its account already holds the two-socket per-account cap. A full pool no longer closes anything: the session is queued (issue #19, "Full pool: admission queue with paid tier priority"). Issue #19, "Real-Time Generation Protocol", owns the protocol-versioned unauthorized, forbidden, drained, quota, and limit close codes; 4005 is assigned (issue #617) to the over-cap canvas frame refusal, which the API sends as an `error` message with the socket kept open rather than as a close, and codes 4006 and up remain unassigned until that issue fixes their numbers. 4401 and 4403 are shipped and come from the authentication contract.
 

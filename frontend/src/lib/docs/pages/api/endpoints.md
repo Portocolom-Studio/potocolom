@@ -4,7 +4,7 @@ subtitle: Every endpoint that ships, grouped by purpose.
 tab: api
 group: Endpoints
 order: 3
-source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration", "Worker models", "Fleet members", "Authentication (shipped, kept here for the exact shapes)"; docs/connection-handling.md "Model store"; backend/app/worker_models.py, backend/app/enable.py
+source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administration", "Worker models", "Fleet members", "Authentication (shipped, kept here for the exact shapes)"; docs/connection-handling.md "Model store", "Fleet authentication"; docs/decisions.md "Fleet workers enroll for a per-worker credential; signed tokens are not built"; backend/app/worker_models.py, backend/app/enable.py, backend/app/fleet_members.py
 ---
 
 > [!PLANNED]
@@ -22,10 +22,10 @@ Every REST path below starts with `/api/v1`. Unless a row says otherwise, the ca
 
 ## Realtime and fleet sockets
 
-| Method | Path               | Purpose                                                                                             |
-| ------ | ------------------ | --------------------------------------------------------------------------------------------------- |
-| WS     | `/api/v1/realtime` | Realtime drawing session for the studio. See the [realtime socket page](/docs/api/realtime-socket). |
-| WS     | `/api/v1/fleet`    | Worker connection, not for browsers. Needs the `X-Fleet-Token` header.                              |
+| Method | Path               | Purpose                                                                                                            |
+| ------ | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| WS     | `/api/v1/realtime` | Realtime drawing session for the studio. See the [realtime socket page](/docs/api/realtime-socket).                |
+| WS     | `/api/v1/fleet`    | Worker connection, not for browsers. Needs the `X-Fleet-Token` header: the shared secret or a member's credential. |
 
 The fleet socket also carries the worker model store. The API sends `"model_store": true` in its registration reply only to a worker that offers the `model_store` capability, and only that worker sends store reports. The worker model routes below send their commands over this socket. The message formats are in [connection-handling.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/connection-handling.md#model-store).
 
@@ -104,7 +104,8 @@ These routes are for admins, except enroll. An administrator adds a GPU on anoth
 - In none mode, create and delete need an allowed origin, as every state-changing request does there. In accounts mode, create also needs a recent sign-in.
 - A join token is refused once it is spent, expired or revoked. Every one of those refusals gets the same `403`.
 - `base_url` must be a bare `http` or `https` origin. A path, a query, a fragment or a user name is refused with `422`, and the token stays usable.
-- The fleet socket does not accept these credentials yet, so an enrolled member cannot connect until that change ships.
+- An enrolled member connects with its credential as the `X-Fleet-Token` header. A credential that is unknown or revoked is refused before the socket opens. If the database cannot answer the lookup, the socket opens and closes with `1013`, so the worker retries instead of treating its credential as removed. The credential is read again once the worker is registered: a member removed in between is closed `4403`.
+- The member's `hello` must name the worker id it was given. Revoking a member closes its live socket on the API process that holds it. The rules are in [connection-handling.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/connection-handling.md#fleet-authentication).
 
 ## Benchmark
 
