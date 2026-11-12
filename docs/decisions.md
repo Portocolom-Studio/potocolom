@@ -2427,3 +2427,8 @@ Routes that do not resolve through `current_user` keep their checks. Each one ca
 Scripts that call the API in none mode send the same header. They send `PUBLIC_URL` when it is set, which is the origin the API allows, and otherwise the origin of the API they call. An operator's own script that posts without an `Origin` header now receives 403.
 
 Rejected alternatives: accepting an absent `Origin` in none mode, on the argument that only non-browser callers omit it. Rejected because `check_origin` already refuses an absent `Origin` in accounts mode, and one rule for both modes is simpler to audit than a rule that depends on the mode and on what a caller leaves out.
+
+## No Dependabot version updates or alerts
+Supersedes the Dependabot configuration added for #873. The repository has no `.github/dependabot.yml`, and Dependabot alerts are off in the repository settings. Dependency pins and ranges move by hand, in a pull request like any other change, and `make check-python-deps` (pip-audit) remains the known-vulnerability check for the Python dependencies.
+The reason is the cost of the first run. It opened twelve pull requests at once, including major bumps that are migrations (SvelteKit 3, Node 25, PyTorch 2.11 against the pinned 2.9), and their checks queued about eighty runs on the shared self-hosted runners. The owner does not want that stream of pull requests or alerts.
+Rejected alternatives: keeping Dependabot with a lower open pull request limit and major updates ignored. Rejected because the owner does not want Dependabot pull requests or alerts at all. Renovate, for the same reason.
