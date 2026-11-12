@@ -1,4 +1,4 @@
-# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference` and the secret scan.
+# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make lint-workflows`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference` and the secret scan.
 # First time on a machine:
 #   make init                  # host preflight, venvs, GPU extras, secrets, postgres
 #   make dev                   # native studio on :5173 (or make selfhost for :8080)
@@ -18,7 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
-	verify-secrets verify-backup shellcheck \
+	verify-secrets verify-backup shellcheck lint-workflows \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -417,6 +417,9 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-backup-guards.sh
 	@python3 scripts/check-workflow-timeouts.py && python3 -m unittest discover -s scripts/tests -p 'test_check_workflow_timeouts.py'
 	@$(MAKE) --no-print-directory shellcheck
+
+lint-workflows: ## lint .github/workflows with pinned actionlint and zizmor (downloads them, SHA-256 checked)
+	bash scripts/lint-workflows.sh
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \

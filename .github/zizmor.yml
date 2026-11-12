@@ -1,0 +1,6 @@
+rules:
+  # Every same-repo reusable workflow call (`uses: ./.github/workflows/...`) is
+  # flagged and wants the `$/` form, which the pinned actionlint 1.7.12 rejects.
+  # Re-enable when actionlint accepts `$/`.
+  self-repository:
+    disable: true
