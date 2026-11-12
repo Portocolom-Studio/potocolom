@@ -1,4 +1,4 @@
-# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make lint-workflows`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference` and the secret scan.
+# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make lint-workflows`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference`, `make check-python-deps` and the secret scan.
 # First time on a machine:
 #   make init                  # host preflight, venvs, GPU extras, secrets, postgres
 #   make dev                   # native studio on :5173 (or make selfhost for :8080)
@@ -18,7 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
-	verify-secrets verify-backup shellcheck lint-workflows \
+	verify-secrets verify-backup shellcheck lint-workflows check-python-deps \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -257,6 +257,11 @@ verify-worker:
 verify-worker-inference:
 	cd worker && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 		$(if $(wildcard $(WORKER_INFERENCE_PYTHON)),$(WORKER_INFERENCE_PYTHON),.venv/bin/python) -m pytest tests_inference
+
+# Known-vulnerability audit of each project venv that CI built. pip-audit runs
+# from its own venv, .ci-audit, so it never enters the project venvs.
+check-python-deps:
+	bash "$(CURDIR)/scripts/check-python-deps.sh"
 
 # Browser checks run per build mode. Each build waits for every check of the mode
 # before it, because vite build rewrites frontend/build and npm run check rewrites
