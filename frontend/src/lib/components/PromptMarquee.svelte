@@ -1,15 +1,19 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import PromptMarqueeRow from '$lib/components/PromptMarqueeRow.svelte';
+	import { Button } from '$lib/components/ui/button';
 	import { promptMarqueePrompts, promptMarqueeText } from '$lib/prompt-marquee-prompts';
 	import { t } from '$lib/i18n.svelte';
 	import CheckIcon from '@lucide/svelte/icons/check';
+	import PauseIcon from '@lucide/svelte/icons/pause';
+	import PlayIcon from '@lucide/svelte/icons/play';
 
 	const rowA = promptMarqueePrompts.slice(0, 8);
 	const rowB = [...promptMarqueePrompts.slice(8)].reverse();
 
 	let showCopied = $state(false);
 	let copiedTimeout: ReturnType<typeof setTimeout> | undefined;
+	let motionPaused = $state(false);
 
 	async function copyPrompt(item: (typeof promptMarqueePrompts)[number]) {
 		try {
@@ -47,7 +51,33 @@
 			</div>
 		{/if}
 
-		<PromptMarqueeRow prompts={rowA} direction="left" durationSec={52} oncopy={copyPrompt} />
-		<PromptMarqueeRow prompts={rowB} direction="right" durationSec={44} oncopy={copyPrompt} />
+		<PromptMarqueeRow
+			prompts={rowA}
+			direction="left"
+			durationSec={52}
+			paused={motionPaused}
+			oncopy={copyPrompt}
+		/>
+		<PromptMarqueeRow
+			prompts={rowB}
+			direction="right"
+			durationSec={44}
+			paused={motionPaused}
+			oncopy={copyPrompt}
+		/>
+		<Button
+			variant="outline"
+			size="icon-lg"
+			class="me-4 self-end sm:me-6"
+			aria-pressed={motionPaused}
+			aria-label={t('gallery.prompts_pause')}
+			onclick={() => (motionPaused = !motionPaused)}
+		>
+			{#if motionPaused}
+				<PlayIcon aria-hidden="true" />
+			{:else}
+				<PauseIcon aria-hidden="true" />
+			{/if}
+		</Button>
 	</div>
 </div>

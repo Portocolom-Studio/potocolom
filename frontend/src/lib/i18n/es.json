@@ -55,6 +55,7 @@
 	"gallery.prompts_aria": "Prompts de ejemplo en desplazamiento",
 	"gallery.prompt_copy_label": "Copiar prompt al portapapeles",
 	"gallery.prompt_copied": "Copiado",
+	"gallery.prompts_pause": "Pausar prompts",
 	"split.title": "Gratis donde debe serlo, de pago donde tiene que serlo",
 	"split.oss_title": "Autoalojado",
 	"split.oss_p1": "AGPL 3.0, completo y sin límites",
