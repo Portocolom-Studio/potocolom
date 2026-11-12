@@ -7,11 +7,12 @@ import uuid
 import pytest
 from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
-from app import db, telemetry
+from app import db, realtime, telemetry
 from app.main import app
-from app.tables import TelemetryState, UsageEvent, User, WorkerIdentity
+from app.manifests import Manifest
+from app.tables import Job, Model, TelemetryState, UsageEvent, User, WorkerIdentity
 
 
 def test_usage_event_schedulers_hold_their_tasks_until_done(monkeypatch):
@@ -156,3 +157,60 @@ def test_usage_events_are_hard_deleted_with_user():
 
     with TestClient(app) as client:
         client.portal.call(exercise)
+
+
+async def _record_job_usage_tier(model_id: str) -> str | None:
+    # Seeds one job for model_id, runs the completion writer, and returns the
+    # tier stored on the usage row it wrote.
+    from app import usage_events
+
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        user = User(email=f"{uuid.uuid4()}@example.test")
+        session.add(Model(id=model_id, name=model_id, capabilities=["text_to_image"],
+                          parameters_schema={}, min_vram_gb=0))
+        session.add(user)
+        # No ORM relationship links these tables, so flush the owners before the job.
+        await session.flush()
+        job = Job(id=uuid.uuid4(), user_id=user.id, model_id=model_id, params={})
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+    await usage_events.record_job(job_id, {"category": "art"})
+    async with db.session_factory() as session:
+        rows = (await session.execute(
+            select(UsageEvent).where(UsageEvent.model_id == model_id)
+        )).scalars().all()
+    # record_job logs and swallows write errors, so a missing row must fail here.
+    assert len(rows) == 1, "record_job wrote no usage event"
+    return rows[0].tier
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("tier", ["draft", "premium"])
+def test_job_usage_event_stores_the_manifest_tier(tier):
+    # The usage table is grouped by tier, so a job's row must carry the tier of
+    # the manifest that ran it, not a placeholder (issue #862).
+    model_id = f"tier-{tier}-{uuid.uuid4().hex[:8]}"
+    worker = realtime.Worker(
+        id=f"w-{model_id}", ws=None, realtime_slots=0,
+        manifests=[Manifest(id=model_id, name=model_id,
+                            capabilities=["text_to_image"], tier=tier)],
+    )
+    with TestClient(app) as client:
+        realtime.workers[worker.id] = worker
+        try:
+            stored = client.portal.call(_record_job_usage_tier, model_id)
+        finally:
+            realtime.workers.pop(worker.id, None)
+    assert stored == tier
+
+
+@pytest.mark.db
+def test_job_usage_event_stores_null_tier_for_a_model_without_a_manifest():
+    # A model whose worker is offline has no manifest in the registry, so there
+    # is no tier to store.
+    model_id = f"tier-unknown-{uuid.uuid4().hex[:8]}"
+    with TestClient(app) as client:
+        stored = client.portal.call(_record_job_usage_tier, model_id)
+    assert stored is None
