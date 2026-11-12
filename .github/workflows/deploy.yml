@@ -27,6 +27,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# A new push to a pull request cancels the runs of the head it replaced.
+# A push to main groups by commit, so a merge is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     uses: ./.github/workflows/changes.yml
@@ -47,6 +53,10 @@ jobs:
         .github/workflows/deploy.yml
   deploy:
     needs: changes
+    env:
+      # Names every compose project, container and image this job creates, so
+      # the last step can remove them when a newer push cancels the run.
+      CI_RUN_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.run != 'false') }}
     # Self-hosted: docs/self-hosted-runner.md (needs a working docker daemon).
     runs-on: [self-hosted, Linux, X64, potocolom]
@@ -75,3 +85,14 @@ jobs:
       # script names its own p693-* projects and removes them on exit.
       - run: scripts/test-backup-restore.sh
         timeout-minutes: 20
+      # A cancelled run can kill a script before its EXIT trap finishes, and
+      # each run uses its own names, so nothing later would remove them.
+      - name: Remove this run's compose projects
+        if: always()
+        timeout-minutes: 5
+        run: |
+          for p in $(docker compose ls -a -q | grep -E -- "-${CI_RUN_TAG}\$" || true); do
+            docker compose -p "$p" down -v --remove-orphans || true
+          done
+          docker rm -f "potocolom-pgready-${CI_RUN_TAG}" >/dev/null 2>&1 || true
+          docker image ls --format '{{.Repository}}' | grep -E -- "-${CI_RUN_TAG}-" | xargs -r docker image rm -f || true
