@@ -37,7 +37,7 @@ inference = [
     # torch.nn.functional.ScalingType, which lands in torch 2.10, so an
     # unpinned resolve installs a torchao that cannot import against 2.9 and
     # every generation fails at diffusers import time. Raise both together.
-    "torchao>=0.17,<0.18",
+    "torchao>=0.17,<0.19",
     "peft>=0.13,<1",
     "spandrel>=0.4,<1",
 ]
