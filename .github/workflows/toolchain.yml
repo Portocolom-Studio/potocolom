@@ -26,6 +26,8 @@ on:
       - "scripts/restore.sh"
       - "scripts/test-backup-guards.sh"
       - "scripts/test-frontend-verify-graph.sh"
+      # verify-guards runs shellcheck on every tracked shell script (#866).
+      - "**/*.sh"
       - "**/pyproject.toml"
       - "frontend/package.json"
       - "frontend/.npmrc"
@@ -60,6 +62,7 @@ jobs:
         scripts/restore.sh
         scripts/test-backup-guards.sh
         scripts/test-frontend-verify-graph.sh
+        **/*.sh
         **/pyproject.toml
         frontend/package.json
         frontend/.npmrc
