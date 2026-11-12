@@ -52,6 +52,7 @@ for cmd in docker sha256sum tar; do
 done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/install-lock.sh"
 ENV_FILE="${ENV_FILE:-$ROOT/deploy/compose/.env}"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/deploy/compose/compose.yml}"
 [[ -f "$ENV_FILE" ]] || die "$ENV_FILE does not exist"
@@ -59,11 +60,17 @@ IFS=':' read -r -a FILES <<<"$COMPOSE_FILE"
 [[ -f "${FILES[0]}" ]] || die "${FILES[0]} does not exist"
 
 # The project docker compose itself would pick: the shell, then the env file,
-# then the directory of the first compose file.
-env_project="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$ENV_FILE" | tail -n 1)"
-dir_project="$(basename "$(dirname "${FILES[0]}")" \
-	| tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
-PROJECT="${COMPOSE_PROJECT_NAME:-${env_project:-$dir_project}}"
+# then the directory of the first compose file. The env file is read with the
+# installer's reader, so every line form Compose accepts gives the same name.
+if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+	PROJECT="$COMPOSE_PROJECT_NAME"
+else
+	env_project="$(install_compose_value "$ENV_FILE" "${FILES[0]}" COMPOSE_PROJECT_NAME)" \
+		|| die "cannot read COMPOSE_PROJECT_NAME from $ENV_FILE; set it in the shell to choose the project"
+	dir_project="$(basename "$(dirname "${FILES[0]}")" \
+		| tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
+	PROJECT="${env_project:-$dir_project}"
+fi
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE")
 for file in "${FILES[@]}"; do COMPOSE+=(-f "$file"); done
 
