@@ -15,11 +15,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
+
+
+def origin_headers(api: str) -> dict[str, str]:
+    """The Origin a none-mode API accepts from a script (docs/api.md).
+
+    That is PUBLIC_URL when set, which the API allows, else the origin of the
+    API this script calls.
+    """
+    parts = urlsplit(os.environ.get("PUBLIC_URL") or api)
+    return {"Origin": f"{parts.scheme}://{parts.netloc}"}
 
 
 @dataclass(frozen=True)
@@ -49,7 +61,7 @@ def generate_image(
             print(message)
 
     own_client = client is None
-    http = client or httpx.Client(base_url=api, timeout=30)
+    http = client or httpx.Client(base_url=api, timeout=30, headers=origin_headers(api))
     try:
         models = http.get("/api/v1/models").json()
         if not models:

@@ -61,6 +61,8 @@ A request that changes data (`POST`, `PUT` or `DELETE`) and uses the session coo
 
 If either is missing or wrong, the API answers `403`. An unsafe request with no `Origin` is refused.
 
+In `none` mode a `POST`, `PUT`, `PATCH` or `DELETE` needs only the `Origin` header, which must be the public address or one of `ALLOWED_ORIGINS`. Otherwise it answers `403`. Scripts that call the API in `none` mode send the same header.
+
 A request that sends `Authorization: Bearer <token>` needs neither header. A bearer is presented deliberately rather than sent along by the browser. A bearer wins over the cookie. An invalid bearer gets `401`, and the API never falls back to the cookie.
 
 ## Passwords

@@ -170,7 +170,8 @@ def http_json(base: str, path: str, *, method: str = "GET",
     data = json.dumps(body).encode() if body is not None else None
     request = Request(urljoin(base.rstrip("/") + "/", path.lstrip("/")), data=data,
                       method=method, headers={"Accept": "application/json",
-                      "Content-Type": "application/json"})
+                      "Content-Type": "application/json",
+                      "Origin": base.rstrip("/")})
     try:
         with urlopen(request, timeout=timeout) as response:
             if response.status in (401, 403):

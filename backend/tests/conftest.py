@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 import anyio
 import pytest
 from sqlalchemy import text
-from starlette.testclient import WebSocketTestSession
+from starlette.testclient import TestClient, WebSocketTestSession
 
 # Generous on purpose. The slowest whole test that drives a socket is under
 # two seconds and a single read is milliseconds, so this fires only on a read
@@ -83,6 +83,23 @@ def _bounded_receive(self):
 # and `_send_rx`; if either is renamed this fails loudly on the first read
 # rather than quietly going back to waiting forever.
 WebSocketTestSession.receive = _bounded_receive
+
+
+# AUTH_MODE=none refuses an unsafe request that carries no allowed Origin (issue
+# #854), and the suite sends hundreds of them. Every client therefore acts as a
+# browser of the public URL by default. A test that needs a foreign or absent
+# Origin sets or removes the header on that request.
+_testclient_init = TestClient.__init__
+
+
+def _testclient_init_with_public_origin(self, *args, headers=None, **kwargs):
+    from app.settings import get_settings
+
+    origin = {"Origin": get_settings().public_url.rstrip("/")}
+    _testclient_init(self, *args, headers={**origin, **(headers or {})}, **kwargs)
+
+
+TestClient.__init__ = _testclient_init_with_public_origin
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parents[2]
 _VERSIONS = _CHECKOUT / "backend" / "migrations" / "versions"

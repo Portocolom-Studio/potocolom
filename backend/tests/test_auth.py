@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app import db
 from app.auth import require_role
 from app.main import app
+from app.settings import get_settings
 from app.tables import User
 
 
@@ -93,3 +94,38 @@ def test_existing_implicit_local_user_is_promoted_to_admin():
                 return user.role
 
         assert client.portal.call(read_role) == "admin"
+
+
+# The star route answers 404 for a job that does not exist, so a 404 shows that
+# the request got past the origin check and reached the route.
+_MISSING_STAR = f"/api/v1/generations/{uuid.UUID(int=0)}/star"
+
+
+@pytest.mark.db
+def test_none_mode_refuses_an_unsafe_request_from_a_foreign_origin():
+    """AUTH_MODE=none answers every request as the administrator, so a page the
+    operator visits must not reach a state-changing route through the browser.
+    Accounts mode already refuses this (test_session_policy.py)."""
+    with TestClient(app) as client:
+        foreign = client.post(_MISSING_STAR, headers={"Origin": "https://evil.example"})
+        assert foreign.status_code == 403
+        assert foreign.json()["detail"] == "origin not allowed"
+
+
+@pytest.mark.db
+def test_none_mode_refuses_an_unsafe_request_with_no_origin():
+    with TestClient(app) as client:
+        client.headers.pop("origin", None)
+        absent = client.post(_MISSING_STAR)
+        assert absent.status_code == 403
+        assert absent.json()["detail"] == "origin not allowed"
+
+
+@pytest.mark.db
+def test_none_mode_accepts_the_allowed_origin_and_a_safe_request_without_one():
+    allowed = get_settings().public_url
+    with TestClient(app) as client:
+        assert client.post(_MISSING_STAR, headers={"Origin": allowed}).status_code == 404
+
+        client.headers.pop("origin", None)
+        assert client.get("/api/v1/generations").status_code == 200

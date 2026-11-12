@@ -2415,3 +2415,15 @@ Whether a model may load, on which rung, and after which reclaim or eviction was
 The engine still owns the recorded rung. It writes the rung when admission succeeds, which is after the last eviction and no longer before it, and it clears the rung when a load is refused for a model with nothing resident. A model list read during a load can show the predicted rung for a moment. Admission does not read that list.
 
 Rejected alternatives: a pure function from measured values to a whole plan (free VRAM is measured again after each reclaim and each eviction, and what an eviction frees is not known before it runs); passing the rung selector in as a fourth call so the engine's `_select_rung` stays on the path (the selection is the decision being moved); one shared helper that applies the upscaler rule for the engine and for `admit` (it measured free VRAM before it checked for an upscaler, which added device reads the old code never made); moving the rung demotion table in the same change (it holds the candidate pipeline rule, which is its own change).
+
+## Unsafe requests in none mode must carry an allowed origin
+
+Refines "First run is decided in the browser through a setup link", whose switch to accounts already checked the origin. In `AUTH_MODE=none` every request resolves to the implicit local administrator. Before this entry only the switch to accounts checked the origin, so every other state-changing route accepted an unsafe request from any page the operator visited. Now every `POST`, `PUT`, `PATCH` and `DELETE` that resolves its user through `current_user` needs an `Origin` equal to `PUBLIC_URL` or one of `ALLOWED_ORIGINS`, or it answers 403. This is the check accounts mode already applies to cookie writes, and an absent `Origin` is refused. Safe methods are unchanged.
+
+The reason is the one the enable switch gives. A none install answers every request as the administrator, so a request from another site must not be accepted, and a page the operator visits can send requests from the operator's own browser. The rule covers every route that answers as the administrator, so no route gets an exception of its own.
+
+Routes that do not resolve through `current_user` keep their checks. Each one carries a credential that a page cannot borrow from the browser: a share token, a setup, invitation or reset link, an upload token, the signature on an SES notification, or the worker's fleet secret. Routes that exist only in accounts mode answer 404 in none mode.
+
+Scripts that call the API in none mode send the same header. They send `PUBLIC_URL` when it is set, which is the origin the API allows, and otherwise the origin of the API they call. An operator's own script that posts without an `Origin` header now receives 403.
+
+Rejected alternatives: accepting an absent `Origin` in none mode, on the argument that only non-browser callers omit it. Rejected because `check_origin` already refuses an absent `Origin` in accounts mode, and one rule for both modes is simpler to audit than a rule that depends on the mode and on what a caller leaves out.
