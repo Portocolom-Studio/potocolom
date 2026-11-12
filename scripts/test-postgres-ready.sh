@@ -9,7 +9,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE_FILE="$ROOT/deploy/compose/compose.yml"
-NAME="potocolom-pgready-$$"
+NAME="potocolom-pgready-${CI_RUN_TAG:-$$}"
 WORK="$(mktemp -d)"
 MARKER=/tmp/potocolom-pgready-init
 CHECKS=0

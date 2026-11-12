@@ -73,7 +73,7 @@ A new push to a pull request cancels the runs of the commit that it replaced. Th
 Each component job runs the matching `make verify-<component>` target. Other jobs run for certain paths:
 
 - A change to the Makefile, a dependency file or a workflow runs `make verify-guards`, `make lint-workflows` and `make setup`. `make setup` tests the new-contributor path from start to finish. `make lint-workflows` checks the workflow files with actionlint and zizmor. The linters are pinned releases that the script downloads and checks against a SHA-256.
-- A change to the backend, the frontend, the deploy files, the smoke script or the backup scripts runs `make verify-compose`, then `scripts/compose-smoke.sh` and `scripts/test-backup-restore.sh`.
+- A change to the backend, the frontend, the deploy files, the smoke script or the backup scripts runs `make verify-compose`, then `scripts/compose-smoke.sh` and `scripts/test-backup-restore.sh`. A last step removes the stacks of the run, also when a newer push cancels it.
 - A change to the worker runs `make verify-worker-inference`.
 - The backend and worker jobs run `make check-python-deps`, which audits the installed Python packages for known vulnerabilities with pip-audit and fails on any finding that the script does not record.
 - A change to the backend runs the backend integration tests against a PostgreSQL service container.
