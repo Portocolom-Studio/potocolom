@@ -1,0 +1,4 @@
+# Labels for the self-hosted runner, so actionlint accepts runs-on for it.
+self-hosted-runner:
+  labels:
+    - potocolom

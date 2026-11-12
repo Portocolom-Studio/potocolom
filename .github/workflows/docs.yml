@@ -50,6 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       # The Makefile target is the single definition of what the job checks.
       # Bounded because it drives headless Chrome, and a hung browser would
       # hold one self-hosted runner, and the jobs queued behind it. The real

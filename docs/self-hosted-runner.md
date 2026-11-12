@@ -14,7 +14,7 @@ The four path-filtered product workflows plus deploy, docs and toolchain:
 | simulation | Docker (postgres service container), Python 3.11 |
 | deploy | Docker (`verify-compose` + compose-smoke) |
 | docs | mermaid-cli + Chrome (`verify-mermaid`) |
-| toolchain | Python 3.11, Node (`verify-guards` + `make setup`) |
+| toolchain | Python 3.11, Node, curl or wget (`verify-guards` + `make setup` + `lint-workflows`) |
 
 Pull request jobs do not run GPU inference. `make verify` matches their component
 gates. A version tag also runs the real installer on the AMD GPU after image

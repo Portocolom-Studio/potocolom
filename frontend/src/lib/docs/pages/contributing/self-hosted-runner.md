@@ -13,15 +13,15 @@ The self-hosted runner is a GitHub Actions runner that a maintainer installs on 
 
 The runner runs the four path-filtered product workflows, plus the deploy, docs and toolchain workflows. Each workflow needs these tools on the host:
 
-| Workflow   | Needs on the host                                                                       |
-| ---------- | --------------------------------------------------------------------------------------- |
-| backend    | Docker (for the PostgreSQL service container), Python 3.11                              |
-| worker     | Python 3.11                                                                             |
-| frontend   | Node 24, Chrome or Chromium, Docker (for the PostgreSQL service container), Python 3.11 |
-| simulation | Docker (for the PostgreSQL service container), Python 3.11                              |
-| deploy     | Docker (`make verify-compose` and the compose smoke test)                               |
-| docs       | mermaid-cli and Chrome (`make verify-mermaid`)                                          |
-| toolchain  | Python 3.11, Node (`make verify-guards` and `make setup`)                               |
+| Workflow   | Needs on the host                                                                              |
+| ---------- | ---------------------------------------------------------------------------------------------- |
+| backend    | Docker (for the PostgreSQL service container), Python 3.11                                     |
+| worker     | Python 3.11                                                                                    |
+| frontend   | Node 24, Chrome or Chromium, Docker (for the PostgreSQL service container), Python 3.11        |
+| simulation | Docker (for the PostgreSQL service container), Python 3.11                                     |
+| deploy     | Docker (`make verify-compose` and the compose smoke test)                                      |
+| docs       | mermaid-cli and Chrome (`make verify-mermaid`)                                                 |
+| toolchain  | Python 3.11, Node, curl or wget (`make verify-guards`, `make setup` and `make lint-workflows`) |
 
 Pull request jobs do not run GPU inference. They run the same component checks that `make verify` runs.
 

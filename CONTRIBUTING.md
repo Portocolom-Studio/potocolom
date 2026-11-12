@@ -25,7 +25,7 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 - No emojis or decorative characters in code, comments, commits, issues or PRs.
 - Match the existing style of the file you are editing.
 - Reviewers apply [CODING_STANDARDS.md](CODING_STANDARDS.md) to every diff.
-- Run `make verify` locally before opening or updating a PR; it runs the backend, worker and frontend gates. CI also runs `make verify-guards` (needs Python 3.11+ with venv support), `make verify-worker-inference` (needs the inference extras), `make verify-mermaid` (needs mmdc and Chrome), `make verify-compose` (needs Docker) and the secret scan behind `make verify-secrets`; deploy CI also runs the Docker-based release-check tests.
+- Run `make verify` locally before opening or updating a PR; it runs the backend, worker and frontend gates. CI also runs `make verify-guards` (needs Python 3.11+ with venv support), `make lint-workflows` (needs curl or wget; downloads pinned actionlint and zizmor), `make verify-worker-inference` (needs the inference extras), `make verify-mermaid` (needs mmdc and Chrome), `make verify-compose` (needs Docker) and the secret scan behind `make verify-secrets`; deploy CI also runs the Docker-based release-check tests.
 - Merge only when every required check is green; update stale tests or CI steps in the same PR, and never skip, disable or loosen a check to get green.
 - Apply the [security and recovery checks](docs/security-checklist.md) to each affected path and record the evidence in the PR.
 - For UI changes, follow the [design system](docs/design-system.md), and update it in the same PR when a token, component contract or rule changes.
