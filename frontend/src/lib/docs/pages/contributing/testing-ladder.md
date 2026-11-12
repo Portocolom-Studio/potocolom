@@ -54,6 +54,8 @@ CI uses `make -j3 --output-sync=target verify-frontend` to run up to three check
 
 The canvas check drives the built studio in headless Chrome. Set `PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if Chrome is not at a standard Linux path. The gate fails when it finds no browser. It does not skip the checks.
 
+Each browser check runs in a private network that has only the loopback interface (`scripts/isolated-net.sh`). Chrome cancels its page loads when the machine adds or removes a network, and Docker does that often. If your kernel does not allow unprivileged user namespaces, the script warns and uses the normal network.
+
 To run the canvas check by itself, build the studio first:
 
 ```bash

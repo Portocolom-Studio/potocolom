@@ -28,6 +28,15 @@ at a standard Linux path. A missing browser fails the gate; it does not skip
 the canvas checks. Its sign-in gate boots the real API against a postgres
 service container and creates the backend venv the test drives.
 
+Each browser check runs in its own loopback-only network namespace
+(`scripts/isolated-net.sh`, `unshare -rn`). Chrome aborts every in-flight
+request with `ERR_NETWORK_CHANGED` when the host adds or removes a network
+interface, and other jobs on this machine create and remove Docker networks, so
+without the namespace browser checks failed at random (issues #726, #930). The
+host needs unprivileged user namespaces (`kernel.unprivileged_userns_clone=1`,
+the Debian 12 default); without them the script warns and uses the host
+network.
+
 ## One-time setup
 
 ### 1. Host prerequisites
