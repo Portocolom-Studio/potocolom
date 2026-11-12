@@ -188,8 +188,11 @@ def test_create_hands_the_join_token_over_once_and_stores_only_its_hash(accounts
         response = _create(client, headers, label="Den desktop", device="rocm")
         assert response.status_code == 201
         body = response.json()
-        assert set(body) == {"id", "label", "device", "join_token", "expires_at"}
+        assert set(body) == {"id", "label", "device", "join_token", "expires_at",
+                             "worker_image"}
         assert body["label"] == "Den desktop" and body["device"] == "rocm"
+        # The tag is the one this install runs (dev for a source build) plus the device.
+        assert body["worker_image"] == "ghcr.io/portocolom-studio/potocolom-worker:dev-rocm"
         assert len(body["join_token"]) >= 43
 
         row = client.portal.call(_row, body["id"])
@@ -203,6 +206,19 @@ def test_create_hands_the_join_token_over_once_and_stores_only_its_hash(accounts
 
         listed = client.get(MEMBERS, headers=headers).json()
         assert body["join_token"] not in json.dumps(listed)
+
+
+def test_create_names_the_worker_image_of_the_installed_release(accounts, monkeypatch):
+    monkeypatch.setenv("POTOCOLOM_VERSION", "v9.8.7")
+    get_settings.cache_clear()
+    try:
+        with TestClient(app) as client:
+            headers = _admin(accounts, client)
+            body = _create(client, headers, device="cuda").json()
+        assert body["worker_image"] == "ghcr.io/portocolom-studio/potocolom-worker:v9.8.7-cuda"
+    finally:
+        monkeypatch.delenv("POTOCOLOM_VERSION")
+        get_settings.cache_clear()
 
 
 def test_the_list_states_follow_a_member_through_its_life(accounts):

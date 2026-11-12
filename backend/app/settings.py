@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     billing_enabled: bool = False
     log_format: Literal["plain", "json"] = "plain"
     fleet_token_key: str = ""
+    # The release tag this install runs, which compose passes in. It names the
+    # worker image a new fleet member is told to run; a source build is "dev".
+    potocolom_version: str = "dev"
 
     # Versioned root key ring, comma separated version:base64key entries, newest first.
     # The first entry is the active write key; every entry stays readable so rotation is
