@@ -204,13 +204,15 @@ function preserveAssetUrls(incoming: Generation[], existing: Generation[]): Gene
 	});
 }
 
+type LoadStatus = 'loading' | 'ready' | 'error';
+
 export const studio = $state({
 	models: [] as Model[],
-	// False until the first models and history answers (or failures) arrive,
-	// so the views can tell "still loading" from "nothing there" and show a
-	// skeleton for the first.
-	modelsLoaded: false,
-	historyLoaded: false,
+	// 'loading' until the first answer arrives, so the views show a skeleton
+	// rather than "nothing there". 'error' after an HTTP or network failure, so
+	// the views show a Retry instead of an empty list.
+	modelsStatus: 'loading' as LoadStatus,
+	historyStatus: 'loading' as LoadStatus,
 	// The guided tour is open. Help sets it to play the tour again.
 	tourRequest: null as 'automatic' | 'explicit' | null,
 	tourOpen: false,
@@ -290,14 +292,14 @@ function clearPrivateStudioState(): void {
 	studio.historyRecentFull = false;
 	studio.historyHasMore = false;
 	studio.historyExtended = false;
-	studio.historyLoaded = false;
+	studio.historyStatus = 'loading';
 	studio.selectedId = null;
 	studio.selectedExtra = null;
 	studio.lineageSelectedAssetId = null;
 	studio.generationPrefill = null;
 	studio.prompt = '';
 	studio.models = [];
-	studio.modelsLoaded = false;
+	studio.modelsStatus = 'loading';
 	studio.modelId = '';
 	studio.imageToImageModelId = '';
 	studio.upscaleModelId = '';
@@ -632,6 +634,11 @@ export function addModel(modelId: string): void {
 
 export async function loadModels(): Promise<void> {
 	const epoch = ownerEpoch;
+	// A refresh keeps the last good answer on screen: no skeleton while it
+	// runs, and no error panel over the old list if it fails.
+	const refresh = studio.modelsStatus === 'ready';
+	if (!refresh) studio.modelsStatus = 'loading';
+	let status: LoadStatus = refresh ? 'ready' : 'error';
 	try {
 		const response = await fetch('/api/v1/models');
 		if (!response.ok || epoch !== ownerEpoch) return;
@@ -639,10 +646,11 @@ export async function loadModels(): Promise<void> {
 		if (epoch !== ownerEpoch) return;
 		studio.removedModelIds = loadRemovedModelIds();
 		applyModels(models);
+		status = 'ready';
 	} catch {
-		// API unreachable; studio shows the empty-model state.
+		// API unreachable: status stays 'error' and the panels offer a Retry.
 	} finally {
-		if (epoch === ownerEpoch) studio.modelsLoaded = true;
+		if (epoch === ownerEpoch) studio.modelsStatus = status;
 	}
 }
 
@@ -674,22 +682,36 @@ export async function migrateStoredFavorites(): Promise<void> {
 
 export async function loadHistory(): Promise<void> {
 	const epoch = ownerEpoch;
+	// A refresh keeps the rows on screen, as loadModels does.
+	const refresh = studio.historyStatus === 'ready';
+	if (!refresh) studio.historyStatus = 'loading';
+	let status: LoadStatus = refresh ? 'ready' : 'error';
 	try {
-		await fetchRecentHistory(epoch);
+		if (await fetchRecentHistory(epoch)) status = 'ready';
+	} catch {
+		// Network failure: status stays 'error' and the panels offer a Retry.
 	} finally {
-		if (epoch === ownerEpoch) studio.historyLoaded = true;
+		if (epoch === ownerEpoch) studio.historyStatus = status;
 	}
 }
 
-async function fetchRecentHistory(epoch: number): Promise<void> {
+// The poll loop may have exited on the empty history of the failed first
+// request, so a Retry that loads running jobs must restart it.
+export async function retryHistory(): Promise<void> {
+	await loadHistory();
+	void pollWhileWorking();
+}
+
+/** Resolves true only when the page was applied for this owner. */
+async function fetchRecentHistory(epoch: number): Promise<boolean> {
 	const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}`);
-	if (epoch !== ownerEpoch) return;
+	if (epoch !== ownerEpoch) return false;
 	if (!response.ok) {
 		reconcileStarredExtras();
-		return;
+		return false;
 	}
 	const page = (await response.json()) as Generation[];
-	if (epoch !== ownerEpoch) return;
+	if (epoch !== ownerEpoch) return false;
 	const recentFull = page.length === HISTORY_LIMIT;
 	const recent = preserveAssetUrls(page, studio.history);
 	studio.historyRecent = recent;
@@ -698,13 +720,14 @@ async function fetchRecentHistory(epoch: number): Promise<void> {
 		studio.history = recent;
 		studio.historyHasMore = recentFull;
 		reconcileStarredExtras();
-		return;
+		return true;
 	}
 	// Keep older pages at the tail while refreshing the newest slice in place.
 	const recentIds = new Set(recent.map((generation) => generation.id));
 	const olderTail = studio.history.filter((generation) => !recentIds.has(generation.id));
 	studio.history = [...recent, ...olderTail];
 	reconcileStarredExtras();
+	return true;
 }
 
 export async function loadOlderHistory(): Promise<boolean> {

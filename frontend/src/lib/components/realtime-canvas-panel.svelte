@@ -74,6 +74,7 @@
 		modelIsRemoved,
 		openAdmin,
 		openService,
+		loadModels,
 		studio,
 		type Model
 	} from '$lib/studio.svelte';
@@ -242,7 +243,8 @@
 	const connected = $derived(connection === 'active' || connection === 'resuming');
 	const busy = $derived(connection === 'connecting' || connection === 'queued' || connected);
 	const unavailable = $derived(
-		!busy && (worker.online === false || (studio.modelsLoaded && realtimeModels.length === 0))
+		!busy &&
+			(worker.online === false || (studio.modelsStatus === 'ready' && realtimeModels.length === 0))
 	);
 	const canConnect = $derived(
 		worker.online !== false &&
@@ -1240,7 +1242,7 @@
 {/snippet}
 
 {#snippet modelPicker()}
-	{#if !studio.modelsLoaded}
+	{#if studio.modelsStatus === 'loading' && studio.models.length === 0}
 		<div
 			role="status"
 			class="border-line-strong flex items-center gap-2.5 rounded-md border px-2.5 py-2"
@@ -1251,6 +1253,11 @@
 				<Skeleton class="h-3 w-28 rounded" />
 				<Skeleton class="h-2.5 w-20 rounded" />
 			</div>
+		</div>
+	{:else if studio.modelsStatus === 'error' && studio.models.length === 0}
+		<div role="alert" class="flex items-center gap-3">
+			<p class="text-muted-foreground text-sm">{t('app.models.load_error')}</p>
+			<Button variant="outline" size="sm" onclick={loadModels}>{t('shared.retry')}</Button>
 		</div>
 	{:else if selectedModel}
 		<div
@@ -1679,7 +1686,7 @@
 
 		{#if !focus}
 			<aside class="inspector">
-				{#if !studio.modelsLoaded || selectedModel}<div class="section">
+				{#if studio.modelsStatus !== 'ready' || selectedModel}<div class="section">
 						<h2 class="section-title">{t('app.realtime_canvas.model')}</h2>
 						{#if realtimeModels.length > 1}
 							<Label for="realtime-model" class="sr-only">{t('app.realtime_canvas.model')}</Label>

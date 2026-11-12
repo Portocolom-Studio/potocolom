@@ -416,7 +416,7 @@
 {/snippet}
 
 <div class="flex flex-col gap-4">
-	{#if studio.metricsTab === 'usage' && !studio.historyLoaded}
+	{#if studio.metricsTab === 'usage' && studio.historyStatus === 'loading'}
 		<!-- The usage numbers come from the history; until its first page
 		     arrives the demo data would flash in, so show the layout instead. -->
 		<div role="status" class="flex flex-col gap-4">

@@ -184,8 +184,8 @@
 				return startGenerationUpdates();
 			})
 			.catch(() => {
-				// Best-effort preload: the panel shows its empty states and the
-				// poll loop recovers once the API answers.
+				// Best-effort preload: a failed history load shows its own error
+				// and Retry, and the poll loop recovers once the API answers.
 			});
 	}
 

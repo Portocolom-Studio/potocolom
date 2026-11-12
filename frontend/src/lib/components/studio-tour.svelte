@@ -216,7 +216,7 @@
 			firstVisitChecked = false;
 			return;
 		}
-		if (!studio.modelsLoaded) return;
+		if (studio.modelsStatus === 'loading') return;
 		if (studio.tourRequest === 'automatic' && focusIsOccupied()) return;
 		if (awaitingGenerate) {
 			if (studio.shellView !== 'generate') return;
@@ -251,7 +251,7 @@
 	$effect(() => {
 		void studio.tourRequest;
 		void studio.shellView;
-		void studio.modelsLoaded;
+		void studio.modelsStatus;
 		untrack(start);
 	});
 
@@ -314,7 +314,8 @@
 	// model and generate controls are rendered for the tour to point at.
 	let firstVisitChecked = false;
 	$effect(() => {
-		if (firstVisitChecked || !studio.modelsLoaded || studio.shellView !== 'generate') return;
+		if (firstVisitChecked || studio.modelsStatus === 'loading' || studio.shellView !== 'generate')
+			return;
 		firstVisitChecked = true;
 		if (shouldAutoStart(() => localStorage)) studio.tourRequest = 'automatic';
 	});

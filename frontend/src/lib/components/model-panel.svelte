@@ -20,6 +20,7 @@
 		modelIsRemoved,
 		openAdmin,
 		removeModel,
+		loadModels,
 		studio,
 		type Model
 	} from '$lib/studio.svelte';
@@ -49,7 +50,7 @@
 	const canInstall = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
 
 	$effect(() => {
-		if (!canInstall || !studio.modelsLoaded || studio.models.length !== 0) return;
+		if (!canInstall || studio.modelsStatus === 'loading' || studio.models.length !== 0) return;
 		let active = true;
 		workerConnected = null;
 		void apiFetch('/api/v1/admin/models')
@@ -213,7 +214,7 @@
 			</div>
 		{/if}
 
-		{#if !studio.modelsLoaded}
+		{#if studio.modelsStatus === 'loading' && studio.models.length === 0}
 			<div role="status" class="flex flex-col gap-4">
 				<span class="sr-only">{t('app.models.loading')}</span>
 				<div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-hidden="true">
@@ -234,6 +235,11 @@
 						</div>
 					{/each}
 				</div>
+			</div>
+		{:else if studio.modelsStatus === 'error' && studio.models.length === 0}
+			<div role="alert" class="bg-card border-border flex items-center gap-3 rounded-xl border p-6">
+				<p class="text-muted-foreground text-sm">{t('app.models.load_error')}</p>
+				<Button variant="outline" size="sm" onclick={loadModels}>{t('shared.retry')}</Button>
 			</div>
 		{:else if studio.models.length === 0}
 			<div class="bg-card border-border text-muted-foreground rounded-xl border p-6 text-sm">

@@ -461,7 +461,7 @@ test('a late history response from one owner cannot fill the next owner history'
 	finish(jsonResponse([generation('private-a')]));
 	await pending;
 	assert.deepEqual(studio.studio.history, []);
-	assert.equal(studio.studio.historyLoaded, false);
+	assert.equal(studio.studio.historyStatus, 'loading');
 });
 
 test('a history response whose JSON resolves after owner change is ignored', async () => {
@@ -486,7 +486,7 @@ test('a history response whose JSON resolves after owner change is ignored', asy
 	resolveJson([generation('private-a')]);
 	await pending;
 	assert.deepEqual(studio.studio.history, []);
-	assert.equal(studio.studio.historyLoaded, false);
+	assert.equal(studio.studio.historyStatus, 'loading');
 });
 
 test('a late detail response cannot select the same ID for a new owner', async () => {
@@ -894,4 +894,208 @@ test('a removed model stays out of the pickers after the store reloads', async (
 	);
 	assert.equal(reloaded.studio.modelId, 'model-b');
 	assert.equal(reloaded.studio.upscaleModelId, 'model-b');
+});
+
+type StudioResource = {
+	name: string;
+	url: string;
+	load: (studio: StudioModule) => Promise<void>;
+	retry: (studio: StudioModule) => Promise<void>;
+	status: (studio: StudioModule) => string | undefined;
+	ids: (studio: StudioModule) => string[];
+	data: () => unknown[];
+	expectedIds: string[];
+};
+
+const studioResources: StudioResource[] = [
+	{
+		name: 'models',
+		url: '/api/v1/models',
+		load: (studio) => studio.loadModels(),
+		retry: (studio) => studio.loadModels(),
+		status: (studio) => studio.studio.modelsStatus,
+		ids: (studio) => studio.studio.models.map((entry) => entry.id),
+		data: () => [model('model-a', true), model('model-b', false)],
+		expectedIds: ['model-a', 'model-b']
+	},
+	{
+		name: 'history',
+		url: '/api/v1/generations?limit=50',
+		load: (studio) => studio.loadHistory(),
+		retry: (studio) => studio.retryHistory(),
+		status: (studio) => studio.studio.historyStatus,
+		ids: (studio) => studio.studio.history.map((entry) => entry.id),
+		data: () => [generation('gen-1'), generation('gen-2')],
+		expectedIds: ['gen-1', 'gen-2']
+	}
+];
+
+for (const resource of studioResources) {
+	test(`${resource.name} stays loading while the first request is slow`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		let finish!: (response: Response) => void;
+		stub('fetch', () => new Promise<Response>((resolve) => (finish = resolve)));
+
+		const pending = resource.load(studio);
+		assert.equal(resource.status(studio), 'loading');
+		finish(jsonResponse(resource.data()));
+		await pending;
+
+		assert.equal(resource.status(studio), 'ready');
+		assert.deepEqual(resource.ids(studio), resource.expectedIds);
+	});
+
+	test(`${resource.name} empty success is ready with no rows`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		stub('fetch', () => Promise.resolve(jsonResponse([])));
+
+		await resource.load(studio);
+
+		assert.equal(resource.status(studio), 'ready');
+		assert.deepEqual(resource.ids(studio), []);
+	});
+
+	test(`${resource.name} HTTP failure is an error, not an empty list`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		// A valid body, so only the status check tells this apart from success.
+		stub('fetch', () =>
+			Promise.resolve(new Response(JSON.stringify(resource.data()), { status: 503 }))
+		);
+
+		await resource.load(studio);
+
+		assert.equal(resource.status(studio), 'error');
+		assert.deepEqual(resource.ids(studio), []);
+	});
+
+	test(`${resource.name} network failure is an error and does not reject`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		stub('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+
+		await assert.doesNotReject(resource.load(studio));
+
+		assert.equal(resource.status(studio), 'error');
+		assert.deepEqual(resource.ids(studio), []);
+	});
+
+	test(`${resource.name} retry returns to loading and then shows the data`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		const requests: string[] = [];
+		let finish!: (response: Response) => void;
+		stub('fetch', (input: RequestInfo | URL) => {
+			requests.push(String(input));
+			if (requests.length === 1) {
+				return Promise.resolve(new Response('unavailable', { status: 503 }));
+			}
+			return new Promise<Response>((resolve) => (finish = resolve));
+		});
+
+		await resource.load(studio);
+		assert.equal(resource.status(studio), 'error');
+
+		const retrying = resource.retry(studio);
+		assert.equal(resource.status(studio), 'loading');
+		finish(jsonResponse(resource.data()));
+		await retrying;
+
+		assert.equal(resource.status(studio), 'ready');
+		assert.deepEqual(resource.ids(studio), resource.expectedIds);
+		assert.deepEqual(requests, [resource.url, resource.url]);
+	});
+
+	test(`${resource.name} failure from a previous owner does not mark the new owner as failed`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		let finish!: (response: Response) => void;
+		stub('fetch', () => new Promise<Response>((resolve) => (finish = resolve)));
+		studio.activateViewOwner(
+			{ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440000' },
+			'user'
+		);
+		const pending = resource.load(studio);
+		studio.activateViewOwner(
+			{ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440001' },
+			'user'
+		);
+		finish(new Response('unavailable', { status: 503 }));
+		await pending;
+
+		assert.equal(resource.status(studio), 'loading');
+	});
+
+	test(`${resource.name} owner switch from a loaded status resets to loading`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		stub('fetch', () => Promise.resolve(jsonResponse(resource.data())));
+		studio.activateViewOwner(
+			{ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440000' },
+			'user'
+		);
+		await resource.load(studio);
+		assert.equal(resource.status(studio), 'ready');
+
+		studio.activateViewOwner(
+			{ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440001' },
+			'user'
+		);
+
+		assert.equal(resource.status(studio), 'loading');
+		assert.deepEqual(resource.ids(studio), []);
+	});
+
+	test(`${resource.name} reload keeps the loaded status while it runs`, async () => {
+		const studio = await freshStudio();
+		stub('localStorage', storage(new Map()));
+		stub('fetch', () => Promise.resolve(jsonResponse(resource.data())));
+		await resource.load(studio);
+		let finish!: (response: Response) => void;
+		stub('fetch', () => new Promise<Response>((resolve) => (finish = resolve)));
+
+		const reloading = resource.load(studio);
+		assert.equal(resource.status(studio), 'ready');
+		finish(jsonResponse(resource.data()));
+		await reloading;
+
+		assert.equal(resource.status(studio), 'ready');
+	});
+}
+
+test('a history retry that loads a running job starts its stream', async () => {
+	const studio = await freshStudio();
+	stub('localStorage', storage(new Map()));
+	const sources: unknown[] = [];
+	class FakeEventSource {
+		closed = false;
+		onerror: (() => void) | null = null;
+		constructor(_url: string) {
+			sources.push(this);
+		}
+		close() {
+			this.closed = true;
+		}
+	}
+	stub('EventSource', FakeEventSource);
+	stub('setTimeout', (() => 1) as unknown as typeof setTimeout);
+	stub('clearTimeout', (() => {}) as typeof clearTimeout);
+	const running = { ...generation('running-a'), state: 'running' };
+	let requests = 0;
+	stub('fetch', () => {
+		requests += 1;
+		if (requests === 1) return Promise.resolve(new Response('unavailable', { status: 503 }));
+		return Promise.resolve(jsonResponse([running]));
+	});
+
+	await studio.loadHistory();
+	assert.equal(studio.studio.historyStatus, 'error');
+	await studio.retryHistory();
+	await new Promise<void>((resolve) => setImmediate(resolve));
+
+	assert.equal(studio.studio.historyStatus, 'ready');
+	assert.equal(sources.length, 1);
+	studio.stopGenerationUpdates();
 });
