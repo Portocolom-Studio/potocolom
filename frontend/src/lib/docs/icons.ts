@@ -74,6 +74,7 @@ const PAGE_ICONS: Record<string, IconName> = {
 	'contributing/testing-ladder': 'eye',
 	'contributing/self-hosted-runner': 'settings',
 	'contributing/security-checklist': 'shield',
+	'contributing/how-to-contribute': 'list',
 	'reference/decisions': 'file'
 };
 

@@ -3,7 +3,7 @@ title: Local development
 subtitle: Set up the dev loop, run each part, and test your change.
 tab: contributing
 group: Develop
-order: 1
+order: 2
 source: docs/local-development.md "First run on a new machine", "Day-to-day development loop", "Running each component", "Trying accounts mode locally", "Capture the landing page"; Makefile targets init, dev, dev-start, dev-status, api, web, web-landing, worktree, worker-sim, worker-rocm, worker-cuda, verify-worker-inference, setup-link, dev-setup-link, auth-enable; CODING_STANDARDS.md "Wait for state across channels"
 ---
 

@@ -3,7 +3,7 @@ title: Testing ladder
 subtitle: The test levels, from quick checks to the full gate.
 tab: contributing
 group: Develop
-order: 2
+order: 3
 source: docs/local-development.md "Testing ladder", "First run on a new machine" (make verify-worker-inference), "What rung 1 covers, and what it deliberately does not" (the frontend gate paragraphs), "Continuous integration"; Makefile targets verify, verify-backend, verify-worker, verify-worker-inference, verify-frontend, verify-compose, verify-guards, verify-mermaid, verify-secrets, verify-backup, lint-workflows, check-python-deps
 ---
 

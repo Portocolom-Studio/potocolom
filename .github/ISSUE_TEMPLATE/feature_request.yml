@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a change. A maintainer agrees on the scope before work starts.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read docs/decisions.md first. A request that reverses a recorded decision
+        must say what changed since the decision was made.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What should change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: The problem this solves, and for whom.
+    validations:
+      required: true
+
+  - type: textarea
+    id: functionality
+    attributes:
+      label: Functionality
+      description: How it behaves for a user or an operator.
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Design notes, affected profiles, protocol or data model impact.
