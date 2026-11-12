@@ -156,6 +156,7 @@ if [[ "$model_listed" != 1 ]]; then
 fi
 
 job_id=$(curl -sf -X POST "${base}/api/v1/generations" \
+  -H "Origin: ${base}" \
   -H 'Content-Type: application/json' \
   -d '{"model_id":"sd-sim","params":{"prompt":"compose smoke test"}}' \
   | python3 -c "import sys, json; print(json.load(sys.stdin)['job_id'])")

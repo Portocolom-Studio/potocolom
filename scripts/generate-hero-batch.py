@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from generate import generate_image
+from generate import generate_image, origin_headers
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_PATH = Path(__file__).with_name("hero-batch-prompts.json")
@@ -86,7 +86,8 @@ def main() -> None:
     failed = 0
     t0 = time.monotonic()
 
-    with httpx.Client(base_url=args.api, timeout=30) as client:
+    with httpx.Client(base_url=args.api, timeout=30,
+                      headers=origin_headers(args.api)) as client:
         models = client.get("/api/v1/models").json()
         ids = {m["id"] for m in models}
         if MODEL_ID not in ids:

@@ -27,7 +27,7 @@ that skips a required case does not prove the control.
 | Safe logs and request IDs | Correlate HTTP handling with a bounded server request ID. Keep credentials, token URLs and private worker text out of logs and exception output. Use canary values and a positive logging control to prove this. |
 | Store readiness | Prove /api/v1/ready checks PostgreSQL and the configured asset store and returns 503 when either is unavailable. /api/v1/health stays process liveness. |
 | Backups and restore | Restore the database, asset files and required protected key configuration from one consistent recovery point into an isolated environment. Prove account sign-in and saved-image access. |
-| Closed CORS | Keep HTTP same-origin unless a named origin is required. Check exact allowed origins and CSRF for cookie writes, and allowed browser origins on WebSockets. CORS does not replace auth. |
+| Closed CORS | Keep HTTP same-origin unless a named origin is required. Check exact allowed origins on every unsafe HTTP request (cookie writes in accounts mode, every write in `none`, #854), CSRF for cookie writes, and allowed browser origins on WebSockets. CORS does not replace auth. |
 | Overload responses | Use 429 for a client budget refusal. Preserve documented 503 plus Retry-After for a busy service. Test refusal before expensive work and recovery after the limit clears. |
 | Account isolation | Test two distinct accounts. Foreign record IDs, cursors, source assets and nested results must not expose or change another account's data. Test the explicit admin and share permissions separately. |
 

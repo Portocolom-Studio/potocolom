@@ -114,6 +114,10 @@ async def current_user(
             # their account, and may change nothing.
             raise HTTPException(status_code=403, detail="account suspended")
         return principal.user
+    # none answers every request as the administrator, so a page the operator
+    # visits must not be able to act through it (docs/decisions.md).
+    if request.method not in SAFE_METHODS:
+        check_origin(request)
     if db.local_user_id is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     user = await session.get(User, db.local_user_id)

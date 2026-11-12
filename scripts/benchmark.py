@@ -24,7 +24,7 @@ from pathlib import Path
 
 import httpx
 
-from generate import generate_image
+from generate import generate_image, origin_headers
 
 ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_PATH = Path(__file__).with_name("benchmark-prompts.json")
@@ -456,7 +456,8 @@ def main() -> None:
     failures = 0
     job_no = 0
 
-    with httpx.Client(base_url=args.api, timeout=30) as client:
+    with httpx.Client(base_url=args.api, timeout=30,
+                      headers=origin_headers(args.api)) as client:
         registered = fetch_registered_models(args.api, client)
         planned = {m["id"] for m in matrix_models}
         missing = sorted(planned - registered)
@@ -632,6 +633,7 @@ def main() -> None:
             f"{args.api.rstrip('/')}/api/v1/benchmark/sessions",
             json=summary,
             timeout=30,
+            headers=origin_headers(args.api),
         )
         response.raise_for_status()
         print(f"session       -> {response.json()['id']}")

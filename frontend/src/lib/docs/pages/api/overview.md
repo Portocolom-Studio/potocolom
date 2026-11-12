@@ -25,7 +25,7 @@ The potocolom API is one HTTP surface and two WebSocket endpoints. The studio in
 
 ## Authentication in one line
 
-- **Modes:** a new install is unclaimed until someone spends its setup link, and that link chooses the mode. In `none` mode every request is the one implicit local admin. In `accounts` mode a request must present a session cookie or an `Authorization: Bearer` token. See the [authentication page](/docs/api/authentication) for the details.
+- **Modes:** a new install is unclaimed until someone spends its setup link, and that link chooses the mode. In `none` mode every request is the one implicit local admin, and an unsafe request still needs an allowed `Origin`. In `accounts` mode a request must present a session cookie or an `Authorization: Bearer` token. See the [authentication page](/docs/api/authentication) for the details.
 - **Unclaimed installs:** until the setup link is spent, every route answers `503` with `{"detail": "setup_required"}`. The exceptions are the config, health and readiness routes, the two setup routes and the worker socket. A browser WebSocket is closed before it is accepted, so its handshake fails instead.
 
 ## Roles in one line
