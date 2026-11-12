@@ -77,6 +77,8 @@
 				} else {
 					error = t('auth.error.generic');
 				}
+			} catch {
+				error = t('auth.error.generic');
 			} finally {
 				submitting = false;
 			}
