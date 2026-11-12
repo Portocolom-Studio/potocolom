@@ -1431,7 +1431,7 @@ async def assign(session: Session, worker: Worker) -> bool:
             await worker.ws.send_json(with_generation(payload, sent_generation))
         await asyncio.wait_for(session.ready.wait(), SESSION_READY_TIMEOUT)
     # A refused protocol 6 command is this worker's failure, not the browser's.
-    except (TimeoutError, RuntimeError, ProtocolError):  # unresponsive worker, or its socket just closed
+    except (TimeoutError, ProtocolError, *_SEND_FAILURES):  # unresponsive worker, or its socket just closed
         if session.worker is worker:
             # release() and assign() are two writers of one counter, so the
             # compensation is ownership-checked rather than assumed: the

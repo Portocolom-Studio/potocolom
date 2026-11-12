@@ -1650,6 +1650,44 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
     run_on_test_loop(scenario())
 
 
+def test_assign_gives_up_when_a_protocol_5_worker_socket_is_closed():
+    """A worker that closed its socket during assignment must not leave the
+    session "assigning" with its slot held: Starlette raises
+    WebSocketDisconnect from send, and assign has to compensate it like any
+    other failed open, so the session can go back to the queue."""
+
+    class ClosedSocket(FakeSocket):
+        def __init__(self):
+            super().__init__()
+            self.attempts = []
+
+        async def send_json(self, message):
+            self.attempts.append(message["type"])
+            raise WebSocketDisconnect(code=1006)
+
+    async def scenario():
+        ws = ClosedSocket()
+        worker = realtime.Worker(id="w-closed", ws=ws,
+                                 manifests=[Manifest.model_validate(manifest())],
+                                 realtime_slots=1)
+        assert worker.protocol_version == 5
+        realtime.workers[worker.id] = worker
+        session = realtime.Session(id=uuid.uuid4(), model_id="sd-sim", browser=ws)
+        realtime.sessions[session.id] = session
+        try:
+            assert not await realtime.assign(session, worker)
+            # The open was attempted on the protocol 5 branch and refused; the
+            # give-up then tries close_session on the same dead socket.
+            assert ws.attempts == ["open_session", "close_session"]
+            assert worker.slots_in_use == 0
+            assert session.worker is None
+        finally:
+            realtime.workers.pop(worker.id, None)
+            realtime.sessions.pop(session.id, None)
+
+    run_on_test_loop(scenario())
+
+
 def test_reassign_retries_another_protocol_4_worker(monkeypatch):
     """A failed attempt tries the next protocol 4 candidate; generation fences
     the two opens so a late ready from the first cannot complete the second.
