@@ -63,3 +63,30 @@ Why: the upgrade swap in PR #832 first used fixed temp names
 one more operator file the cleanup could delete: a symlinked parent, a folder
 of the same name, a planted symlink, an exact-name file. The cure was the rule
 above, in `scripts/install.sh` (`swap_in_bundle`, `take_backup`).
+
+### Cleanup survives cancellation
+
+A job or script that creates state outside its own process (containers,
+networks, volumes, temp directories, processes) names that state so a later
+step can find it, and removes it in a step that also runs when the job is
+cancelled or times out (`if: always()` in a workflow). An `EXIT` trap alone is
+not enough: a cancelled run can kill the script before its trap finishes.
+
+Why: PR #928 made a new push cancel the older pull request run. The deploy
+job's compose stacks were removed only by the scripts' `EXIT` traps, and each
+run used unique project names, so a cancelled run would have left them on the
+shared runner for good. Review caught it; the job now tags everything with
+`CI_RUN_TAG` and removes it in a last `if: always()` step.
+
+## Checks
+
+### An exemption is as narrow as its reason
+
+When a check must let something through, exempt the exact pattern, line or
+rule that needs it, not the whole file, directory or check. Name the reason
+next to the exemption.
+
+Why: the quarantine check flagged sample violations in its own self-test, and
+the first fix skipped that whole file (PR #935). That also hid any real
+unannotated skip in it. The fix that held split the sample strings so only the
+samples stop matching, and the file stays under every rule.
