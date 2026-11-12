@@ -2246,9 +2246,11 @@ async def fleet(ws: WebSocket) -> None:
                                 "worker grant authority is unavailable") from None
                         worker.grant_nonce = grant.grant_nonce
                         worker.admission_ready = grant.ready
+                        # A ready grant with no time left must expire now, not
+                        # read as having no deadline.
                         worker.grant_deadline = (
-                            time.monotonic() + grant.remaining_ms / 1000
-                            if grant.ready and grant.remaining_ms > 0 else None
+                            time.monotonic() + max(grant.remaining_ms, 0) / 1000
+                            if grant.ready else None
                         )
                         worker.owner_epoch = grant.owner_epoch
                         worker.lease_id = grant.lease_id
