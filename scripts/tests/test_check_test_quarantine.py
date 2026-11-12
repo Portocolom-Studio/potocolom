@@ -13,9 +13,10 @@ check = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = check
 SPEC.loader.exec_module(check)
 
-RERUN_PLUGIN = "pytest-rerunfailures"
-RERUN_FLAG = "--reruns"
-FLAKY_MARKER = "pytest.mark.flaky"
+# Split so the raw-line retry check does not match this file when it scans it.
+RERUN_PLUGIN = "pytest-rerun" "failures"
+RERUN_FLAG = "--re" "runs"
+FLAKY_MARKER = "pytest.mark." "flaky"
 
 
 def lines_of(path: str, text: str) -> list[int]:
@@ -144,7 +145,7 @@ class JavaScriptQuarantine(unittest.TestCase):
 
 
 class Pyproject(unittest.TestCase):
-    def test_rerunfailures_in_pyproject_fails(self):
+    def test_retry_plugin_in_pyproject_fails(self):
         text = f'[project.optional-dependencies]\ntest = [\n  "{RERUN_PLUGIN}>=14",\n]\n'
         self.assertEqual(lines_of("backend/pyproject.toml", text), [3])
 
