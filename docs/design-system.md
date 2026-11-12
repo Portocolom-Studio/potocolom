@@ -232,7 +232,9 @@ them rather than hand-rolled markup.
    `src/lib/studio-prefetch.ts` so hovering the entry prefetches it.
 4. Register header tabs and actions with `useStudioHeader()`, and
    view-specific command palette entries with `useViewCommands()`.
-5. Add every string to both `src/lib/i18n/en.json` and `es.json`.
+5. Add every string to both `src/lib/i18n/en.json` and `es.json`. The unit test
+   `src/lib/i18n-parity.test.ts` fails when the two files differ in keys or in
+   placeholders.
 6. Show skeletons while loading, an empty state when there is no data, and an
    error state with a retry. Cache refetched data with `studioCache` from
    `src/lib/swr-cache.ts` so a revisit shows the last value at once. Keep cached
