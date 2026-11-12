@@ -12,6 +12,7 @@
 	import { adminApiError } from '$lib/studio-admin-logic';
 	import { t } from '$lib/i18n.svelte';
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
+	import StudioFleetMembers from '$lib/components/studio-fleet-members.svelte';
 	import * as Card from '$lib/components/ui/card';
 
 	let range = $state<MetricsRange>('1h');
@@ -109,6 +110,7 @@
 </script>
 
 <div class="flex min-h-0 flex-col gap-4 overflow-auto pb-2">
+	<StudioFleetMembers />
 	<Card.Root class="p-0 [--card-spacing:0]">
 		<Card.Header class="border-border border-b px-4 py-3">
 			<div class="flex flex-wrap items-center justify-between gap-3">

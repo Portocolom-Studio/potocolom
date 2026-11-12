@@ -276,6 +276,7 @@ FE_LANDING_CHECKS += fe-test-footer
 FE_LANDING_CHECKS += fe-test-landing
 FE_PRODUCT_CHECKS :=
 FE_PRODUCT_CHECKS += fe-test-canvas
+FE_PRODUCT_CHECKS += fe-test-fleet
 FE_PRODUCT_CHECKS += fe-test-models
 FE_PRODUCT_CHECKS += fe-test-owner-focus
 FE_PRODUCT_CHECKS += fe-test-self-hosted
