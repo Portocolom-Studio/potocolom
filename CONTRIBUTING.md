@@ -30,3 +30,12 @@ Why this project requires it: potocolom is AGPL-3.0 with commercial exceptions s
 - Apply the [security and recovery checks](docs/security-checklist.md) to each affected path and record the evidence in the PR.
 - For UI changes, follow the [design system](docs/design-system.md), and update it in the same PR when a token, component contract or rule changes.
 - Mermaid diagrams must render; run `make verify-mermaid` before pushing.
+
+## Pull requests
+
+- Start from an issue. For a new feature, open the issue first and wait for a maintainer to agree on the scope, since work ahead of its issue is not merged.
+- One problem per PR. Split unrelated fixes into their own PRs, even when they are small.
+- Show that it works. A logic, data, state or protocol bug gets a test that fails without the fix, at the lowest layer that shows the bug. A purely visual change gets before/after screenshots, and motion or timing gets a short recording. Upload them to the PR; do not commit them.
+- Extend an existing test before you add a new one, and never wait with a fixed sleep ([CODING_STANDARDS.md](CODING_STANDARDS.md)).
+- Fill in every section of the PR template, including the checks you ran and what you could not check.
+- Coding agents are welcome. Read [AGENTS.md](AGENTS.md) and give it to your agent. You remain the author: review the change, sign it off, and leave out agent attribution lines, which the hooks and CI reject.

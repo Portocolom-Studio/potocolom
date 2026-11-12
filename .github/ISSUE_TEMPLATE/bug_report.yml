@@ -1,0 +1,63 @@
+name: Bug report
+description: Something is broken, crashes or got worse.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Keep the report to one problem.
+        Security problems go through SECURITY.md, not here.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Studio (frontend)
+        - API (backend)
+        - GPU worker
+        - Self-hosted install or update
+        - Docs
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happens, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. make selfhost
+        2. Open the studio and pick model ...
+        3. Draw ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.1, or main at abc1234
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Profile (self-hosted or cloud), auth mode, OS, GPU and driver, browser.
+      placeholder: Self-hosted, AUTH_MODE=none, Ubuntu 24.04, RX 7600 XT on ROCm 6.4, Firefox 140
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Only the relevant lines. Remove secrets, tokens and email addresses.
+      render: shell

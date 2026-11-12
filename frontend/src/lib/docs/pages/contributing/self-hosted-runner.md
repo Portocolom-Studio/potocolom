@@ -3,7 +3,7 @@ title: Self-hosted runner
 subtitle: How project CI runs on machines the maintainers operate.
 tab: contributing
 group: Maintain
-order: 3
+order: 4
 source: docs/self-hosted-runner.md "What it runs", "One-time setup" (1. Host prerequisites, 2. Register and start the runners, 3. How many runners), "Pre-PR checklist", "Wire PRs to this runner", "Re-run failed PR checks", "Switching hosted vs self-hosted", "Security notes", "Troubleshooting", "Remove the runner"; Makefile targets ci-runner-install, ci-runner-service-install, ci-runner-start, ci-runner-stop, ci-runner-status
 ---
 

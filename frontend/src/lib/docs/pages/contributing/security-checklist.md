@@ -3,7 +3,7 @@ title: Security checklist
 subtitle: The checks a change that touches security must pass.
 tab: contributing
 group: Maintain
-order: 4
+order: 5
 source: docs/security-checklist.md "Required checks" (rows Input validation through Account isolation), "Scope and accepted exceptions", and the closing paragraph of "Current evidence and open work" (recording evidence)
 ---
 

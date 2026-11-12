@@ -12,6 +12,8 @@
 
 - [ ] Required checks green; update stale tests/CI steps here; never skip, disable or loosen checks
 - [ ] `make verify` passes locally
+- [ ] Proof in Details: a test that fails without the fix, or before/after screenshots for a visual change
+- [ ] One problem in this PR; unrelated fixes go in their own PRs
 - [ ] Applicable checks in `docs/security-checklist.md` have evidence; remaining gaps stay linked to open issues
 - [ ] Public docs match the change, or it needs none: `docs/api.md` for endpoints, `docs/connection-handling.md` for the wire protocol, `docs/architecture.md` and `docs/blueprint.md` for components and config
 - [ ] A changed decision has a new entry in `docs/decisions.md`, or no decision changed
