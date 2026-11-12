@@ -64,7 +64,7 @@ make verify      # optional: the same lint, test and build checks that CI runs
 
 `make dev` runs `make deps` (PostgreSQL), then `make dev-start`, then `make dev-status`.
 
-A `.venv` made on one GPU type does not work on another. Do not copy `.venv` between an AMD machine and an NVIDIA machine. If a `.venv` has Python but no pip, a failed first run left it behind. Run `make setup` again to recreate it, or delete `backend/.venv` and `worker/.venv` and run `make setup`.
+A `.venv` made on one GPU type does not work on another. Do not copy `.venv` between an AMD machine and an NVIDIA machine. If a `.venv` has Python but no pip, a failed first run left it behind. Run `make setup` again to recreate it, or delete `backend/.venv` and `worker/.venv` and run `make setup`. Running `make setup` again also upgrades the backend and worker packages to the newest versions their ranges allow. It does not change torch or the other inference packages.
 
 ## The day-to-day loop
 

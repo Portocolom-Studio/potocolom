@@ -162,8 +162,8 @@ ensure-venvs: check-python ## create backend/ and worker/ venvs, recreating pip-
 	done
 
 setup: check-node ensure-venvs ## create virtualenvs and install all dependencies
-	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
-	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -e ".[dev]"
+	cd backend && .venv/bin/pip install -qU pip && .venv/bin/pip install -U --upgrade-strategy eager -e ".[dev]"
+	cd worker && .venv/bin/pip install -qU pip && .venv/bin/pip install -U --upgrade-strategy eager -e ".[dev]"
 	cd frontend && npm install
 	@if [ "$(PROFILE)" = gpu ]; then \
 		echo 'Next: make setup-cuda  # NVIDIA inference wheels; skip if you only need make verify'; \

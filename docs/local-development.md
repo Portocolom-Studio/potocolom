@@ -56,7 +56,7 @@ make lint            # only the lint steps of verify, each from the right direct
 
 `make verify-worker-inference` runs the CPU inference tests in `worker/tests_inference` (`.local/bin/pr push` runs it after `make verify`). They use `worker/.venv-inference` when that exists (CI builds it) and `worker/.venv` otherwise, so the worker venv needs the inference extras: `make setup-cuda` or `make setup-rocm`.
 
-`make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
+`make setup` recreates a `.venv` that has Python but no pip (a leftover from a failed first run). On an existing `.venv` it also upgrades every package of the base and `dev` extras to the newest version their ranges allow, so a local `make check-python-deps` sees the same versions as a fresh CI venv. It does not touch the inference extras or torch; `make setup-rocm` and `make setup-cuda` own those. You can also `rm -rf backend/.venv worker/.venv` and run it again. Do not copy `.venv` between an AMD machine and an NVIDIA machine.
 
 `make deps` uses the Compose project `potocolom-dev` so it does not share PostgreSQL with the self-hosted stack in `compose.yml` (different password). If leftover `compose-postgres-1` is still holding :5432, `make deps` stops that self-hosted stack first.
 
