@@ -68,6 +68,8 @@ A landing build left in `frontend/build` makes `/app` show the static preview, a
 
 Every pull request starts all component workflows, so each check always reports a result. A component job is skipped only when the change selection works and finds no matching file. If the selection fails, the job runs.
 
+A new push to a pull request cancels the runs of the commit that it replaced. This keeps old runs off the runner. A push to `main` is never cancelled.
+
 Each component job runs the matching `make verify-<component>` target. Other jobs run for certain paths:
 
 - A change to the Makefile, a dependency file or a workflow runs `make verify-guards`, `make lint-workflows` and `make setup`. `make setup` tests the new-contributor path from start to finish. `make lint-workflows` checks the workflow files with actionlint and zizmor. The linters are pinned releases that the script downloads and checks against a SHA-256.
