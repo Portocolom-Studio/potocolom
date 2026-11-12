@@ -32,6 +32,11 @@ jobs:
       - name: Self-test
         run: bash scripts/test-check-commit-msg.sh
         timeout-minutes: 5
+      - name: Test quarantine rule
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_check_test_quarantine.py'
+          python3 scripts/check-test-quarantine.py
+        timeout-minutes: 5
       - name: Check the commit messages the pull request adds
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}

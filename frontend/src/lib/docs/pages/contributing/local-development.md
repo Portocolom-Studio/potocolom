@@ -4,7 +4,7 @@ subtitle: Set up the dev loop, run each part, and test your change.
 tab: contributing
 group: Develop
 order: 2
-source: docs/local-development.md "First run on a new machine", "Day-to-day development loop", "Running each component", "Trying accounts mode locally", "Capture the landing page"; Makefile targets init, dev, dev-start, dev-status, api, web, web-landing, worktree, worker-sim, worker-rocm, worker-cuda, verify-worker-inference, setup-link, dev-setup-link, auth-enable; CODING_STANDARDS.md "Wait for state across channels"
+source: docs/local-development.md "First run on a new machine", "Day-to-day development loop", "Running each component", "Trying accounts mode locally", "Capture the landing page"; Makefile targets init, dev, dev-start, dev-status, api, web, web-landing, worktree, worker-sim, worker-rocm, worker-cuda, verify-worker-inference, setup-link, dev-setup-link, auth-enable; CODING_STANDARDS.md "Wait for state across channels", "Quarantine skipped and flaky tests"
 ---
 
 This page sets up a development machine and starts each part of the product. The product has three parts: the API (the backend), the studio (the browser app, also called the frontend), and the worker (the process that runs image models on a GPU, or a simulated one on a machine without a GPU).
@@ -148,7 +148,7 @@ To work on a second branch without a second install, run `make worktree NAME=x`.
 
 ## Tests for one component
 
-Run `make lint` for only the lint steps of `make verify`: ruff on the backend, `scripts/` and the worker, each from the directory where its paths resolve, then the frontend lint, then shellcheck on every tracked shell script (`make shellcheck`, error severity). Reviewers apply [CODING_STANDARDS.md](https://github.com/Portocolom-Studio/potocolom/blob/main/CODING_STANDARDS.md) to every diff. Its first rule: a test that changes state through one channel, such as a socket, waits for that state before it reads it through another, such as HTTP or the DOM.
+Run `make lint` for only the lint steps of `make verify`: ruff on the backend, `scripts/` and the worker, each from the directory where its paths resolve, then the frontend lint, then shellcheck on every tracked shell script (`make shellcheck`, error severity), then the test quarantine rule (`scripts/check-test-quarantine.py`). Reviewers apply [CODING_STANDARDS.md](https://github.com/Portocolom-Studio/potocolom/blob/main/CODING_STANDARDS.md) to every diff. Its first rule: a test that changes state through one channel, such as a socket, waits for that state before it reads it through another, such as HTTP or the DOM.
 
 Each component has a make target that runs its lint, type check and tests. Run the one that matches your change:
 

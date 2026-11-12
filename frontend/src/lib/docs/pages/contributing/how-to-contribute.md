@@ -77,6 +77,7 @@ Coding agents are welcome. The guide for agents is [AGENTS.md](https://github.co
 
 The key points from AGENTS.md are:
 
+- A flaky test is fixed, not retried. An unconditional skip or expected failure needs a `quarantine: #N <why>` comment on the line above. `scripts/check-test-quarantine.py` enforces it.
 - Read the four rules under "What we never compromise on". They cover self-hosting, realtime, private data by default, and the line between this repository and the private cloud code.
 - Check GPU memory headroom before a GPU job. Never kill a process that you found by matching its name or path.
 - Test the right checkout. In a git worktree, a bare `pytest` tests the main checkout's code, not your worktree.

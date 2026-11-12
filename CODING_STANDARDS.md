@@ -25,6 +25,30 @@ Two shipped in the first-run onboarding PRs and survived several reviews:
 `frontend/scripts/test-model-management.mjs` (the wait before the admin entry
 click).
 
+### Quarantine skipped and flaky tests
+
+A flaky test is fixed, not retried. A skip or an expected failure that always
+applies is tracked by an issue.
+
+- Retry is not allowed: no `pytest-rerunfailures` or `flaky` plugin, no
+  `@pytest.mark.flaky`, no `--reruns`, and no node `retry` or `retries` option.
+- An unconditional skip or expected failure has a comment on the line above:
+  `# quarantine: #<issue> <why>` in Python, or `// quarantine: #<issue> <why>`
+  in TypeScript and JavaScript. Unconditional means `@pytest.mark.skip`, an
+  `xfail` with no condition, a bare `pytest.skip()` as the first statement of a
+  test, `it.skip`, `test.skip`, `describe.skip` and `skip: true`.
+- A conditional skip needs no comment: `pytest.mark.skipif`,
+  `pytest.importorskip`, or a `pytest.skip()` inside an `if` that tests the
+  environment.
+- `.only` is never allowed, even with a quarantine comment.
+- `scripts/check-test-quarantine.py` enforces the rule. `make lint` and the
+  commit-hygiene workflow run it.
+
+Why: a retry turns a race into a green check, and the race stays in the code.
+On 2026-11-12 `frontend/scripts/test-docs-browser.mjs` failed twice under
+runner load; a retry would have hidden the cause. A quarantine comment keeps
+every known gap visible in the issue tracker.
+
 ## Scripts
 
 ### Own a path before you delete it
