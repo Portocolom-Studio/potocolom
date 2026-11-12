@@ -142,6 +142,9 @@ def tracked_test_files(root):
     ).stdout
     for path in listing.split("\0"):
         name = os.path.basename(path)
+        # The self-test holds violating samples on purpose.
+        if path == "scripts/tests/test_check_test_quarantine.py":
+            continue
         if name == "pyproject.toml":
             yield path
         elif path.endswith(".py") and path.startswith(PY_DIRS):

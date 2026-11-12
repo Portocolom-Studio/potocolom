@@ -13,10 +13,9 @@ check = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = check
 SPEC.loader.exec_module(check)
 
-# Split so this file does not trip the retry check when the script scans it.
-RERUN_PLUGIN = "pytest-" "rerunfailures"
-RERUN_FLAG = "--" "reruns"
-FLAKY_MARKER = "pytest.mark" + ".flaky"
+RERUN_PLUGIN = "pytest-rerunfailures"
+RERUN_FLAG = "--reruns"
+FLAKY_MARKER = "pytest.mark.flaky"
 
 
 def lines_of(path: str, text: str) -> list[int]:
