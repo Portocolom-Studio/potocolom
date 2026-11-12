@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from textwrap import dedent
@@ -152,6 +154,21 @@ class Pyproject(unittest.TestCase):
     def test_pyproject_without_retry_plugin_passes(self):
         text = '[project.optional-dependencies]\ntest = [\n  "pytest>=8",\n]\n'
         self.assertEqual(lines_of("backend/pyproject.toml", text), [])
+
+
+class CandidateFiles(unittest.TestCase):
+    def test_tracked_and_untracked_files_are_listed_once_and_ignored_ones_are_not(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            for path in ("backend/tests/test_tracked.py", "backend/tests/test_new.py",
+                         "backend/tests/test_ignored.py"):
+                Path(root, path).parent.mkdir(parents=True, exist_ok=True)
+                Path(root, path).write_text("", encoding="utf-8")
+            Path(root, ".gitignore").write_text("backend/tests/test_ignored.py\n", encoding="utf-8")
+            subprocess.run(["git", "add", "backend/tests/test_tracked.py", ".gitignore"],
+                           cwd=root, check=True)
+            listed = list(check.candidate_test_files(root))
+        self.assertEqual(listed, ["backend/tests/test_new.py", "backend/tests/test_tracked.py"])
 
 
 if __name__ == "__main__":

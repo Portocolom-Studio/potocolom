@@ -80,7 +80,7 @@ Each component job runs the matching `make verify-<component>` target. Other job
 - The backend and worker jobs run `make check-python-deps`, which audits the installed Python packages for known vulnerabilities with pip-audit and fails on any finding that the script does not record.
 - A change to the backend runs the backend integration tests against a PostgreSQL service container.
 - Every pull request and every push to `main` runs a secret scan.
-- A change to the docs runs `make verify-mermaid`. It also checks that each changed repository doc changed with its /docs page, and that `AGENTS.md` stays under its size limit.
+- A change to the docs runs `make verify-mermaid`. It also checks that each changed repository doc changed with its /docs page, that every repository Markdown file a /docs page names as a source is in the docs workflow's path filters, and that `AGENTS.md` stays under its size limit.
 
 A version tag runs the release workflow. It runs the full gate, real CPU inference, image smoke tests and vulnerability scans before it publishes images. It then runs the real installer on the AMD GPU. See the [release checks](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/release-checklist.md) for the details.
 

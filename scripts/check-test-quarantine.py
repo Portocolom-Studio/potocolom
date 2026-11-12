@@ -19,8 +19,9 @@ not excuse these.
 
 The issue number is checked for shape only (#digits). No network call is made.
 
-Scanned files: the tracked files that git ls-files reports under
-backend/tests, worker/tests, worker/tests_inference and scripts/tests (Python),
+Scanned files: the tracked files and the untracked files that are not ignored,
+as git ls-files reports them, under backend/tests, worker/tests,
+worker/tests_inference and scripts/tests (Python),
 frontend/src/**/*.test.ts and frontend/scripts/test-*.mjs (JavaScript), and
 every pyproject.toml (retry plugins only).
 
@@ -136,11 +137,13 @@ def check_text(path, text):
     return check_js(text)
 
 
-def tracked_test_files(root):
+def candidate_test_files(root):
+    """Yield each test file once: tracked files and untracked, non-ignored files."""
     listing = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=root, check=True, capture_output=True, text=True,
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=root, check=True, capture_output=True, text=True,
     ).stdout
-    for path in listing.split("\0"):
+    for path in dict.fromkeys(listing.split("\0")):
         name = os.path.basename(path)
         if name == "pyproject.toml":
             yield path
@@ -157,7 +160,7 @@ def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     violations = []
     checked = 0
-    for path in tracked_test_files(root):
+    for path in candidate_test_files(root):
         checked += 1
         with open(os.path.join(root, path), encoding="utf-8") as fh:
             text = fh.read()

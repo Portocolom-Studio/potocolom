@@ -18,6 +18,23 @@ printf -- '---\nsource: docs/self-hosting.md "First run"\n---\na\n' >frontend/sr
 printf -- '---\nsource: README.md\n---\na\n' >frontend/src/lib/docs/pages/guide/intro.md
 printf -- '---\nsource: docs/README.md\n---\na\n' >frontend/src/lib/docs/pages/guide/notes.md
 printf "const PAGE_ICONS = {\n\t'guide/start': 'book',\n\t'guide/intro': 'book',\n\t'guide/notes': 'book'\n};\n" >frontend/src/lib/docs/icons.ts
+mkdir -p .github/workflows
+cat >.github/workflows/docs.yml <<'EOF'
+name: docs
+on:
+  push:
+    paths:
+      - "docs/**"
+      - "README.md"
+      - "frontend/src/lib/docs/pages/**"
+jobs:
+  changes:
+    with:
+      paths: |
+        docs/**
+        README.md
+        frontend/src/lib/docs/pages/**
+EOF
 git add -A && git commit -qm base
 base=$(git rev-parse HEAD)
 
@@ -48,6 +65,12 @@ expect fail "README.md is matched as its own path"
 printf 'b\n' >>README.md
 printf 'b\n' >>frontend/src/lib/docs/pages/guide/notes.md && git commit -qam wrong-page
 expect fail "a page that mirrors docs/README.md does not cover README.md"
+
+printf 'a\n' >CONTRIBUTING.md
+printf -- '---\nsource: CONTRIBUTING.md\n---\na\n' >frontend/src/lib/docs/pages/guide/rules.md
+printf "const PAGE_ICONS = {\n\t'guide/start': 'book',\n\t'guide/intro': 'book',\n\t'guide/notes': 'book',\n\t'guide/rules': 'book'\n};\n" >frontend/src/lib/docs/icons.ts
+git add -A && git commit -qm unfiltered-source
+expect fail "a page whose source is outside the docs path filters"
 
 printf 'a\n' >frontend/src/lib/docs/pages/guide/new.md && git add -A && git commit -qm new-page
 expect fail "a new page with no icon"
