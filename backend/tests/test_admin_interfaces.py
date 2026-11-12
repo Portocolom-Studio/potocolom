@@ -6,7 +6,7 @@ naming one is itself recorded.
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -485,3 +485,110 @@ def test_a_page_that_ends_the_list_exactly_has_no_next_cursor(library):
         page = client.get("/api/v1/users", params={"q": "exactpage", "limit": 2}).json()
     assert len(page["users"]) == 2
     assert page["next_cursor"] is None
+
+
+async def _bulk_jobs(user_id: uuid.UUID, stamps: list[datetime]) -> None:
+    """One succeeded job per timestamp, prompts numbered in the order given."""
+    from tests.test_shares import MODEL
+    from app.tables import Model
+
+    async with db.session_factory() as session:
+        if await session.get(Model, MODEL) is None:
+            session.add(Model(id=MODEL, name="SD Share", capabilities=["text_to_image"],
+                              parameters_schema={}, min_vram_gb=0))
+            await session.flush()
+        session.add_all([
+            Job(id=uuid.uuid4(), user_id=user_id, model_id=MODEL,
+                params={"prompt": f"image {n}"}, state="succeeded", created_at=when)
+            for n, when in enumerate(stamps)
+        ])
+        await session.commit()
+
+
+def _generation_pages(client, user_id: uuid.UUID, limit: int) -> list[str]:
+    """Every generation id, walked page by page: the last id of each page is
+    the next cursor, and an empty page ends the walk."""
+    ids: list[str] = []
+    cursor = None
+    # A cursor that never ends must fail the test, not hang it.
+    for _ in range(100):
+        params = {"limit": limit, **({"cursor": cursor} if cursor else {})}
+        page = client.get(f"/api/v1/users/{user_id}/generations", params=params)
+        assert page.status_code == 200
+        rows = page.json()
+        assert isinstance(rows, list), rows
+        if not rows:
+            return ids
+        ids += [row["id"] for row in rows]
+        cursor = rows[-1]["id"]
+    raise AssertionError("cursor paging never ended")
+
+
+@pytest.mark.db
+def test_an_account_with_more_generations_than_a_page_pages_by_cursor(library):
+    """201 generations, the oldest one last: a full page holds the newest 200,
+    the last row's id gives the oldest one, and that row's id gives nothing."""
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "deep-history@example.com")
+        client.portal.call(_bulk_jobs, subject.id,
+                           [base + timedelta(seconds=n) for n in range(201)])
+        _admin(client)
+
+        first = client.get(f"/api/v1/users/{subject.id}/generations", params={"limit": 200})
+        assert first.status_code == 200
+        page = first.json()
+        assert isinstance(page, list), page
+        assert len(page) == 200
+        assert page[0]["params"] == {"prompt": "image 200"}
+
+        second = client.get(f"/api/v1/users/{subject.id}/generations",
+                            params={"limit": 200, "cursor": page[-1]["id"]})
+        assert second.status_code == 200
+        tail = second.json()
+        assert [row["params"] for row in tail] == [{"prompt": "image 0"}]
+
+        after = client.get(f"/api/v1/users/{subject.id}/generations",
+                           params={"limit": 200, "cursor": tail[-1]["id"]})
+        assert after.status_code == 200
+        assert after.json() == []
+
+
+@pytest.mark.db
+def test_a_generation_cursor_nobody_issued_is_not_found(library):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "stale-cursor@example.com")
+        client.portal.call(_bulk_jobs, subject.id, [base])
+        other = client.portal.call(_make, "other-account@example.com")
+        client.portal.call(_bulk_jobs, other.id, [base])
+        _admin(client)
+        # A real generation, but another account's: a cursor does not cross accounts.
+        foreign = client.get(f"/api/v1/users/{other.id}/generations").json()[0]["id"]
+        reads_before = len(client.portal.call(_events))
+        unknown = client.get(f"/api/v1/users/{subject.id}/generations",
+                             params={"cursor": str(uuid.uuid4())})
+        assert unknown.status_code == 404
+        borrowed = client.get(f"/api/v1/users/{subject.id}/generations",
+                              params={"cursor": foreign})
+        assert borrowed.status_code == 404
+        # Refused before the read is recorded: neither 404 left an audit row.
+        assert len(client.portal.call(_events)) == reads_before
+
+
+@pytest.mark.db
+def test_generation_pages_lose_and_repeat_nothing_when_timestamps_tie(library):
+    """Keyset on created_at alone would skip or repeat rows that share a
+    timestamp. Ten rows share each timestamp here, and every walk must give
+    the same order as one whole page."""
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    with TestClient(app, base_url=ORIGIN) as client:
+        subject = client.portal.call(_make, "tied-history@example.com")
+        client.portal.call(_bulk_jobs, subject.id,
+                           [base + timedelta(seconds=n // 10) for n in range(150)])
+        _admin(client)
+        whole = _generation_pages(client, subject.id, limit=200)
+        walked = _generation_pages(client, subject.id, limit=7)
+    assert len(whole) == 150
+    assert len(set(whole)) == 150
+    assert walked == whole

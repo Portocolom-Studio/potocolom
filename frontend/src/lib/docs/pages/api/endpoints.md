@@ -168,7 +168,7 @@ These routes are for admins.
 | POST   | `/api/v1/invitations/{id}/reveal` | Make a new link and retire the previous one.                                |
 | GET    | `/api/v1/users`                   | Accounts with their role and state. Cursor paging and an email search.      |
 | GET    | `/api/v1/users/{id}`              | One account. The read is audited.                                           |
-| GET    | `/api/v1/users/{id}/generations`  | One account's generations, read only.                                       |
+| GET    | `/api/v1/users/{id}/generations`  | One account's generations, newest first. Cursor is the last id; empty ends. |
 | POST   | `/api/v1/users/{id}/role`         | Change an account's role.                                                   |
 | POST   | `/api/v1/users/{id}/state`        | Suspend, disable, reactivate or mark an account for deletion.               |
 | POST   | `/api/v1/users/{id}/restore`      | Put back an account that is waiting for deletion, inside its 30-day window. |
