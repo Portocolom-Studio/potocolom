@@ -60,8 +60,11 @@ services:
       POSTGRES_DB: potocolom
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # TCP, not the socket: on a new volume the image's first-start server
+    # listens on the socket only, so a socket check passes before the real
+    # server runs (issue #882).
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U potocolom"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U potocolom"]
       interval: 5s
       timeout: 5s
       retries: 5

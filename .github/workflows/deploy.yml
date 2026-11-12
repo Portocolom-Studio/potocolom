@@ -17,6 +17,7 @@ on:
       - "scripts/backup.sh"
       - "scripts/restore.sh"
       - "scripts/test-backup-restore.sh"
+      - "scripts/test-postgres-ready.sh"
       - "scripts/release-check.py"
       - "scripts/tests/test_release_check*.py"
       - "Makefile"
@@ -39,6 +40,7 @@ jobs:
         scripts/backup.sh
         scripts/restore.sh
         scripts/test-backup-restore.sh
+        scripts/test-postgres-ready.sh
         scripts/release-check.py
         scripts/tests/test_release_check*.py
         Makefile
@@ -62,6 +64,10 @@ jobs:
           # run at once. With one project name they reused and then removed
           # each other's containers mid-test.
           COMPOSE_SMOKE_PROJECT: potocolom-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      # Checks that the postgres healthcheck waits for the real server, not the
+      # first-start server of a new volume (issue #882). Needs only docker.
+      - run: scripts/test-postgres-ready.sh
+        timeout-minutes: 5
       # Backs up a populated stack, removes it, restores the backup into a
       # second project and signs in to the restored account (issue #693). The
       # script names its own p693-* projects and removes them on exit.

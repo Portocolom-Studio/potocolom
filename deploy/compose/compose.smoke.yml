@@ -32,8 +32,9 @@ services:
       POSTGRES_DB: potocolom
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # TCP, not the socket: see deploy/compose/compose.yml (issue #882).
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U potocolom"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U potocolom"]
       interval: 5s
       timeout: 5s
       retries: 5
