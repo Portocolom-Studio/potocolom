@@ -263,7 +263,8 @@ verify-worker-inference:
 check-python-deps:
 	bash "$(CURDIR)/scripts/check-python-deps.sh"
 
-# Browser checks run per build mode. Each build waits for every check of the mode
+# Browser checks run per build mode, each in a loopback-only network
+# (scripts/isolated-net.sh) so Docker network changes cannot abort its requests. Each build waits for every check of the mode
 # before it, because vite build rewrites frontend/build and npm run check rewrites
 # .svelte-kit, so no static step or build may overlap a browser check. make -j3
 # runs at most three leaves at once; plain make runs the same leaves one at a time
@@ -286,6 +287,11 @@ FE_PRODUCT_CHECKS += fe-test-views
 
 .PHONY: fe-static fe-build-landing fe-build-product $(FE_LANDING_CHECKS) $(FE_PRODUCT_CHECKS)
 
+# These checks boot the real API against PostgreSQL on the host's loopback,
+# which a private network namespace cannot reach, so they keep the host network.
+FE_HOST_NET_CHECKS := fe-test-setup fe-test-signin
+fe_net = $(if $(filter $@,$(FE_HOST_NET_CHECKS)),,../scripts/isolated-net.sh)
+
 verify-frontend: $(FE_PRODUCT_CHECKS)
 
 fe-static:
@@ -295,13 +301,13 @@ fe-build-landing: fe-static
 	cd frontend && PUBLIC_SITE_MODE=landing npm run build
 
 $(FE_LANDING_CHECKS): fe-build-landing
-	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
+	cd frontend && $(fe_net) npm run $(patsubst fe-test-%,test:%,$@)
 
 fe-build-product: $(FE_LANDING_CHECKS)
 	cd frontend && PUBLIC_SITE_MODE= npm run build
 
 $(FE_PRODUCT_CHECKS): fe-build-product
-	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
+	cd frontend && $(fe_net) npm run $(patsubst fe-test-%,test:%,$@)
 
 lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint, then shellcheck, then the test quarantine rule
 	cd backend && .venv/bin/ruff check . ../scripts
