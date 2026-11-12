@@ -281,6 +281,42 @@ Protect the fleet token as described below. Test a generation and an
 image-to-image job after attaching the worker to check both image upload and
 source fetch. SSH is not part of this deployment path.
 
+### Join with a one-use token
+
+A worker can join without a copy of `FLEET_SECRET`. Use `POST /api/v1/admin/fleet/members` on the API host to create a join token. The studio screen that creates join tokens is not built yet. A join token works once and lives one hour. In `worker.env`, set `JOIN_TOKEN` and `STATE_DIR` in place of `FLEET_TOKEN`:
+
+```dotenv
+DEVICE=cuda
+API_URL=wss://studio.example.com/api/v1/fleet
+JOIN_TOKEN=<join token from the API host>
+STATE_DIR=/var/lib/potocolom-worker
+MODELS_DIR=/models
+VRAM_RESERVE_MB=1536
+```
+
+Mount a volume on `STATE_DIR`, so the credential survives a container that is created again:
+
+```bash
+docker run -d --name potocolom-worker --restart unless-stopped \
+  --gpus all --env-file ./worker.env \
+  -v potocolom-models:/models \
+  -v potocolom-hf-cache:/root/.cache/huggingface \
+  -v potocolom-worker-state:/var/lib/potocolom-worker \
+  ghcr.io/portocolom-studio/potocolom-worker:vX.Y.Z-cuda
+```
+
+The worker spends the join token at its first start. It saves the worker ID and the credential that it receives in `STATE_DIR/fleet-credential.json`, with mode `0600`. Every later start uses that file, and `JOIN_TOKEN` is then ignored. A worker with `JOIN_TOKEN` and no `STATE_DIR` refuses to start: the credential would be lost at the next start, and the token would already be spent. The worker also checks that it can write to `STATE_DIR` before it uses the token, so a volume that is not mounted costs no token. With `WORKER_UID` set, `STATE_DIR` must lie outside `/models`: the container gives that directory to the worker user. The state volume holds the only copy of the credential, so include it in your backups. Without it, the machine must join again.
+
+If the worker stops with a message that the join token is spent, expired or removed, create a new join token, set it as `JOIN_TOKEN` in `worker.env`, and create the container again. The `FLEET_TOKEN` setup above still works for a worker that has no `JOIN_TOKEN` and no saved credential.
+
+When the studio removes a machine, the next handshake from its worker fails with HTTP 403. The worker logs this on each attempt, and it waits 30 seconds between attempts:
+
+```text
+this machine was removed from the install; add it again from the studio and remove /var/lib/potocolom-worker/fleet-credential.json
+```
+
+The worker does not delete the file. To add the machine again, stop the container, delete the file, set a new `JOIN_TOKEN`, and create the container again. For example, delete the file with `docker run --rm -v potocolom-worker-state:/state alpine rm /state/fleet-credential.json`.
+
 ## First run
 
 ```bash

@@ -11,17 +11,20 @@ import contextvars
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from websockets.exceptions import SecurityError
+from websockets.exceptions import InvalidStatus, SecurityError
 
 from worker.protocol6 import (
     Protocol6Error,
@@ -1568,12 +1571,130 @@ def fleet_connect(allow_insecure: bool):
     return Connect
 
 
+FLEET_CREDENTIAL_FILE = "fleet-credential.json"
+IDENTITY_FIELDS = ("worker_id", "credential")
+ENROLL_TIMEOUT = 10.0
+
+
+def _identity(value: object) -> dict[str, str] | None:
+    if isinstance(value, dict) and all(
+            isinstance(value.get(field), str) and value[field] for field in IDENTITY_FIELDS):
+        return {field: value[field] for field in IDENTITY_FIELDS}
+    return None
+
+
+def _load_credential(path: Path) -> dict[str, str] | None:
+    try:
+        identity = _identity(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        identity = None
+    if identity is None:
+        # Refused rather than enrolled again: the join token behind this file is spent.
+        raise RuntimeError(
+            f"saved fleet credential {path} is unreadable or incomplete; "
+            "remove it only if this machine must join again with a new token")
+    return identity
+
+
+def _save_credential(path: Path, identity: dict[str, str]) -> None:
+    # Written beside the target and then renamed: a crash leaves no file or the whole
+    # file, never a truncated one. The join token that made it is already spent.
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(identity, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
+    # The rename reaches the disk only once the directory itself is synced.
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _check_writable(directory: Path) -> None:
+    # Before the join token is spent: a credential that cannot be saved is lost
+    # for good, and the token cannot be used a second time.
+    probe = directory / f".write-check.{uuid.uuid4().hex}"
+    try:
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        os.unlink(probe)
+    except OSError as error:
+        raise RuntimeError(
+            f"STATE_DIR {directory} cannot be written ({type(error).__name__}); "
+            "the join token was not used") from None
+
+
+async def _enroll(settings: Settings) -> dict[str, str]:
+    # One attempt only: a retry would present a token the server may already have spent.
+    parts = urlsplit(settings.api_url)
+    scheme = {"ws": "http", "wss": "https"}.get(parts.scheme)
+    if scheme is None:
+        raise RuntimeError("API_URL must start with ws:// or wss:// to join a fleet")
+    # The origin keeps the port and drops any userinfo, which the server refuses.
+    origin = f"{scheme}://{parts.netloc.rpartition('@')[2]}"
+    try:
+        # Redirects are not followed: a redirect would carry the join token to another host.
+        async with httpx.AsyncClient(timeout=ENROLL_TIMEOUT, follow_redirects=False) as client:
+            response = await client.post(
+                f"{origin}/api/v1/fleet/enroll",
+                json={"join_token": settings.join_token, "base_url": origin})
+    except (httpx.HTTPError, OSError) as error:
+        raise RuntimeError(f"fleet enrollment failed ({type(error).__name__})") from None
+    if response.status_code == 403:
+        raise RuntimeError(
+            "the join token is spent, expired or removed; a new one comes from the studio "
+            "(Administration, fleet), set as JOIN_TOKEN")
+    if response.status_code != 200:
+        raise RuntimeError(f"fleet enrollment answered HTTP {response.status_code}")
+    try:
+        identity = _identity(response.json())
+    except ValueError:
+        identity = None
+    if identity is None:
+        raise RuntimeError("fleet enrollment answered without a worker_id and credential")
+    return identity
+
+
+async def _resolve_identity(settings: Settings) -> tuple[Settings, Path | None]:
+    """The identity this start uses, and the saved file it came from (None for FLEET_TOKEN)."""
+    path = Path(settings.state_dir) / FLEET_CREDENTIAL_FILE if settings.state_dir else None
+    identity = _load_credential(path) if path is not None else None
+    if identity is None and settings.join_token:
+        if path is None:
+            raise RuntimeError(
+                "JOIN_TOKEN needs STATE_DIR: without it the credential is lost at the next "
+                "start and the join token is already spent")
+        _check_writable(path.parent)
+        identity = await _enroll(settings)
+        _save_credential(path, identity)
+    if identity is None:
+        return settings, None
+    # The id logged at process start is the configured one, which a joined worker
+    # does not use.
+    logger.info("fleet identity %s from %s", identity["worker_id"], path)
+    joined = settings.model_copy(update={
+        "worker_id": identity["worker_id"], "fleet_token": identity["credential"]})
+    return joined, path
+
+
 async def run() -> None:
     settings = get_settings()
     # Checked before build_runtime so a refused worker loads nothing and dials nothing.
     url_error = fleet_url_error(settings.api_url, settings.allow_insecure_fleet)
     if url_error is not None:
         raise RuntimeError(url_error)
+    # Before build_runtime too, so a refused join loads no engine.
+    settings, credential_path = await _resolve_identity(settings)
     manifests, engine = build_runtime(settings)
     store = None
     if settings.models_dir:
@@ -1584,6 +1705,7 @@ async def run() -> None:
     connect = fleet_connect(settings.allow_insecure_fleet)
     try:
         while True:
+            removed = False
             try:
                 warm = list(store.installed.values()) if store is not None else manifests
                 await warmup_realtime(engine, warm, settings.realtime_slots)
@@ -1600,8 +1722,19 @@ async def run() -> None:
                 logger.error("registration rejected (%s); update this worker, not retrying", error)
                 return
             except (OSError, websockets.WebSocketException) as error:
-                logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
-            await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
+                # A 403 on the handshake while a credential is in use means the studio
+                # removed this machine. The file stays: only the studio can add it back.
+                removed = (credential_path is not None and isinstance(error, InvalidStatus)
+                           and error.response.status_code == 403)
+                if removed:
+                    logger.error(
+                        "this machine was removed from the install; add it again from the "
+                        "studio and remove %s", credential_path)
+                else:
+                    logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
+            # A removed machine waits the cap: a faster retry is refused the same way.
+            wait = BACKOFF_CAP if removed else delay * (1 + random.random() * BACKOFF_JITTER)
+            await asyncio.sleep(wait)
             delay = min(delay * 2, BACKOFF_CAP)
     finally:
         # build_runtime and the store are made once, so the engine and any download
