@@ -628,6 +628,8 @@ class FleetMember(Base):
     enrolled_at: Mapped[datetime | None]
     last_seen_at: Mapped[datetime | None]
     revoked_at: Mapped[datetime | None]
+    # A paused member keeps its socket and its work and is given no new job or session.
+    paused: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

@@ -94,14 +94,16 @@ These routes are for admins. They install, cancel and remove the model weights o
 
 These routes are for admins, except enroll. An administrator adds a GPU on another machine, and that machine spends the one-hour join token it is given for a credential of its own. The API keeps only a hash of each secret.
 
-| Method | Path                               | Purpose                                                                                      |
-| ------ | ---------------------------------- | -------------------------------------------------------------------------------------------- |
-| POST   | `/api/v1/admin/fleet/members`      | Create a member for a `cuda` or `rocm` GPU. The join token is returned once.                 |
-| GET    | `/api/v1/admin/fleet/members`      | List the members and their state: `waiting`, `expired`, `connected`, `offline` or `revoked`. |
-| DELETE | `/api/v1/admin/fleet/members/{id}` | Revoke a member. The row stays as the record.                                                |
-| POST   | `/api/v1/fleet/enroll`             | Spend a join token once. Needs no session. Answers the worker id and its credential.         |
+| Method | Path                               | Purpose                                                                                                                                         |
+| ------ | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/v1/admin/fleet/members`      | Create a member for a `cuda` or `rocm` GPU. The join token is returned once.                                                                    |
+| GET    | `/api/v1/admin/fleet/members`      | List the members and their state: `waiting`, `expired`, `connected`, `offline` or `revoked`.                                                    |
+| DELETE | `/api/v1/admin/fleet/members/{id}` | Revoke a member. The row stays as the record.                                                                                                   |
+| PATCH  | `/api/v1/admin/fleet/members/{id}` | Pause or resume a member with `{"paused": true}` or `{"paused": false}`. A paused member keeps its current work and gets no new job or session. |
+| POST   | `/api/v1/fleet/enroll`             | Spend a join token once. Needs no session. Answers the worker id and its credential.                                                            |
 
-- In none mode, create and delete need an allowed origin, as every state-changing request does there. In accounts mode, create also needs a recent sign-in.
+- In none mode, create, pause, resume and delete need an allowed origin, as every state-changing request does there. In accounts mode, create also needs a recent sign-in.
+- Pause and resume are admin only, and work in none mode and in accounts mode. A paused member keeps its socket and its current work, and continues it there. It is given no new job and no new realtime session: a queued job waits, and a session waits in the queue, until the member is resumed or another worker takes it. A pause survives a reconnect and an API restart. A revoked member answers `409`.
 - A join token is refused once it is spent, expired or revoked. Every one of those refusals gets the same `403`.
 - `base_url` must be a bare `http` or `https` origin. A path, a query, a fragment or a user name is refused with `422`, and the token stays usable.
 - With local storage, an enrolled worker's upload and source-image addresses are under the `base_url` it sent to enroll (the origin of its `API_URL`), so it never needs `INTERNAL_URL`. A shared-secret worker still gets addresses under `INTERNAL_URL`, or under `PUBLIC_URL` when that is unset. With S3 storage every worker gets presigned bucket addresses, so each worker must reach the bucket.

@@ -118,3 +118,31 @@ def test_plain_gpu_command_picks_go_only_to_a_worker_without_incarnation(connect
     worker = connected(kwargs)
     assert (realtime.pick_any_worker() is worker) is plain
     assert (realtime.pick_worker_for_model(MODEL_ID) is worker) is plain
+
+
+GRANTED_KINDS = [kind for kind in WORKER_KINDS if kind.values[1]]
+
+
+@pytest.mark.parametrize(("kwargs", "grant", "plain"), GRANTED_KINDS)
+def test_a_paused_worker_gets_no_new_job_or_session_but_keeps_its_listing(
+        connected, kwargs, grant, plain):
+    worker = connected(kwargs)
+    worker.paused = True
+    assert jobs.pick_job_worker(MODEL_ID) is None
+    assert realtime.pick_worker(MODEL_ID) is None
+    assert realtime.model_known(MODEL_ID) is True
+    assert MODEL_ID in registry.available()
+    # GPU status and unload are not new work, so a pause does not stop them.
+    assert (realtime.pick_any_worker() is worker) is plain
+    # A model load is: it takes the memory the pause was meant to give back.
+    assert realtime.pick_worker_for_model(MODEL_ID) is None
+
+
+def test_a_paused_worker_is_passed_over_while_another_serves_the_model(connected):
+    paused = connected({"protocol_version": 5, "incarnation": None})
+    paused.paused = True
+    other = connected({"protocol_version": 5, "incarnation": None})
+    for _ in range(3):
+        assert jobs.pick_job_worker(MODEL_ID) is other
+        assert realtime.pick_worker(MODEL_ID) is other
+    assert realtime.pick_worker_for_model(MODEL_ID) is other

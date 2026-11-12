@@ -116,6 +116,7 @@ async def list_members(_admin: User = Depends(require_role("admin"))) -> list[di
             "label": row.label,
             "device": row.device,
             "state": _state(row, now),
+            "paused": row.paused,
             "created_at": _iso(row.created_at),
             "enrolled_at": _iso(row.enrolled_at),
             "last_seen_at": _iso(row.last_seen_at),
@@ -160,6 +161,55 @@ async def revoke_member(
             except TimeoutError:
                 logger.warning("revoked fleet member %s did not close in time", member_id)
         await audit.record("fleet.member_revoked", actor=admin, object_ids=[str(member_id)])
+    return Response(status_code=204)
+
+
+class PauseRequest(BaseModel):
+    paused: bool
+
+
+@router.patch("/api/v1/admin/fleet/members/{member_id}", status_code=204)
+async def set_member_paused(
+    member_id: uuid.UUID,
+    body: PauseRequest,
+    admin: User = Depends(require_role("admin")),
+) -> Response:
+    """A paused member keeps its socket and its current work. It is given no new job or session.
+
+    The row is locked for the change, so two pauses cannot both record an event
+    for one change. The flag on the live worker is set after the commit, so the
+    scheduler never sees a pause the database does not hold.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        async with session.begin():
+            row = (await session.execute(
+                select(FleetMember.worker_id, FleetMember.paused, FleetMember.revoked_at)
+                .where(FleetMember.id == member_id)
+                .with_for_update()
+            )).first()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Not Found")
+            if row.revoked_at is not None:
+                raise HTTPException(status_code=409, detail="fleet member is revoked")
+            changed = row.paused != body.paused
+            if changed:
+                await session.execute(
+                    update(FleetMember).where(FleetMember.id == member_id)
+                    .values(paused=body.paused)
+                )
+    # The live flag is set even when nothing changed, so a worker that disagrees
+    # with the row is corrected. Resume wakes the admission queue at once, since
+    # a session waiting for this member would otherwise wait for the next sweep.
+    worker = realtime.workers.get(row.worker_id)
+    if worker is not None:
+        worker.paused = body.paused
+        if not body.paused:
+            realtime.admit_queued()
+    if changed:
+        action = "fleet.member_paused" if body.paused else "fleet.member_resumed"
+        await audit.record(action, actor=admin, object_ids=[str(member_id)])
     return Response(status_code=204)
 
 
@@ -234,7 +284,8 @@ async def member_for_credential(credential: str):
         raise RuntimeError("database unavailable")
     async with db.session_factory() as session:
         return (await session.execute(
-            select(FleetMember.id, FleetMember.worker_id, FleetMember.base_url).where(
+            select(FleetMember.id, FleetMember.worker_id, FleetMember.base_url,
+                   FleetMember.paused).where(
                 FleetMember.credential_hash == sessions.token_hash(credential),
                 FleetMember.revoked_at.is_(None),
             )

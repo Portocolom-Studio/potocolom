@@ -1517,7 +1517,7 @@ def job_dispatch_depth(worker: realtime.Worker) -> int:
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     candidates = [
         worker for worker in realtime.workers.values()
-        if worker.has_current_work_grant
+        if worker.accepts_new_work
         and model_id in worker.models
         and worker.jobs_in_flight < job_dispatch_depth(worker)
     ]
@@ -1601,7 +1601,7 @@ async def _dispatch_step_body() -> None:
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
-            if not any(w.has_current_work_grant
+            if not any(w.accepts_new_work
                        and w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break

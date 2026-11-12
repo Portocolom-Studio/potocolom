@@ -821,6 +821,9 @@ class Worker:
     # The origin an enrolled member joined through, which its upload and
     # source-image addresses are built from. None for the shared secret.
     base_url: str | None = None
+    # Read from the member row at registration and set by the member's PATCH.
+    # A paused worker keeps its socket and its work and is picked for nothing new.
+    paused: bool = False
     capabilities: list[str] = field(default_factory=list)
     region: str = "local"
     owner_epoch: int | None = None
@@ -873,6 +876,11 @@ class Worker:
             or self.admission_ready
             and (self.grant_deadline is None or time.monotonic() < self.grant_deadline)
         )
+
+    @property
+    def accepts_new_work(self) -> bool:
+        """Whether the scheduler may give this worker a new job or realtime session."""
+        return self.has_current_work_grant and not self.paused
 
 
 def _require_worker_incarnation(worker: Worker) -> uuid.UUID:
@@ -1228,7 +1236,8 @@ def pick_any_worker() -> Worker | None:
 
 def pick_worker_for_model(model_id: str) -> Worker | None:
     for worker in workers.values():
-        if not accepts_plain_gpu_commands(worker):
+        # A model load takes memory, so it is new work and a paused worker is passed over.
+        if not accepts_plain_gpu_commands(worker) or worker.paused:
             continue
         if model_id in worker.models:
             return worker
@@ -1310,7 +1319,7 @@ def pick_worker(model_id: str, *, exclude_ids: set[str] | None = None) -> Worker
     for worker in workers.values():
         if exclude_ids is not None and worker.id in exclude_ids:
             continue
-        if not worker.has_current_work_grant:
+        if not worker.accepts_new_work:
             continue
         if model_id not in worker.models:
             continue
@@ -1934,7 +1943,8 @@ async def fleet(ws: WebSocket) -> None:
                         device=hello.get("device"),
                         memory_mode=hello.get("memory_mode"),
                         member_id=member.id if member is not None else None,
-                        base_url=member.base_url if member is not None else None)
+                        base_url=member.base_url if member is not None else None,
+                        paused=member.paused if member is not None else False)
         if "realtime_p95_ms" in hello:
             parsed = parse_frame_p95(hello.get("realtime_p95_ms"))
             worker.admission_p95_ms = parsed if parsed is not None else {}
@@ -2112,6 +2122,9 @@ async def fleet(ws: WebSocket) -> None:
                 logger.warning("fleet member %s was removed during its handshake", member.id)
                 await ws.close(code=CLOSE_FORBIDDEN, reason="fleet member removed")
                 return
+            # Read after registration, so a pause the route commits in between
+            # is seen here, and the route's own worker lookup finds this worker.
+            worker.paused = live.paused
         # The registered message is already out, so a slow store cannot delay
         # registration, and inside the try so a failure still reaches cleanup.
         await audit.record(
