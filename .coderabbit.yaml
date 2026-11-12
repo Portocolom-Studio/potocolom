@@ -8,7 +8,9 @@ reviews:
       instructions: >-
         Apply AGENTS.md and CODING_STANDARDS.md. Do not ask to reverse a choice
         recorded in docs/decisions.md; say a new decision entry is needed
-        instead. Flag non-ASCII punctuation, emojis and AI attribution lines.
+        instead. Flag emojis, AI attribution lines, and the decorative
+        characters scripts/check-commit-msg.sh bans (long dashes, arrows, box
+        drawing, curly quotes). Spanish punctuation in es.json is correct.
     - path: "backend/**"
       instructions: >-
         Endpoints, requests, responses and close codes must match docs/api.md.
