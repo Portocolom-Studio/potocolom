@@ -349,6 +349,12 @@ async def _rebuild_rollups(session: AsyncSession, from_ts: datetime, to_ts: date
     # round(double precision) breaks ties to even like Python's round, and
     # the epoch-anchored five-minute floor is the same grid _floor_bucket
     # derives from the UTC wall clock, since 300 divides 3600.
+    # from_ts is the raw cutoff, which moves with the clock. A bucket it splits
+    # was complete at its last rebuild, and rebuilding it from its tail would
+    # overwrite the stored statistics, so start at the next bucket boundary
+    # (issue #855). A from_ts already on a boundary is unchanged.
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    from_ts = from_ts + (epoch - from_ts) % ROLLUP_BUCKET
     used = cast(GpuSample.vram_used_bytes, Float)
     total = cast(GpuSample.vram_total_bytes, Float)
     pct = func.round((used * 100.0) / total)
