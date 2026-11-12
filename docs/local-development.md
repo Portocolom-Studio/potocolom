@@ -429,7 +429,8 @@ order; no build can overwrite files while a browser check uses them. Plain
 `PUBLIC_SITE_MODE=landing` set. Each browser check runs through
 `scripts/isolated-net.sh`, in a loopback-only network namespace, so a Docker
 network created or removed by another job cannot abort its page loads
-(issues #726, #930).
+(issues #726, #930). The sign-in and setup checks keep the host network,
+because they reach PostgreSQL on the host's loopback.
 
 The landing waitlist form never leaves the machine in development: the dev
 and preview servers answer a submit locally, and an address ending in

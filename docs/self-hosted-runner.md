@@ -35,7 +35,8 @@ interface, and other jobs on this machine create and remove Docker networks, so
 without the namespace browser checks failed at random (issues #726, #930). The
 host needs unprivileged user namespaces (`kernel.unprivileged_userns_clone=1`,
 the Debian 12 default); without them the script warns and uses the host
-network.
+network. The sign-in and setup checks keep the host network, because they
+reach the PostgreSQL service container on the host's loopback.
 
 ## One-time setup
 

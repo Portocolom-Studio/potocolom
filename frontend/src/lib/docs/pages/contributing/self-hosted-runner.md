@@ -25,7 +25,7 @@ The runner runs the four path-filtered product workflows, plus the deploy, docs 
 
 Pull request jobs do not run GPU inference. They run the same component checks that `make verify` runs.
 
-Each browser check runs in a private network with only the loopback interface (`scripts/isolated-net.sh`). Other jobs on the machine create and remove Docker networks, and Chrome cancels its page loads when that happens. The host needs unprivileged user namespaces, which Debian 12 allows by default. Without them, the script warns and uses the normal network.
+Each browser check runs in a private network with only the loopback interface (`scripts/isolated-net.sh`). Other jobs on the machine create and remove Docker networks, and Chrome cancels its page loads when that happens. The host needs unprivileged user namespaces, which Debian 12 allows by default. Without them, the script warns and uses the normal network. The sign-in and setup checks always use the normal network, because they connect to the PostgreSQL service container on the host.
 
 A version tag also runs the real installer on the AMD GPU. That check needs port 8080 to be free, and it takes the release GPU lock. See the [release checks](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/release-checklist.md).
 
