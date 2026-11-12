@@ -9,7 +9,7 @@ source: docs/decisions.md "Design decisions" (format and entry count); CONTRIBUT
 
 potocolom keeps its design choices in one file, docs/decisions.md. Read it to learn why the project works the way it does. Add to it when the project agrees on a new choice.
 
-The record holds more than 190 entries. They cover the API server and frontend stack, the inference worker, accounts, billing, licensing, cloud hosting, and the realtime path. This page does not copy the entries. Read them on GitHub, linked at the end.
+The record holds more than 200 entries. They cover the API server and frontend stack, the inference worker, accounts, billing, licensing, cloud hosting, and the realtime path. This page does not copy the entries. Read them on GitHub, linked at the end.
 
 ## What an entry holds
 

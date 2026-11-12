@@ -105,7 +105,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance; saving the address the account already holds, only spelled differently, changes nothing and keeps the assurance it has |
 | GET `/api/v1/account` | implemented | this account, its live sessions, `totp` (true only when a second factor is confirmed) and `identities` (the account's providers, sorted) |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
-| GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON |
+| GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON, with a link to each image |
 | DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |
 | POST `/api/v1/users/{id}/restore` | implemented | put an account waiting to be deleted back where it was; admin only |
 | GET `/api/v1/users` | implemented | who is on this install and what state they are in; admin only |
@@ -642,6 +642,8 @@ GET    /api/v1/account            profile, plan (cloud), active sessions with cr
 DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
 GET    /api/v1/account/export     200 application/json, streamed:
                                   {"account": {...}, "identities": [...],
+                                   "usage": [{...}, ...],
+                                   "usage_rollups": [{...}, ...],
                                    "generations": [{..., "assets": [...]}, ...]}
 DELETE /api/v1/account            204, the account stops now, both cookies are cleared, and it is purged in 30 days
 POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an account
@@ -649,7 +651,7 @@ POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an accoun
                                   one that passed its 30 day window
 ```
 
-- The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
+- The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The file holds the account's data, not its images: each asset carries a `url` to its image, and the image bytes are not copied into the stream. The `usage` rows hold the model, the action, the output category, GPU time and frame count of each event, and no prompt, image or network address. Days older than the 90 day raw window are in `usage_rollups` instead, one row per day and dimension, with counts and sums in place of single events. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
 - Deleting an account stops it immediately: the state becomes `deletion_pending`, every session is revoked, every outstanding link is spent, the realtime sockets close, and the queued and running jobs are cancelled. Nothing is destroyed yet.
 - The account remembers the state it was in, one level deep, and a restore inside the window puts it back there. An account that was suspended when it asked to be deleted comes back suspended: a restore undoes the deletion, not everything before it. Past the window the account belongs to the sweep, and a restore answers 409 rather than handing back something the next pass destroys.
 - After 30 days a sweep purges it: the objects first, because the row is the only thing that names them, then the assets, then the jobs, and only then the user row, which is the order the foreign keys demand. A purged user row no longer exists. Audit rows carry plain ids with no foreign key, so what an administrator did survives the account they did it to.

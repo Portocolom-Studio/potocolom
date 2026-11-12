@@ -75,6 +75,12 @@ make auth-collapse CONFIRM="destroy the accounts on this installation"
 
 After the reset, remove `AUTH_MODE=accounts` from `deploy/compose/.env` (or set `AUTH_MODE=none`), and restart the API. An accounts override refuses to start an install that runs without accounts.
 
+## Export and delete an account
+
+An account can take everything the install holds about it with `GET /api/v1/account/export`. The export is one JSON file with a link to each image. The image files themselves are not in it.
+
+An account can also ask to be deleted with `DELETE /api/v1/account`. Deleting stops the account at once and destroys nothing for 30 days. An administrator can restore it inside that window with `POST /api/v1/users/{id}/restore`. After that, a sweep purges it.
+
 ## When nobody can get in
 
 Every way back is a command run at the machine. There is no web route for recovery, because a route that can do this is a route that someone could steal a session for.
