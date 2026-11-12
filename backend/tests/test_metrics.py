@@ -905,6 +905,93 @@ def test_gpu_rollups_are_utc_floors_regardless_of_the_session_timezone():
 
 
 @pytest.mark.db
+def test_gpu_rollup_keeps_a_bucket_the_raw_cutoff_splits(monkeypatch):
+    # Maintenance runs every five minutes, so its raw cutoff lands inside a
+    # bucket that was already complete when it was rebuilt. Rebuilding that
+    # bucket from the samples past the cutoff would overwrite its statistics
+    # with the tail's (issue #855).
+    bucket = datetime(2026, 7, 28, 12, tzinfo=timezone.utc)
+    tail = bucket + timedelta(minutes=5)
+    worker_id = "w-rollup-split"
+    clock = {"now": bucket + gpu_samples.RAW_RETENTION}
+    monkeypatch.setattr(gpu_samples, "_utcnow", lambda: clock["now"])
+
+    async def rollups() -> dict[datetime, tuple]:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            rows = (
+                await session.execute(
+                    select(GpuSampleRollup).where(GpuSampleRollup.worker_id == worker_id)
+                )
+            ).scalars().all()
+            return {
+                row.bucket_start: (row.sample_count, row.util_min, row.util_max, row.util_mean)
+                for row in rows
+            }
+
+    async def add(samples: list[GpuSample]) -> None:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            session.add_all(samples)
+            await session.commit()
+
+    async def exercise() -> tuple[dict, dict, dict, dict, list[datetime]]:
+        await add([
+            GpuSample(worker_id=worker_id, sampled_at=bucket + timedelta(minutes=1), util_pct=10),
+            GpuSample(worker_id=worker_id, sampled_at=bucket + timedelta(minutes=2), util_pct=90),
+            GpuSample(worker_id=worker_id, sampled_at=bucket + timedelta(minutes=4), util_pct=50),
+        ])
+        # The cutoff is the bucket start, so the whole bucket is inside the window.
+        await gpu_samples.maintain_once()
+        whole = await rollups()
+
+        # The cutoff is now 2.5 minutes into the bucket. It prunes the samples at
+        # +1 and +2 minutes, and the bucket must keep the statistics it had.
+        clock["now"] = bucket + gpu_samples.RAW_RETENTION + timedelta(seconds=150)
+        await gpu_samples.maintain_once()
+        split = await rollups()
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            remaining = list(
+                (
+                    await session.execute(
+                        select(GpuSample.sampled_at)
+                        .where(GpuSample.worker_id == worker_id)
+                        .order_by(GpuSample.sampled_at)
+                    )
+                ).scalars().all()
+            )
+
+        # A bucket still inside the window keeps being rebuilt from new samples.
+        await add([
+            GpuSample(worker_id=worker_id, sampled_at=bucket + timedelta(minutes=6), util_pct=70),
+        ])
+        await gpu_samples.maintain_once()
+        early = await rollups()
+        await add([
+            GpuSample(worker_id=worker_id, sampled_at=bucket + timedelta(minutes=7), util_pct=30),
+        ])
+        await gpu_samples.maintain_once()
+        grown = await rollups()
+
+        async with db.session_factory() as session:
+            await session.execute(delete(GpuSampleRollup).where(GpuSampleRollup.worker_id == worker_id))
+            await session.execute(delete(GpuSample).where(GpuSample.worker_id == worker_id))
+            await session.commit()
+        return whole, split, early, grown, remaining
+
+    whole, split, early, grown, remaining = run_on_test_loop(
+        _run_database_check(exercise)
+    )
+
+    assert whole[bucket] == (3, 10, 90, 50.0)
+    assert remaining == [bucket + timedelta(minutes=4)], "the cutoff must split the bucket"
+    assert split[bucket] == whole[bucket]
+    assert early[tail] == (1, 70, 70, 70.0)
+    assert grown[tail] == (2, 30, 70, 50.0)
+
+
+@pytest.mark.db
 def test_gpu_history_round_trip():
     now = datetime.now(timezone.utc)
     sample = GpuSample(
