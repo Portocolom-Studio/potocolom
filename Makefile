@@ -303,11 +303,12 @@ fe-build-product: $(FE_LANDING_CHECKS)
 $(FE_PRODUCT_CHECKS): fe-build-product
 	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
 
-lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint, then shellcheck
+lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint, then shellcheck, then the test quarantine rule
 	cd backend && .venv/bin/ruff check . ../scripts
 	cd worker && .venv/bin/ruff check .
 	cd frontend && npm run lint
 	$(MAKE) --no-print-directory shellcheck
+	python3 scripts/check-test-quarantine.py
 
 shellcheck: ## shellcheck at error severity on every tracked shell script (scripts/shellcheck.sh)
 	bash scripts/shellcheck.sh

@@ -73,6 +73,7 @@ The most common defect is a change that works on the path you tested and is miss
 - A purely visual bug gets before/after screenshots as its proof, not a UI test.
 - Do not test what types already guarantee, copy text, or trivial wiring.
 - Never wait with a fixed sleep. Wait for the state you need ([CODING_STANDARDS.md](CODING_STANDARDS.md) "Wait for state across channels").
+- A flaky test is fixed, not retried. An unconditional skip needs `quarantine: #N <why>` on the line above; `scripts/check-test-quarantine.py` enforces it.
 
 ## Commits, issues and pull requests
 
