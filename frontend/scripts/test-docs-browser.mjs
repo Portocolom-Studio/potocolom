@@ -103,6 +103,9 @@ async function serveBuild() {
 	return server;
 }
 
+const pageEvents = [];
+let lastPage;
+
 // Each page loads with its own theme stored before the app reads it.
 async function openDocs(
 	browser,
@@ -111,6 +114,21 @@ async function openDocs(
 	{ width = 1280, height = 900, mode = 'dark', touch = false } = {}
 ) {
 	const page = await browser.newPage();
+	lastPage = page;
+	// Browser-side trouble for this page, printed if the run fails: a check that fails under
+	// load reads differently when a request, a script or the theme script went wrong first.
+	const note = (text) => pageEvents.push(`${path} ${mode} ${width}px: ${text}`);
+	page.on('pageerror', (error) => note(`pageerror ${error.message}`));
+	page.on('console', (message) => {
+		if (message.type() === 'error' || message.type() === 'warn')
+			note(`console.${message.type()} ${message.text()}`);
+	});
+	page.on('requestfailed', (request) =>
+		note(`requestfailed ${request.url()} ${request.failure()?.errorText}`)
+	);
+	page.on('response', (response) => {
+		if (response.status() >= 400) note(`HTTP ${response.status()} ${response.url()}`);
+	});
 	await page.setViewport({ width, height, hasTouch: touch, isMobile: touch });
 	await page.evaluateOnNewDocument((theme) => {
 		try {
@@ -614,6 +632,21 @@ try {
 	await checkContrast(browser, baseUrl);
 
 	console.log('Docs browser checks passed.');
+} catch (error) {
+	console.error(`browser events before the failure (${pageEvents.length}):`);
+	for (const line of pageEvents.slice(-40)) console.error(`  ${line}`);
+	const state = await lastPage
+		?.evaluate(() => ({
+			url: location.href,
+			readyState: document.readyState,
+			stylesheets: [...document.styleSheets].map((sheet) => sheet.href?.split('/').pop()),
+			shell: Boolean(document.querySelector('[data-docs-shell]')),
+			nav: Boolean(document.querySelector('#docs-nav')),
+			bodyLength: document.body?.innerHTML.length ?? 0
+		}))
+		.catch((stateError) => `unreadable: ${stateError.message}`);
+	console.error('last page state:', JSON.stringify(state));
+	throw error;
 } finally {
 	if (browser) await browser.close();
 	if (server)
