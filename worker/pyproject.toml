@@ -54,7 +54,11 @@ exclude = ["vendor/iris3b/**"]
 
 # Keep the pre-0.16 default set until we deliberately adopt the expanded rules.
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "TID251"]
+
+# The services talk only over the socket protocol (docs/connection-handling.md).
+[tool.ruff.lint.flake8-tidy-imports.banned-api."app"]
+msg = "The worker and the backend talk only over the socket protocol (docs/connection-handling.md). Do not import the backend app package here."
 
 [tool.mypy]
 python_version = "3.11"

@@ -40,7 +40,15 @@ line-length = 100
 # Keep the pre-0.16 default set until we deliberately adopt the expanded rules.
 # ruff 0.16 enables B008 (breaks FastAPI Depends) and many others by default.
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F"]
+select = ["E4", "E7", "E9", "F", "TID251"]
+
+# The services talk only over the socket protocol (docs/connection-handling.md).
+[tool.ruff.lint.flake8-tidy-imports.banned-api."worker"]
+msg = "The backend and the worker talk only over the socket protocol (docs/connection-handling.md). Do not import the worker package here."
+
+# scripts/ are dev and release tools that run worker code on purpose, so they are exempt.
+[tool.ruff.lint.per-file-ignores]
+"../scripts/**" = ["TID251"]
 
 [tool.mypy]
 python_version = "3.11"
