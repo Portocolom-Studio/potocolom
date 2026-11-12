@@ -20,7 +20,7 @@ dev = [
     "pytest-cov>=7,<8",
     "ruff>=0.6,<0.16",
     "mypy>=2,<3",
-    "huggingface-hub>=1.32,<2",
+    "huggingface-hub>=1.32,<3",
 ]
 # Install torch for your device first (CUDA wheels from PyPI; ROCm and CPU
 # wheels from the matching https://download.pytorch.org/whl/ index), then
@@ -28,7 +28,7 @@ dev = [
 inference = [
     "torch>=2.5,<3",
     "diffusers @ https://github.com/huggingface/diffusers/archive/3b56af0c5268049588cf470e38955f4c18002498.tar.gz",
-    "huggingface-hub>=1.32,<2",
+    "huggingface-hub>=1.32,<3",
     "transformers>=5,<6",
     "accelerate>=1,<2",
     "omegaconf>=2.3,<3",
