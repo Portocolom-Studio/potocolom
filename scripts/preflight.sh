@@ -9,6 +9,12 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The release bundle ships no smoke script, so without deploy/docker the hint
+# names a checkout instead (#669).
+smoke_hint="scripts/compose-smoke.sh"
+if [[ ! -d "$ROOT/deploy/docker" ]]; then
+  smoke_hint="clone https://github.com/Portocolom-Studio/potocolom and run the compose smoke test from that checkout"
+fi
 PORT="${POTOCOLOM_PORT:-8080}"
 ENV_FILE="${ENV_FILE:-$ROOT/deploy/compose/.env}"
 COMPOSE_FILE="$ROOT/deploy/compose/compose.yml"
@@ -437,7 +443,7 @@ if [[ "$profile" != gpu && "$profile" != api ]]; then
     scan_unusable_gpus "0x10de" || true
   elif ! scan_unusable_gpus "0x10de 0x1002"; then
     warn "no NVIDIA or AMD compute GPU detected"
-    note "the full stack still runs against the simulated worker: scripts/compose-smoke.sh"
+    note "the full stack still runs against the simulated worker: $smoke_hint"
   fi
 fi
 
@@ -533,6 +539,6 @@ fi
 case "$profile" in
   gpu)   printf '  Ready. NVIDIA worker:\n\n    docker compose -f deploy/compose/compose.yml --profile gpu up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
   rocm)  printf '  Ready. AMD worker:\n\n    docker compose -f deploy/compose/compose.yml --profile rocm up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
-  smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    scripts/compose-smoke.sh\n' ;;
+  smoke) printf '  Ready for the simulated worker (no GPU inference):\n\n    %s\n' "$smoke_hint" ;;
   api)   printf '  Ready. API and database only; generation needs an attached GPU worker:\n\n    docker compose -f deploy/compose/compose.yml --profile api up -d %s\n\n  Then open http://localhost:%s\n' "$up_flags" "$PORT" ;;
 esac
