@@ -27,7 +27,7 @@
 		backdrop-filter: blur(18px);
 		box-shadow: 0 1rem 2.5rem oklch(0 0 0 / 45%);
 		transform: translateX(-50%);
-		font-family: 'Lato', ui-sans-serif, system-ui, sans-serif;
+		font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
 		--mode-toggle-color: oklch(0.72 0.015 255);
 		--mode-toggle-hover: oklch(0.98 0.005 250);
 		--mode-toggle-focus: oklch(0.72 0.18 255);

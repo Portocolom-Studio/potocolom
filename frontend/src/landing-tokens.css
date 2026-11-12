@@ -8,11 +8,11 @@
 	--k-veil: oklch(0.06 0.01 265 / 62%);
 	--k-panel: oklch(0.14 0.018 265 / 92%);
 	--k-line: oklch(1 0 0 / 16%);
-	--k-accent: oklch(0.32 0.09 265);
-	--k-accent-ink: oklch(0.96 0.01 265);
+	--k-accent: #3a64f0;
+	--k-accent-ink: #ffffff;
 	--k-focus: oklch(0.72 0.18 255);
-	--k-display: 'Lato', ui-sans-serif, system-ui, sans-serif;
-	--k-mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', monospace;
+	--k-display: 'Geist', ui-sans-serif, system-ui, sans-serif;
+	--k-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
 	--k-ease: cubic-bezier(0.16, 1, 0.3, 1);
 	--k-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 	color: var(--k-ink);
@@ -47,9 +47,9 @@
 .landing-surface h2,
 .landing-surface h3 {
 	margin: 0;
-	font-weight: 800;
+	font-weight: 700;
 	font-style: normal;
-	letter-spacing: -0.045em;
+	letter-spacing: -0.035em;
 	overflow-wrap: anywhere;
 }
 

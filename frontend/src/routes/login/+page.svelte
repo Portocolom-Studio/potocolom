@@ -365,9 +365,9 @@
 		border: 0;
 		border-radius: 999px;
 		background: transparent;
-		color: #a6abb5;
+		color: var(--muted-foreground);
 		font-size: 0.875rem;
-		font-weight: 700;
+		font-weight: 600;
 		cursor: pointer;
 		transition:
 			background-color 160ms ease-out,
@@ -375,12 +375,12 @@
 	}
 
 	.auth-tabs button:hover {
-		color: #f7f8fa;
+		color: var(--foreground);
 	}
 
 	.auth-tabs button[aria-selected='true'] {
-		background: #f7f8fa;
-		color: #07090f;
+		background: var(--foreground);
+		color: var(--background);
 	}
 
 	@media (prefers-reduced-motion: reduce) {

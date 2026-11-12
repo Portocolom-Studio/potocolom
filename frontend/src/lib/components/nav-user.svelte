@@ -77,7 +77,7 @@
 						>
 							<Avatar.Root class="size-7 rounded-full">
 								<Avatar.Fallback
-									class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-[#333] ring-inset"
+									class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-line-strong ring-inset"
 									>{initial}</Avatar.Fallback
 								>
 							</Avatar.Root>
@@ -117,7 +117,7 @@
 						<div class="flex items-center gap-2 px-1 py-1.5 text-start">
 							<Avatar.Root class="size-7 rounded-full">
 								<Avatar.Fallback
-									class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-[#333] ring-inset"
+									class="bg-hover text-foreground rounded-full text-xs font-medium ring-1 ring-line-strong ring-inset"
 									>{initial}</Avatar.Fallback
 								>
 							</Avatar.Root>

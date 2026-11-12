@@ -506,7 +506,7 @@
 
 	.mark {
 		font-size: 1.05rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.03em;
 	}
 
@@ -963,7 +963,7 @@
 
 	.amount {
 		font-size: clamp(1.9rem, 2.4vw, 2.3rem);
-		font-weight: 800;
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.04em;
 	}

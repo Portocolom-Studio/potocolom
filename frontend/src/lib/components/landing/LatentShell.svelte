@@ -112,7 +112,7 @@
 	.mark {
 		color: var(--k-ink);
 		font-size: 1.05rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.03em;
 	}
 

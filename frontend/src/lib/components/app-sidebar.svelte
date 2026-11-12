@@ -81,15 +81,14 @@
 			title={t('app.back')}
 			class="flex min-w-0 flex-1 items-baseline gap-2 rounded-md px-1.5 py-1 outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:hidden"
 		>
-			<span
-				class="text-foreground font-[Lato] text-[17px] leading-none font-black tracking-[-0.03em]"
+			<span class="text-foreground text-[17px] leading-none font-bold tracking-[-0.035em]"
 				>potocolom</span
 			>
 			<span class="text-dim text-xs">{t('app.title')}</span>
 		</a>
 		<button
 			type="button"
-			class="text-foreground hidden size-9 place-items-center rounded-md font-[Lato] text-lg font-black tracking-[-0.04em] outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:grid"
+			class="text-foreground hidden size-9 place-items-center rounded-md text-lg font-bold tracking-[-0.04em] outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[collapsible=icon]:grid"
 			title={t('app.shell.expand_sidebar')}
 			aria-label={t('app.shell.expand_sidebar')}
 			onclick={() => sidebar.setOpen(true)}>p</button

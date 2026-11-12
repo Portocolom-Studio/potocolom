@@ -87,7 +87,7 @@
 		gap: 2.25rem;
 		padding: 3rem clamp(1rem, 4vw, 3rem) calc(2rem + env(safe-area-inset-bottom));
 		color: var(--k-muted);
-		font-family: Lato, sans-serif;
+		font-family: Geist, sans-serif;
 		font-size: 0.875rem;
 	}
 
@@ -116,7 +116,7 @@
 	.mark {
 		color: var(--k-ink);
 		font-size: 1.05rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.03em;
 	}
 
@@ -141,7 +141,7 @@
 		margin: 0;
 		color: var(--k-ink);
 		font-size: 0.8rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.045em;
 		text-transform: uppercase;
 	}
@@ -286,7 +286,7 @@
 		margin: 0 0 calc(0.2em + 1rem);
 		color: #07090f;
 		font-size: clamp(5rem, 18.6vw, 16.75rem);
-		font-weight: 900;
+		font-weight: 700;
 		line-height: 0.8;
 		letter-spacing: -0.07em;
 		text-align: center;

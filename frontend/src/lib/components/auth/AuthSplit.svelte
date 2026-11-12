@@ -45,8 +45,8 @@
 	.split {
 		display: flex;
 		min-block-size: 100dvh;
-		background: #07090f;
-		color: #f4f6fb;
+		background: var(--background);
+		color: var(--foreground);
 	}
 
 	.split.field-start {
@@ -70,9 +70,9 @@
 	}
 
 	.mark {
-		color: #f4f6fb;
+		color: var(--foreground);
 		font-size: 1.05rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.03em;
 		text-decoration: none;
 	}
@@ -92,12 +92,12 @@
 		display: flex;
 		flex: 999 1 30rem;
 		min-inline-size: 0;
-		border-inline-start: 1px solid #1c2440;
+		border-inline-start: 1px solid var(--border);
 	}
 
 	.split.field-start .field {
 		border-inline-start: 0;
-		border-inline-end: 1px solid #1c2440;
+		border-inline-end: 1px solid var(--border);
 	}
 
 	.overlay {
@@ -109,7 +109,7 @@
 
 	.heading {
 		margin: 0;
-		color: #f4f6fb;
+		color: var(--foreground);
 		font-size: 2rem;
 		font-weight: 600;
 		line-height: 2.5rem;
@@ -121,7 +121,7 @@
 	}
 
 	.heading .tail {
-		color: #9aa4bd;
+		color: var(--muted-foreground);
 	}
 
 	/* Form controls. The primitives keep their markup; these set the colours,
@@ -132,7 +132,7 @@
 		border-radius: 0;
 		background: transparent;
 		box-shadow: none;
-		color: #f4f6fb;
+		color: var(--foreground);
 		overflow: visible;
 	}
 
@@ -142,7 +142,7 @@
 	}
 
 	.form-wrap :global([data-slot='card-title']) {
-		color: #f4f6fb;
+		color: var(--foreground);
 		font-size: 1.5rem;
 		font-weight: 600;
 		line-height: 2rem;
@@ -152,11 +152,11 @@
 	.form-wrap :global([data-slot='card-description']),
 	.form-wrap :global([data-slot='field-description']),
 	.form-wrap :global(.text-muted-foreground) {
-		color: #9aa4bd;
+		color: var(--muted-foreground);
 	}
 
 	.form-wrap :global(label) {
-		color: #f4f6fb;
+		color: var(--foreground);
 		font-size: 0.8125rem;
 		font-weight: 500;
 		line-height: 1.125rem;
@@ -164,10 +164,10 @@
 
 	.form-wrap :global([data-slot='input']) {
 		block-size: 2.5rem;
-		border: 1px solid #263152;
+		border: 1px solid var(--line-strong);
 		border-radius: 0.5rem;
-		background: #0f1830;
-		color: #f4f6fb;
+		background: var(--field);
+		color: var(--foreground);
 		box-shadow: none;
 	}
 
@@ -180,27 +180,27 @@
 	}
 
 	.form-wrap :global(button[data-slot='button'][type='submit']) {
-		border: 1px solid #4263eb;
-		background: #4263eb;
-		color: #ffffff;
+		border: 1px solid var(--brand);
+		background: var(--brand);
+		color: var(--brand-foreground);
 	}
 
 	.form-wrap :global(button[data-slot='button'][type='submit']:hover:not(:disabled)) {
-		border-color: #3451ce;
-		background: #3451ce;
+		border-color: #3357d6;
+		background: #3357d6;
 	}
 
 	.form-wrap :global(a[data-slot='button']),
 	.form-wrap :global(button[data-slot='button']:not([type='submit'])) {
-		border: 1px solid #263152;
-		background: #0f1830;
-		color: #f4f6fb;
+		border: 1px solid var(--line-strong);
+		background: var(--raised);
+		color: var(--foreground);
 	}
 
 	.form-wrap :global(a[data-slot='button']:hover),
 	.form-wrap :global(button[data-slot='button']:not([type='submit']):hover) {
-		border-color: #3a4a78;
-		background: #162447;
+		border-color: var(--line-strong);
+		background: var(--hover);
 	}
 
 	.form-wrap :global(a:not([data-slot])) {
@@ -210,11 +210,11 @@
 	}
 
 	.form-wrap :global(input[type='checkbox']) {
-		accent-color: #4263eb;
+		accent-color: var(--brand);
 	}
 
 	.split :global(:focus-visible) {
-		outline: 2px solid #5b7bff;
+		outline: 2px solid var(--ring);
 		outline-offset: 2px;
 	}
 
@@ -239,7 +239,7 @@
 			order: -1;
 			flex: 0 0 8rem;
 			border-inline-start: 0;
-			border-block-end: 1px solid #1c2440;
+			border-block-end: 1px solid var(--border);
 		}
 
 		.split.field-start .field {

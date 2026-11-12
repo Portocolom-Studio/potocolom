@@ -2080,6 +2080,7 @@ readiness; replacing an unknown database password with a new random value.
 ## The studio, landing and auth pages follow one written design system
 
 > **Partly superseded** by "Studio polish uses readable type and responsive layouts" below: the compact studio sizes no longer hold.
+> **Partly superseded** by "One font and one base token set for every page": the landing and auth pages no longer keep Lato, and the studio tokens are no longer scoped.
 
 PR #774 redesigns the studio shell and views, the landing footer and the
 sign-in and join pages, and records the result in
@@ -2099,6 +2100,8 @@ rules only in component code and a private design canvas (future sessions
 could not find them).
 
 ## Studio polish uses readable type and responsive layouts
+
+> **Partly superseded** by "One font and one base token set for every page": the neutral greys are replaced by a cool near-black ground.
 
 The studio keeps its neutral colours, Geist font, task groups and blue GPU
 actions. Its body text is 14px, labels are 12px, controls have 8px corners,
@@ -2455,3 +2458,13 @@ The rules that follow from it:
 Rejected alternatives: signed short-lived tokens for the cloud, which need a signing key on the minting side, a verification path here and a separate revocation list, for a statelessness the registration path does not have; a key pair made on the worker with a signed challenge at each connection, which protects the credential on a plain `ws://` network where prompts and frames are readable anyway, and adds a step to the wire handshake; the operator's own SSH keys, which need an account and a key on each machine and give no join screen; a relay or tunnel of our own, when the worker already dials out and a mesh VPN covers an API with no public address; discovery on the local network by mDNS or broadcast, which makes every node on that network a candidate with no authentication; a short PIN typed by the operator, which needs a rate limit and an approval step to be safe where a copied command is one step; an end of life for a credential that has not connected for 90 days, which refuses a home server that is off for a season and a machine that stays connected for 91 days at its next reconnect; columns on the existing `workers` table in place of a new one, because any `hello` writes that table and its rows are pruned after 30 days.
 
 > Shipped status (2026-11-11): the member routes and enrollment ship in #894. The fleet socket rules above ship with this entry. The worker-side join (#886), the per-member base address for upload and source-image links, and the studio screen (#887) are not built.
+
+## One font and one base token set for every page
+
+The studio, the landing, the sign-in pages and the docs now share one font and one base token set. Geist is the only text font and Geist Mono is for code, ids and seeds; Lato and its package are removed. The base `:root` block in `frontend/src/app.css` holds the one token set: a cool near-black ground (`#0a0c10`), three tone steps above it for panels, controls and hover, cool grey text, and the same brand blue (`#3a64f0`). The studio scope keeps only its density (14px body, tabular figures). The landing keeps its `--k-*` chrome tokens and its light mode, but its dark accent is now the brand blue, and the sign-in pages read the base tokens instead of their own hex values. The heaviest weight is 700.
+
+This follows a review of every surface on 2026-11-11. Three palettes and two fonts made the product read as three products: a visitor went from a Lato navy landing to a Lato sign-in page with its own blues to a neutral grey Geist studio. The owner compared sketch boards of the whole product in one system and chose it.
+
+This supersedes three earlier points. "One shared token set for landing and studio" was rejected because the landing is image-led; the landing keeps its chrome tokens for that reason, and only the font, the accent and the base set are shared. "Near-black panels" were rejected because labels were harder to read; the new text steps are measured against every surface, and the weakest pair (tertiary text on a hovered row) is 4.9:1, with secondary text at 8.2:1 or more. "A new studio palette" was rejected because it would not fix layout problems; the layout changes are separate, later changes, and this one changes no layout.
+
+Rejected alternatives: keep Lato for the landing and the wordmark (two fonts for one product, and a visible change at sign-in); move the landing to the studio's neutral greys (the pictures need a darker, cooler ground); change tokens and layouts in one change (too large to review by screenshot).
