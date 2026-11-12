@@ -430,7 +430,9 @@ order; no build can overwrite files while a browser check uses them. Plain
 `scripts/isolated-net.sh`, in a loopback-only network namespace, so a Docker
 network created or removed by another job cannot abort its page loads
 (issues #726, #930). The sign-in and setup checks keep the host network,
-because they reach PostgreSQL on the host's loopback.
+because they reach PostgreSQL on the host's loopback. When a browser check
+fails, it prints the page errors, failed requests and HTTP 400+ responses its
+pages produced to stderr, so a flaky failure shows what the browser saw first.
 
 The landing waitlist form never leaves the machine in development: the dev
 and preview servers answer a submit locally, and an address ending in

@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { recordPageEvents } from './studio-test-page.mjs';
 
 const build = resolve(fileURLToPath(new URL('../build', import.meta.url)));
 const manualUrl = process.env.FOOTER_TEST_URL;
@@ -195,6 +196,7 @@ try {
 	assert.ok(nodeIds?.length, 'built home must identify its route nodes');
 	const homeNode = nodeIds.at(-1);
 	const brokenHome = await browser.newPage();
+	recordPageEvents(brokenHome);
 	await brokenHome.setCacheEnabled(false);
 	await load(brokenHome, () =>
 		brokenHome.goto(`${baseUrl}/privacy`, { waitUntil: 'networkidle0' })
@@ -246,8 +248,10 @@ try {
 	// hidden, and compare the text colour with the lightest background behind
 	// it, ignoring the brightest 5% of pixels (single passing particles).
 	const livePage = await browser.newPage();
+	recordPageEvents(livePage);
 	// The site's CSP blocks data: images, so screenshots are read on a blank page.
 	const reader = await browser.newPage();
+	recordPageEvents(reader);
 	let liveEngineRun;
 	await livePage.evaluateOnNewDocument(() => {
 		const originalGetContext = HTMLCanvasElement.prototype.getContext;
@@ -356,6 +360,7 @@ try {
 
 	// Then block the canvas and check the CSS fallback behind it.
 	const page = await browser.newPage();
+	recordPageEvents(page);
 	await page.evaluateOnNewDocument(() => {
 		const getContext = HTMLCanvasElement.prototype.getContext;
 		HTMLCanvasElement.prototype.getContext = function (...args) {
@@ -421,6 +426,7 @@ try {
 	);
 
 	const parity = await browser.newPage();
+	recordPageEvents(parity);
 	await parity.setViewport({ width: 390, height: 844 });
 	async function footerStyles(path) {
 		await load(parity, () => parity.goto(`${baseUrl}${path}`, { waitUntil: 'networkidle0' }));
@@ -458,6 +464,7 @@ try {
 	await parity.close();
 
 	const navigation = await browser.newPage();
+	recordPageEvents(navigation);
 	const hydrationErrors = [];
 	navigation.on('pageerror', (error) => hydrationErrors.push(error.message));
 	navigation.on('console', (message) => {

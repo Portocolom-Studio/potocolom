@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { recordPageEvents } from './studio-test-page.mjs';
 
 // Runs against the self-hosted build (PUBLIC_SITE_MODE empty): the studio shell
 // fills the first viewport, the page does not scroll, no page footer renders, and
@@ -100,6 +101,7 @@ try {
 		args: ['--no-sandbox', '--disable-gpu']
 	});
 	const studio = await browser.newPage();
+	recordPageEvents(studio);
 	await studio.setViewport({ width: 1280, height: 900 });
 	await studio.goto(`${baseUrl}/app`, { waitUntil: 'networkidle0' });
 	await studio.waitForSelector('[data-slot="sidebar-container"]', { visible: true });
@@ -115,6 +117,7 @@ try {
 
 	// Home replaces its own entry with /app, so Back returns to the page before home.
 	const home = await browser.newPage();
+	recordPageEvents(home);
 	await home.goto(`${baseUrl}/login`, { waitUntil: 'networkidle0' });
 	await home.goto(`${baseUrl}/`, { waitUntil: 'networkidle0' });
 	await home.waitForFunction(() => location.pathname === '/app', { timeout: 10000 });
