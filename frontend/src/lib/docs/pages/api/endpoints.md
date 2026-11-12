@@ -101,7 +101,7 @@ These routes are for admins, except enroll. An administrator adds a GPU on anoth
 | DELETE | `/api/v1/admin/fleet/members/{id}` | Revoke a member. The row stays as the record.                                                |
 | POST   | `/api/v1/fleet/enroll`             | Spend a join token once. Needs no session. Answers the worker id and its credential.         |
 
-- Create and delete need an allowed origin. In accounts mode, create also needs a recent sign-in.
+- In none mode, create and delete need an allowed origin, as every state-changing request does there. In accounts mode, create also needs a recent sign-in.
 - A join token is refused once it is spent, expired or revoked. Every one of those refusals gets the same `403`.
 - `base_url` must be a bare `http` or `https` origin. A path, a query, a fragment or a user name is refused with `422`, and the token stays usable.
 - The fleet socket does not accept these credentials yet, so an enrolled member cannot connect until that change ships.

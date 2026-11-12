@@ -17,7 +17,7 @@ from sqlalchemy import func, select, update
 from starlette.responses import Response
 
 from app import audit, auth_mode, db, realtime, sessions
-from app.auth import check_origin, current_principal, origin_listed, require_role
+from app.auth import current_principal, origin_listed, require_role
 from app.manifests import StorableStr
 from app.rate_limit import charge_address
 from app.tables import FleetMember, User
@@ -53,11 +53,10 @@ async def create_member(
     http: Request,
     admin: User = Depends(require_role("admin")),
 ) -> dict:
-    check_origin(http)
     if auth_mode.current() == auth_mode.ACCOUNTS:
         # Creating a member is a credential change, so it needs the same recent
         # sign-in as an administrator invitation. None mode has no session to be
-        # recent: the origin check above is its only guard.
+        # recent: the Origin check every unsafe request gets there is its guard.
         principal = await current_principal(http)
         if not sessions.is_recent(principal.session):
             raise HTTPException(status_code=403, detail="recent authentication required")
@@ -123,11 +122,9 @@ async def list_members(_admin: User = Depends(require_role("admin"))) -> list[di
 @router.delete("/api/v1/admin/fleet/members/{member_id}", status_code=204)
 async def revoke_member(
     member_id: uuid.UUID,
-    http: Request,
     admin: User = Depends(require_role("admin")),
 ) -> Response:
     """The row stays as the record. Closing a socket it still holds is a later change."""
-    check_origin(http)
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
