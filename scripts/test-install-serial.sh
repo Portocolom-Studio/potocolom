@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by the installer test suites. They run the real installer locks, and
 # every case uses the default project, so two suites at once take each other's
 # project lock and fail with "another potocolom install" (#831). This runs the

@@ -18,7 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
-	verify-secrets verify-backup \
+	verify-secrets verify-backup shellcheck \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -298,10 +298,14 @@ fe-build-product: $(FE_LANDING_CHECKS)
 $(FE_PRODUCT_CHECKS): fe-build-product
 	cd frontend && npm run $(patsubst fe-test-%,test:%,$@)
 
-lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint
+lint: ## the lint steps of verify only: ruff on backend, scripts and worker, then the frontend lint, then shellcheck
 	cd backend && .venv/bin/ruff check . ../scripts
 	cd worker && .venv/bin/ruff check .
 	cd frontend && npm run lint
+	$(MAKE) --no-print-directory shellcheck
+
+shellcheck: ## shellcheck at error severity on every tracked shell script (scripts/shellcheck.sh)
+	bash scripts/shellcheck.sh
 
 verify: verify-backend verify-worker verify-frontend ## backend, worker and frontend gates; CI also runs verify-guards, verify-compose, verify-mermaid, verify-worker-inference and the secret scan (verify-secrets)
 
@@ -412,6 +416,7 @@ verify-guards: ## prove setup guards and shared GPU detection
 	@bash scripts/test-check-docs-site.sh
 	@bash scripts/test-backup-guards.sh
 	@python3 scripts/check-workflow-timeouts.py && python3 -m unittest discover -s scripts/tests -p 'test_check_workflow_timeouts.py'
+	@$(MAKE) --no-print-directory shellcheck
 
 verify-compose: ## validate every compose file and profile (no containers started)
 	cd deploy/compose && ENV_FILE=$$([ -f .env ] && echo .env || echo .env.example) && \

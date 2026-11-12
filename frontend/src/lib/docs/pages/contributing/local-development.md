@@ -148,7 +148,7 @@ To work on a second branch without a second install, run `make worktree NAME=x`.
 
 ## Tests for one component
 
-Run `make lint` for only the lint steps of `make verify`: ruff on the backend, `scripts/` and the worker, each from the directory where its paths resolve, then the frontend lint. Reviewers apply [CODING_STANDARDS.md](https://github.com/Portocolom-Studio/potocolom/blob/main/CODING_STANDARDS.md) to every diff. Its first rule: a test that changes state through one channel, such as a socket, waits for that state before it reads it through another, such as HTTP or the DOM.
+Run `make lint` for only the lint steps of `make verify`: ruff on the backend, `scripts/` and the worker, each from the directory where its paths resolve, then the frontend lint, then shellcheck on every tracked shell script (`make shellcheck`, error severity). Reviewers apply [CODING_STANDARDS.md](https://github.com/Portocolom-Studio/potocolom/blob/main/CODING_STANDARDS.md) to every diff. Its first rule: a test that changes state through one channel, such as a socket, waits for that state before it reads it through another, such as HTTP or the DOM.
 
 Each component has a make target that runs its lint, type check and tests. Run the one that matches your change:
 
