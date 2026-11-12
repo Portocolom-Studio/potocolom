@@ -9,8 +9,8 @@
 # sees those changes. Use it only for a check that needs no host service: the
 # sign-in and setup checks reach PostgreSQL on the host and stay outside.
 set -euo pipefail
-if unshare -rn true 2>/dev/null; then
+if unshare -rn ip link set lo up 2>/dev/null; then
 	exec unshare -rn sh -c 'ip link set lo up && exec "$@"' sh "$@"
 fi
-echo "isolated-net: no unprivileged network namespace here; using the host network" >&2
+echo "isolated-net: no unprivileged network namespace or no ip command here; using the host network" >&2
 exec "$@"
