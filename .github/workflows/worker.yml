@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - "worker/**"
+      - "scripts/check-python-deps.sh"
       - "Makefile"
       - ".github/workflows/worker.yml"
 
@@ -20,6 +21,7 @@ jobs:
     with:
       paths: |
         worker/**
+        scripts/check-python-deps.sh
         Makefile
         .github/workflows/worker.yml
   inference-cpu:
@@ -44,6 +46,8 @@ jobs:
       - run: .venv-inference/bin/pip install -e ".[dev,inference]"
       - run: make verify-worker-inference
         working-directory: .
+      - run: make check-python-deps
+        working-directory: .
 
   worker:
     needs: changes
@@ -62,6 +66,8 @@ jobs:
       - run: .venv/bin/pip install -e ".[dev]"
       # The Makefile target is the single definition of what the job checks.
       - run: make verify-worker
+        working-directory: .
+      - run: make check-python-deps
         working-directory: .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
