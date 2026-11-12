@@ -1,3 +1,45 @@
 inheritance: true
 reviews:
   high_level_summary: false
+  # Each area names the rules a maintainer applies there. AGENTS.md and
+  # CODING_STANDARDS.md apply everywhere.
+  path_instructions:
+    - path: "**"
+      instructions: >-
+        Apply AGENTS.md and CODING_STANDARDS.md. Do not ask to reverse a choice
+        recorded in docs/decisions.md; say a new decision entry is needed
+        instead. Flag non-ASCII punctuation, emojis and AI attribution lines.
+    - path: "backend/**"
+      instructions: >-
+        Endpoints, requests, responses and close codes must match docs/api.md.
+        A schema change needs an Alembic migration in backend/migrations/.
+        New user-linked data must join the GDPR export and the account purge.
+        Check the affected rows of docs/security-checklist.md.
+    - path: "{backend/app/realtime.py,worker/worker/client.py}"
+      instructions: >-
+        These implement the wire protocol in docs/connection-handling.md.
+        The worker protocol promises N-1 compatibility: a new field must be
+        optional for an older peer, and a required change bumps the version.
+    - path: "worker/**"
+      instructions: >-
+        Never import the backend app package. Watch VRAM use and the memory
+        ladder in docs/architecture.md; tests run on CPU with a tiny model.
+    - path: "frontend/**"
+      instructions: >-
+        Follow docs/design-system.md. Every user-facing string goes into both
+        src/lib/i18n/en.json and es.json. PUBLIC_SITE_MODE is never a security
+        boundary; the API must enforce what the UI hides.
+    - path: "**/tests/**"
+      instructions: >-
+        A test must fail without the fix it guards. No fixed sleeps: wait for
+        state (CODING_STANDARDS.md). No retries.
+    - path: ".github/workflows/**"
+      instructions: >-
+        Pin every action to a full commit SHA, keep permissions minimal and set
+        timeout-minutes. Workflows run on a self-hosted runner, so check what a
+        pull request from a fork can reach (docs/self-hosted-runner.md).
+    - path: "{docs/*.md,README.md,CONTRIBUTING.md,SECURITY.md,AGENTS.md}"
+      instructions: >-
+        A changed repository doc needs its mirror page under
+        frontend/src/lib/docs/pages/ (named in its source: line) updated, or a
+        Docs-site trailer that names the page checked.
