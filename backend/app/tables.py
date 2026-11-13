@@ -28,6 +28,7 @@ LOGIN_ATTEMPT_SCOPES = ("identifier", "address")
 OUTBOX_STATES = ("pending", "sent", "failed")
 AUDIT_SEVERITIES = ("info", "high")
 BANNER_KINDS = ("high_demand", "degraded", "maintenance")
+FLEET_DEVICES = ("cuda", "rocm")
 NORMALIZED_EMAIL = text("lower(btrim(email))")
 
 
@@ -600,3 +601,33 @@ class WorkerIdentity(Base):
     device: Mapped[str | None] = mapped_column(Text)
     memory_mode: Mapped[str | None] = mapped_column(Text)
     last_seen: Mapped[datetime]
+
+
+class FleetMember(Base):
+    """A GPU machine an administrator connected, with its own credential.
+
+    The join token is one use and lives an hour. Its hash is cleared when the
+    token is spent or the member is revoked, so a row holds a join hash only
+    while that member can still enrol. The credential hash is set by the spend
+    and never changes after it.
+    """
+
+    __tablename__ = "fleet_members"
+    __table_args__ = (
+        CheckConstraint(_one_of("device", FLEET_DEVICES), name="fleet_members_device"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    worker_id: Mapped[str] = mapped_column(Text, unique=True)
+    label: Mapped[str] = mapped_column(Text)
+    device: Mapped[str] = mapped_column(Text)
+    join_token_hash: Mapped[bytes | None] = mapped_column(LargeBinary, unique=True)
+    join_expires_at: Mapped[datetime]
+    credential_hash: Mapped[bytes | None] = mapped_column(LargeBinary, unique=True)
+    base_url: Mapped[str | None] = mapped_column(Text)
+    enrolled_at: Mapped[datetime | None]
+    last_seen_at: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
