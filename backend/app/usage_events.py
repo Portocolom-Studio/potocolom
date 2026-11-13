@@ -26,6 +26,8 @@ def _category(control: dict) -> tuple[str, float | None]:
 async def record_job(job_id: uuid.UUID, control: dict) -> None:
     if db.session_factory is None:
         return
+    from app import registry  # late import; registry reads realtime's state
+
     try:
         async with db.session_factory() as session:
             job = await session.get(Job, job_id)
@@ -33,6 +35,7 @@ async def record_job(job_id: uuid.UUID, control: dict) -> None:
                 return
             model = await session.get(Model, job.model_id)
             capabilities = set(model.capabilities) if model is not None else set()
+            manifest = registry.available().get(job.model_id)
             action = (
                 "generate" if job.source_asset_id is None else
                 "enhance" if "upscale" in capabilities else
@@ -44,8 +47,8 @@ async def record_job(job_id: uuid.UUID, control: dict) -> None:
                 kind="job",
                 action=action,
                 model_id=job.model_id,
-                # Model tier routing is not shipped yet, so there is no honest value.
-                tier=None,
+                # Null when the model has no live manifest, e.g. its worker is offline.
+                tier=manifest.tier if manifest is not None else None,
                 category=category,
                 category_score=score,
                 gpu_ms=job.gpu_ms,
