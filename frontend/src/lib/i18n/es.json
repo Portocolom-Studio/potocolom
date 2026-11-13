@@ -571,6 +571,7 @@
 	"app.images.search": "Buscar en prompts",
 	"app.images.next_match": "Siguiente coincidencia",
 	"app.images.matches": "Coincidencias: {count}",
+	"app.images.search_failed": "La b\u00fasqueda fall\u00f3.",
 	"app.images.starred": "Destacada",
 	"app.images.loading": "Cargando historial de imágenes...",
 	"app.images.no_starred_roots": "Aún no hay imágenes destacadas.",

@@ -571,6 +571,7 @@
 	"app.images.search": "Search prompts",
 	"app.images.next_match": "Next match",
 	"app.images.matches": "Matches: {count}",
+	"app.images.search_failed": "Search failed.",
 	"app.images.starred": "Starred",
 	"app.images.loading": "Loading image history...",
 	"app.images.no_starred_roots": "No starred images yet.",
