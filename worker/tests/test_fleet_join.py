@@ -9,9 +9,16 @@ import httpx
 import pytest
 import websockets
 
-from worker.client import BACKOFF_CAP, BACKOFF_INITIAL, BACKOFF_JITTER, run
+from worker.client import (
+    BACKOFF_CAP,
+    BACKOFF_INITIAL,
+    BACKOFF_JITTER,
+    FLEET_STATE_LOCK,
+    run,
+)
 from worker.engine import SimulatedEngine
 from worker.manifests import SIMULATED_MANIFEST
+from worker.process_lock import acquire_exclusive_lock
 from worker.settings import Settings
 
 JOIN_TOKEN = "join-token-SECRET"
@@ -22,6 +29,11 @@ STATE_FILE = "fleet-credential.json"
 
 class StopReconnect(Exception):
     pass
+
+
+def _files(directory):
+    """What the worker saved, without the lock file it holds while it runs."""
+    return sorted(name for name in os.listdir(directory) if name != FLEET_STATE_LOCK)
 
 
 def _issue(_request):
@@ -155,7 +167,7 @@ def test_first_start_posts_the_join_token_and_saves_the_credential(
     path = tmp_path / STATE_FILE
     assert json.loads(path.read_text()) == {"worker_id": WORKER_ID, "credential": CREDENTIAL}
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-    assert os.listdir(tmp_path) == [STATE_FILE]
+    assert _files(tmp_path) == [STATE_FILE]
     assert JOIN_TOKEN not in caplog.text
     assert CREDENTIAL not in caplog.text
 
@@ -200,7 +212,7 @@ def test_fleet_token_without_a_join_token_behaves_as_before(monkeypatch, tmp_pat
     token, hello = seen[0]
     assert token == "fleet-secret"
     assert hello["worker_id"] == "w-plain"
-    assert os.listdir(tmp_path) == []
+    assert _files(tmp_path) == []
 
 
 def test_join_token_without_state_dir_refuses_to_start(monkeypatch):
@@ -235,6 +247,50 @@ def test_a_state_dir_that_cannot_be_written_refuses_before_the_token_is_spent(
     assert built == []
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes to a read-only folder")
+def test_an_existing_state_dir_that_refuses_writes_refuses_before_the_token_is_spent(
+        monkeypatch, tmp_path):
+    requests = _enroll_server(monkeypatch, _issue)
+    read_only = tmp_path / "read-only"
+    read_only.mkdir()
+    read_only.chmod(0o500)
+    connections, built = _offline(monkeypatch, Settings(
+        join_token=JOIN_TOKEN, state_dir=str(read_only)))
+    try:
+        with pytest.raises(RuntimeError) as error:
+            asyncio.run(run())
+    finally:
+        read_only.chmod(0o700)
+
+    assert "STATE_DIR" in str(error.value)
+    assert JOIN_TOKEN not in str(error.value)
+    assert requests == []
+    assert connections == []
+    assert built == []
+
+
+def test_a_second_worker_on_the_same_state_dir_is_refused_before_the_token_is_spent(
+        monkeypatch, tmp_path):
+    # Two workers on one STATE_DIR would both spend a token and the second save
+    # would replace the first identity, or both would connect as one worker.
+    requests = _enroll_server(monkeypatch, _issue)
+    other = acquire_exclusive_lock(str(tmp_path / FLEET_STATE_LOCK))
+    connections, built = _offline(monkeypatch, Settings(
+        join_token=JOIN_TOKEN, state_dir=str(tmp_path)))
+    try:
+        with pytest.raises(RuntimeError) as error:
+            asyncio.run(run())
+    finally:
+        other.close()
+
+    assert "another worker" in str(error.value)
+    assert str(tmp_path) in str(error.value)
+    assert JOIN_TOKEN not in str(error.value)
+    assert requests == []
+    assert connections == []
+    assert built == []
+
+
 def test_a_spent_join_token_stops_the_worker_with_a_message_for_the_studio(monkeypatch, tmp_path):
     requests = _enroll_server(monkeypatch, lambda _r: httpx.Response(403, json={"detail": "no"}))
     connections, _built = _offline(monkeypatch, Settings(
@@ -249,7 +305,7 @@ def test_a_spent_join_token_stops_the_worker_with_a_message_for_the_studio(monke
     assert JOIN_TOKEN not in message
     assert len(requests) == 1
     assert connections == []
-    assert os.listdir(tmp_path) == []
+    assert _files(tmp_path) == []
 
 
 def _unreachable(_request):
@@ -277,7 +333,7 @@ def test_other_enroll_failures_stop_the_worker_without_the_token(
     assert JOIN_TOKEN not in message
     assert CREDENTIAL not in message
     assert connections == []
-    assert os.listdir(tmp_path) == []
+    assert _files(tmp_path) == []
 
 
 def test_enroll_does_not_follow_a_redirect(monkeypatch, tmp_path):
@@ -290,7 +346,7 @@ def test_enroll_does_not_follow_a_redirect(monkeypatch, tmp_path):
 
     assert len(requests) == 1
     assert JOIN_TOKEN not in str(error.value)
-    assert os.listdir(tmp_path) == []
+    assert _files(tmp_path) == []
 
 
 def test_a_crash_before_the_rename_leaves_no_credential_file(monkeypatch, tmp_path):
@@ -307,7 +363,7 @@ def test_a_crash_before_the_rename_leaves_no_credential_file(monkeypatch, tmp_pa
         asyncio.run(run())
 
     assert not (tmp_path / STATE_FILE).exists()
-    assert os.listdir(tmp_path) == []
+    assert _files(tmp_path) == []
     assert connections == []
 
 

@@ -100,7 +100,7 @@ MODELS_DIR=/models
 VRAM_RESERVE_MB=1536
 ```
 
-Mount a volume on `STATE_DIR`, so the credential survives a container that is created again:
+Mount a volume on `STATE_DIR`, so the credential survives a container that is created again. Give each worker its own volume: a second worker that starts on a `STATE_DIR` in use is refused.
 
 ```bash
 docker run -d --name potocolom-worker --restart unless-stopped \

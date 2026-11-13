@@ -45,6 +45,7 @@ from worker.engine import (
 from worker.categorize import categorize_output, enable_categorizer
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_fleet_manifests
 from worker.model_store import CAPABILITY as MODEL_STORE_CAPABILITY, ModelStore
+from worker.process_lock import acquire_exclusive_lock
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, fleet_url_error, get_settings
 
@@ -1572,6 +1573,32 @@ def fleet_connect(allow_insecure: bool):
 
 
 FLEET_CREDENTIAL_FILE = "fleet-credential.json"
+FLEET_STATE_LOCK = "fleet-credential.lock"
+# Open for the life of the process: closing a handle releases its lock. Keyed by
+# folder, because run() can start again in one process and flock does not let
+# a second handle of the same process take a lock the first one holds.
+_STATE_LOCKS: dict[Path, Any] = {}
+
+
+def _hold_state_dir(directory: Path) -> None:
+    """Own STATE_DIR for this process, or refuse to start.
+
+    Two workers on one folder would each spend a join token, and the second
+    save would replace the identity the first is using; or both would connect
+    with one saved identity.
+    """
+    if directory in _STATE_LOCKS or not directory.is_dir():
+        return
+    try:
+        _STATE_LOCKS[directory] = acquire_exclusive_lock(str(directory / FLEET_STATE_LOCK))
+    except BlockingIOError:
+        raise RuntimeError(
+            f"another worker already uses STATE_DIR {directory}; give each worker "
+            "its own state folder") from None
+    except OSError:
+        # A folder that refuses writes is reported by _check_writable before a
+        # token is spent; a worker with a saved credential can still start.
+        pass
 IDENTITY_FIELDS = ("worker_id", "credential")
 ENROLL_TIMEOUT = 10.0
 
@@ -1668,6 +1695,8 @@ async def _enroll(settings: Settings) -> dict[str, str]:
 async def _resolve_identity(settings: Settings) -> tuple[Settings, Path | None]:
     """The identity this start uses, and the saved file it came from (None for FLEET_TOKEN)."""
     path = Path(settings.state_dir) / FLEET_CREDENTIAL_FILE if settings.state_dir else None
+    if path is not None:
+        _hold_state_dir(path.parent)
     identity = _load_credential(path) if path is not None else None
     if identity is None and settings.join_token:
         if path is None:
