@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
+import { recordPageEvents } from './studio-test-page.mjs';
 
 // The studio tour on the product build: first visit starts it, a finished tour
 // stays shut, Help replays it, Escape skips with focus back on the control, and
@@ -151,6 +152,7 @@ async function openStudio(
 	} = {}
 ) {
 	const page = await context.newPage();
+	recordPageEvents(page);
 	page.setDefaultTimeout(timeoutMs);
 	await page.setViewport(viewport);
 	const errors = [];
