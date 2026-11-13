@@ -74,6 +74,6 @@
 	{/if}
 
 	{#if landing && !noindex && jsonLd}
-		{@html `<script type="application/ld+json">${jsonLd}</script>`}
+		{@html '<script type="application/ld+json">' + jsonLd + '</script>'}
 	{/if}
 </svelte:head>

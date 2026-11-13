@@ -4,7 +4,6 @@ import type { MetricsTab } from './studio-view';
 import type { MetricsRange } from './studio-metrics-range';
 import type { LineageTreeOffset, LineageViewport } from './studio.svelte';
 import { clampLineageCoordinate } from './lineage-canvas-state';
-import { readStored, writeStored } from './safe-storage';
 import { localDayStart } from './image-filters';
 
 export type ViewOwner = { kind: 'local' } | { kind: 'account'; id: string };

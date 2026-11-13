@@ -401,7 +401,7 @@
 					role="presentation"
 				>
 					<div class="dots">
-						<ParticleField density={0.003} glyph={'()'} active={hoveredHalf === 'oss'} />
+						<ParticleField density={0.003} glyph="()" active={hoveredHalf === 'oss'} />
 					</div>
 					<span class="tag">{t('split.oss_p1')}</span>
 					<h2>

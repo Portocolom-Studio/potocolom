@@ -270,7 +270,6 @@
 			height: sizeValue
 		})
 	);
-	const gpuEstimateLabel = $derived(gpuEstimateMs != null ? `~${formatMs(gpuEstimateMs)}` : null);
 	// Diffusers truncates at the text encoder window and only logs it worker
 	// side, so the prompt tail silently stops affecting the image (issue #148).
 	const promptWindow = $derived(selectedModel?.prompt_token_limit ?? 0);

@@ -29,7 +29,7 @@ const SAMPLE_TIMEOUT_MS = 5000;
 
 let samples: GpuSample[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
-let listeners = new Set<() => void>();
+const listeners = new Set<() => void>();
 let lastHardware: GpuHardware | null = null;
 let samplerEpoch = 0;
 let activeTick: { epoch: number; controller: AbortController } | null = null;

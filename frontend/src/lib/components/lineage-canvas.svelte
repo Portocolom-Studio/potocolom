@@ -23,7 +23,6 @@
 	import LayoutGridIcon from '@lucide/svelte/icons/layout-grid';
 	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { toggleStarWithUndo } from '$lib/studio-toasts';
 	import { revealOnLoad } from '$lib/image-reveal';
@@ -842,7 +841,7 @@
 		gridFailedAppend = false;
 		let invalidResume = false;
 		let pageCursorResume = cursorResume;
-		let restoredAnchor: GridResumeAnchor | null = null;
+		let restoredAnchor: GridResumeAnchor | null;
 		let restoredSelectionId: string | null = null;
 		try {
 			const response = await fetch(`/api/v1/generations?${query}`, { signal: controller.signal });
@@ -3289,7 +3288,6 @@
 	{/if}
 
 	{#if selectedData !== null}
-		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<aside
 			bind:this={inspectorEl}
 			data-leaving={inspectorLeaving ? '' : undefined}

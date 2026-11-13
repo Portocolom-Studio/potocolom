@@ -19,7 +19,7 @@ const variants = [
 
 const children = [];
 
-function startServer({ port, strictPort = true }) {
+function startServer({ port }) {
 	const child = spawn(
 		'npm',
 		['run', 'dev', '--', '--host', host, '--port', String(port), '--strictPort'],
@@ -44,10 +44,10 @@ process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
 const hubPort = 5189;
-startServer({ port: hubPort, strictPort: true });
+startServer({ port: hubPort });
 
 for (const variant of variants) {
-	startServer({ port: variant.port, strictPort: true });
+	startServer({ port: variant.port });
 }
 
 console.log('');
