@@ -38,6 +38,13 @@ the authoritative, grouped (M2-M8) view of what is open.
 - Model registry (#11): manifests travel in the fleet hello, persist for history
   foreign keys, and `GET /api/v1/models` serves them with schema, capabilities,
   default flag and GPU-time estimates.
+- Model routing tiers: a generation request with no `model_id` routes to the
+  cheapest registered model whose tier, capability and parameters fit
+  (`registry.route()`, called from `backend/app/jobs.py`). Manifests carry
+  `tier`; an older manifest without one is `standard`.
+- Status banner, set by hand (#46): one `status_banner` row (migration
+  `0028_status_banner.py`), read by `GET /api/v1/config`, set and cleared through
+  `PUT` and `DELETE /api/v1/admin/banner`, and shown by `status-banner.svelte`.
 - Job execution watchdog (#61): `sweep_stalled_jobs` fails or requeues jobs stuck
   in `running` when a connected worker stops reporting progress.
 - Worker thumbnails and generation lineage (#56, #57): WebP thumbnails beside
@@ -89,6 +96,8 @@ the authoritative, grouped (M2-M8) view of what is open.
   via the API, `/login` and `/join`, sidebar with Models and History, en/es
   strings throughout.
 - Dev loop: the vite server proxies `/api/v1` to the native API.
+- Studio admin UI (#28): the admin screens (dashboard, users, invitations, fleet,
+  audit and banner) sit over the shipped admin API.
 
 ### Performance, measured on the reference RX 7600 XT
 
@@ -118,7 +127,6 @@ tracker-verified detail (open issues and in-flight PRs).
 
 - Tiny-model CPU integration test in CI (the testing ladder's rung 2).
 - v0.1 tag: three images plus the compose file, cut together.
-- Model routing tier field (designed; not shipped - see decisions.md).
 - Optional: flip `TORCH_COMPILE` default on after a CUDA fleet bake-off
   (ROCm A/B in PR #141 was ~0-7% warm gain; left opt-in).
 
@@ -132,12 +140,18 @@ Still open:
 
 - #19 realtime protocol extras (prompt_update, queued position with the
   admission queue, idle slot release, browser keepalive, frame revisions)
-- #41 pointer and stylus input
 - #42 canvas input optimizations
 - #54 higher-resolution refine and compressed checkpoints (journal, undo and
   save/open already shipped)
 - #55 vector masks and selections
-- #46 status banner
+
+Closed issues whose remaining work no open issue tracks:
+
+- #41 pointer and stylus input: partly shipped. Pen pressure (drawing file
+  version 4, a `pressure` field on stroke points) and palm rejection (a touch
+  pointer is ignored while a pen stroke is active) ship.
+- #46 automatic high-demand banner setting. The manual banner ships (see Done);
+  the automatic setting waits for the private autoscaler to report its ceiling.
 
 Shipped this pass:
 
@@ -164,12 +178,12 @@ Still open:
 ### M5 Cloud readiness (largest)
 
 - #20 multi-worker scheduler, #21 usage metering and quota seam, #27 content
-  safety screening, #28 studio admin UI (the admin API is shipped), #29 usage
-  metrics and opt-out telemetry (the `usage_events` path and TELEMETRY flag
-  are shipped; cloud ingest stays private), #48 relay load harness, #60
-  inference-speed baseline and optimization backlog, #95 CLIP output
-  categorizer, #107 one-click benchmark pipeline. Lineage favorites (#124) and
-  PNG masters (#125) shipped. PR #210 shipped #129 (lineage on the detail view).
+  safety screening, #29 usage metrics and opt-out telemetry (the
+  `usage_events` path and TELEMETRY flag are shipped; cloud ingest stays
+  private), #48 relay load harness, #60 inference-speed baseline and
+  optimization backlog, #95 CLIP output categorizer, #107 one-click
+  benchmark pipeline. Lineage favorites (#124) and PNG masters (#125) shipped.
+  PR #210 shipped #129 (lineage on the detail view).
 - Inference backlog note (#60): torch.compile warmup and measured realtime slots
   are in-flight in PR #141. That PR recommends against enabling torch.compile by
   default (measured ROCm speedup only 0.8-7.4% against a large cold-load cost).

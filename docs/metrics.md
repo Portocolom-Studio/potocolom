@@ -233,7 +233,7 @@ alarm, not a curiosity.
 
 ## Dashboards and the boundary
 
-- Both modes: the admin area (issue #28) gains a usage view over the instance's own `usage_events` - top models, categories, active users, GPU time.
+- Both modes, planned and not yet tracked by an issue: the admin area gains a usage view over the instance's own `usage_events` - top models, categories, active users, GPU time.
 - Cloud only, private repo: the analytics warehouse. It reads the cloud deployment's `usage_events` and the telemetry ingest database, and produces the investor-facing numbers (growth, retention, category mix, install base). Per the boundary rules in [repository-boundary.md](repository-boundary.md) it never imports public code; the telemetry payload above is a public, versioned contract exactly like the quota interface.
 
 ## Commitments, in one place
