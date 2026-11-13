@@ -65,6 +65,8 @@ These are the secrets in this setup. Their values never appear in this guide, so
    VRAM_RESERVE_MB=1536
    ```
 
+   The worker refuses a plain `ws://` address to a remote host, because it would send the fleet token in clear text. It accepts `ws://` only for `localhost`, a loopback address, or a single-label name such as the compose service `api`. Keep `API_URL` on `wss://`. On a private test network without TLS, set `ALLOW_INSECURE_FLEET=true` in `worker.env` to allow `ws://` to another host. Without that setting the worker stops at startup, before it connects, and the error names `ALLOW_INSECURE_FLEET`.
+
    Replace `<copy FLEET_SECRET from the API host>` with the value of `FLEET_SECRET` from the API host's `deploy/compose/.env`. Replace `studio.example.com` with the same HTTPS origin you used on the API host.
 
 2. Start the NVIDIA worker. Replace `vX.Y.Z` with the release tag that the API host runs:
