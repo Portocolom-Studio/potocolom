@@ -34,7 +34,7 @@ export function markGpuCardDone(storage: () => CardStorage): void {
 	}
 }
 
-// A null list (still loading, or the request failed) keeps "This computer":
+// A null list (still loading, or the request failed) keeps the "this" option:
 // the failure must not send the user to a dialog that cannot show their GPUs.
 export function defaultGpuOption(workers: string[] | null): GpuOption {
 	return workers !== null && workers.length === 0 ? 'other' : 'this';

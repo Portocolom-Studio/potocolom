@@ -21,7 +21,7 @@
 		() => localStorage
 	);
 
-	// Null while the list loads and when it failed. Both keep "This computer".
+	// Null while the list loads and when it failed. Both keep the "this" option.
 	let workers = $state<string[] | null>(null);
 	let loading = $state(true);
 	// The user's own pick wins over the default, which may still change while loading.

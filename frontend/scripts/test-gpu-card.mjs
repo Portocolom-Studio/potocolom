@@ -265,13 +265,12 @@ async function scenarioAdminNoWorkerKeyboard(browser, server) {
 	assert.equal(await tourOpen(page), false, 'the tour waits behind the card');
 
 	// Keyboard only: arrows choose the option, Tab reaches Continue, Enter submits.
-	await page.focus('[data-testid="gpu-card-this"]');
+	// Up first, so the check sees the selection move away from the default.
+	await page.focus('[data-testid="gpu-card-other"]');
+	await page.keyboard.press('ArrowUp');
+	assert.equal(await checked(page, 'gpu-card-this'), true, 'ArrowUp selects the option above');
 	await page.keyboard.press('ArrowDown');
-	assert.equal(
-		await checked(page, 'gpu-card-other'),
-		true,
-		'the arrow key selects the next option'
-	);
+	assert.equal(await checked(page, 'gpu-card-other'), true, 'ArrowDown selects the next option');
 	await tabTo(page, 'gpu-card-continue');
 	await page.keyboard.press('Enter');
 
