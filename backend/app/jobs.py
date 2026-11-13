@@ -1517,7 +1517,7 @@ def job_dispatch_depth(worker: realtime.Worker) -> int:
 def pick_job_worker(model_id: str) -> realtime.Worker | None:
     candidates = [
         worker for worker in realtime.workers.values()
-        if worker.has_current_work_grant
+        if worker.accepts_new_work
         and model_id in worker.models
         and worker.jobs_in_flight < job_dispatch_depth(worker)
     ]
@@ -1601,7 +1601,7 @@ async def _dispatch_step_body() -> None:
     try:
         while True:
             # No free slot: popping would only lock a queued row for nothing.
-            if not any(w.has_current_work_grant
+            if not any(w.accepts_new_work
                        and w.jobs_in_flight < job_dispatch_depth(w)
                        for w in realtime.workers.values()):
                 break
@@ -1724,6 +1724,9 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             }
         from app import command_store
 
+        # A pause can land during the awaits above; the job stays queued.
+        if not worker.accepts_new_work:
+            return None
         # Publish before the claim commits so cancellation always finds its attempt.
         current = InFlight(
             worker=worker,
@@ -1849,6 +1852,9 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                                                    base_url=worker.base_url)
         thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token,
                                                          base_url=worker.base_url)
+        # A pause can land during the awaits above; the job stays queued.
+        if not worker.accepts_new_work:
+            return False
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.jobs_in_flight += 1

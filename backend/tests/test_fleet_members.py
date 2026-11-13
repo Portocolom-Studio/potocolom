@@ -235,7 +235,7 @@ def test_the_list_states_follow_a_member_through_its_life(accounts):
                       "offline": "offline", "connected": "connected"}
     for row in listed:
         assert set(row) == {"id", "worker_id", "label", "device", "state", "created_at",
-                            "enrolled_at", "last_seen_at", "join_expires_at"}
+                            "enrolled_at", "last_seen_at", "join_expires_at", "paused"}
 
 
 def test_delete_keeps_the_row_is_idempotent_and_404s_an_unknown_id(accounts):
@@ -455,3 +455,83 @@ def test_enrolment_is_not_open_before_setup(accounts):
         response = _enroll(client, "any-token")
     assert response.status_code == 503
     assert response.json() == {"detail": "setup_required"}
+
+
+# ------------------------------------------------------------------- pausing
+
+
+def _set_pause(client, headers, member_id: str, paused: bool):
+    return client.patch(f"{MEMBERS}/{member_id}", headers=headers, json={"paused": paused})
+
+
+def _listed_by_id(client, headers) -> dict:
+    return {row["id"]: row for row in client.get(MEMBERS, headers=headers).json()}
+
+
+def test_pause_sets_and_clears_the_flag_and_the_list_reports_it(accounts):
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        member = _create(client, headers, label="Pausable").json()
+        assert _listed_by_id(client, headers)[member["id"]]["paused"] is False
+
+        assert _set_pause(client, headers, member["id"], True).status_code == 204
+        assert client.portal.call(_row, member["id"])["paused"] is True
+        listed = _listed_by_id(client, headers)[member["id"]]
+        assert listed["paused"] is True and listed["state"] == "waiting"
+
+        assert _set_pause(client, headers, member["id"], False).status_code == 204
+        assert client.portal.call(_row, member["id"])["paused"] is False
+        assert _listed_by_id(client, headers)[member["id"]]["paused"] is False
+
+
+def test_pause_404s_an_unknown_id_and_409s_a_revoked_member(accounts):
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        revoked = _create(client, headers).json()
+        assert client.delete(f"{MEMBERS}/{revoked['id']}", headers=headers).status_code == 204
+
+        assert _set_pause(client, headers, str(uuid.uuid4()), True).status_code == 404
+        refused = _set_pause(client, headers, revoked["id"], True)
+        assert refused.status_code == 409
+        assert refused.json() == {"detail": "fleet member is revoked"}
+        assert client.portal.call(_row, revoked["id"])["paused"] is False
+
+
+def test_in_none_mode_pause_refuses_a_foreign_origin_and_accepts_the_allowed_one(none_mode):
+    evil = {"Origin": "https://evil.example"}
+    with TestClient(app, base_url=ORIGIN) as client:
+        member = _create(client, {"Origin": ORIGIN}).json()
+        assert _set_pause(client, evil, member["id"], True).status_code == 403
+        assert client.portal.call(_row, member["id"])["paused"] is False
+        assert _set_pause(client, {"Origin": ORIGIN}, member["id"], True).status_code == 204
+        assert client.portal.call(_row, member["id"])["paused"] is True
+
+
+def test_only_an_administrator_pauses_a_member(accounts):
+    _account(accounts, "member@example.com")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        member = _create(client, headers).json()
+        client.cookies.clear()
+        user_headers = _sign_in(client, "member@example.com")
+        assert _set_pause(client, user_headers, member["id"], True).status_code == 403
+        assert client.portal.call(_row, member["id"])["paused"] is False
+
+
+async def _events(action: str) -> list[dict]:
+    return await audit.search(action=action)
+
+
+def test_a_pause_writes_one_event_per_change_and_names_only_the_member(accounts):
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        member = _create(client, headers).json()
+        # Already unpaused: setting false again changes nothing, so it is no event.
+        assert _set_pause(client, headers, member["id"], False).status_code == 204
+        assert _set_pause(client, headers, member["id"], True).status_code == 204
+        assert _set_pause(client, headers, member["id"], True).status_code == 204
+        assert _set_pause(client, headers, member["id"], False).status_code == 204
+        paused = client.portal.call(_events, "fleet.member_paused")
+        resumed = client.portal.call(_events, "fleet.member_resumed")
+    assert [row["object_ids"] for row in paused] == [[member["id"]]]
+    assert [row["object_ids"] for row in resumed] == [[member["id"]]]
