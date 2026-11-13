@@ -88,16 +88,21 @@ expect_profile() {
 # absent (text that must not appear), mode (contributor|selfhost; default
 # contributor without a working NVIDIA GPU, selfhost with one), profile
 # (POTOCOLOM_PROFILE), groups (what id -nG prints), render (readable|unreadable
-# for a fake /dev/dri/renderD128).
+# for a fake /dev/dri/renderD128), deploy_docker (yes adds deploy/docker, which
+# only a source checkout has), in_verdict (yes matches expected and absent only
+# in the text after the Verdict heading).
 expect_preflight_gpu() {
-	local name="$1" expected="$2" vendor=0x10de kfd=absent topology="" id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no profile="" groups="video render" render=readable public_url=""
-	local slot="0000:01:00.0" output code kfd_path option tool node=0 value
+	local name="$1" expected="$2" vendor=0x10de kfd=absent topology="" id=ubuntu id_like="" nvidia=fail docker=ok toolkit=none rc=any absent="" mode="" crlf=no profile="" groups="video render" render=readable public_url="" deploy_docker=no in_verdict=no
+	local slot="0000:01:00.0" output code kfd_path option tool node=0 value scope
 	shift 2
 	for option in "$@"; do
 		local "$option"
 	done
 	new_case "$name"
 	copy_repo
+	if [[ "$deploy_docker" == yes ]]; then
+		mkdir -p "$case_dir/repo/deploy/docker"
+	fi
 	if [[ -n "$public_url" ]]; then
 		printf 'PUBLIC_URL=%s\n' "$public_url" >>"$case_dir/repo/deploy/compose/.env"
 	fi
@@ -167,7 +172,9 @@ EOF
 		POTOCOLOM_PCI_DEVICES="$case_dir/pci" POTOCOLOM_PORT=9 TMPDIR="$case_dir" PATH="$case_dir/bin" \
 		bash "$case_dir/repo/scripts/preflight.sh" "${args[@]}" 2>&1)"
 	code=$?
-	if [[ "$output" == *"$expected"* && ( -z "$absent" || "$output" != *"$absent"* ) && ( "$rc" == any || "$code" -eq "$rc" ) ]]; then
+	scope="$output"
+	if [[ "$in_verdict" == yes ]]; then scope="${output#*Verdict}"; fi
+	if [[ "$scope" == *"$expected"* && ( -z "$absent" || "$scope" != *"$absent"* ) && ( "$rc" == any || "$code" -eq "$rc" ) ]]; then
 		printf 'ok %s\n' "$name"
 	else
 		fail_case "$name" "exit=$code\n$output"
@@ -274,6 +281,12 @@ expect_preflight_gpu contributor-toolkit-missing-warns 'warn NVIDIA Container To
 expect_preflight_gpu toolkit-cli-passthrough-fails 'toolkit installed but passthrough is broken' vendor=0x8086 nvidia=ok docker=fail toolkit=cli rc=1
 expect_preflight_gpu selfhost-loopback-public-url 'the studio only works from this machine' nvidia=ok toolkit=ctk mode=selfhost public_url=http://localhost:8080 rc=0
 expect_preflight_gpu contributor-skips-loopback-public-url 'Host ready for make init.' mode=contributor public_url=http://localhost:8080 absent='the studio only works from this machine' rc=0
+# A release install has no deploy/docker and must not be sent to a script the
+# bundle does not ship (#669). A source checkout keeps the script name.
+expect_preflight_gpu release-smoke-hint-clones-repo 'clone' mode=selfhost in_verdict=yes absent='scripts/compose-smoke.sh'
+expect_preflight_gpu source-smoke-hint-names-script 'scripts/compose-smoke.sh' mode=selfhost deploy_docker=yes in_verdict=yes
+# The no-compute-GPU note is outside the Verdict, so check the whole output.
+expect_preflight_gpu release-no-gpu-hint-clones-repo 'clone' vendor=0x8086 mode=selfhost absent='scripts/compose-smoke.sh'
 
 expect_toolchain toolchain-old-node v20.0.0 true 'Node.js 24+ is required' 1
 expect_toolchain toolchain-missing-npm v24.0.0 false 'npm not installed' 1
