@@ -704,7 +704,8 @@ installation has. There is no retention policy and nothing is copied off the
 machine: the backup is the directory you named.
 
 `restore.sh` restores into a new, empty project. It refuses a project that
-already has a `pgdata` or `assets` volume, then starts PostgreSQL alone,
+already has any volume the compose file declares (for example `pgdata`,
+`assets`, `models` or `hf-cache`), then starts PostgreSQL alone,
 restores the dump, unpacks `assets.tar` into the new `assets` volume, and
 starts the stack with the backup's env file, which carries `AUTH_MODE`,
 `ROOT_KEYS` and every other setting. The target project is
