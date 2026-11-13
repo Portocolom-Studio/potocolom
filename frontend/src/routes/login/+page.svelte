@@ -42,6 +42,7 @@
 	let rememberMe = $state(false);
 	let code = $state('');
 	let error = $state('');
+	let configFailed = $state(false);
 	let loadingConfig = $state(!landing);
 	let submitting = $state(false);
 	let challengeAttempts = $state(0);
@@ -65,17 +66,24 @@
 		tab = initialAuthTab(page.url.search, Boolean(waitlistEndpoint), landing);
 		if (landing) return;
 		view = initialAuthView(page.url.search);
+		await loadConfig();
+	});
+
+	async function loadConfig() {
+		loadingConfig = true;
+		configFailed = false;
+		error = '';
 		try {
 			const response = await apiFetch('/api/v1/config');
 			if (!response.ok) throw new Error('config failed');
 			const config = (await response.json()) as { auth_methods?: string[] };
 			authMethods = config.auth_methods ?? [];
 		} catch {
-			error = t('auth.error.config');
+			configFailed = true;
 		} finally {
 			loadingConfig = false;
 		}
-	});
+	}
 
 	async function submitLogin(event: SubmitEvent) {
 		event.preventDefault();
@@ -106,6 +114,8 @@
 				}
 				const parsed = await parseAuthError(response);
 				error = messageFor(parsed);
+			} catch {
+				error = t('auth.error.generic');
 			} finally {
 				submitting = false;
 			}
@@ -145,6 +155,8 @@
 					return;
 				}
 				error = messageFor(parsed);
+			} catch {
+				error = t('auth.error.generic');
 			} finally {
 				submitting = false;
 			}
@@ -336,6 +348,16 @@
 							{/if}
 						</div>
 					{/if}
+				</Card.Content>
+			</Card.Root>
+		{:else if configFailed}
+			<Card.Root>
+				<Card.Header>
+					<h1 data-slot="card-title" class="text-base font-medium">{t('auth.login.title')}</h1>
+				</Card.Header>
+				<Card.Content class="flex flex-col gap-4">
+					<p class="text-destructive text-sm" role="alert">{t('auth.error.config')}</p>
+					<Button type="button" onclick={loadConfig}>{t('shared.retry')}</Button>
 				</Card.Content>
 			</Card.Root>
 		{:else}

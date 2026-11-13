@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -27,6 +27,9 @@ const adminUrl =
 const WAIT_MS = 15000;
 const EMAIL = 'admin@example.com';
 const PASSWORD = 'a real password for the sign-in test 12345';
+const messages = JSON.parse(
+	await readFile(new URL('../src/lib/i18n/en.json', import.meta.url), 'utf8')
+);
 
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
@@ -209,7 +212,15 @@ async function stopApi(api) {
 	if (!exited) api.kill('SIGKILL');
 }
 
-test('a real browser signs in on the built /login and the next unsafe request carries the CSRF header', async () => {
+async function launchBrowser() {
+	return puppeteer.launch({
+		executablePath: await chromeExecutable(),
+		headless: true,
+		args: ['--no-sandbox', '--disable-gpu']
+	});
+}
+
+async function startApi() {
 	// A killed run may have left a database of the planned name behind, so drop
 	// it with FORCE before creating today's; the suffix keeps concurrent runs
 	// (one per self-hosted runner) from tripping over each other.
@@ -222,6 +233,10 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 	let token;
 	let publicUrl;
 	const apiLog = [];
+	const stop = async () => {
+		await stopApi(api);
+		await runPython(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`, adminUrl);
+	};
 	try {
 		// freePort() closes its probe socket before uvicorn binds, and on a
 		// shared runner another job can grab the port in between, which kills
@@ -260,7 +275,17 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 				await stopApi(api);
 			}
 		}
+	} catch (error) {
+		await stop();
+		throw error;
+	}
+	return { publicUrl, token, stop };
+}
 
+test('a real browser signs in on the built /login and the next unsafe request carries the CSRF header', async () => {
+	const server = await startApi();
+	try {
+		const { publicUrl, token } = server;
 		const setup = await fetch(`${publicUrl}/api/v1/auth/setup`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -268,11 +293,7 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 		});
 		assert.equal(setup.status, 204, `setup claim answered ${setup.status}`);
 
-		const browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-gpu']
-		});
+		const browser = await launchBrowser();
 		try {
 			const page = await newStudioPage(browser);
 			page.setDefaultTimeout(WAIT_MS);
@@ -512,7 +533,200 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 			await browser.close();
 		}
 	} finally {
-		await stopApi(api);
-		await runPython(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`, adminUrl);
+		await server.stop();
+	}
+});
+
+test('a failed sign-in options request shows the config error, and Retry asks again', async () => {
+	const server = await startApi();
+	try {
+		const browser = await launchBrowser();
+		try {
+			const page = await newStudioPage(browser);
+			page.setDefaultTimeout(WAIT_MS);
+			await page.setRequestInterception(true);
+			let configRequests = 0;
+			page.on('request', (request) => {
+				if (request.method() === 'GET' && new URL(request.url()).pathname === '/api/v1/config') {
+					configRequests += 1;
+					// The first attempt fails at the network level; Retry gets through.
+					if (configRequests === 1) return request.abort('failed');
+				}
+				return request.continue();
+			});
+			await page.goto(`${server.publicUrl}/login`, { waitUntil: 'networkidle0' });
+			const configError = messages['auth.error.config'];
+			const noMethods = messages['auth.login.no_methods'];
+			await page.waitForFunction(
+				(texts) => texts.some((text) => document.body.textContent.includes(text)),
+				{},
+				[configError, noMethods]
+			);
+			const alert = await page.evaluate(
+				() => document.querySelector('[role="alert"]')?.textContent ?? ''
+			);
+			assert.ok(alert.includes(configError), 'a failed config request must show the config error');
+			assert.ok(
+				!(await page.evaluate(() => document.body.textContent)).includes(noMethods),
+				'a failed config request must not claim that no sign-in methods are configured'
+			);
+
+			await clickButtonText(page, messages['shared.retry']);
+			await page.waitForSelector('#login-email');
+			assert.equal(configRequests, 2, 'Retry must repeat the config request');
+		} finally {
+			await browser.close();
+		}
+	} finally {
+		await server.stop();
+	}
+});
+
+test('a sign-in request that fails at the network level shows the generic error and frees the button', async () => {
+	const server = await startApi();
+	try {
+		const browser = await launchBrowser();
+		try {
+			const page = await newStudioPage(browser);
+			page.setDefaultTimeout(WAIT_MS);
+			await page.setRequestInterception(true);
+			let failLogin;
+			const loginFailed = new Promise((resolveFailed) => (failLogin = resolveFailed));
+			page.on('request', (request) => {
+				if (
+					request.method() === 'POST' &&
+					new URL(request.url()).pathname === '/api/v1/auth/login'
+				) {
+					failLogin();
+					return request.abort('failed');
+				}
+				return request.continue();
+			});
+			await page.goto(`${server.publicUrl}/login`, { waitUntil: 'networkidle0' });
+			await page.waitForSelector('#login-email');
+			await page.type('#login-email', EMAIL);
+			await page.type('#login-password', PASSWORD);
+			await page.click('button[type="submit"]');
+			await loginFailed;
+			await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
+			const alert = await page.evaluate(
+				() => document.querySelector('[role="alert"]')?.textContent.trim() ?? ''
+			);
+			assert.equal(
+				alert,
+				messages['auth.error.generic'],
+				'a network failure must show the generic sign-in error'
+			);
+			assert.equal(
+				await page.$eval('button[type="submit"]', (button) => button.disabled),
+				false,
+				'the sign-in button must be enabled again after a network failure'
+			);
+			assert.equal(new URL(page.url()).pathname, '/login');
+		} finally {
+			await browser.close();
+		}
+	} finally {
+		await server.stop();
+	}
+});
+
+test('a second-factor request that fails at the network level shows the generic error and frees the button', async () => {
+	const server = await startApi();
+	try {
+		const browser = await launchBrowser();
+		try {
+			const page = await newStudioPage(browser);
+			page.setDefaultTimeout(WAIT_MS);
+			await page.setRequestInterception(true);
+			let failChallenge;
+			const challengeFailed = new Promise((resolveFailed) => (failChallenge = resolveFailed));
+			page.on('request', (request) => {
+				const { pathname } = new URL(request.url());
+				if (request.method() === 'POST' && pathname === '/api/v1/auth/login') {
+					// Answer the password step as an account that has a second factor.
+					return request.respond({
+						status: 200,
+						contentType: 'application/json',
+						body: JSON.stringify({ totp_required: true })
+					});
+				}
+				if (request.method() === 'POST' && pathname === '/api/v1/auth/totp') {
+					failChallenge();
+					return request.abort('failed');
+				}
+				return request.continue();
+			});
+			await page.goto(`${server.publicUrl}/login`, { waitUntil: 'networkidle0' });
+			await page.waitForSelector('#login-email');
+			await page.type('#login-email', EMAIL);
+			await page.type('#login-password', PASSWORD);
+			await page.click('button[type="submit"]');
+			await page.waitForSelector('#totp-code');
+			await page.type('#totp-code', '123456');
+			await page.click('button[type="submit"]');
+			await challengeFailed;
+			await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
+			const alert = await page.evaluate(
+				() => document.querySelector('[role="alert"]')?.textContent.trim() ?? ''
+			);
+			assert.equal(
+				alert,
+				messages['auth.error.generic'],
+				'a network failure must show the generic error on the second-factor form'
+			);
+			assert.ok(await page.$('#totp-code'), 'the second-factor form must stay on screen');
+		} finally {
+			await browser.close();
+		}
+	} finally {
+		await server.stop();
+	}
+});
+
+test('a join request that fails at the network level shows the generic error and frees the button', async () => {
+	const server = await startApi();
+	try {
+		const browser = await launchBrowser();
+		try {
+			const page = await newStudioPage(browser);
+			page.setDefaultTimeout(WAIT_MS);
+			await page.setRequestInterception(true);
+			let failJoin;
+			const joinFailed = new Promise((resolveFailed) => (failJoin = resolveFailed));
+			page.on('request', (request) => {
+				if (
+					request.method() === 'POST' &&
+					new URL(request.url()).pathname === '/api/v1/auth/register'
+				) {
+					failJoin();
+					return request.abort('failed');
+				}
+				return request.continue();
+			});
+			// The request is aborted before the server sees the token, so no real invitation is needed.
+			await page.goto(`${server.publicUrl}/join#network-failure-check`, {
+				waitUntil: 'networkidle0'
+			});
+			await page.waitForSelector('#join-password');
+			await page.type('#join-password', PASSWORD);
+			await page.type('#join-confirm', PASSWORD);
+			await page.click('button[type="submit"]');
+			await joinFailed;
+			await page.waitForFunction(() => !document.querySelector('button[type="submit"]').disabled);
+			const alert = await page.evaluate(
+				() => document.querySelector('[role="alert"]')?.textContent.trim() ?? ''
+			);
+			assert.equal(
+				alert,
+				messages['auth.error.generic'],
+				'a network failure must show the generic error on the join form'
+			);
+			assert.equal(new URL(page.url()).pathname, '/join');
+		} finally {
+			await browser.close();
+		}
+	} finally {
+		await server.stop();
 	}
 });
