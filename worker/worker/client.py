@@ -1552,12 +1552,14 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     await _serve_protocol5(ws, settings, manifests, engine, store, store_supported)
 
 
-def fleet_connect(allow_insecure: bool):
+def fleet_connect(allow_insecure: bool, origin: str | None = None):
     """websockets.connect with the fleet URL policy applied to redirect targets.
 
     The client follows a redirect and sends the same headers again, so a
     permitted address that answers with a redirect to a remote plain ws:// host
-    would carry the fleet token there in clear text.
+    would carry the fleet token there in clear text. With origin set (a worker
+    that joined), a redirect off that origin is refused too: the credential
+    belongs to one installation.
     """
 
     class Connect(websockets.connect):
@@ -1565,6 +1567,9 @@ def fleet_connect(allow_insecure: bool):
             target = super().process_redirect(exc)
             if isinstance(target, str):
                 error = fleet_url_error(target, allow_insecure)
+                if error is None and origin is not None and _fleet_origin(target) != origin:
+                    error = (f"the fleet socket redirected to {_fleet_origin(target)}, but this "
+                             f"worker joined {origin}; not following it")
                 if error is not None:
                     return SecurityError(error)
             return target
@@ -1749,7 +1754,9 @@ async def run() -> None:
         store = ModelStore(manifests, engine, settings.models_dir)
         await store.scan()
     delay = BACKOFF_INITIAL
-    connect = fleet_connect(settings.allow_insecure_fleet)
+    connect = fleet_connect(
+        settings.allow_insecure_fleet,
+        origin=_fleet_origin(settings.api_url) if credential_path is not None else None)
     try:
         while True:
             removed = False

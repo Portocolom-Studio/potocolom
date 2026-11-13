@@ -15,6 +15,7 @@ from worker.client import (
     BACKOFF_INITIAL,
     BACKOFF_JITTER,
     FLEET_STATE_LOCK,
+    fleet_connect,
     run,
 )
 from worker.engine import SimulatedEngine
@@ -473,3 +474,64 @@ def test_a_close_with_an_outage_or_registration_code_keeps_the_normal_backoff(
 
     assert _normal_backoff(waits[0])
     assert json.loads((tmp_path / STATE_FILE).read_text())["credential"] == CREDENTIAL
+
+
+def test_a_joined_worker_follows_no_redirect_off_its_origin():
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus, SecurityError
+    from websockets.http11 import Response
+
+    def redirect_to(location):
+        return InvalidStatus(Response(302, "Found", Headers(Location=location)))
+
+    connector = fleet_connect(False, origin="https://studio.example.com")(
+        "wss://studio.example.com/api/v1/fleet")
+    refused = connector.process_redirect(redirect_to("wss://other.example.com/api/v1/fleet"))
+    assert isinstance(refused, SecurityError)
+    assert "other.example.com" in str(refused)
+    assert (connector.process_redirect(redirect_to("/api/v1/fleet/"))
+            == "wss://studio.example.com/api/v1/fleet/")
+
+
+def test_a_saved_credential_is_not_sent_to_a_redirect_target(monkeypatch, tmp_path):
+    received = []
+    waits = []
+    monkeypatch.setattr(
+        "worker.client.build_runtime",
+        lambda _settings: ([SIMULATED_MANIFEST], SimulatedEngine(0.01)))
+    _stop_at_the_reconnect_wait(monkeypatch, waits)
+
+    async def scenario():
+        async def other_installation(reader, writer):
+            received.append(await reader.readuntil(b"\r\n\r\n"))
+            writer.close()
+
+        other = await asyncio.start_server(other_installation, "127.0.0.1", 0)
+        other_port = other.sockets[0].getsockname()[1]
+
+        async def redirecting(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            # Loopback, so the plain ws:// rule allows it: only the origin differs.
+            writer.write(f"HTTP/1.1 302 Found\r\nLocation: ws://127.0.0.1:{other_port}"
+                         "/api/v1/fleet\r\nContent-Length: 0\r\n\r\n".encode())
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(redirecting, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        _saved(tmp_path, origin=f"http://127.0.0.1:{port}")
+        settings = Settings(api_url=f"ws://127.0.0.1:{port}/api/v1/fleet",
+                            state_dir=str(tmp_path))
+        monkeypatch.setattr("worker.client.get_settings", lambda: settings)
+        try:
+            with pytest.raises(StopReconnect):
+                await run()
+        finally:
+            for each in (server, other):
+                each.close()
+                await each.wait_closed()
+
+    asyncio.run(scenario())
+    assert waits, "the refused redirect ends in the normal reconnect wait"
+    assert all(CREDENTIAL.encode() not in request for request in received)
+    assert received == []
