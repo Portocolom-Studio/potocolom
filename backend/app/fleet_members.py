@@ -22,6 +22,7 @@ from app import audit, auth_mode, db, realtime, sessions
 from app.auth import current_principal, origin_listed, require_role
 from app.manifests import StorableStr
 from app.rate_limit import charge_address
+from app.settings import get_settings
 from app.tables import FleetMember, User
 
 logger = logging.getLogger("potocolom.fleet_members")
@@ -32,6 +33,7 @@ CREDENTIAL_PREFIX = "ptc_fleet_"
 INVALID_JOIN = "invalid or expired join token"
 MAX_BASE_URL = 255
 ENROLL_BUCKET = "fleet-enroll"
+WORKER_IMAGE = "ghcr.io/portocolom-studio/potocolom-worker"
 # A last-seen write that takes longer than this is dropped. Its callers are a
 # registration and a socket's cleanup, which must not wait on the database.
 LAST_SEEN_TIMEOUT_SECONDS = 2.0
@@ -89,6 +91,8 @@ async def create_member(
         "device": body.device,
         "join_token": token,
         "expires_at": expires_at.isoformat(),
+        # The same tag and device suffix deploy/compose/compose.yml gives its workers.
+        "worker_image": f"{WORKER_IMAGE}:{get_settings().potocolom_version}-{body.device}",
     }
 
 

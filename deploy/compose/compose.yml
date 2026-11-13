@@ -16,6 +16,12 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
+      # Baked into the image as POTOCOLOM_VERSION, so the API names the worker
+      # image of its own tag for a GPU on another machine (docs/api.md "Fleet
+      # members"). Not set in environment below: that would replace the tag a
+      # release image carries with this default.
+      args:
+        POTOCOLOM_VERSION: ${POTOCOLOM_VERSION:-dev}
     ports:
       - "8080:8080"
     environment:
