@@ -713,6 +713,7 @@
 	"app.admin.fleet_address_invalid": "Escribe una dirección completa, por ejemplo http://192.168.1.20:8080.",
 	"app.admin.fleet_address_loopback": "Eso es localhost otra vez. Escribe la dirección que usan otros equipos para llegar a este.",
 	"app.admin.fleet_address_public_http": "Una dirección pública necesita https. Abre el estudio con una dirección https://.",
+	"app.admin.fleet_replace_note": "La primera línea elimina el contenedor de worker llamado potocolom-worker si esta máquina ya ejecuta uno, para que una máquina añadida de nuevo empiece desde cero.",
 	"app.admin.fleet_insecure_notice": "Esta conexión no está cifrada. Úsala solo en una red de confianza.",
 	"app.admin.fleet_source_build_notice": "Esta instalación se ejecuta desde el código fuente, así que la imagen del comando solo existe en este equipo. Compila primero la imagen del worker en el otro equipo, o instala una versión publicada.",
 	"app.admin.fleet_command_label": "Comando para ejecutar en el equipo",

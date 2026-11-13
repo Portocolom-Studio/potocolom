@@ -392,6 +392,9 @@ test('fleet tab lists members, pauses, adds a GPU, connects and removes it', asy
 				)
 		);
 		assert.deepEqual(deletes, ['m-b']);
+		await page.waitForFunction(
+			() => document.activeElement?.getAttribute('data-testid') === 'admin-fleet-add'
+		);
 	} finally {
 		if (browser) await browser.close();
 		await new Promise((done) => server.close(done));

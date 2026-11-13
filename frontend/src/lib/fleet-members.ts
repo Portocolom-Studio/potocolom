@@ -95,6 +95,7 @@ export function fleetAddress(origin: string): FleetAddress {
 
 export function workerCommand(input: {
 	device: FleetDevice;
+	memberId: string;
 	wsUrl: string;
 	token: string;
 	image: string;
@@ -106,6 +107,10 @@ export function workerCommand(input: {
 		input.device === 'cuda'
 			? ['--gpus all']
 			: ['--device /dev/kfd', '--device /dev/dri', '--group-add video'];
+	// The state volume is named for the member: a machine added again after a
+	// removal must not start from the old, refused credential. The container
+	// keeps one name, so a worker from an earlier join is removed first.
+	const state = `potocolom-worker-state-${input.memberId.slice(0, 8)}`;
 	const lines = [
 		'docker run -d --name potocolom-worker --restart unless-stopped',
 		...gpu,
@@ -115,12 +120,13 @@ export function workerCommand(input: {
 		'-e STATE_DIR=/state',
 		'-e MODELS_DIR=/models',
 		...(input.insecure ? ['-e ALLOW_INSECURE_FLEET=true'] : []),
-		'-v potocolom-worker-state:/state',
+		`-v ${state}:/state`,
 		'-v potocolom-models:/models',
 		'-v potocolom-hf-cache:/root/.cache/huggingface',
 		input.image
 	];
-	return lines.map((line, index) => (index === 0 ? line : `  ${line}`)).join(' \\\n');
+	const run = lines.map((line, index) => (index === 0 ? line : `  ${line}`)).join(' \\\n');
+	return `docker rm -f potocolom-worker 2>/dev/null\n${run}`;
 }
 
 // A source build tags its images dev, and they exist only on the machine that

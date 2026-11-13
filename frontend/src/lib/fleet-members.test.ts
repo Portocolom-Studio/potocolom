@@ -155,12 +155,14 @@ test('the command for NVIDIA uses the GPU flag and the state, models and cache v
 	assert.equal(
 		workerCommand({
 			device: 'cuda',
+			memberId: '3f2a9c1e-7b40-4d8e-9a51-0c6e2f1b8d77',
 			wsUrl: 'wss://studio.example.com/api/v1/fleet',
 			token: 'tok-123',
 			image: 'ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-cuda',
 			insecure: false
 		}),
 		[
+			'docker rm -f potocolom-worker 2>/dev/null',
 			'docker run -d --name potocolom-worker --restart unless-stopped \\',
 			'  --gpus all \\',
 			'  -e DEVICE=cuda \\',
@@ -168,7 +170,7 @@ test('the command for NVIDIA uses the GPU flag and the state, models and cache v
 			'  -e JOIN_TOKEN=tok-123 \\',
 			'  -e STATE_DIR=/state \\',
 			'  -e MODELS_DIR=/models \\',
-			'  -v potocolom-worker-state:/state \\',
+			'  -v potocolom-worker-state-3f2a9c1e:/state \\',
 			'  -v potocolom-models:/models \\',
 			'  -v potocolom-hf-cache:/root/.cache/huggingface \\',
 			'  ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-cuda'
@@ -180,12 +182,14 @@ test('the command for AMD passes the ROCm devices and the video group', () => {
 	assert.equal(
 		workerCommand({
 			device: 'rocm',
+			memberId: 'a07b11d2-0000-4000-8000-000000000001',
 			wsUrl: 'ws://192.168.1.20:8080/api/v1/fleet',
 			token: 'tok-456',
 			image: 'ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-rocm',
 			insecure: true
 		}),
 		[
+			'docker rm -f potocolom-worker 2>/dev/null',
 			'docker run -d --name potocolom-worker --restart unless-stopped \\',
 			'  --device /dev/kfd \\',
 			'  --device /dev/dri \\',
@@ -196,7 +200,7 @@ test('the command for AMD passes the ROCm devices and the video group', () => {
 			'  -e STATE_DIR=/state \\',
 			'  -e MODELS_DIR=/models \\',
 			'  -e ALLOW_INSECURE_FLEET=true \\',
-			'  -v potocolom-worker-state:/state \\',
+			'  -v potocolom-worker-state-a07b11d2:/state \\',
 			'  -v potocolom-models:/models \\',
 			'  -v potocolom-hf-cache:/root/.cache/huggingface \\',
 			'  ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-rocm'
@@ -207,6 +211,7 @@ test('the command for AMD passes the ROCm devices and the video group', () => {
 test('the insecure opt-in appears only when the address is insecure', () => {
 	const secure = workerCommand({
 		device: 'cuda',
+		memberId: 'm1',
 		wsUrl: 'wss://studio.example.com/api/v1/fleet',
 		token: 't',
 		image: 'img',
@@ -215,12 +220,31 @@ test('the insecure opt-in appears only when the address is insecure', () => {
 	assert.equal(secure.includes('ALLOW_INSECURE_FLEET'), false);
 	const insecure = workerCommand({
 		device: 'cuda',
+		memberId: 'm1',
 		wsUrl: 'ws://192.168.1.20:8080/api/v1/fleet',
 		token: 't',
 		image: 'img',
 		insecure: true
 	});
 	assert.equal(insecure.includes('-e ALLOW_INSECURE_FLEET=true'), true);
+});
+
+test('a machine added again gets a fresh state volume, so an old credential is never reused', () => {
+	const command = (memberId: string) =>
+		workerCommand({
+			device: 'cuda',
+			memberId,
+			wsUrl: 'wss://s/api/v1/fleet',
+			token: 't',
+			image: 'img',
+			insecure: false
+		});
+	const first = command('11111111-0000-4000-8000-000000000000');
+	const again = command('22222222-0000-4000-8000-000000000000');
+	assert.match(first, /-v potocolom-worker-state-11111111:\/state/);
+	assert.match(again, /-v potocolom-worker-state-22222222:\/state/);
+	// The container keeps one name, so the old one is removed before the new one runs.
+	assert.equal(again.split('\n')[0], 'docker rm -f potocolom-worker 2>/dev/null');
 });
 
 test('time left counts down in minutes and seconds and never goes negative', () => {

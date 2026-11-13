@@ -713,6 +713,7 @@
 	"app.admin.fleet_address_invalid": "Enter a full address, for example http://192.168.1.20:8080.",
 	"app.admin.fleet_address_loopback": "That is localhost again. Enter the address that other machines use to reach this computer.",
 	"app.admin.fleet_address_public_http": "A public address needs https. Open the studio at an https:// address.",
+	"app.admin.fleet_replace_note": "The first line removes a worker container named potocolom-worker if this machine already runs one, so a machine added again starts clean.",
 	"app.admin.fleet_insecure_notice": "This connection is not encrypted. Use it only on a network you trust.",
 	"app.admin.fleet_source_build_notice": "This install runs from source, so the image in the command exists only on this computer. Build the worker image on the other machine first, or install a release.",
 	"app.admin.fleet_command_label": "Command to run on the machine",

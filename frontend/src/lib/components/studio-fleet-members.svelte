@@ -59,6 +59,10 @@
 	let rowError = $state<Record<string, string>>({});
 
 	let addOpen = $state(false);
+	// Counts openings of the Add dialog, so a create answer that arrives after the
+	// dialog was closed and opened again does not fill the new form.
+	let addOpening = 0;
+	let addButton = $state<HTMLElement | null>(null);
 	let name = $state('');
 	let device = $state<FleetDevice>('cuda');
 	let lanOrigin = $state('');
@@ -120,11 +124,16 @@
 					? modelsResponse
 					: null;
 			if (failed) {
-				loadError = await adminApiError(failed);
+				const message = await adminApiError(failed);
+				if (alive && version === refreshVersion) loadError = message;
 				return;
 			}
-			members = (await membersResponse.json()) as FleetMember[];
-			builtIn = builtInWorkers((await modelsResponse.json()) as { worker_id: string }[]);
+			const listed = (await membersResponse.json()) as FleetMember[];
+			const workers = (await modelsResponse.json()) as { worker_id: string }[];
+			// Checked again: a newer refresh may have started while the bodies were read.
+			if (!alive || version !== refreshVersion) return;
+			members = listed;
+			builtIn = builtInWorkers(workers);
 			now = Date.now();
 			loadError = '';
 		} catch {
@@ -208,6 +217,8 @@
 				return;
 			}
 			await refresh();
+			// The row and its Remove button are gone, so focus goes to the next action.
+			addButton?.focus();
 		} catch {
 			closeRemove();
 			rowError[target.id] = t('app.admin.request_failed');
@@ -229,6 +240,7 @@
 
 	function setAddOpen(open: boolean): void {
 		addOpen = open;
+		addOpening += 1;
 		if (!open) resetAdd();
 	}
 
@@ -237,6 +249,7 @@
 		if (!canSubmit || (address.kind !== 'secure' && address.kind !== 'insecure')) return;
 		const chosen = address;
 		const insecure = chosen.kind === 'insecure';
+		const opening = addOpening;
 		submitting = true;
 		formError = '';
 		formRecentAuthHint = false;
@@ -257,7 +270,7 @@
 			const created = (await response.json()) as Created;
 			// The dialog may have been closed while the request was in flight. The
 			// token then has no screen to show on, so it is dropped here.
-			if (addOpen) {
+			if (addOpen && opening === addOpening) {
 				pending = {
 					id: created.id,
 					expiresAt: created.expires_at,
@@ -265,6 +278,7 @@
 					sourceBuild: isSourceBuildImage(created.worker_image),
 					command: workerCommand({
 						device: created.device,
+						memberId: created.id,
 						wsUrl: chosen.wsUrl,
 						token: created.join_token,
 						image: created.worker_image,
@@ -272,7 +286,7 @@
 					})
 				};
 			}
-			name = '';
+			if (opening === addOpening) name = '';
 			await refresh();
 		} catch {
 			formError = t('app.admin.request_failed');
@@ -301,7 +315,7 @@
 			<Card.Title class="text-base">{t('app.admin.fleet_members_title')}</Card.Title>
 			<Card.Description>{t('app.admin.fleet_members_sub')}</Card.Description>
 		</div>
-		<Button data-testid="admin-fleet-add" onclick={() => (addOpen = true)}>
+		<Button bind:ref={addButton} data-testid="admin-fleet-add" onclick={() => setAddOpen(true)}>
 			{t('app.admin.fleet_add')}
 		</Button>
 	</Card.Header>
@@ -507,6 +521,7 @@
 						<p class="text-muted-foreground text-xs" aria-live="polite">{copyHint}</p>
 					</div>
 
+					<p class="text-muted-foreground text-xs">{t('app.admin.fleet_replace_note')}</p>
 					{#if pending.insecure}
 						<p class="text-sm">{t('app.admin.fleet_insecure_notice')}</p>
 					{/if}
