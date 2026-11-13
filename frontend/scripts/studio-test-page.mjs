@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import { TOUR_DONE_KEY } from '../src/lib/studio-tour.ts';
 
 // Every browser check reports the browser side of a failing run. The events of all
@@ -42,8 +43,11 @@ export function recordPageEvents(page, label) {
 // does not print them again at exit.
 export function printPageEvents() {
 	if (pageEvents.length === 0) return;
-	console.error(`browser page events (${pageEvents.length}):`);
-	for (const line of pageEvents) console.error(`  ${line}`);
+	// Synchronous: at process exit Node drops queued writes to a piped stderr, as in CI.
+	writeSync(
+		2,
+		`browser page events (${pageEvents.length}):\n${pageEvents.map((line) => `  ${line}\n`).join('')}`
+	);
 	pageEvents.length = 0;
 }
 
