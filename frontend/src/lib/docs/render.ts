@@ -31,7 +31,7 @@ function plainText(html: string): string {
 export function slugify(text: string): string {
 	return text
 		.normalize('NFKD')
-		.replace(/[^\x00-\x7F]/g, '')
+		.replace(/[\u0080-\uffff]/g, '')
 		.toLowerCase()
 		.replace(/[^a-z0-9\s-]/g, '')
 		.trim()

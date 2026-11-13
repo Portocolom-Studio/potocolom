@@ -254,7 +254,9 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 				break;
 			} catch (error) {
 				if (attempt === 3)
-					throw new Error(`API would not start after 3 attempts\n${apiLog.join('')}`);
+					throw new Error(`API would not start after 3 attempts\n${apiLog.join('')}`, {
+						cause: error
+					});
 				await stopApi(api);
 			}
 		}

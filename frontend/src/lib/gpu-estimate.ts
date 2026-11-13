@@ -39,7 +39,7 @@ export function estimateUpscaleGpuMs(
 	// Measured per-factor numbers from the registry win; factor^2 scaling is
 	// the fallback and is wrong for native-scale models (x4 net serving x2).
 	const measured = model?.estimated_gpu_ms_by_factor?.[String(factor)];
-	let ms: number | null = null;
+	let ms: number;
 	if (measured != null && measured > 0) {
 		ms = measured;
 	} else {

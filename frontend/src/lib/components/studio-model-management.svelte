@@ -614,7 +614,7 @@
 									>{/if}
 							</div>
 							<div class="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-								{#each [...model.capabilities.map( (capability) => capabilityLabel(capability) ), tierLabel(model.tier)] as chip}<span
+								{#each [...model.capabilities.map( (capability) => capabilityLabel(capability) ), tierLabel(model.tier)] as chip, i (i)}<span
 										class="rounded-md border px-2 py-0.5">{chip}</span
 									>{/each}
 								<span class="text-dim self-center"
@@ -761,7 +761,7 @@
 								>
 									{t('app.model_management.failed')}: {model.download.error}
 								</p>{/if}
-							{#each ['install', 'cancel', 'remove'] as action}
+							{#each ['install', 'cancel', 'remove'] as action (action)}
 								{@const message = actionErrors[actionKey(worker.worker_id, model.id, action)]}
 								{#if message}<p role="alert">
 										{t(

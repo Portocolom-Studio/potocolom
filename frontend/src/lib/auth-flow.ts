@@ -86,7 +86,7 @@ export type AuthError = {
 export async function parseAuthError(response: Response): Promise<AuthError> {
 	const retryAfter = response.headers.get('Retry-After');
 	const retryAfterSeconds = retryAfter ? Number.parseInt(retryAfter, 10) : undefined;
-	let detail = '';
+	let detail: string;
 	try {
 		const body = (await response.json()) as { detail?: string };
 		detail = typeof body.detail === 'string' ? body.detail : '';

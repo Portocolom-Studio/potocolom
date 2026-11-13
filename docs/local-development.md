@@ -115,7 +115,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip instal
 # frontend, from frontend/
 npm install
 npm run dev                                      # http://localhost:5173
-npm run lint && npm run check                    # format check and type check
+npm run lint && npm run check                    # Prettier, ESLint, then the type check
 ```
 
 `npm test` from `frontend/` loads `.svelte.ts` modules through
