@@ -133,8 +133,13 @@ def test_an_identifier_is_refused_once_its_ten_are_spent(accounts, waits, monkey
 
 
 @pytest.mark.db
-def test_one_address_queues_however_many_identifiers_it_uses(accounts, waits):
+def test_one_address_queues_however_many_identifiers_it_uses(accounts, waits, monkeypatch):
     spread = 16
+    # Turns are measured from the limiter's clock. On a loaded machine each
+    # login takes long enough for the queue to drain between them, so the burst
+    # never reaches the cap. Held still, only the attempt count moves the turn.
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(rate_limit, "_now", lambda: now)
     with TestClient(app) as client:
         # A different identifier every time, so each of those buckets holds one
         # attempt and owes no wait: every answer below is the address alone.
