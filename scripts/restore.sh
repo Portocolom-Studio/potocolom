@@ -59,23 +59,33 @@ done
 (cd "$BACKUP" && sha256sum --check --strict SHA256SUMS) || die "SHA256SUMS does not match the backup"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/install-lock.sh"
 ENV_FILE="$BACKUP/env"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/deploy/compose/compose.yml}"
 IFS=':' read -r -a FILES <<<"$COMPOSE_FILE"
 [[ -f "${FILES[0]}" ]] || die "${FILES[0]} does not exist"
 
+# A daemon that does not answer would read as "no volume" below, and the
+# cleanup of a failed restore runs down -v on whatever project that was.
+# This check comes before the project lookup, which may call docker compose.
+docker info >/dev/null 2>&1 || die "cannot reach Docker; start the daemon and run this again"
+
 # The same resolution backup.sh and docker compose use: the shell, then the
-# env file, then the directory of the first compose file.
-env_project="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$ENV_FILE" | tail -n 1)"
-dir_project="$(basename "$(dirname "${FILES[0]}")" \
-	| tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
-PROJECT="${COMPOSE_PROJECT_NAME:-${env_project:-$dir_project}}"
+# env file, then the directory of the first compose file. The env file is read
+# with the installer's reader, so every line form Compose accepts gives the
+# same name.
+if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+	PROJECT="$COMPOSE_PROJECT_NAME"
+else
+	env_project="$(install_compose_value "$ENV_FILE" "${FILES[0]}" COMPOSE_PROJECT_NAME)" \
+		|| die "cannot read COMPOSE_PROJECT_NAME from $ENV_FILE; set it in the shell to choose the project"
+	dir_project="$(basename "$(dirname "${FILES[0]}")" \
+		| tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')"
+	PROJECT="${env_project:-$dir_project}"
+fi
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE")
 for file in "${FILES[@]}"; do COMPOSE+=(-f "$file"); done
 
-# A daemon that does not answer would read as "no volume" below, and the
-# cleanup of a failed restore runs down -v on whatever project that was.
-docker info >/dev/null 2>&1 || die "cannot reach Docker; start the daemon and run this again"
 for volume in pgdata assets; do
 	if docker volume inspect "${PROJECT}_${volume}" >/dev/null 2>&1; then
 		die "$PROJECT already has a ${volume} volume; restore into a new, empty project (set COMPOSE_PROJECT_NAME)"

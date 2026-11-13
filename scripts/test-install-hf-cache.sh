@@ -274,7 +274,8 @@ seed_live() {  # CASE_DIR VERSION [EXTRA_ENV_TEXT]
 	local dir="$1/install"
 	mkdir -p "$dir/deploy/compose" "$dir/scripts"
 	cp "$repo/deploy/compose/compose.yml" "$dir/deploy/compose/"
-	cp "$repo/scripts/backup.sh" "$repo/scripts/restore.sh" "$dir/scripts/"
+	# A live release ships install-lock.sh beside them, and both source it.
+	cp "$repo/scripts/backup.sh" "$repo/scripts/restore.sh" "$repo/scripts/install-lock.sh" "$dir/scripts/"
 	sed -e "s/^POTOCOLOM_VERSION=.*/POTOCOLOM_VERSION=$2/" \
 		-e 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=keep-db/' \
 		-e 's/^FLEET_SECRET=.*/FLEET_SECRET=keep-fleet/' \

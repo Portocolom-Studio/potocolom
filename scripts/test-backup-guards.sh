@@ -58,3 +58,74 @@ if [[ "$rc" -eq 0 || "$(cat "$tmp/docker.log")" != info ]]; then
 	exit 1
 fi
 printf 'ok restore-refuses-without-daemon\n'
+
+# Both scripts must pass docker compose -p the name Compose itself reads from
+# the env file, for every line form Compose accepts. The fake docker has no
+# Compose plugin, so the scripts take the no-Docker reader; each run logs the
+# docker argv and the project is read back from that log.
+fake_docker() {
+	local bin="$1"
+	mkdir -p "$bin"
+	cat >"$bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${DOCKER_LOG:?}"
+case "$*" in
+	"compose version" | "volume inspect"*) exit 1 ;;
+esac
+exit 0
+EOF
+	chmod +x "$bin/docker"
+}
+
+project_passed_to_compose() {
+	sed -n 's/^compose -p \(.*\) --env-file .*/\1/p' "$1" | head -n 1
+}
+
+backup_project_for() {
+	local line="$1" dir
+	dir="$(mktemp -d "$tmp/backup-project.XXXXXX")"
+	fake_docker "$dir/bin"
+	printf '%s\n' "$line" >"$dir/env"
+	env -u COMPOSE_PROJECT_NAME PATH="$dir/bin:$PATH" DOCKER_LOG="$dir/docker.log" \
+		ENV_FILE="$dir/env" COMPOSE_FILE="$repo/deploy/compose/compose.yml" \
+		bash "$repo/scripts/backup.sh" "$dir/out" >/dev/null 2>&1
+	project_passed_to_compose "$dir/docker.log"
+}
+
+restore_project_for() {
+	local line="$1" dir backup name
+	dir="$(mktemp -d "$tmp/restore-project.XXXXXX")"
+	backup="$dir/backup"
+	fake_docker "$dir/bin"
+	mkdir -p "$backup"
+	for name in database.dump assets.tar; do printf 'previous\n' >"$backup/$name"; done
+	printf '%s\n' "$line" >"$backup/env"
+	(cd "$backup" && sha256sum database.dump assets.tar env >SHA256SUMS)
+	env -u COMPOSE_PROJECT_NAME PATH="$dir/bin:$PATH" DOCKER_LOG="$dir/docker.log" \
+		COMPOSE_FILE="$repo/deploy/compose/compose.yml" \
+		bash "$repo/scripts/restore.sh" "$backup" >/dev/null 2>&1
+	project_passed_to_compose "$dir/docker.log"
+}
+
+# label | env file line | project Compose uses. The plain line is the control;
+# the directory name fallback is "compose", so every other want differs from it.
+forms=(
+	'plain|COMPOSE_PROJECT_NAME=env-plain|env-plain'
+	'export|export COMPOSE_PROJECT_NAME=env-export|env-export'
+	'indented|  COMPOSE_PROJECT_NAME=env-indented|env-indented'
+	'quoted|COMPOSE_PROJECT_NAME="env-quoted"|env-quoted'
+)
+failed=0
+for form in "${forms[@]}"; do
+	IFS='|' read -r label line want <<<"$form"
+	for script in backup restore; do
+		got="$(${script}_project_for "$line")"
+		if [[ "$got" != "$want" ]]; then
+			printf 'FAIL %s-project-%s: expected %s, docker got %s\n' "$script" "$label" "$want" "$got"
+			failed=1
+			continue
+		fi
+		printf 'ok %s-project-%s\n' "$script" "$label"
+	done
+done
+exit "$failed"
