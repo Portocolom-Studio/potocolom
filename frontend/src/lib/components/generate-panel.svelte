@@ -63,6 +63,8 @@
 		openService,
 		pollWhileWorking,
 		recentPrompts,
+		retryHistory,
+		loadModels,
 		selectGeneration,
 		starredGenerations,
 		studio,
@@ -749,7 +751,7 @@
 		aria-label={panelTitle}
 	>
 		<h1 class="sr-only">{panelTitle}</h1>
-		{#if !studio.modelsLoaded}
+		{#if studio.modelsStatus === 'loading' && studio.models.length === 0}
 			<!-- The parameter column's shape while the models load. -->
 			<div role="status" class="flex flex-col gap-4 p-4">
 				<span class="sr-only">{t('app.models.loading')}</span>
@@ -768,6 +770,11 @@
 					</div>
 				{/each}
 				<Skeleton class="mt-2 h-9 rounded-md" aria-hidden="true" />
+			</div>
+		{:else if studio.modelsStatus === 'error' && studio.models.length === 0}
+			<div role="alert" class="flex flex-col items-start gap-3 p-4">
+				<p class="text-muted-foreground text-sm">{t('app.models.load_error')}</p>
+				<Button variant="outline" size="sm" onclick={loadModels}>{t('shared.retry')}</Button>
 			</div>
 		{:else if worker.online === false || availableModels.length === 0}
 			<div class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
@@ -1507,7 +1514,7 @@
 						</div>
 					{/if}
 				</dl>
-			{:else if !studio.historyLoaded}
+			{:else if studio.historyStatus === 'loading' && studio.history.length === 0}
 				<div
 					role="status"
 					class="relative flex min-h-72 min-w-0 flex-1 items-center justify-center p-6 lg:p-10"
@@ -1517,6 +1524,14 @@
 						class="aspect-square h-full max-h-full max-w-full rounded-xl"
 						aria-hidden="true"
 					/>
+				</div>
+			{:else if studio.historyStatus === 'error' && studio.history.length === 0}
+				<div
+					role="alert"
+					class="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center lg:p-10"
+				>
+					<p class="text-muted-foreground text-sm">{t('app.gen.history_error')}</p>
+					<Button variant="outline" size="sm" onclick={retryHistory}>{t('shared.retry')}</Button>
 				</div>
 			{:else}
 				<div class="flex flex-1 items-center justify-center p-6 text-center lg:p-10">
@@ -1531,7 +1546,7 @@
 				</div>
 			{/if}
 		</div>
-		{#if !studio.historyLoaded || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
+		{#if studio.historyStatus === 'loading' || hasHistoryItems || studio.historyHasMore || studio.historyExtended}
 			<div class="border-border min-w-0 shrink-0 border-t px-4 py-3">
 				<HistoryStrip {shownId} {failureReason} />
 			</div>
