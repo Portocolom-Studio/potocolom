@@ -77,7 +77,7 @@ After the reset, remove `AUTH_MODE=accounts` from `deploy/compose/.env` (or set 
 
 ## Export and delete an account
 
-An account can take everything the install holds about it with `GET /api/v1/account/export`. The export is one JSON file with a link to each image. The image files themselves are not in it.
+An account can take everything the install holds about it with `GET /api/v1/account/export`. The export is one JSON file with a link to each image. The image files themselves are not in it. Each link needs a signed-in session of the account, so download the images before you delete the account.
 
 An account can also ask to be deleted with `DELETE /api/v1/account`. Deleting stops the account at once and destroys nothing for 30 days. An administrator can restore it inside that window with `POST /api/v1/users/{id}/restore`. After that, a sweep purges it.
 

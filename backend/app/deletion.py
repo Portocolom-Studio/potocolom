@@ -17,8 +17,9 @@ from datetime import datetime, timedelta, timezone
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 from starlette.responses import Response, StreamingResponse
 
 from app import audit, db, jobs, sessions
@@ -133,12 +134,12 @@ async def _export_document(user: User) -> AsyncIterator[str]:
         ])
         yield ',"usage":['
         first = True
-        async for event in _owned_rows(session, user, UsageEvent):
+        async for event in _owned_rows(session, user, UsageEvent, UsageEvent.created_at):
             yield ("" if first else ",") + json.dumps(_exported_usage(event))
             first = False
         yield '],"usage_rollups":['
         first = True
-        async for rollup in _owned_rows(session, user, UsageEventRollup):
+        async for rollup in _owned_rows(session, user, UsageEventRollup, UsageEventRollup.bucket_date):
             yield ("" if first else ",") + json.dumps(_exported_rollup(rollup))
             first = False
         yield '],"generations":['
@@ -174,25 +175,26 @@ async def _export_document(user: User) -> AsyncIterator[str]:
 _Row = TypeVar("_Row", UsageEvent, UsageEventRollup)
 
 
-async def _owned_rows(session: AsyncSession, user: User,
-                      model: type[_Row]) -> AsyncIterator[_Row]:
-    """Every row of one table that belongs to the account, paged by id. The
-    account is checked between pages, as generations are."""
-    after: uuid.UUID | None = None
+async def _owned_rows(session: AsyncSession, user: User, model: type[_Row],
+                      when: InstrumentedAttribute) -> AsyncIterator[_Row]:
+    """Every row of one table that belongs to the account, oldest first, paged
+    on (when, id) so each page reads the (user_id, when) index. The account is
+    checked between pages, as generations are."""
+    after: tuple | None = None
     while True:
         if (await session.execute(
                 select(User.state).where(User.id == user.id))).scalar_one_or_none() != "active":
             raise HTTPException(status_code=409, detail="account no longer active")
+        query = select(model).where(model.user_id == user.id)
+        if after is not None:
+            query = query.where(tuple_(when, model.id) > after)
         rows = list((await session.execute(
-            select(model).where(model.user_id == user.id,
-                                *( [model.id > after] if after is not None else [] ))
-            .order_by(model.id).limit(EXPORT_PAGE)
-        )).scalars().all())
+            query.order_by(when, model.id).limit(EXPORT_PAGE))).scalars().all())
         if not rows:
             return
         for row in rows:
             yield row
-        after = rows[-1].id
+        after = (getattr(rows[-1], when.key), rows[-1].id)
 
 
 def _exported_usage(event: UsageEvent) -> dict:

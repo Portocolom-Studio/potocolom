@@ -378,7 +378,7 @@ operators who follow compose do not hit this.
 ## Accounts
 
 An account can take everything this install holds about it with `GET /api/v1/account/export`.
-The export is one JSON file with a link to each image; the image files themselves are not in it.
+The export is one JSON file with a link to each image; the image files themselves are not in it. Each link needs a signed-in session of the account, so download the images before you delete the account.
 An account can also ask to be deleted with `DELETE /api/v1/account`. Deleting stops the account
 immediately and destroys nothing for 30 days: an administrator restores it with
 `POST /api/v1/users/{id}/restore` until the sweep runs. After that the objects, the rows
