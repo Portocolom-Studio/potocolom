@@ -80,6 +80,10 @@ CLOSE_PROTOCOL_VIOLATION = 4000
 CLOSE_UNSUPPORTED_VERSION = 4002
 CLOSE_NO_CAPACITY = 4003
 CLOSE_UNKNOWN_MODEL = 4004
+# RFC 6455 "try again later". A fleet socket whose credential lookup failed is
+# accepted and closed with this, so a worker retries instead of reading the
+# close as its credential having been removed.
+CLOSE_TRY_AGAIN_LATER = 1013
 # An over-cap canvas frame is dropped with the socket kept open, so this
 # travels as a non-terminal error message and never as a close
 # (docs/connection-handling.md).
@@ -103,6 +107,10 @@ CLOSE_TIMEOUT = 2.0
 # delivered (its browser binding expired) or the worker may never report.
 CLOSE_RECEIPT_TIMEOUT = 30.0
 FLEET_TOKEN_HEADER = "x-fleet-token"
+# The worker id an enrolled member is given (fleet_members.py). A shared-secret
+# worker may not use it, so holding the shared secret does not let anyone take
+# a member's id.
+MEMBER_WORKER_ID_PREFIX = "m-"
 # Same 500 ms bar the worker uses in slots_from_frame_ms. Duplicated rather
 # than imported: the two packages have no shared module.
 REALTIME_BAR_MS = 500
@@ -244,18 +252,26 @@ def fleet_token_allowed(ws: WebSocket) -> bool:
             "run scripts/preflight.sh to write deploy/compose/.env"
         )
         return False
-    # Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
-    # matches the stored key verbatim, and the ASGI server passes the name
-    # through with whatever casing the client sent. Any worker spelling this
-    # X-Fleet-Token would otherwise be refused as if it sent nothing.
+    presented = fleet_presented_token(ws)
+    if presented is None:
+        return False
+    return hmac.compare_digest(presented, key.encode("utf-8", "surrogateescape"))
+
+
+def fleet_presented_token(ws: WebSocket) -> bytes | None:
+    """The X-Fleet-Token value the peer sent, or None when it sent none or several.
+
+    Scan raw: header names are case-insensitive per RFC 9110, but Headers.get
+    matches the stored key verbatim, and the ASGI server passes the name
+    through with whatever casing the client sent. Any worker spelling this
+    X-Fleet-Token would otherwise be refused as if it sent nothing.
+    """
     presented = [value for name, value in ws.headers.raw
                  if name.lower() == FLEET_TOKEN_HEADER.encode()]
     # Exactly one, or the answer depends on which duplicate an intermediary
     # happened to put first: correct-then-wrong would authenticate and
     # wrong-then-correct would not.
-    if len(presented) != 1:
-        return False
-    return hmac.compare_digest(presented[0], key.encode("utf-8", "surrogateescape"))
+    return presented[0] if len(presented) == 1 else None
 
 
 class ProtocolError(Exception):
@@ -799,6 +815,9 @@ class Worker:
     # the life of the connection.
     incarnation: uuid.UUID | None = None
     grant_nonce: uuid.UUID | None = None
+    # The enrolled member whose credential admitted this socket. None for the
+    # shared secret, which admits any worker id outside the member prefix.
+    member_id: uuid.UUID | None = None
     capabilities: list[str] = field(default_factory=list)
     region: str = "local"
     owner_epoch: int | None = None
@@ -1821,24 +1840,51 @@ async def _finalize_worker(worker: Worker) -> None:
     jobs.on_worker_lost(worker)
     for _ in owner_errors:
         logger.warning("worker delivery owner failed during disconnect for %s", worker.id)
+    if worker.member_id is not None:
+        from app import fleet_members  # late import; fleet_members imports this module
+        await fleet_members.record_last_seen(worker.member_id)
 
 
 @router.websocket("/api/v1/fleet")
 async def fleet(ws: WebSocket) -> None:
+    from app import fleet_members  # late import; fleet_members imports this module
     if not origin_allowed(ws):
         logger.warning("fleet handshake refused: origin not allowed")
         await ws.close()  # before accept: the handshake fails with HTTP 403
         return
+    member = None
+    credential = ""
     if not fleet_token_allowed(ws):
-        if get_settings().fleet_token_key:
-            logger.warning("fleet handshake refused: invalid token")
+        presented = fleet_presented_token(ws)
+        if (presented is not None and presented.isascii()
+                and presented.startswith(fleet_members.CREDENTIAL_PREFIX.encode())):
+            credential = presented.decode("ascii")
+            try:
+                member = await fleet_members.member_for_credential(credential)
+            except Exception:
+                # The database could not answer, which is an outage and not a
+                # removal. Accepting and closing 1013 tells the worker to retry,
+                # where a 403 would tell it the credential is gone.
+                logger.warning("fleet credential lookup failed; closing 1013")
+                await ws.accept()
+                await ws.close(code=CLOSE_TRY_AGAIN_LATER,
+                               reason="fleet member lookup unavailable")
+                return
+            if member is None:
+                # Not logged with the value: the credential is a bearer secret.
+                logger.warning("fleet handshake refused: credential unknown or revoked")
+                await ws.close()  # before accept: the handshake fails with HTTP 403
+                return
         else:
-            logger.warning(
-                "fleet handshake refused: FLEET_TOKEN_KEY is unset; "
-                "run scripts/preflight.sh to write deploy/compose/.env"
-            )
-        await ws.close()  # before accept: the handshake fails with HTTP 403
-        return
+            if get_settings().fleet_token_key:
+                logger.warning("fleet handshake refused: invalid token")
+            else:
+                logger.warning(
+                    "fleet handshake refused: FLEET_TOKEN_KEY is unset; "
+                    "run scripts/preflight.sh to write deploy/compose/.env"
+                )
+            await ws.close()  # before accept: the handshake fails with HTTP 403
+            return
     await ws.accept()
     try:
         # A fleet socket that never sends hello is otherwise held by this
@@ -1883,7 +1929,8 @@ async def fleet(ws: WebSocket) -> None:
                             and version < 6
                         ),
                         device=hello.get("device"),
-                        memory_mode=hello.get("memory_mode"))
+                        memory_mode=hello.get("memory_mode"),
+                        member_id=member.id if member is not None else None)
         if "realtime_p95_ms" in hello:
             parsed = parse_frame_p95(hello.get("realtime_p95_ms"))
             worker.admission_p95_ms = parsed if parsed is not None else {}
@@ -1941,6 +1988,18 @@ async def fleet(ws: WebSocket) -> None:
         await ws.send_json({"type": "rejected", "reason": "unsupported protocol version",
                             "min_supported_version": MIN_SUPPORTED_VERSION})
         await ws.close(code=CLOSE_UNSUPPORTED_VERSION)
+        return
+    # The id rules run on the hello, so the credential decides which ids a
+    # socket may claim: a member only its own, and a shared-secret worker never
+    # a member's.
+    if member is not None and worker.id != member.worker_id:
+        logger.warning("fleet member %s sent a hello for another worker id", member.id)
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION,
+                       reason="worker id does not match the credential")
+        return
+    if member is None and worker.id.startswith(MEMBER_WORKER_ID_PREFIX):
+        logger.warning("worker id %s is reserved for enrolled members", worker.id)
+        await ws.close(code=CLOSE_PROTOCOL_VIOLATION, reason="worker id is reserved")
         return
     if worker.id in workers:
         # Refused, not replaced: taking over a live id would hand the new
@@ -2033,6 +2092,22 @@ async def fleet(ws: WebSocket) -> None:
     gpu_samples.schedule_worker_identity(worker.id, worker.device, worker.memory_mode)
     peer = ws.client.host if ws.client is not None else "unknown"
     try:
+        if member is not None:
+            # The credential was read before accept, and a revoke since then
+            # found no worker in `workers` to close. Read it again now that this
+            # one is there: a revoke that commits after this answer finds the
+            # worker and closes it. Inside the try, so the cleanup runs.
+            try:
+                live = await fleet_members.member_for_credential(credential)
+            except Exception:
+                logger.warning("fleet credential lookup failed; closing 1013")
+                await ws.close(code=CLOSE_TRY_AGAIN_LATER,
+                               reason="fleet member lookup unavailable")
+                return
+            if live is None:
+                logger.warning("fleet member %s was removed during its handshake", member.id)
+                await ws.close(code=CLOSE_FORBIDDEN, reason="fleet member removed")
+                return
         # The registered message is already out, so a slow store cannot delay
         # registration, and inside the try so a failure still reaches cleanup.
         await audit.record(
@@ -2040,6 +2115,8 @@ async def fleet(ws: WebSocket) -> None:
             object_ids=[worker.id, peer, *worker.models],
             severity="info",
         )
+        if worker.member_id is not None:
+            await fleet_members.record_last_seen(worker.member_id)
         # Inside the try: this awaits a database write, and a failure before
         # the try left the worker in `workers` with no cleanup path, so it kept
         # being advertised until the 90 second reaper noticed.

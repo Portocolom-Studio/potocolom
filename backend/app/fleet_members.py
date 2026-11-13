@@ -5,6 +5,8 @@ spends it once at the enroll route for a credential that is its own. Nothing
 durable holds a token or a credential, only its SHA-256.
 """
 
+import asyncio
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -17,11 +19,12 @@ from sqlalchemy import func, select, update
 from starlette.responses import Response
 
 from app import audit, auth_mode, db, realtime, sessions
-from app.auth import check_origin, current_principal, origin_listed, require_role
+from app.auth import current_principal, origin_listed, require_role
 from app.manifests import StorableStr
 from app.rate_limit import charge_address
 from app.tables import FleetMember, User
 
+logger = logging.getLogger("potocolom.fleet_members")
 JOIN_TTL = timedelta(hours=1)
 CREDENTIAL_PREFIX = "ptc_fleet_"
 # One answer for unknown, spent, expired and revoked, so the route is not an
@@ -29,10 +32,13 @@ CREDENTIAL_PREFIX = "ptc_fleet_"
 INVALID_JOIN = "invalid or expired join token"
 MAX_BASE_URL = 255
 ENROLL_BUCKET = "fleet-enroll"
+# A last-seen write that takes longer than this is dropped. Its callers are a
+# registration and a socket's cleanup, which must not wait on the database.
+LAST_SEEN_TIMEOUT_SECONDS = 2.0
 
 
 def _worker_id(member_id: uuid.UUID) -> str:
-    return f"m-{member_id.hex}"
+    return f"{realtime.MEMBER_WORKER_ID_PREFIX}{member_id.hex}"
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -53,11 +59,10 @@ async def create_member(
     http: Request,
     admin: User = Depends(require_role("admin")),
 ) -> dict:
-    check_origin(http)
     if auth_mode.current() == auth_mode.ACCOUNTS:
         # Creating a member is a credential change, so it needs the same recent
         # sign-in as an administrator invitation. None mode has no session to be
-        # recent: the origin check above is its only guard.
+        # recent: the Origin check every unsafe request gets there is its guard.
         principal = await current_principal(http)
         if not sessions.is_recent(principal.session):
             raise HTTPException(status_code=403, detail="recent authentication required")
@@ -123,11 +128,9 @@ async def list_members(_admin: User = Depends(require_role("admin"))) -> list[di
 @router.delete("/api/v1/admin/fleet/members/{member_id}", status_code=204)
 async def revoke_member(
     member_id: uuid.UUID,
-    http: Request,
     admin: User = Depends(require_role("admin")),
 ) -> Response:
-    """The row stays as the record. Closing a socket it still holds is a later change."""
-    check_origin(http)
+    """The row stays as the record. A live socket of the member is closed here."""
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
@@ -144,7 +147,18 @@ async def revoke_member(
     if not known:
         raise HTTPException(status_code=404, detail="Not Found")
     if revoked is not None:
-        # Only the delete that revoked: a repeat changes nothing to record.
+        # Only the delete that revoked: a repeat changes nothing to record. The
+        # socket close is the same call the reaper makes, and the fleet
+        # handler's cleanup does the rest. Only this process's registry is
+        # looked at, so with several API processes a socket held by another
+        # one stays open; the refusal at the next handshake still holds.
+        worker = realtime.workers.get(_worker_id(member_id))
+        if worker is not None:
+            try:
+                await asyncio.wait_for(realtime.safe_send(worker.ws.close()),
+                                       realtime.CLOSE_TIMEOUT)
+            except TimeoutError:
+                logger.warning("revoked fleet member %s did not close in time", member_id)
         await audit.record("fleet.member_revoked", actor=admin, object_ids=[str(member_id)])
     return Response(status_code=204)
 
@@ -207,6 +221,45 @@ async def enroll(join_token: str, base_url: str) -> tuple[uuid.UUID, str]:
     if spent is None:
         raise HTTPException(status_code=403, detail=INVALID_JOIN)
     return spent.id, credential
+
+
+async def member_for_credential(credential: str):
+    """The member row a credential belongs to while it is not revoked, else None.
+
+    Raises when the database cannot answer, and the handshake reads that as an
+    outage. Its own short session, so the handshake holds no lock that a
+    registration takes.
+    """
+    if db.session_factory is None:
+        raise RuntimeError("database unavailable")
+    async with db.session_factory() as session:
+        return (await session.execute(
+            select(FleetMember.id, FleetMember.worker_id).where(
+                FleetMember.credential_hash == sessions.token_hash(credential),
+                FleetMember.revoked_at.is_(None),
+            )
+        )).first()
+
+
+async def record_last_seen(member_id: uuid.UUID) -> None:
+    """Best effort. A failed or slow write must not stop a registration or a cleanup."""
+    try:
+        await asyncio.wait_for(_write_last_seen(member_id), LAST_SEEN_TIMEOUT_SECONDS)
+    except Exception as error:
+        logger.warning("could not record last seen for fleet member %s: %s",
+                       member_id, type(error).__name__)
+
+
+async def _write_last_seen(member_id: uuid.UUID) -> None:
+    if db.session_factory is None:
+        raise RuntimeError("database unavailable")
+    async with db.session_factory() as session:
+        async with session.begin():
+            await session.execute(
+                update(FleetMember)
+                .where(FleetMember.id == member_id)
+                .values(last_seen_at=func.now())
+            )
 
 
 @router.post("/api/v1/fleet/enroll")

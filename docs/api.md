@@ -49,7 +49,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | GET `/api/v1/ready` | implemented | PostgreSQL and asset-storage readiness |
 | GET `/api/v1/config` | implemented | runtime configuration for the SPA; `setup_required` tells it to show setup |
 | WS `/api/v1/realtime` | implemented | realtime drawing sessions; studio client on `/app`; in accounts mode the session cookie authenticates the upgrade, and revoking that session closes the socket |
-| WS `/api/v1/fleet` | implemented | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one without the `X-Fleet-Token` shared secret; an unset key refuses API startup |
+| WS `/api/v1/fleet` | implemented | worker fleet connection, not for browsers: a handshake carrying a non-allowlisted `Origin` is refused, as is one whose `X-Fleet-Token` is neither the shared secret nor a live member credential; an unset key refuses API startup; see "Fleet members" for the member rules |
 | GET `/api/v1/models` | implemented | registered models with parameter schemas and GPU-time estimates; requires a principal |
 | POST `/api/v1/generations` | implemented (#11, #16) | queue a generation job (text2img, img2img, or upscale) |
 | GET `/api/v1/generations/{id}` | implemented (#16) | job state, result asset when done |
@@ -570,13 +570,16 @@ POST   /api/v1/fleet/enroll                 {"join_token", "base_url"}          
 
 - The join token lives one hour and is refused once spent. `worker_id` is `m-` followed by the 32 hex characters of the member id.
 - Each list entry has `id`, `worker_id`, `label`, `device`, `state`, `created_at`, `enrolled_at`, `last_seen_at` and `join_expires_at`. `state` is `revoked` once revoked. Otherwise it is `waiting` (not enrolled, join still valid), `expired` (not enrolled, join past its hour), `connected` (a fleet socket for that worker id is open on this API process) or `offline`.
-- Create and delete need an allowed `Origin`, as `POST /api/v1/auth/enable` does. In accounts mode, create also needs recent authentication and is refused with `403` otherwise. These routes work in none mode and in accounts mode.
-- Delete keeps the row and clears the join token's hash. A repeated delete also answers `204`. Closing a live socket on revoke is a later change.
+- These routes work in none mode and in accounts mode. In none mode, create and delete need an allowed `Origin`, as every state-changing request does there. In accounts mode they need the session and its CSRF header, and create also needs recent authentication and is refused with `403` otherwise.
+- Delete keeps the row and clears the join token's hash. A repeated delete also answers `204`. A revoke that changes the row closes the member's live socket on this API process (see the fleet socket rules below).
 - Enroll needs no session. A request with no `Origin` header is accepted, as a worker sends none. A present `Origin` must be on the allowlist. Every refusal of the join token (unknown, spent, expired or revoked) is the same `403` with the same body. Two requests that race with one token: one succeeds.
 - `base_url` must be an `http` or `https` origin: a scheme, a host and an optional port. Userinfo, a path other than `/`, a query, a fragment, or more than 255 characters is refused with `422`, and that refusal does not spend the token. The stored value has no trailing slash.
 - Enroll is charged to the caller's address in its own rate-limit bucket, so it does not share a queue with password reset. It answers `503 setup_required` until the installation is claimed.
 - The audit trail records `fleet.member_created` (member id), `fleet.member_enrolled` (member id and peer address) and `fleet.member_revoked` (member id). No event holds a join token or a credential.
-- The fleet socket does not accept these credentials yet, so an enrolled member cannot connect until that change ships.
+- The fleet socket takes a member's credential as its `X-Fleet-Token`. The credential starts with `ptc_fleet_`, and the API matches its SHA-256 against a row that is not revoked. Any other value, including a revoked or unknown credential, is refused with HTTP `403` before the socket is accepted. A refusal writes no audit event. If the database cannot answer the lookup, the socket is accepted and closed with `1013` (try again later), so a worker can tell an outage from a removal. The credential is read a second time once the worker is registered: a member revoked in between is closed `4403` with the reason `fleet member removed`.
+- A member's `hello` must name its own `worker_id`. Any other id is closed `4000` with the reason `worker id does not match the credential`. A shared-secret `hello` whose id starts with `m-` is closed `4000` with the reason `worker id is reserved`, so the shared secret cannot take a member's id.
+- `last_seen_at` is set when a member's socket registers and again when it ends. A failed write does not stop registration or cleanup.
+- Revoke closes the live socket on the API process that holds it. The worker's sessions and jobs then follow the same path as any lost worker. With more than one API process, a socket held by another process stays open until it ends, but its next handshake is refused.
 
 ## Account states
 
