@@ -167,6 +167,40 @@ def test_local_storage_urls(tmp_path):
     }
 
 
+def test_local_storage_upload_target_uses_the_base_it_is_given(tmp_path):
+    # A fleet member is sent the origin it joined through, not the worker address.
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    target = asyncio.run(storage.upload_target(
+        "u/j.png", "tok", base_url="https://studio.example.com/"))
+    assert target.url == "https://studio.example.com/api/v1/files/u/j.png"
+    assert target.headers == {"Content-Type": "image/png", "X-Upload-Token": "tok"}
+    fallback = asyncio.run(storage.upload_target("u/j.png"))
+    assert fallback.url == "http://worker/api/v1/files/u/j.png"
+
+
+def test_local_storage_worker_fetch_url_uses_the_base_it_is_given(tmp_path):
+    storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
+    fetch = asyncio.run(storage.worker_fetch_url(
+        "u/j.png", base_url="https://studio.example.com"))
+    assert fetch.startswith("https://studio.example.com/api/v1/worker-input?token=")
+    fallback = asyncio.run(storage.worker_fetch_url("u/j.png"))
+    assert fallback.startswith("http://worker/api/v1/worker-input?token=")
+
+
+def test_s3_storage_ignores_a_base_url_because_its_addresses_are_presigned():
+    storage = S3Storage(Settings(storage_backend="s3",
+                                 storage_s3_endpoint="http://localhost:9100",
+                                 storage_s3_access_key="key",
+                                 storage_s3_secret_key="secret"))
+    target = asyncio.run(storage.upload_target(
+        "u/j.png", base_url="https://studio.example.com"))
+    fetch = asyncio.run(storage.worker_fetch_url(
+        "u/j.png", base_url="https://studio.example.com"))
+    assert target.url.startswith("http://localhost:9100/")
+    assert fetch.startswith("http://localhost:9100/")
+    assert "studio.example.com" not in target.url + fetch
+
+
 def test_local_storage_reads_uploaded_image_info(tmp_path):
     storage = LocalStorage(str(tmp_path), "http://browser", "http://worker")
     path = storage.path("u/j.png")

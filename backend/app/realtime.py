@@ -818,6 +818,9 @@ class Worker:
     # The enrolled member whose credential admitted this socket. None for the
     # shared secret, which admits any worker id outside the member prefix.
     member_id: uuid.UUID | None = None
+    # The origin an enrolled member joined through, which its upload and
+    # source-image addresses are built from. None for the shared secret.
+    base_url: str | None = None
     capabilities: list[str] = field(default_factory=list)
     region: str = "local"
     owner_epoch: int | None = None
@@ -1930,7 +1933,8 @@ async def fleet(ws: WebSocket) -> None:
                         ),
                         device=hello.get("device"),
                         memory_mode=hello.get("memory_mode"),
-                        member_id=member.id if member is not None else None)
+                        member_id=member.id if member is not None else None,
+                        base_url=member.base_url if member is not None else None)
         if "realtime_p95_ms" in hello:
             parsed = parse_frame_p95(hello.get("realtime_p95_ms"))
             worker.admission_p95_ms = parsed if parsed is not None else {}

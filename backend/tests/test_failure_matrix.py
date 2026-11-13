@@ -186,7 +186,7 @@ def test_a_storage_outage_leaves_the_job_where_the_next_pass_finds_it(monkeypatc
             attempted: list[str] = []
 
             class Refusing:
-                async def upload_target(self, key, token=None):
+                async def upload_target(self, key, token=None, *, base_url=None):
                     attempted.append(key)
                     raise RuntimeError("storage is down")
 

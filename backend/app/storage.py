@@ -292,14 +292,15 @@ def _inspect(data: bytes) -> tuple[int, int, str] | None:
 class Storage(Protocol):
     async def ready(self) -> bool: ...
 
-    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget: ...
+    async def upload_target(self, key: str, token: str | None = None, *,
+                            base_url: str | None = None) -> UploadTarget: ...
 
     async def image_info(self, key: str) -> ImageInfo | None: ...
 
     async def url(self, key: str, download_name: str | None = None,
                   ttl: int | None = None) -> str: ...
 
-    async def worker_fetch_url(self, key: str) -> str: ...
+    async def worker_fetch_url(self, key: str, *, base_url: str | None = None) -> str: ...
 
     async def promote(self, source_key: str, dest_key: str) -> None: ...
 
@@ -320,11 +321,18 @@ class LocalStorage:
             raise ValueError("storage key escapes the storage root")
         return path
 
+    def _worker_origin(self, base_url: str | None) -> str:
+        # An enrolled fleet member is reached at the origin it joined through.
+        # INTERNAL_URL only resolves on the compose network, so a remote worker
+        # must never be sent it.
+        return self.worker_url if base_url is None else base_url.rstrip("/")
+
     async def ready(self) -> bool:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(_ready_threads(), self.root.is_dir)
 
-    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
+    async def upload_target(self, key: str, token: str | None = None, *,
+                            base_url: str | None = None) -> UploadTarget:
         content_type = PNG_CONTENT_TYPE if key.endswith(".png") else WEBP_CONTENT_TYPE
         headers = {"Content-Type": content_type}
         if token:
@@ -333,7 +341,7 @@ class LocalStorage:
             # the key rather than to anyone who can derive it (issue #247).
             headers[UPLOAD_TOKEN_HEADER] = token
         return UploadTarget(
-            url=f"{self.worker_url}/api/v1/files/{key}",
+            url=f"{self._worker_origin(base_url)}/api/v1/files/{key}",
             headers=headers,
         )
 
@@ -365,13 +373,14 @@ class LocalStorage:
             return url
         return f"{url}?{urlencode({'download': validate_download_name(download_name)})}"
 
-    async def worker_fetch_url(self, key: str) -> str:
+    async def worker_fetch_url(self, key: str, *, base_url: str | None = None) -> str:
         from app import jobs
 
         capability = secrets.token_urlsafe(32)
         expires = int(time.time()) + WORKER_URL_TTL
         jobs.register_input_capability(capability, key, expires)
-        return f"{self.worker_url}/api/v1/worker-input?token={capability}&expires={expires}"
+        return (f"{self._worker_origin(base_url)}/api/v1/worker-input"
+                f"?token={capability}&expires={expires}")
 
     async def promote(self, source_key: str, dest_key: str) -> None:
         def copy_once() -> None:
@@ -458,9 +467,11 @@ class S3Storage:
             return False
         return True
 
-    async def upload_target(self, key: str, token: str | None = None) -> UploadTarget:
+    async def upload_target(self, key: str, token: str | None = None, *,
+                            base_url: str | None = None) -> UploadTarget:
         # Presigning is local computation, no network round trip. The token is
         # the local backend's capability; here the signed URL is one already.
+        # base_url is ignored: a presigned address names the bucket, not the API.
         content_type = stored_content_type(key)
         url = self.client.generate_presigned_url(
             "put_object",
@@ -567,7 +578,8 @@ class S3Storage:
             ExpiresIn=SIGNED_URL_TTL if ttl is None else ttl,
         )
 
-    async def worker_fetch_url(self, key: str) -> str:
+    async def worker_fetch_url(self, key: str, *, base_url: str | None = None) -> str:
+        # base_url is ignored, as in upload_target: the address is presigned.
         return self.client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key, "ResponseContentType": stored_content_type(key)},

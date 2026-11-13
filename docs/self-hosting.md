@@ -242,9 +242,12 @@ env -u INTERNAL_URL docker compose --env-file deploy/compose/.env -f deploy/comp
 
 Both `PUBLIC_URL` and `INTERNAL_URL` must use addresses reachable from the
 remote worker. `INTERNAL_URL` supplies worker upload and source-image URLs;
-its default `http://api:8080` works only on the local Compose network. A
-successful fleet WebSocket connection alone does not prove image jobs work.
-Configure the HTTPS proxy before using this example. Keep an install without
+its default `http://api:8080` works only on the local Compose network. An
+enrolled fleet member does not depend on `INTERNAL_URL`: with local storage its
+addresses use the origin of its own `API_URL`, which it sent to enroll. With S3
+storage every worker uploads to presigned bucket addresses and must reach the
+bucket. A successful fleet WebSocket connection alone does
+not prove image jobs work. Configure the HTTPS proxy before using this example. Keep an install without
 accounts on a trusted network; anyone who can reach that API has full access.
 
 On the GPU host, create a private `worker.env` file (mode `0600`):

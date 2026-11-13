@@ -116,6 +116,8 @@ def test_a_member_credential_registers_under_its_own_id_and_tracks_its_socket(no
             ws.send_json(_hello(worker_id))
             assert ws.receive_json()["type"] == "registered"
             assert worker_id in realtime.workers
+            # The origin the member joined through, which its links are built from.
+            assert realtime.workers[worker_id].base_url == "https://worker.example:8443"
             assert _listed(client, member_id)["state"] == "connected"
             # The registration write runs after the reply, so wait for it.
             _wait_for(lambda: _listed(client, member_id)["last_seen_at"] is not None,
@@ -287,6 +289,7 @@ def test_the_shared_secret_never_queries_the_member_table(none_mode, monkeypatch
                 "/api/v1/fleet", headers={"x-fleet-token": SHARED_SECRET}) as ws:
             ws.send_json(_hello("w-shared-no-lookup"))
             assert ws.receive_json()["type"] == "registered"
+            assert realtime.workers["w-shared-no-lookup"].base_url is None
     assert looked_up == []
 
 
