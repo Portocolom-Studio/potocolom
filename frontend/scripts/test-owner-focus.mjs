@@ -19,7 +19,8 @@ const contentTypes = {
 	'.svg': 'image/svg+xml',
 	'.woff2': 'font/woff2'
 };
-const pixel = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#dc2626"/></svg>')}`;
+// Same origin, so the page CSP (img-src 'self') lets it load.
+const pixel = '/favicon.svg';
 const model = {
 	id: 'focus-model',
 	name: 'Focus model',
