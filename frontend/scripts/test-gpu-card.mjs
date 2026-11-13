@@ -260,7 +260,10 @@ async function scenarioAdminNoWorkerKeyboard(browser, server) {
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
-	assert.equal(await checked(page, 'gpu-card-other'), true, '"Other computers" is the default');
+	// The card opens on "this" while the list loads; the empty list moves it.
+	await page.waitForFunction(
+		() => document.querySelector('[data-testid="gpu-card-other"]')?.checked === true
+	);
 	await settleAfterModels(page);
 	assert.equal(await tourOpen(page), false, 'the tour waits behind the card');
 

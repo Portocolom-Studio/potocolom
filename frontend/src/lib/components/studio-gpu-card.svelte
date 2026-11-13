@@ -39,7 +39,7 @@
 			});
 			if (response.ok) {
 				const list = (await response.json()) as { worker_id: string }[];
-				workers = list.map((worker) => worker.worker_id);
+				workers = [...new Set(list.map((worker) => worker.worker_id))];
 			}
 		} catch {
 			// A failed or slow list shows the card with the "could not be read" note.
