@@ -115,10 +115,10 @@ The worker spends the join token at its first start. It saves the worker ID and 
 
 If the worker stops with a message that the join token is spent, expired or removed, create a new join token, set it as `JOIN_TOKEN` in `worker.env`, and create the container again. The `FLEET_TOKEN` setup above still works for a worker that has no `JOIN_TOKEN` and no saved credential.
 
-When the studio removes a machine, the next handshake from its worker fails with HTTP 403. The worker logs this on each attempt, and it waits 30 seconds between attempts:
+When the API refuses a saved credential, the handshake fails with HTTP 403. Usually the studio removed the machine; an install restored from a backup taken before the machine joined refuses it too. The worker logs this on each attempt, and it waits 30 seconds between attempts:
 
 ```text
-this machine was removed from the install; add it again from the studio and remove /var/lib/potocolom-worker/fleet-credential.json
+the API refused this machine's credential: it was removed from the install, or this install does not know it; check the studio and the API log, and if it was removed, add it again from the studio and remove /var/lib/potocolom-worker/fleet-credential.json
 ```
 
 The worker does not delete the file. To add the machine again, stop the container, delete the file, set a new `JOIN_TOKEN`, and create the container again. For example, delete the file with `docker run --rm -v potocolom-worker-state:/state alpine rm /state/fleet-credential.json`.

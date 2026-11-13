@@ -535,3 +535,23 @@ def test_a_saved_credential_is_not_sent_to_a_redirect_target(monkeypatch, tmp_pa
     assert waits, "the refused redirect ends in the normal reconnect wait"
     assert all(CREDENTIAL.encode() not in request for request in received)
     assert received == []
+
+
+@pytest.mark.parametrize("saved_origin, api_url", [
+    ("https://studio.example.com", "wss://STUDIO.example.com:443/api/v1/fleet"),
+    ("http://gpu-host:8080", "ws://Gpu-Host:8080/api/v1/fleet"),
+    ("http://gpu-host", "ws://gpu-host:80/api/v1/fleet"),
+    ("http://[::1]:8080", "ws://[::1]:8080/api/v1/fleet"),
+])
+def test_one_origin_written_two_ways_is_still_the_saved_origin(monkeypatch, tmp_path,
+                                                                saved_origin, api_url):
+    _saved(tmp_path, origin=saved_origin)
+    requests = _enroll_server(monkeypatch, _issue)
+    connections, _built = _offline(monkeypatch, Settings(api_url=api_url,
+                                                         state_dir=str(tmp_path)))
+
+    with pytest.raises(StopReconnect):
+        asyncio.run(run())
+
+    assert requests == []
+    assert connections == [api_url]

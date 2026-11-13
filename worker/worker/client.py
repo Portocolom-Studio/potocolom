@@ -1680,8 +1680,15 @@ def _fleet_origin(api_url: str) -> str:
     scheme = {"ws": "http", "wss": "https"}.get(parts.scheme)
     if scheme is None:
         raise RuntimeError("API_URL must start with ws:// or wss:// to join a fleet")
-    # The origin keeps the port and drops any userinfo, which the server refuses.
-    return f"{scheme}://{parts.netloc.rpartition('@')[2]}"
+    # One spelling per origin, so a saved one compares equal to API_URL written
+    # another way: host in lower case, no default port, no userinfo (which the
+    # server refuses), and IPv6 in brackets.
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    default = 443 if scheme == "https" else 80
+    return f"{scheme}://{host}" + (f":{port}" if port is not None and port != default else "")
 
 
 async def _enroll(settings: Settings) -> dict[str, str]:
@@ -1782,8 +1789,10 @@ async def run() -> None:
                            and error.response.status_code == 403)
                 if removed:
                     logger.error(
-                        "this machine was removed from the install; add it again from the "
-                        "studio and remove %s", credential_path)
+                        "the API refused this machine's credential: it was removed from the "
+                        "install, or this install does not know it; check the studio and the "
+                        "API log, and if it was removed, add it again from the studio and "
+                        "remove %s", credential_path)
                 else:
                     logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
             # A removed machine waits the cap: a faster retry is refused the same way.
