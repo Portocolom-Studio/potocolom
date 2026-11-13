@@ -217,6 +217,8 @@
 	let searchQuery = $state(restoredImagesPreferences.search);
 	let searchMatchIds = $state<Set<string> | null>(null);
 	let searchMatchIndex = $state(-1);
+	let searchFailed = $state(false);
+	let searchRetryCount = $state(0);
 	let searchRequestEpoch = 0;
 	let searchCriteriaKey = '';
 	let searchDebounce: ReturnType<typeof setTimeout> | undefined;
@@ -1429,6 +1431,7 @@
 
 	$effect(() => {
 		completedHistorySignature;
+		searchRetryCount;
 		const q = searchQuery;
 		const filterStarred = starredOnly;
 		const filters = imageFilters;
@@ -1441,10 +1444,12 @@
 		if (criteriaChanged) {
 			searchMatchIds = null;
 			searchMatchIndex = -1;
+			searchFailed = false;
 		}
 		if (q === '') {
 			searchMatchIds = null;
 			searchMatchIndex = -1;
+			searchFailed = false;
 			return;
 		}
 		void (async () => {
@@ -1456,7 +1461,10 @@
 			if (filterStarred) search.set('starred', 'true');
 			const filteredSearch = withImageFilters(search, filters, referenceDate);
 			if (filteredSearch === null) {
-				if (epoch === searchRequestEpoch) searchMatchIds = new Set();
+				if (epoch === searchRequestEpoch) {
+					searchMatchIds = new Set();
+					searchFailed = false;
+				}
 				return;
 			}
 			filteredSearch.append('state', 'succeeded');
@@ -1468,13 +1476,20 @@
 				if (epoch !== searchRequestEpoch) return;
 				searchMatchIds = new Set(body.ids);
 				searchMatchIndex = -1;
+				searchFailed = false;
 			} catch (error) {
 				if (error instanceof DOMException && error.name === 'AbortError') return;
 				if (epoch !== searchRequestEpoch) return;
-				if (criteriaChanged) searchMatchIds = new Set();
+				// An empty set would read as zero matches, so keep the last matches. After a
+				// criteria change the set is already null (cleared above), which dims nothing.
+				searchFailed = true;
 			}
 		})();
 	});
+
+	function retrySearch(): void {
+		searchRetryCount += 1;
+	}
 
 	function goToNextSearchMatch(): void {
 		if (searchMatchIds === null || searchMatchIds.size === 0) return;
@@ -2641,6 +2656,10 @@
 			{t('app.images.next_match')}
 		</Button>
 	{/if}
+	{#if searchFailed}
+		<span class="text-muted-foreground text-xs">{t('app.images.search_failed')}</span>
+		<Button variant="outline" size="sm" onclick={retrySearch}>{t('shared.retry')}</Button>
+	{/if}
 {/snippet}
 
 {#snippet imagesHeader()}
@@ -2755,6 +2774,8 @@
 			{:else}
 				{t('app.gen.result_hint')}
 			{/if}
+		{:else if searchQuery !== '' && searchFailed}
+			{t('app.images.search_failed')}
 		{:else if searchQuery !== ''}
 			{t('app.images.matches').replace('{count}', String(searchMatchIds?.size ?? 0))}
 		{/if}
@@ -2987,7 +3008,9 @@
 								<g
 									class:is-active={selectedPathEdgeIds.has(edge.id)}
 									class:is-dimmed={(selectedNode !== null && !selectedPathEdgeIds.has(edge.id)) ||
-										(searchMatchIds !== null && !searchMatchRootIds.has(tree.rootId))}
+										(searchMatchIds !== null &&
+											!searchFailed &&
+											!searchMatchRootIds.has(tree.rootId))}
 								>
 									<path
 										class="lineage-edge"
@@ -3106,7 +3129,7 @@
 							class:is-missing={data.entry.missing || shownImage === null}
 							class:is-starred={starred}
 							class:is-search-match={searchTone === 'match'}
-							class:is-search-dim={searchTone === 'dim'}
+							class:is-search-dim={searchTone === 'dim' && !searchFailed}
 							style={`--tile-pull: ${proximityScale(item)}`}
 							aria-label={`${actionLabel(data.entry.action)}: ${promptLabel(data)}${starred ? `. ${t('app.images.starred')}` : ''}${item.isRoot ? `. ${t('app.images.drag_tree')}` : ''}${item.treeStatus === 'loading' ? `. ${t('app.images.tree_loading')}` : ''}${item.treeStatus === 'error' ? `. ${t('app.images.tree_load_failed')}` : ''}`}
 							title={promptLabel(data)}

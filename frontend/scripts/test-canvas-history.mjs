@@ -5166,6 +5166,165 @@ test('grid, lineage roots, and search IDs exclude failed jobs before paging', as
 	}
 });
 
+test('a failed lineage search keeps the last matches, dims nothing, and offers a retry', async () => {
+	const createdAt = new Date().toISOString();
+	const match = lineageGeneration(
+		lineageJobId(1400),
+		lineageAssetId(1400),
+		'Older saved image',
+		createdAt
+	);
+	const other = lineageGeneration(
+		lineageJobId(1401),
+		lineageAssetId(1401),
+		'Unrelated prompt',
+		createdAt,
+		null,
+		{ hasDerivatives: true }
+	);
+	// A child gives the unmatched tree an edge, which is where its dimming shows.
+	const child = lineageGeneration(
+		lineageJobId(1403),
+		lineageAssetId(1403),
+		'Unrelated child',
+		createdAt,
+		other.assets[0].id
+	);
+	// A running job makes the studio poll history. Its completion changes the
+	// completed-history signature, which re-runs the search with the same criteria.
+	const working = lineageGeneration(lineageJobId(1402), null, 'Working job', createdAt);
+	working.state = 'running';
+	const finished = lineageGeneration(working.id, lineageAssetId(1402), 'Working job', createdAt);
+	let finishWorking = false;
+	let searchStatus = 200;
+	const searchQueries = [];
+	const answers = {
+		'/api/v1/generations/models': { body: { models: [MODEL] } },
+		'/api/v1/generations?roots_only=true&limit=50': { body: [match, other] },
+		'/api/v1/generations?limit=50': { body: () => (finishWorking ? [finished] : [working]) },
+		'/api/v1/generations?fields=ids&limit=5000': {
+			body: (url) => {
+				searchQueries.push(url.search);
+				return { ids: [match.id] };
+			},
+			status: () => searchStatus
+		},
+		[`/api/v1/generations/${match.id}/subtree`]: {
+			body: lineageSubtree([lineageSubtreeNode(match, match.assets[0].id, null)])
+		},
+		[`/api/v1/generations/${other.id}/subtree`]: {
+			body: lineageSubtree([
+				lineageSubtreeNode(other, other.assets[0].id, null),
+				lineageSubtreeNode(child, child.assets[0].id, other.id)
+			])
+		}
+	};
+	const harness = await openImagesGrid(answers, () => {
+		localStorage.setItem('potocolom-images-mode', 'lineage');
+		window.EventSource = class {
+			constructor() {
+				setTimeout(() => this.onerror?.(new Event('error')), 0);
+			}
+			close() {}
+		};
+	});
+	// Runs in the page: waitForFunction and evaluate serialize this function.
+	const retryButtonShown = () =>
+		[...document.querySelectorAll('button')].some(
+			(button) => button.textContent.trim() === 'Retry'
+		);
+	try {
+		const { page } = harness;
+		// A branched root is packed below the single-root grid, which is off screen at 1100px.
+		await page.setViewport({ width: 1440, height: 2400 });
+		await page.waitForSelector(`[data-lineage-node="${match.assets[0].id}"]`, {
+			timeout: WAIT_MS
+		});
+		await page.type('input[name="q"]', 'Older saved image');
+		await page.waitForSelector('.lineage-tile.is-search-match', { timeout: WAIT_MS });
+		await page.waitForSelector('.lineage-tile.is-search-dim', { timeout: WAIT_MS });
+		await page.waitForSelector('.lineage-edges g.is-dimmed', { timeout: WAIT_MS });
+		assert.equal(searchQueries.length, 1);
+
+		// The same criteria fail after the working job finishes.
+		searchStatus = 500;
+		finishWorking = true;
+		await page.waitForFunction(retryButtonShown, { timeout: WAIT_MS });
+		assert.equal(searchQueries.length, 2, 'the finished job re-runs the same search');
+		assert.equal(new URLSearchParams(searchQueries[1]).get('q'), 'Older saved image');
+		const failed = await page.evaluate(() => ({
+			statusTexts: [...document.querySelectorAll('[role="status"]')].map((node) =>
+				node.textContent.trim()
+			),
+			dimmedTiles: document.querySelectorAll('.lineage-tile.is-search-dim').length,
+			dimmedTrees: document.querySelectorAll('.lineage-edges g.is-dimmed').length,
+			matchTiles: document.querySelectorAll('.lineage-tile.is-search-match').length,
+			nextMatchDisabled: [...document.querySelectorAll('button')].find(
+				(button) => button.textContent.trim() === 'Next match'
+			)?.disabled
+		}));
+		assert.equal(
+			failed.statusTexts.some((text) => text.startsWith('Matches:')),
+			false,
+			'a failed search does not report a match count'
+		);
+		assert.ok(failed.statusTexts.includes('Search failed.'), 'the count line shows the error');
+		assert.equal(failed.dimmedTiles, 0, 'a failed search dims no lineage tile');
+		assert.equal(failed.dimmedTrees, 0, 'a failed search dims no tree');
+		assert.equal(failed.matchTiles, 1, 'a failed search keeps the last matches');
+		assert.equal(failed.nextMatchDisabled, false, 'a failed search keeps Next match usable');
+
+		// Retry repeats the same search, and a success clears the error.
+		searchStatus = 200;
+		await clickButton(page, 'Retry');
+		await page.waitForFunction(
+			() =>
+				![...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Retry'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(searchQueries.length, 3, 'Retry sends one more search');
+		assert.equal(new URLSearchParams(searchQueries[2]).get('q'), 'Older saved image');
+		await page.waitForSelector('.lineage-tile.is-search-dim', { timeout: WAIT_MS });
+		assert.equal(
+			await page.evaluate(() =>
+				[...document.querySelectorAll('[role="status"]')].some(
+					(node) => node.textContent.trim() === 'Search failed.'
+				)
+			),
+			false,
+			'a successful retry clears the error'
+		);
+
+		// Editing the query into a failing search, then clearing it, drops the error.
+		searchStatus = 500;
+		await page.click('input[name="q"]');
+		await page.keyboard.press('End');
+		await page.keyboard.type('x');
+		await page.waitForFunction(retryButtonShown, { timeout: WAIT_MS });
+		await page.click('input[name="q"]');
+		await page.keyboard.down('Control');
+		await page.keyboard.press('KeyA');
+		await page.keyboard.up('Control');
+		await page.keyboard.press('Backspace');
+		await page.waitForFunction(
+			() =>
+				![...document.querySelectorAll('button')].some(
+					(button) => button.textContent.trim() === 'Next match'
+				),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(
+			await page.evaluate(retryButtonShown),
+			false,
+			'an empty query clears the error and Retry'
+		);
+	} finally {
+		await harness.close();
+	}
+});
+
 test('lineage root requests abort on filter and mode changes, then use current criteria', async () => {
 	let releaseRootPages;
 	const rootPages = new Promise((resolvePages) => {
