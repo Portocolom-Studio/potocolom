@@ -6,6 +6,7 @@ import asyncio
 import base64
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -277,6 +278,47 @@ def test_v6_hello_registers_grants_heartbeats_and_closes_on_disconnect(monkeypat
                 lambda row: row["closed_at"] is not None,
             )
             assert closed["lifecycle"] == "ended"
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("remaining_ms", "current"),
+    [
+        pytest.param(0, False, id="no_time_left"),
+        pytest.param(-5, False, id="lease_already_past"),
+        pytest.param(5000, True, id="time_left"),
+    ],
+)
+def test_a_grant_renewed_at_lease_expiry_is_current_only_with_time_left(
+    monkeypatch, remaining_ms, current
+):
+    """The authority can answer ready with no time left when the lease ends
+    between its two clock reads. Such a grant must expire at once, not be
+    kept with no deadline."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-expiry-{uuid.uuid4()}"
+    model_id = f"p6-expiry-model-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    real_renew = worker_authority.renew_worker_grant
+
+    async def renew_with_remaining(worker_id, incarnation, grant_nonce):
+        grant = await real_renew(worker_id, incarnation, grant_nonce)
+        return replace(grant, ready=True, remaining_ms=remaining_ms)
+
+    monkeypatch.setattr(worker_authority, "renew_worker_grant", renew_with_remaining)
+    try:
+        with protocol6_client(worker_id) as client:
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as ws:
+                ws.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+                assert ws.receive_json()["protocol_version"] == 6
+                # Closing before the identity row is written would cancel the
+                # handler first, as in test_a_v6_worker_is_never_picked_for_work.
+                client.portal.call(wait_for_identity, worker_id)
+                request_work_grant(ws, worker_id, incarnation)
+                assert realtime.workers[worker_id].has_current_work_grant is current
     finally:
         get_settings.cache_clear()
 
