@@ -93,6 +93,13 @@ export function fleetAddress(origin: string): FleetAddress {
 	return { kind: 'refused' };
 }
 
+// One shell word. A value that is not plain is put in single quotes: the
+// address can come from the page origin or from what the administrator typed,
+// and the command is pasted into a shell on another machine.
+function shellWord(word: string): string {
+	return /^[A-Za-z0-9@%+=:,./_-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
+}
+
 export function workerCommand(input: {
 	device: FleetDevice;
 	memberId: string;
@@ -115,15 +122,15 @@ export function workerCommand(input: {
 		'docker run -d --name potocolom-worker --restart unless-stopped',
 		...gpu,
 		`-e DEVICE=${input.device}`,
-		`-e API_URL=${input.wsUrl}`,
-		`-e JOIN_TOKEN=${input.token}`,
+		`-e ${shellWord(`API_URL=${input.wsUrl}`)}`,
+		`-e ${shellWord(`JOIN_TOKEN=${input.token}`)}`,
 		'-e STATE_DIR=/state',
 		'-e MODELS_DIR=/models',
 		...(input.insecure ? ['-e ALLOW_INSECURE_FLEET=true'] : []),
 		`-v ${state}:/state`,
 		'-v potocolom-models:/models',
 		'-v potocolom-hf-cache:/root/.cache/huggingface',
-		input.image
+		shellWord(input.image)
 	];
 	const run = lines.map((line, index) => (index === 0 ? line : `  ${line}`)).join(' \\\n');
 	return `docker rm -f potocolom-worker 2>/dev/null\n${run}`;

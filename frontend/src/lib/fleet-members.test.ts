@@ -247,6 +247,20 @@ test('a machine added again gets a fresh state volume, so an old credential is n
 	assert.equal(again.split('\n')[0], 'docker rm -f potocolom-worker 2>/dev/null');
 });
 
+test('a value with shell syntax is quoted, so pasting the command runs nothing else', () => {
+	const command = workerCommand({
+		device: 'cuda',
+		memberId: 'm1',
+		wsUrl: "wss://$(id).ex'ample/api/v1/fleet",
+		token: 't',
+		image: 'img',
+		insecure: false
+	});
+	assert.ok(command.includes(`  -e 'API_URL=wss://$(id).ex'\\''ample/api/v1/fleet' \\`));
+	// A plain value stays as it was.
+	assert.ok(command.includes('  -e JOIN_TOKEN=t \\'));
+});
+
 test('time left counts down in minutes and seconds and never goes negative', () => {
 	const expires = new Date(NOW + 900_000).toISOString();
 	assert.equal(formatTimeLeft(expires, NOW), '15:00');

@@ -381,6 +381,11 @@ test('fleet tab lists members, pauses, adds a GPU, connects and removes it', asy
 		await page.keyboard.press('Escape');
 		await dialogGone();
 		assert.equal(deletes.length, 0);
+		assert.equal(
+			await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+			'Remove: Spare AMD',
+			'a cancelled removal returns focus to the row'
+		);
 		assert.ok(await page.$('button[aria-label="Remove: Spare AMD"]'));
 		await page.locator('button[aria-label="Remove: Spare AMD"]').click();
 		await page.waitForSelector('[data-testid="admin-fleet-remove-confirm"]');
