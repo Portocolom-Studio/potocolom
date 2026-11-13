@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import stat
+from pathlib import Path
 from http import HTTPStatus
 
 import httpx
@@ -25,6 +26,8 @@ JOIN_TOKEN = "join-token-SECRET"
 CREDENTIAL = "ptc_fleet_credential-SECRET"
 WORKER_ID = "m-" + "a" * 32
 STATE_FILE = "fleet-credential.json"
+ORIGIN = "http://gpu-host:8080"
+API_URL = "ws://gpu-host:8080/api/v1/fleet"
 
 
 class StopReconnect(Exception):
@@ -95,9 +98,10 @@ def _offline(monkeypatch, settings):
     return connections, built
 
 
-def _run_against_fleet(monkeypatch, handler, *, refuse=False, **settings_fields):
+def _run_against_fleet(monkeypatch, handler, *, refuse=False, saved=False, **settings_fields):
     """Runs run() against a local fleet socket. handler serves each accepted socket,
-    and refuse=True answers every handshake with HTTP 403. Returns the reconnect
+    and refuse=True answers every handshake with HTTP 403. saved=True writes a saved
+    credential for this socket's origin into state_dir. Returns the reconnect
     waits that run() asked for."""
     waits = []
 
@@ -118,6 +122,8 @@ def _run_against_fleet(monkeypatch, handler, *, refuse=False, **settings_fields)
             port = server.sockets[0].getsockname()[1]
             settings = settings.model_copy(
                 update={"api_url": f"ws://127.0.0.1:{port}/api/v1/fleet"})
+            if saved:
+                _saved(Path(settings.state_dir), origin=f"http://127.0.0.1:{port}")
             monkeypatch.setattr("worker.client.get_settings", lambda: settings)
             with pytest.raises(StopReconnect):
                 await run()
@@ -135,9 +141,10 @@ def _recording_handler(seen):
     return handler
 
 
-def _saved(tmp_path, content=None):
+def _saved(tmp_path, content=None, origin=ORIGIN):
     path = tmp_path / STATE_FILE
-    path.write_text(content or json.dumps({"worker_id": WORKER_ID, "credential": CREDENTIAL}))
+    path.write_text(content or json.dumps(
+        {"worker_id": WORKER_ID, "credential": CREDENTIAL, "origin": origin}))
     return path
 
 
@@ -165,7 +172,8 @@ def test_first_start_posts_the_join_token_and_saves_the_credential(
     ]
     assert connections == [api_url]
     path = tmp_path / STATE_FILE
-    assert json.loads(path.read_text()) == {"worker_id": WORKER_ID, "credential": CREDENTIAL}
+    assert json.loads(path.read_text()) == {
+        "worker_id": WORKER_ID, "credential": CREDENTIAL, "origin": base_url}
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert _files(tmp_path) == [STATE_FILE]
     assert JOIN_TOKEN not in caplog.text
@@ -186,18 +194,35 @@ def test_first_start_connects_with_the_issued_identity(monkeypatch, tmp_path):
 
 
 def test_a_saved_credential_is_used_and_the_join_token_is_not_spent(monkeypatch, tmp_path):
-    path = _saved(tmp_path)
     requests = _enroll_server(monkeypatch, _issue)
     seen = []
 
     _run_against_fleet(monkeypatch, _recording_handler(seen), join_token="another-join-token",
-                       state_dir=str(tmp_path))
+                       state_dir=str(tmp_path), saved=True)
 
     assert requests == []
     token, hello = seen[0]
     assert token == CREDENTIAL
     assert hello["worker_id"] == WORKER_ID
-    assert json.loads(path.read_text()) == {"worker_id": WORKER_ID, "credential": CREDENTIAL}
+    assert json.loads((tmp_path / STATE_FILE).read_text())["credential"] == CREDENTIAL
+
+
+def test_a_saved_credential_for_another_installation_is_never_sent(monkeypatch, tmp_path):
+    path = _saved(tmp_path, origin="https://other-studio.example.com")
+    requests = _enroll_server(monkeypatch, _issue)
+    connections, built = _offline(monkeypatch, Settings(
+        api_url=API_URL, join_token=JOIN_TOKEN, state_dir=str(tmp_path)))
+
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(run())
+
+    assert "other-studio.example.com" in str(error.value)
+    assert ORIGIN in str(error.value)
+    assert CREDENTIAL not in str(error.value)
+    assert requests == []
+    assert connections == []
+    assert built == []
+    assert json.loads(path.read_text())["credential"] == CREDENTIAL
 
 
 def test_fleet_token_without_a_join_token_behaves_as_before(monkeypatch, tmp_path):
@@ -295,7 +320,7 @@ def test_a_second_worker_on_the_same_state_dir_is_refused_before_the_token_is_sp
 def test_a_lock_that_cannot_be_taken_stops_a_worker_with_a_saved_credential(
         monkeypatch, tmp_path):
     (tmp_path / STATE_FILE).write_text(json.dumps(
-        {"worker_id": "m-" + "a" * 32, "credential": "ptc_fleet_saved"}))
+        {"worker_id": "m-" + "a" * 32, "credential": "ptc_fleet_saved", "origin": ORIGIN}))
     (tmp_path / STATE_FILE).chmod(0o600)
     lock = tmp_path / FLEET_STATE_LOCK
     lock.write_text("")
@@ -394,7 +419,8 @@ def test_a_crash_before_the_rename_leaves_no_credential_file(monkeypatch, tmp_pa
     "[]",
     json.dumps({"worker_id": WORKER_ID}),
     json.dumps({"worker_id": "", "credential": CREDENTIAL}),
-], ids=["not-json", "not-an-object", "no-credential", "empty-worker-id"])
+    json.dumps({"worker_id": WORKER_ID, "credential": CREDENTIAL}),
+], ids=["not-json", "not-an-object", "no-credential", "empty-worker-id", "no-origin"])
 def test_an_unreadable_saved_file_stops_the_worker_and_names_the_path(
         monkeypatch, tmp_path, content):
     path = _saved(tmp_path, content)
@@ -412,18 +438,17 @@ def test_an_unreadable_saved_file_stops_the_worker_and_names_the_path(
 
 
 def test_a_removed_machine_keeps_its_file_and_waits_the_cap(monkeypatch, tmp_path, caplog):
-    path = _saved(tmp_path)
-    content = path.read_text()
+    path = tmp_path / STATE_FILE
 
     async def never_served(_ws):
         raise AssertionError("a refused handshake reaches no handler")
 
     with caplog.at_level(logging.ERROR, logger="potocolom.worker"):
         waits = _run_against_fleet(monkeypatch, never_served, refuse=True,
-                                   state_dir=str(tmp_path))
+                                   state_dir=str(tmp_path), saved=True)
 
     assert waits == [BACKOFF_CAP]
-    assert path.read_text() == content
+    assert json.loads(path.read_text())["credential"] == CREDENTIAL
     removed = [r.getMessage() for r in caplog.records if "removed" in r.getMessage()]
     assert removed and str(path) in removed[0]
     assert CREDENTIAL not in caplog.text
@@ -441,13 +466,10 @@ def test_a_shared_secret_refused_with_403_keeps_the_normal_backoff(monkeypatch):
 @pytest.mark.parametrize("code", [1013, 4403])
 def test_a_close_with_an_outage_or_registration_code_keeps_the_normal_backoff(
         monkeypatch, tmp_path, code):
-    path = _saved(tmp_path)
-    content = path.read_text()
-
     async def close_now(ws):
         await ws.close(code=code)
 
-    waits = _run_against_fleet(monkeypatch, close_now, state_dir=str(tmp_path))
+    waits = _run_against_fleet(monkeypatch, close_now, state_dir=str(tmp_path), saved=True)
 
     assert _normal_backoff(waits[0])
-    assert path.read_text() == content
+    assert json.loads((tmp_path / STATE_FILE).read_text())["credential"] == CREDENTIAL

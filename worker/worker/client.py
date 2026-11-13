@@ -1613,11 +1613,18 @@ def _identity(value: object) -> dict[str, str] | None:
 
 
 def _load_credential(path: Path) -> dict[str, str] | None:
+    """The saved identity and the origin it was issued for, or None when there is no file."""
     try:
-        identity = _identity(json.loads(path.read_text(encoding="utf-8")))
+        saved = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except ValueError:
+        saved = None
+    identity = _identity(saved)
+    if identity is not None and isinstance(saved, dict) and isinstance(saved.get("origin"), str) \
+            and saved["origin"]:
+        identity["origin"] = saved["origin"]
+    else:
         identity = None
     if identity is None:
         # Refused rather than enrolled again: the join token behind this file is spent.
@@ -1663,14 +1670,18 @@ def _check_writable(directory: Path) -> None:
             "the join token was not used") from None
 
 
-async def _enroll(settings: Settings) -> dict[str, str]:
-    # One attempt only: a retry would present a token the server may already have spent.
-    parts = urlsplit(settings.api_url)
+def _fleet_origin(api_url: str) -> str:
+    parts = urlsplit(api_url)
     scheme = {"ws": "http", "wss": "https"}.get(parts.scheme)
     if scheme is None:
         raise RuntimeError("API_URL must start with ws:// or wss:// to join a fleet")
     # The origin keeps the port and drops any userinfo, which the server refuses.
-    origin = f"{scheme}://{parts.netloc.rpartition('@')[2]}"
+    return f"{scheme}://{parts.netloc.rpartition('@')[2]}"
+
+
+async def _enroll(settings: Settings) -> dict[str, str]:
+    # One attempt only: a retry would present a token the server may already have spent.
+    origin = _fleet_origin(settings.api_url)
     try:
         # Redirects are not followed: a redirect would carry the join token to another host.
         async with httpx.AsyncClient(timeout=ENROLL_TIMEOUT, follow_redirects=False) as client:
@@ -1700,13 +1711,18 @@ async def _resolve_identity(settings: Settings) -> tuple[Settings, Path | None]:
     if path is not None:
         _hold_state_dir(path.parent)
     identity = _load_credential(path) if path is not None else None
+    if identity is not None and identity["origin"] != _fleet_origin(settings.api_url):
+        # Checked before any connection: the credential must not reach another installation.
+        raise RuntimeError(
+            f"saved fleet credential {path} belongs to {identity['origin']}, not to "
+            f"{_fleet_origin(settings.api_url)}; give each installation its own STATE_DIR")
     if identity is None and settings.join_token:
         if path is None:
             raise RuntimeError(
                 "JOIN_TOKEN needs STATE_DIR: without it the credential is lost at the next "
                 "start and the join token is already spent")
         _check_writable(path.parent)
-        identity = await _enroll(settings)
+        identity = {**await _enroll(settings), "origin": _fleet_origin(settings.api_url)}
         _save_credential(path, identity)
     if identity is None:
         return settings, None
