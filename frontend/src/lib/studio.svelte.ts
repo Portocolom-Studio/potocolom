@@ -498,6 +498,9 @@ function setFavoriteNotice(kind: FavoriteNoticeKind, message: string | null): vo
 }
 
 function openView(view: ShellView, tab: StudioTab = 'usage'): void {
+	// A fleet request from the GPU card is for the Administration view only: one
+	// left pending would hold the tour back and open the Add dialog on a later visit.
+	if (view !== 'admin') studio.fleetAddRequested = false;
 	const search = studioViewSearch(location.search, view, tab);
 	// Clicking the view already open must not stack a duplicate history entry.
 	if (search === location.search) return;

@@ -21,6 +21,13 @@
 		() => localStorage
 	);
 
+	// Access can be lost while the card is open (the role is read again on window
+	// focus). The card closes without its flag, so it comes back if access does.
+	$effect(() => {
+		if (studio.gpuCardOpen && !(account.localModeConfirmed || account.current?.role === 'admin'))
+			studio.gpuCardOpen = false;
+	});
+
 	// Null while the list loads and when it failed. Both keep the "this" option.
 	let workers = $state<string[] | null>(null);
 	let loading = $state(true);

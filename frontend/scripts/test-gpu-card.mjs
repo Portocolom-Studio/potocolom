@@ -154,6 +154,10 @@ async function openStudio(context, server, { blockStorage = false, path = '/app'
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.message));
 	await page.evaluateOnNewDocument((blocked) => {
+		// A clock the test can move, so the studio's focus refresh is due at once.
+		const realNow = Date.now.bind(Date);
+		window.__clockOffset = 0;
+		Date.now = () => realNow() + window.__clockOffset;
 		// The studio opens streams it never reads here; the card does not use them.
 		window.EventSource = class {
 			addEventListener() {}
@@ -192,9 +196,22 @@ const storedFlag = (page, key) =>
 
 // The studio asks for the models before the tour may start. Waiting for that
 // request, then a settle pause, makes "no tour" a real claim rather than a race.
+// Two animation frames: every effect queued by the last update has run.
+const frames = (page) =>
+	page.evaluate(
+		() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+	);
+
+// The studio has answered its models: the panel drops its loading status in the
+// same update that runs the tour's first-visit check.
 async function settleAfterModels(page) {
 	await waitFor(() => count('/api/v1/models') > 0, 'the models request');
-	await pause(400);
+	await page.waitForFunction(
+		() =>
+			document.querySelector('h1.sr-only') &&
+			!document.body.textContent.includes('Loading models...')
+	);
+	await frames(page);
 }
 
 // Moves focus with Tab until the element with `testid` has it.
@@ -284,7 +301,7 @@ async function scenarioAdminNoWorkerKeyboard(browser, server) {
 		/Add a GPU/,
 		'the Add a GPU dialog is open'
 	);
-	await pause(400);
+	await frames(page);
 	assert.equal(await tourOpen(page), false, 'the tour does not start over the Administration view');
 	await waitFor(async () => !(await cardOpen(page)), 'the card is gone');
 	assert.equal(await storedFlag(page, cardKey), '1', 'the card flag is written');
@@ -340,6 +357,26 @@ async function scenarioFailedList(browser, server) {
 	await context.close();
 }
 
+async function scenarioAccessLostWhileOpen(browser, server) {
+	accountMode = 'admin';
+	workers = [{ worker_id: 'm-a1' }];
+	workersFail = false;
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	// The role changes while the tab is open; the focus refresh reads it again.
+	accountMode = 'viewer';
+	await page.evaluate(() => {
+		window.__clockOffset = 24 * 3_600_000;
+		window.dispatchEvent(new Event('focus'));
+	});
+	await waitFor(async () => !(await cardOpen(page)), 'the card to close for a viewer');
+	assert.equal(await storedFlag(page, cardKey), null, 'losing access does not mark the card done');
+	assert.deepEqual(errors, []);
+	await context.close();
+	accountMode = 'admin';
+}
+
 async function scenarioViewer(browser, server) {
 	accountMode = 'viewer';
 	workers = [];
@@ -347,7 +384,9 @@ async function scenarioViewer(browser, server) {
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await waitFor(() => count('/api/v1/account') > 0, 'the account probe');
-	await pause(400);
+	// The card mounts with the studio shell, once the account check has passed.
+	await page.waitForSelector('[data-slot="sidebar-container"]', { visible: true });
+	await frames(page);
 	assert.equal(await cardOpen(page), false, 'a viewer never sees the card');
 	assert.equal(await storedFlag(page, cardKey), null, 'a viewer does not write the card flag');
 	assert.deepEqual(errors, []);
@@ -400,11 +439,12 @@ async function main() {
 		await scenarioAdminNoWorkerKeyboard(browser, server);
 		await scenarioEscapeDismiss(browser, server);
 		await scenarioFailedList(browser, server);
+		await scenarioAccessLostWhileOpen(browser, server);
 		await scenarioViewer(browser, server);
 		await scenarioNoneMode(browser, server);
 		await scenarioBlockedStorage(browser, server);
 		console.log(
-			'GPU card browser checks passed: default option, worker list, focus, both endings, dismissal, failed list, viewer, none mode, blocked storage and the tour order'
+			'GPU card browser checks passed: default option, worker list, focus, both endings, dismissal, failed list, lost access, viewer, none mode, blocked storage and the tour order'
 		);
 	} finally {
 		await browser?.close();
