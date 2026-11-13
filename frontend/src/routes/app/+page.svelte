@@ -23,6 +23,7 @@
 	import StudioPreview from '$lib/components/studio-preview.svelte';
 	import StudioTurnOnAccounts from '$lib/components/studio-turn-on-accounts.svelte';
 	import StudioTour from '$lib/components/studio-tour.svelte';
+	import StudioGpuCard from '$lib/components/studio-gpu-card.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Toaster } from '$lib/components/ui/sonner';
@@ -406,8 +407,13 @@
 				</div>
 			</Sidebar.Inset>
 		</Sidebar.Provider>
-		<!-- Mounted only once the account check has passed, so the first-visit tour
-			     starts on a studio that is there to be seen. -->
+		<!-- Mounted only once the account check has passed, so the first-visit card and
+			     tour start on a studio that is there to be seen. The GPU card decides for
+			     itself who sees it, and mounts first so that the tour's first-visit check
+			     already sees the card is open. -->
+		{#if !landing}
+			<StudioGpuCard />
+		{/if}
 		{#if !landing && sectionNeeds('generate', account.current?.role ?? null) === null}
 			<StudioTour />
 		{/if}

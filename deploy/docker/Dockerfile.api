@@ -22,6 +22,10 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && rm -r
 COPY --from=frontend /build/build /app/static
 
 ENV FRONTEND_DIST=/app/static
+# The release build passes its tag, so the API names the matching worker image
+# without POTOCOLOM_VERSION in its environment. Compose sets it as well.
+ARG POTOCOLOM_VERSION=dev
+ENV POTOCOLOM_VERSION=$POTOCOLOM_VERSION
 
 EXPOSE 8080
 

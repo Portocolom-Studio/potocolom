@@ -311,10 +311,20 @@
 	});
 
 	// First visit to Generate: wait until the models have answered, so the prompt,
-	// model and generate controls are rendered for the tour to point at.
+	// model and generate controls are rendered for the tour to point at. The GPU
+	// card goes first. Its "Other computers" moves the view by URL, so shellView
+	// still reads generate for a moment: the pending fleet request holds the tour
+	// until the fleet tab has taken it.
 	let firstVisitChecked = false;
 	$effect(() => {
-		if (firstVisitChecked || !studio.modelsLoaded || studio.shellView !== 'generate') return;
+		if (
+			firstVisitChecked ||
+			!studio.modelsLoaded ||
+			studio.shellView !== 'generate' ||
+			studio.gpuCardOpen ||
+			studio.fleetAddRequested
+		)
+			return;
 		firstVisitChecked = true;
 		if (shouldAutoStart(() => localStorage)) studio.tourRequest = 'automatic';
 	});

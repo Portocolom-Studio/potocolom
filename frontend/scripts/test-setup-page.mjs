@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
-import { recordPageEvents } from './studio-test-page.mjs';
+import { newStudioPage } from './studio-test-page.mjs';
 
 // Mocked API, real build: /setup, the /app guard and the none-mode settings
 // card against fixtures. Run after `PUBLIC_SITE_MODE= npm run build`.
@@ -160,8 +160,7 @@ async function chromeExecutable() {
 }
 
 async function open(browser, server, path) {
-	const page = await browser.newPage();
-	recordPageEvents(page);
+	const page = await newStudioPage(browser);
 	page.setDefaultTimeout(timeoutMs);
 	const errors = [];
 	page.on('pageerror', (error) => {

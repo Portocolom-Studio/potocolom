@@ -85,13 +85,15 @@ jobs:
           registry="ghcr.io/${owner,,}"
           echo "registry=$registry" >> "$GITHUB_OUTPUT"
           for image in api worker-cuda worker-rocm; do
+            version_arg=()
             if [[ "$image" == api ]]; then
               tag="$registry/potocolom-api:$VERSION"
+              version_arg=(--build-arg "POTOCOLOM_VERSION=$VERSION")
             else
               tag="$registry/potocolom-worker:$VERSION-${image#worker-}"
             fi
             docker build --pull --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-              --label "org.opencontainers.image.version=$VERSION" \
+              --label "org.opencontainers.image.version=$VERSION" "${version_arg[@]}" \
               -f "deploy/docker/Dockerfile.$image" -t "$tag" .
           done
       - name: Check exact worker images and API

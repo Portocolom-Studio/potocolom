@@ -7,7 +7,7 @@ import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
-import { recordPageEvents } from './studio-test-page.mjs';
+import { newStudioPage } from './studio-test-page.mjs';
 
 // The real handoff: a backend on a fresh database, a setup link minted by the
 // operator command, and the built studio in a browser. Each install gets its
@@ -198,8 +198,7 @@ async function withFreshInstall(run) {
 }
 
 async function openLink(context, link) {
-	const page = await context.newPage();
-	recordPageEvents(page);
+	const page = await newStudioPage(context);
 	page.setDefaultTimeout(WAIT_MS);
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.stack ?? error.message));

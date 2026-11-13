@@ -105,6 +105,7 @@ These routes are for admins, except enroll. An administrator adds a GPU on anoth
 - In none mode, create, pause, resume and delete need an allowed origin, as every state-changing request does there. In accounts mode, create also needs a recent sign-in.
 - Pause and resume are admin only, and work in none mode and in accounts mode. A paused member keeps its socket and its current work, and continues it there. It is given no new job and no new realtime session: a queued job waits, and a session waits in the queue, until the member is resumed or another worker takes it. A pause survives a reconnect and an API restart. With more than one API process, a pause reaches a socket that another process holds at that socket's next connection. A revoked member answers `409`.
 - A join token is refused once it is spent, expired or revoked. Every one of those refusals gets the same `403`.
+- The create answer also carries `worker_image`: the worker image for this install and the chosen device. The studio puts it in the join command. A source build names a `dev` image, which another machine cannot pull.
 - `base_url` must be a bare `http` or `https` origin. A path, a query, a fragment or a user name is refused with `422`, and the token stays usable.
 - With local storage, an enrolled worker's upload and source-image addresses are under the `base_url` it sent to enroll (the origin of its `API_URL`), so it never needs `INTERNAL_URL`. A shared-secret worker still gets addresses under `INTERNAL_URL`, or under `PUBLIC_URL` when that is unset. With S3 storage every worker gets presigned bucket addresses, so each worker must reach the bucket.
 - An enrolled member connects with its credential as the `X-Fleet-Token` header. A credential that is unknown or revoked is refused before the socket opens. If the database cannot answer the lookup, the socket opens and closes with `1013`, so the worker retries instead of treating its credential as removed. The credential is read again once the worker is registered: a member removed in between is closed `4403`.
@@ -142,19 +143,19 @@ These routes are for the benchmark script. Every route needs an admin. The sessi
 
 ## Account
 
-| Method | Path                                    | Purpose                                                                                  |
-| ------ | --------------------------------------- | ---------------------------------------------------------------------------------------- |
-| GET    | `/api/v1/account`                       | The account, its live sessions, whether a second factor is on, and its linked providers. |
-| POST   | `/api/v1/account/password`              | Change or add a password. Needs recent authentication.                                   |
-| POST   | `/api/v1/account/email`                 | Change the primary email address.                                                        |
-| DELETE | `/api/v1/account/sessions/{id}`         | Sign out one of the account's own sessions.                                              |
-| POST   | `/api/v1/account/totp`                  | Start enrolling a second factor. Needs recent authentication.                            |
-| POST   | `/api/v1/account/totp/confirm`          | Confirm an enrolment with a code from the authenticator.                                 |
-| DELETE | `/api/v1/account/totp`                  | Remove the second factor. Needs recent authentication and a code.                        |
-| POST   | `/api/v1/account/identities/{provider}` | Start linking a provider. Needs recent authentication.                                   |
-| DELETE | `/api/v1/account/identities/{provider}` | Unlink a provider. Refused when it is the last way in.                                   |
-| GET    | `/api/v1/account/export`                | Everything the install holds about the account, as streamed JSON. No secrets.            |
-| DELETE | `/api/v1/account`                       | Stop the account now. Its data is purged after 30 days.                                  |
+| Method | Path                                    | Purpose                                                                                                  |
+| ------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/account`                       | The account, its live sessions, whether a second factor is on, and its linked providers.                 |
+| POST   | `/api/v1/account/password`              | Change or add a password. Needs recent authentication.                                                   |
+| POST   | `/api/v1/account/email`                 | Change the primary email address.                                                                        |
+| DELETE | `/api/v1/account/sessions/{id}`         | Sign out one of the account's own sessions.                                                              |
+| POST   | `/api/v1/account/totp`                  | Start enrolling a second factor. Needs recent authentication.                                            |
+| POST   | `/api/v1/account/totp/confirm`          | Confirm an enrolment with a code from the authenticator.                                                 |
+| DELETE | `/api/v1/account/totp`                  | Remove the second factor. Needs recent authentication and a code.                                        |
+| POST   | `/api/v1/account/identities/{provider}` | Start linking a provider. Needs recent authentication.                                                   |
+| DELETE | `/api/v1/account/identities/{provider}` | Unlink a provider. Refused when it is the last way in.                                                   |
+| GET    | `/api/v1/account/export`                | Everything the install holds about the account, as streamed JSON, with a link to each image. No secrets. |
+| DELETE | `/api/v1/account`                       | Stop the account now. Its data is purged after 30 days.                                                  |
 
 ## Invitations and users
 
@@ -168,7 +169,7 @@ These routes are for admins.
 | POST   | `/api/v1/invitations/{id}/reveal` | Make a new link and retire the previous one.                                |
 | GET    | `/api/v1/users`                   | Accounts with their role and state. Cursor paging and an email search.      |
 | GET    | `/api/v1/users/{id}`              | One account. The read is audited.                                           |
-| GET    | `/api/v1/users/{id}/generations`  | One account's generations, read only.                                       |
+| GET    | `/api/v1/users/{id}/generations`  | One account's generations, newest first. Cursor is the last id; empty ends. |
 | POST   | `/api/v1/users/{id}/role`         | Change an account's role.                                                   |
 | POST   | `/api/v1/users/{id}/state`        | Suspend, disable, reactivate or mark an account for deletion.               |
 | POST   | `/api/v1/users/{id}/restore`      | Put back an account that is waiting for deletion, inside its 30-day window. |

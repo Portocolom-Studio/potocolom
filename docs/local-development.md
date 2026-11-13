@@ -418,7 +418,7 @@ then builds with `PUBLIC_SITE_MODE=landing` and checks the studio preview, docs,
 and footer contrast and keyboard focus. Only after all landing checks pass does
 it build with an empty `PUBLIC_SITE_MODE`. It then checks the self-hosted build,
 studio shell, setup, drawing canvas, sign-in, saved views, owner focus, Models,
-and the first-run tour. The sign-in and setup handoff checks use separate
+the fleet tab, the first-run GPU card and the first-run tour. The sign-in and setup handoff checks use separate
 throwaway databases and API processes.
 
 Use `make -j3 --output-sync=target verify-frontend` to run up to three checks

@@ -15,7 +15,7 @@ failures=0
 rc=0
 
 LANDING_LEAVES=(test:landing test:docs test:footer)
-PRODUCT_LEAVES=(test:canvas test:models test:self-hosted test:studio-shell test:setup test:signin test:views test:owner-focus test:tour)
+PRODUCT_LEAVES=(test:canvas test:models test:self-hosted test:studio-shell test:setup test:signin test:views test:owner-focus test:tour test:fleet test:gpu-card)
 
 note_fail() {
 	printf 'FAIL %s\n' "$1"
@@ -98,7 +98,8 @@ PRODUCT_BUILD = 'build:mode='
 STATIC = ['lint', 'check', 'test']
 LANDING = ['test:landing', 'test:docs', 'test:footer']
 PRODUCT = ['test:canvas', 'test:models', 'test:self-hosted', 'test:studio-shell',
-           'test:setup', 'test:signin', 'test:views', 'test:owner-focus', 'test:tour']
+           'test:setup', 'test:signin', 'test:views', 'test:owner-focus', 'test:tour',
+           'test:fleet', 'test:gpu-card']
 EXPECTED = Counter(STATIC + [LANDING_BUILD, PRODUCT_BUILD] + LANDING + PRODUCT)
 
 failures = []

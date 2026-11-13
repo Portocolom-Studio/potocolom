@@ -108,7 +108,7 @@ actually used.
 Both raw and rollup rows remain user-linked because that is what retention,
 cohort and funnel analysis need. The obligations apply to both tables: the
 foreign keys use `ON DELETE CASCADE`, so both are hard deleted with the account's
-30 day purge, and issue #10's GDPR export must include both
+30 day purge, and the GDPR export includes both
 ([architecture.md](architecture.md), content safety and privacy).
 
 ## The studio's own usage view

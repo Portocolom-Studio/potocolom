@@ -86,7 +86,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/invitations/{id}` | implemented | revoke an open invitation (404 once it is revoked or accepted); records `invitation.revoked` with the invitation id, address and role; admin only |
 | POST `/api/v1/invitations/{id}/reveal` | implemented | re-mint the link and retire the previous one; returns the same shape as create, `link` included; records `invitation.revealed` with the invitation id, address and role, high severity for an administrator invitation; admin only |
 | POST `/api/v1/users/{id}/role` | implemented | change an account's role; admin only |
-| POST `/api/v1/admin/fleet/members` | implemented (#885) | create a GPU member for another machine; returns `{id, label, device, join_token, expires_at}` once, with a one-hour join token; admin only; accounts mode also needs recent authentication |
+| POST `/api/v1/admin/fleet/members` | implemented (#885) | create a GPU member for another machine; returns `{id, label, device, join_token, expires_at, worker_image}` once, with a one-hour join token; admin only; accounts mode also needs recent authentication |
 | GET `/api/v1/admin/fleet/members` | implemented (#885) | the fleet members and each one's state (`waiting`, `expired`, `connected`, `offline`, `revoked`); never a token or a credential; admin only |
 | DELETE `/api/v1/admin/fleet/members/{id}` | implemented (#885) | revoke a member; the row stays; `404` for an unknown id; admin only |
 | PATCH `/api/v1/admin/fleet/members/{id}` | implemented (#889) | pause or resume a member with `{"paused": true}` or `{"paused": false}`; a paused member keeps its current work and gets no new job or session; `404` for an unknown id, `409` for a revoked member; admin only |
@@ -105,12 +105,12 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance; saving the address the account already holds, only spelled differently, changes nothing and keeps the assurance it has |
 | GET `/api/v1/account` | implemented | this account, its live sessions, `totp` (true only when a second factor is confirmed) and `identities` (the account's providers, sorted) |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
-| GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON |
+| GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON, with a link to each image |
 | DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |
 | POST `/api/v1/users/{id}/restore` | implemented | put an account waiting to be deleted back where it was; admin only |
 | GET `/api/v1/users` | implemented | who is on this install and what state they are in; admin only |
 | GET `/api/v1/users/{id}` | implemented | one account, read only, and the read is recorded; admin only |
-| GET `/api/v1/users/{id}/generations` | implemented | that account's work, read only; admin only |
+| GET `/api/v1/users/{id}/generations` | implemented | that account's work, read only, newest first, paged on `cursor`; admin only |
 | GET `/api/v1/audit` | implemented | search the audit; admin only |
 | GET `/api/v1/audit/summary` | implemented | seven days of privileged action, and the gaps in it; admin only |
 | GET `/api/v1/audit/anomalies` | implemented | administrators reading unusually many accounts; admin only |
@@ -516,7 +516,11 @@ GET /api/v1/users                     ?limit= (default 50, max 200) &cursor= &q=
                                       role and state, no work and no credential; recorded for the page
                                       read, not the whole install; an unknown cursor answers 404
 GET /api/v1/users/{id}                one account, plus how much work it holds
-GET /api/v1/users/{id}/generations    that account's generations, read only
+GET /api/v1/users/{id}/generations    that account's generations, read only, newest first, as a bare
+                                      list; ?limit= (default 50, max 200) &cursor= (the last row's id
+                                      of the previous page; a full page may be followed by more, an
+                                      empty page ends the list); an unknown cursor, or one from another
+                                      account, answers 404
 GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
 GET /api/v1/audit/summary             {"actions": {...}, "gaps": [...]} over seven days
 GET /api/v1/audit/anomalies           administrators who opened unusually many accounts
@@ -571,6 +575,7 @@ POST   /api/v1/fleet/enroll                 {"join_token", "base_url"}          
 ```
 
 - The join token lives one hour and is refused once spent. `worker_id` is `m-` followed by the 32 hex characters of the member id.
+- `worker_image` in the create answer is the worker image for this install and the chosen device: `ghcr.io/portocolom-studio/potocolom-worker:<tag>-<device>`, where the tag is the API's `POTOCOLOM_VERSION`, baked into the image when it is built: a release image carries its release tag, and a compose build carries the `POTOCOLOM_VERSION` build argument. A source build answers `dev`, which another machine cannot pull, and the studio says so next to the command. The studio puts it in the join command.
 - Each list entry has `id`, `worker_id`, `label`, `device`, `state`, `created_at`, `enrolled_at`, `last_seen_at`, `join_expires_at` and `paused`. `state` is `revoked` once revoked. Otherwise it is `waiting` (not enrolled, join still valid), `expired` (not enrolled, join past its hour), `connected` (a fleet socket for that worker id is open on this API process) or `offline`. `paused` is `true` while the member is paused, and does not change `state`.
 - These routes work in none mode and in accounts mode. In none mode, create, pause, resume and delete need an allowed `Origin`, as every state-changing request does there. In accounts mode they need the session and its CSRF header, and create also needs recent authentication and is refused with `403` otherwise.
 - Delete keeps the row and clears the join token's hash. A repeated delete also answers `204`. A revoke that changes the row closes the member's live socket on this API process (see the fleet socket rules below).
@@ -638,6 +643,8 @@ GET    /api/v1/account            profile, plan (cloud), active sessions with cr
 DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
 GET    /api/v1/account/export     200 application/json, streamed:
                                   {"account": {...}, "identities": [...],
+                                   "usage": [{...}, ...],
+                                   "usage_rollups": [{...}, ...],
                                    "generations": [{..., "assets": [...]}, ...]}
 DELETE /api/v1/account            204, the account stops now, both cookies are cleared, and it is purged in 30 days
 POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an account
@@ -645,7 +652,7 @@ POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an accoun
                                   one that passed its 30 day window
 ```
 
-- The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
+- The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The file holds the account's data, not its images: each asset carries a `url` to its image, and the image bytes are not copied into the stream. Each link needs a signed-in session of the account, so download the images before you delete the account. The `usage` rows hold the model, the action, the output category, GPU time and frame count of each event, and no prompt, image or network address. Days older than the 90 day raw window are in `usage_rollups` instead, one row per day and dimension, with counts and sums in place of single events. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
 - Deleting an account stops it immediately: the state becomes `deletion_pending`, every session is revoked, every outstanding link is spent, the realtime sockets close, and the queued and running jobs are cancelled. Nothing is destroyed yet.
 - The account remembers the state it was in, one level deep, and a restore inside the window puts it back there. An account that was suspended when it asked to be deleted comes back suspended: a restore undoes the deletion, not everything before it. Past the window the account belongs to the sweep, and a restore answers 409 rather than handing back something the next pass destroys.
 - After 30 days a sweep purges it: the objects first, because the row is the only thing that names them, then the assets, then the jobs, and only then the user row, which is the order the foreign keys demand. A purged user row no longer exists. Audit rows carry plain ids with no foreign key, so what an administrator did survives the account they did it to.

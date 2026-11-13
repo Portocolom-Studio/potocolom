@@ -1,4 +1,5 @@
 import { writeSync } from 'node:fs';
+import { GPU_CARD_DONE_KEY } from '../src/lib/gpu-setup-card.ts';
 import { TOUR_DONE_KEY } from '../src/lib/studio-tour.ts';
 
 // Every browser check reports the browser side of a failing run. The events of all
@@ -55,18 +56,23 @@ process.on('exit', () => {
 	if (process.exitCode) printPageEvents();
 });
 
-// Opens a page for the studio checks. The studio starts a first-visit tour that
-// takes focus and clicks, so these pages are marked as having seen it before any
-// script loads. test-studio-tour.mjs wants the tour and opens its own pages.
+// Opens a page for the studio checks. The studio shows a first-visit GPU card
+// and then a tour, and both take focus and clicks, so these pages are marked as
+// having seen them before any script loads. test-gpu-card.mjs and
+// test-studio-tour.mjs want them and open their own pages. Takes a browser or
+// one of its contexts.
 export async function newStudioPage(browser) {
 	const page = await browser.newPage();
-	await page.evaluateOnNewDocument((key) => {
-		try {
-			localStorage.setItem(key, '1');
-		} catch {
-			// The initial blank document can have an opaque origin.
-		}
-	}, TOUR_DONE_KEY);
+	await page.evaluateOnNewDocument(
+		(keys) => {
+			try {
+				for (const key of keys) localStorage.setItem(key, '1');
+			} catch {
+				// The initial blank document can have an opaque origin.
+			}
+		},
+		[TOUR_DONE_KEY, GPU_CARD_DONE_KEY]
+	);
 	recordPageEvents(page);
 	return page;
 }

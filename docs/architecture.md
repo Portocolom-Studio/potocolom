@@ -727,7 +727,7 @@ flowchart LR
 
 **Today versus target:** the S3 backend currently uses `{user_id}/{job_id}-attempt-{attempt}.png` master keys and returns presigned S3 GET URLs (`backend/app/storage.py`); the tier prefixes, `{asset_id}` keys and CloudFront signed URLs above are the cloud-profile target and land with billing tiers and the CDN.
 
-**Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams the same prefix as a zip alongside account JSON.
+**Account purge and export:** deletion removes the user's database rows and deletes their prefix in storage. GDPR export streams one JSON document (account, identities, usage rows, usage rollups, generations) with a link to each image, and copies no image bytes; see [decisions.md](decisions.md).
 
 Videos are out of scope at launch; the generic `mime` and `storage_key` columns make them additive later.
 
@@ -742,7 +742,7 @@ Both exist because a public service that turns prompts into images answers to GP
 
 Privacy: assets are private to their owner by default and served through short lived signed URLs in the cloud. A user can mint a share link, which makes one asset publicly reachable under an unguessable token, and revoke it later. There is no public gallery.
 
-Account deletion and data export are self serve, since GDPR makes both obligations rather than features. Deletion deactivates the account immediately and hard deletes its rows and assets within 30 days; the window also absorbs accidental or malicious deletions of a paying user's library. Export produces the account's data as JSON plus an archive of images. Self-hosted installs get both for free.
+Account deletion and data export are self serve, since GDPR makes both obligations rather than features. Deletion deactivates the account immediately and hard deletes its rows and assets within 30 days; the window also absorbs accidental or malicious deletions of a paying user's library. Export produces the account's data as one JSON document with a link to each image, not an archive of the images. Self-hosted installs get both for free.
 
 ## Usage metrics and telemetry
 

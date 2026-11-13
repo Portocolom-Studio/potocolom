@@ -167,20 +167,30 @@ async def read_user(
 async def read_user_generations(
     user_id: uuid.UUID,
     limit: int = 50,
+    cursor: uuid.UUID | None = None,
     actor: User = Depends(require_role("admin")),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     """The same view the account has of its own work, read only.
 
-    Complete, including the lineage the owner sees, because an administrator
+    Newest first, one page at a time, the way the owner's own list pages: pass
+    the last row's id as ?cursor for the next page, and an empty page ends the
+    list. Each row carries the lineage the owner sees, because an administrator
     answering a complaint about one image needs what produced it.
     """
     target = await session.get(User, user_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Not Found")
+    query = select(Job).where(Job.user_id == user_id)
+    if cursor is not None:
+        anchor = await session.get(Job, cursor)
+        if anchor is None or anchor.user_id != user_id:
+            raise HTTPException(status_code=404, detail="unknown cursor")
+        query = query.where(
+            tuple_(Job.created_at, Job.id) < (anchor.created_at, anchor.id)
+        )
     rows = (await session.execute(
-        select(Job).where(Job.user_id == user_id)
-        .order_by(Job.created_at.desc(), Job.id.desc())
+        query.order_by(Job.created_at.desc(), Job.id.desc())
         .limit(min(max(limit, 1), 200))
     )).scalars().all()
     await _seen(actor, user_id)
