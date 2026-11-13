@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from starlette.websockets import WebSocketDisconnect
 
-from app import db, jobs, realtime, registry, worker_authority
+from app import db, gpu_samples, jobs, realtime, registry, worker_authority
 from app.main import app
 from app.protocol6 import validate_message
 from app.settings import get_settings
@@ -167,27 +167,36 @@ async def wait_for_identity(worker_id: str) -> None:
     raise AssertionError("the worker identity row never persisted")
 
 
+async def wait_for_background_writes() -> None:
+    """Wait for this loop's fire-and-forget writes to finish. The identity and
+    heartbeat tasks are both tracked in gpu_samples._background_tasks. A write
+    may fail or never run, so this waits for the task, not for a row. A write
+    still running after 5 s is cancelled, so cleanup cannot hang on it."""
+    loop = asyncio.get_running_loop()
+    pending = [
+        task
+        for task in gpu_samples._background_tasks
+        if task.get_loop() is loop and not task.done()
+    ]
+    if not pending:
+        return
+    _, hung = await asyncio.wait(pending, timeout=5)
+    for task in hung:
+        task.cancel()
+    await asyncio.gather(*hung, return_exceptions=True)
+
+
 async def drop_worker_rows(worker_id: str) -> None:
     """Delete the identity and heartbeat sample rows this file wrote.
 
     Registration and heartbeat persist both, conftest clears neither, and
     tests/test_metrics.py reads the sample table expecting it to hold what its
-    own heartbeat wrote and nothing else. The identity row is waited for
-    first: it is written by a background task, and a delete that ran before
-    that task would leave the row behind anyway.
+    own heartbeat wrote and nothing else. The identity row may never be written
+    (a socket closed before the handler schedules it), so cleanup deletes
+    whatever exists rather than asserting that it appeared.
     """
     assert db.session_factory is not None
-    for _ in range(250):
-        async with db.session_factory() as session:
-            present = await session.scalar(
-                text("SELECT count(*) FROM workers WHERE worker_id = :worker_id"),
-                {"worker_id": worker_id},
-            )
-        if present:
-            break
-        await asyncio.sleep(0.02)
-    else:
-        raise AssertionError("the worker identity row never persisted")
+    await wait_for_background_writes()
     async with db.session_factory() as session:
         await session.execute(
             text("DELETE FROM gpu_samples WHERE worker_id = :worker_id"),
@@ -538,3 +547,84 @@ def test_empty_v6_store_install_activates_grant(monkeypatch):
             assert row["manifests"][0]["id"] == model["id"]
             assert row["execution_envelope"]["models"][0]["id"] == model["id"]
             request_work_grant(ws, worker_id, incarnation)
+
+
+async def wait_for_list(events: list[str], message: str) -> None:
+    for _ in range(250):
+        if events:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(message)
+
+
+async def count_identity_rows(worker_id: str) -> int:
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        return await session.scalar(
+            text("SELECT count(*) FROM workers WHERE worker_id = :worker_id"),
+            {"worker_id": worker_id},
+        )
+
+
+@pytest.mark.db
+def test_cleanup_survives_an_identity_write_that_never_lands(monkeypatch):
+    """The identity write runs as a background task that can fail or be
+    cancelled before it commits. Closing the client must still clean up."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-nowrite-{uuid.uuid4()}"
+    started: list[str] = []
+
+    async def never_writes(*_args):
+        started.append(worker_id)
+
+    monkeypatch.setattr(gpu_samples, "record_worker_identity", never_writes)
+    try:
+        with protocol6_client(worker_id) as client:
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as ws:
+                ws.send_json(hello(worker_id, [manifest(f"{worker_id}-model")]))
+                assert ws.receive_json()["protocol_version"] == 6
+                # The identity write is scheduled after the handler's
+                # post-registration database work, so wait for it to start
+                # while the socket is still open.
+                client.portal.call(
+                    wait_for_list, started, "the worker identity write was never scheduled"
+                )
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.db
+def test_cleanup_waits_for_an_identity_write_still_in_flight(monkeypatch):
+    """A write that is still running when the socket closes must finish before
+    cleanup deletes rows, or it lands after the delete and is left behind."""
+    root_keys(monkeypatch)
+    worker_id = f"p6-slowwrite-{uuid.uuid4()}"
+    real_write = gpu_samples.record_worker_identity
+    started: list[str] = []
+    finished: list[str] = []
+
+    async def slow_write(*args):
+        started.append(worker_id)
+        # Stands in for a slow database commit.
+        await asyncio.sleep(0.2)
+        await real_write(*args)
+        finished.append(worker_id)
+
+    monkeypatch.setattr(gpu_samples, "record_worker_identity", slow_write)
+    try:
+        with protocol6_client(worker_id) as client:
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as ws:
+                ws.send_json(hello(worker_id, [manifest(f"{worker_id}-model")]))
+                assert ws.receive_json()["protocol_version"] == 6
+                client.portal.call(
+                    wait_for_list, started, "the worker identity write was never scheduled"
+                )
+            # The socket is closed and the write is still sleeping. Cleanup
+            # must wait for it, or its row lands after the delete.
+            client.portal.call(drop_worker_rows, worker_id)
+            client.portal.call(wait_for_list, finished, "the worker identity write never finished")
+            assert client.portal.call(count_identity_rows, worker_id) == 0
+    finally:
+        get_settings.cache_clear()
