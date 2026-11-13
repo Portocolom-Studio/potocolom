@@ -8,7 +8,7 @@
 			try {
 				if (localStorage.getItem('landing-mode') === 'light') {
 					document.documentElement.dataset.landingMode = 'light';
-					if (/^\/(whitepaper|benchmark|illusions)?\/?$/.test(location.pathname))
+					if (/^\/(whitepaper|benchmark|illusions|pricing)?\/?$/.test(location.pathname))
 						document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f3f5f8');
 				}
 			} catch (e) {}

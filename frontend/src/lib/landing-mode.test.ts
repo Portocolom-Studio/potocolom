@@ -101,7 +101,7 @@ test('the pre-paint script lightens the browser bar on landing pages only', asyn
 		});
 		return meta.content;
 	};
-	for (const path of ['/', '/whitepaper', '/benchmark', '/illusions']) {
+	for (const path of ['/', '/whitepaper', '/benchmark', '/illusions', '/pricing']) {
 		assert.equal(colorAfterLoad(path), '#f3f5f8', path);
 	}
 	for (const path of ['/app', '/login', '/privacy']) {

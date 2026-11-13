@@ -66,9 +66,9 @@
 		grid-template-columns: minmax(0, 0.7fr) minmax(0, 1fr);
 		gap: 4rem;
 		align-items: end;
-		max-width: 1344px;
+		max-width: 78rem;
 		margin-inline: auto;
-		padding: clamp(4.5rem, 9vw, 7.5rem) 3rem;
+		padding: clamp(3.5rem, 9vw, 6.5rem) clamp(1rem, 4vw, 3rem);
 	}
 
 	.copy {

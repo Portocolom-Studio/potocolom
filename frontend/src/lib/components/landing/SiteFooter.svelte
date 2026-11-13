@@ -18,6 +18,8 @@
 			| '/illusions'
 			| '/legal'
 			| '/privacy'
+			| '/pricing'
+			| '/docs/guide/quickstart'
 			| '/docs/guide/introduction'
 	) => (PUBLIC_SITE_MODE === 'landing' ? resolve(path) : `https://potocolom.leonfuller.com${path}`);
 	const year = new Date().getFullYear();
@@ -42,12 +44,16 @@
 				<a href={pageHref('/benchmark')}>{t('nav.benchmark')}</a>
 				<a href={pageHref('/illusions')}>{t('nav.illusions')}</a>
 				<a href={pageHref('/docs/guide/introduction')}>{t('nav.docs')}</a>
+				<a href={pageHref('/pricing')}>{t('nav.pricing')}</a>
 			</div>
 			<div>
 				<h2>{t('footer.col_source')}</h2>
 				<a href={repoUrl}>{t('footer.github')}</a>
 				<a href={`${repoUrl}/tree/main/docs`}>{t('footer.docs')}</a>
+				<a href={pageHref('/docs/guide/quickstart')}>{t('footer.selfhost_guide')}</a>
+				<a href={`${repoUrl}/releases`}>{t('footer.changelog')}</a>
 				<a href={`${repoUrl}/blob/main/LICENSE`}>{t('footer.license')}</a>
+				<a href={`${repoUrl}/security/policy`}>{t('footer.security')}</a>
 			</div>
 			<div>
 				<h2>{t('footer.col_company')}</h2>

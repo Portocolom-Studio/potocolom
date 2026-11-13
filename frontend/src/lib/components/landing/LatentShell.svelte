@@ -12,7 +12,7 @@
 		current,
 		children
 	}: {
-		current?: 'whitepaper' | 'benchmark' | 'illusions';
+		current?: 'whitepaper' | 'benchmark' | 'illusions' | 'pricing';
 		children: Snippet;
 	} = $props();
 </script>
@@ -35,6 +35,9 @@
 			</a>
 			<a href={resolve('/illusions')} aria-current={current === 'illusions' ? 'page' : undefined}>
 				{t('nav.illusions')}
+			</a>
+			<a href={resolve('/pricing')} aria-current={current === 'pricing' ? 'page' : undefined}>
+				{t('nav.pricing')}
 			</a>
 		</nav>
 		<div class="chrome-actions">

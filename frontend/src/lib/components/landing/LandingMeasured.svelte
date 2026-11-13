@@ -11,6 +11,7 @@
 		t('measured.body')
 			.replace('{model}', leader.name)
 			.replace('{gpu}', measured.gpu)
+			.replace('{models}', String(measured.models))
 			.replace('{jobs}', jobs)
 	);
 
@@ -62,9 +63,9 @@
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		gap: clamp(2.5rem, 5vw, 4rem);
 		align-items: end;
-		max-width: 84rem;
+		max-width: 78rem;
 		margin-inline: auto;
-		padding: clamp(4.5rem, 10vw, 9rem) 3rem;
+		padding: clamp(3.5rem, 9vw, 6.5rem) clamp(1rem, 4vw, 3rem);
 	}
 
 	h2 {
@@ -74,13 +75,13 @@
 
 	.figure {
 		display: flex;
+		font-size: clamp(6rem, 17vw, 15rem);
 		align-items: baseline;
 		margin-block-start: clamp(2.5rem, 5vw, 4rem);
 		margin-inline-start: -0.04em;
 	}
 
 	.value {
-		font-size: clamp(6rem, 19vw, 17.5rem);
 		font-weight: 700;
 		line-height: 0.8;
 		letter-spacing: -0.07em;
@@ -140,7 +141,7 @@
 		min-width: 4.5rem;
 		padding-inline: 0.75rem;
 		border-radius: 6px;
-		background: var(--k-panel);
+		background: color-mix(in oklch, var(--k-ink) 10%, transparent);
 		color: var(--k-ink);
 		font-size: 0.9rem;
 		font-weight: 500;

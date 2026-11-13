@@ -5,6 +5,7 @@ import { measured } from './landing-measured.ts';
 
 type BenchmarkReport = {
 	total_jobs: number;
+	models: string[];
 	conditions: { gpu: string };
 	model_stats: { model_id: string; avg_gpu_ms: number | null }[];
 };
@@ -15,7 +16,10 @@ const report: BenchmarkReport = JSON.parse(
 
 test('landing numbers match the public benchmark report', () => {
 	assert.equal(measured.totalJobs, report.total_jobs);
-	assert.equal(measured.gpu, report.conditions.gpu);
+	assert.equal(measured.models, report.models.length);
+	// The report names the card as "AMD RX 7600 XT gfx1102"; the landing uses its retail name.
+	assert.ok(report.conditions.gpu.includes('RX 7600 XT'), report.conditions.gpu);
+	assert.ok(measured.gpu.includes('RX 7600 XT'));
 
 	const seconds = measured.rows.map((row) => row.seconds);
 	assert.deepEqual(

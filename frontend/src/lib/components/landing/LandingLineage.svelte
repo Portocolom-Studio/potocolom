@@ -7,7 +7,7 @@
 			body: 'lineage.step1_body',
 			alt: 'lineage.alt1',
 			src: '/images/landing/lineage-generate.webp',
-			size: 150,
+			size: 220,
 			link: 'lineage.link1'
 		},
 		{
@@ -15,7 +15,7 @@
 			body: 'lineage.step2_body',
 			alt: 'lineage.alt2',
 			src: '/images/landing/lineage-edit.webp',
-			size: 200,
+			size: 300,
 			link: 'lineage.link2'
 		},
 		{
@@ -23,7 +23,7 @@
 			body: 'lineage.step3_body',
 			alt: 'lineage.alt3',
 			src: '/images/landing/lineage-upscale.webp',
-			size: 280,
+			size: 420,
 			link: null
 		}
 	] as const;
@@ -68,9 +68,9 @@
 	/* Captions sit above the frames so the chip after each image lands
 	   between two figures in the phone stack. */
 	.lineage {
-		max-width: 1344px;
+		max-width: 78rem;
 		margin-inline: auto;
-		padding: clamp(4.5rem, 9vw, 8rem) 3rem;
+		padding: clamp(3.5rem, 9vw, 6.5rem) clamp(1rem, 4vw, 3rem);
 	}
 
 	.head {
@@ -96,7 +96,7 @@
 	}
 
 	.row {
-		--gap: clamp(2rem, 12vw, 12.5rem);
+		--gap: clamp(1.5rem, 8vw, 6.5rem);
 		display: flex;
 		align-items: flex-end;
 		min-width: 0;

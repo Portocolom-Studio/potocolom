@@ -16,12 +16,17 @@
 	import GitForkIcon from '@lucide/svelte/icons/git-fork';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import PlayIcon from '@lucide/svelte/icons/play';
+	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import LandingFaq from './LandingFaq.svelte';
+	import LandingLineage from './LandingLineage.svelte';
 	import LandingLoader, {
 		hasCompletedLandingEntrance,
 		type LandingAsset,
 		type LandingEntrancePhase
 	} from './LandingLoader.svelte';
+	import LandingMeasured from './LandingMeasured.svelte';
+	import LandingPricing from './LandingPricing.svelte';
+	import LandingStrokes from './LandingStrokes.svelte';
 	import ParticleField from './ParticleField.svelte';
 	import SalonGrid, { type SalonTile } from './SalonGrid.svelte';
 	import SiteFooter from './SiteFooter.svelte';
@@ -98,15 +103,7 @@
 		}
 		return [...unique.values()];
 	});
-	const capabilities = ['live', 'gen', 'up', 'edit'] as const;
 	const forkPoints = ['b1', 'b2', 'b3'] as const;
-	const bullets = ['b1', 'b2', 'b3'] as const;
-	const tiers = [
-		{ key: 't1', price: '9', featured: false },
-		{ key: 't2', price: '24', featured: true },
-		{ key: 't3', price: '59', featured: false },
-		{ key: 't4', price: null, featured: false }
-	] as const;
 
 	// The headline types real sample prompts, one character at a time.
 	let typed = $state('');
@@ -214,7 +211,9 @@
 			<a href={resolve('/benchmark')}>{t('nav.benchmark')}</a>
 			<a href={resolve('/illusions')}>{t('nav.illusions')}</a>
 			<a href={resolve('/docs/guide/introduction')}>{t('nav.docs')}</a>
+			<a href={resolve('/pricing')}>{t('nav.pricing')}</a>
 		</nav>
+		<div class="header-lang"><LanguageToggle /></div>
 		<a class="pill pill-ghost" href={PUBLIC_WAITLIST_URL ? waitlistHref : resolve('/login')}>
 			{PUBLIC_WAITLIST_URL ? t('wl.cta') : t('auth.login.title')}
 		</a>
@@ -288,20 +287,9 @@
 			</div>
 		</section>
 
-		<section id="does" class="jobs">
-			<div class="head">
-				<h2>{t('caps.title')}</h2>
-				<p>{t('caps.sub')}</p>
-			</div>
-			<div class="jobs-grid">
-				{#each capabilities as capability (capability)}
-					<article>
-						<h3>{t(`caps.${capability}_title`)}</h3>
-						<p>{t(`caps.${capability}_body`)}</p>
-					</article>
-				{/each}
-			</div>
-		</section>
+		<LandingStrokes />
+
+		<LandingLineage />
 
 		<section id="work" class="work">
 			<div class="work-stage" bind:this={workStage}>
@@ -321,44 +309,7 @@
 			<PromptMarquee />
 		</section>
 
-		<section id="pricing" class="pricing">
-			<div class="head">
-				<h2>{t('pricing.title')}</h2>
-				<p>{t('pricing.sub')}</p>
-			</div>
-			<div class="tiers">
-				{#each tiers as tier (tier.key)}
-					<article class:featured={tier.featured}>
-						<div class="tier-head">
-							<span>{t(`pricing.${tier.key}_name`)}</span>
-							{#if tier.featured}
-								<span class="tier-badge">{t('pricing.t2_badge')}</span>
-							{/if}
-						</div>
-						<p class="tier-price">
-							{#if tier.price}
-								<span class="amount">&euro;{tier.price}</span>
-								<span class="term">{t('pricing.month')}</span>
-							{:else}
-								<span class="amount amount-word">{t('pricing.t4_price')}</span>
-							{/if}
-						</p>
-						<ul>
-							{#each bullets as bullet (bullet)}
-								<li>
-									<CheckIcon aria-hidden="true" />
-									{t(`pricing.${tier.key}_${bullet}`)}
-								</li>
-							{/each}
-						</ul>
-						{#if !tier.price}
-							<a class="text-link" href="mailto:admin@leonfuller.com">{t('footer.contact')}</a>
-						{/if}
-					</article>
-				{/each}
-			</div>
-			<p class="trial">{t('pricing.trial')}</p>
-		</section>
+		<LandingMeasured />
 
 		<section id="run" class="run">
 			<h2>{t('fork.title')}</h2>
@@ -452,6 +403,8 @@
 				</div>
 			</div>
 
+			<LandingPricing />
+
 			<LandingFaq />
 		</section>
 	</main>
@@ -520,6 +473,24 @@
 
 	header nav a:hover {
 		color: var(--k-ink);
+	}
+
+	/* The flags sit in the header from the tablet width up; below it they stay
+	   in the bottom dock, where a thumb reaches them. */
+	.header-lang {
+		display: none;
+	}
+
+	.header-lang :global([data-slot='toggle-group']) {
+		border-color: var(--k-line);
+	}
+
+	.header-lang :global([data-slot='toggle-group-item']) {
+		border: 0;
+	}
+
+	.header-lang :global([data-slot='toggle-group-item'][data-state='on']) {
+		background: var(--k-line);
 	}
 
 	/* The terminal stays dark navy in both themes, but the prompt path inherits
@@ -792,8 +763,6 @@
 	}
 
 	/* Shared section furniture ---------------------------------------------- */
-	.jobs,
-	.pricing,
 	.run {
 		display: grid;
 		gap: clamp(1.75rem, 4vw, 3rem);
@@ -802,47 +771,13 @@
 		padding: clamp(3.5rem, 9vw, 6.5rem) clamp(1rem, 4vw, 3rem);
 	}
 
-	.head {
-		display: grid;
-		gap: 0.9rem;
-		justify-items: center;
-		max-width: 56ch;
-		margin-inline: auto;
-		text-align: center;
-	}
-
 	h2 {
 		font-size: clamp(1.9rem, 3.8vw, 3.1rem);
 		line-height: 1.02;
 	}
 
-	h3 {
-		font-size: 1.15rem;
-		font-weight: 700;
-	}
-
-	.head p,
-	.jobs-grid p,
-	.trial,
 	.work-plate p {
 		color: var(--k-muted);
-	}
-
-	.jobs-grid {
-		display: grid;
-		gap: 1.75rem;
-	}
-
-	.jobs-grid article {
-		display: grid;
-		gap: 0.45rem;
-		padding-block-start: 0.9rem;
-		border-block-start: 1px solid var(--k-line);
-	}
-
-	.jobs-grid p {
-		max-width: 34ch;
-		font-size: 0.92rem;
 	}
 
 	/* Work ------------------------------------------------------------------ */
@@ -916,75 +851,6 @@
 		font-size: 0.85rem;
 	}
 
-	/* Pricing ---------------------------------------------------------------- */
-	.tiers {
-		display: grid;
-		gap: 1rem;
-	}
-
-	.tiers article {
-		display: grid;
-		align-content: start;
-		gap: 0.9rem;
-		padding: clamp(1.25rem, 2vw, 1.5rem);
-		border: 1px solid var(--k-line);
-		border-radius: 1.25rem;
-		background: var(--k-panel);
-	}
-
-	.tiers article.featured {
-		border-color: var(--k-accent);
-	}
-
-	.tier-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		color: var(--k-muted);
-		font-size: 0.9rem;
-	}
-
-	.tier-badge {
-		padding: 0.2rem 0.6rem;
-		border-radius: 999px;
-		background: var(--k-accent);
-		color: var(--k-accent-ink);
-		font-size: 0.72rem;
-		font-weight: 700;
-		white-space: nowrap;
-	}
-
-	.tier-price {
-		display: flex;
-		align-items: baseline;
-		gap: 0.45rem;
-	}
-
-	.amount {
-		font-size: clamp(1.9rem, 2.4vw, 2.3rem);
-		font-weight: 700;
-		font-variant-numeric: tabular-nums;
-		letter-spacing: -0.04em;
-	}
-
-	.amount-word {
-		font-size: clamp(1.5rem, 2vw, 1.9rem);
-	}
-
-	.term {
-		color: var(--k-muted);
-		font-size: 0.9rem;
-	}
-
-	.text-link {
-		justify-self: start;
-		color: var(--k-focus);
-		font-weight: 700;
-		text-decoration: underline;
-		text-underline-offset: 0.25em;
-	}
-
 	/* Run -------------------------------------------------------------------- */
 	/* Wider than the other blocks, and weighted toward the terminal: the clone
 	   line is 74 monospace characters and was scrolling sideways inside it. */
@@ -1010,7 +876,6 @@
 		background: var(--k-panel);
 	}
 
-	.tiers ul,
 	.run-card ul {
 		display: grid;
 		gap: 0.9rem;
@@ -1019,7 +884,6 @@
 		list-style: none;
 	}
 
-	.tiers li,
 	.run-card li {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr);
@@ -1029,11 +893,6 @@
 		line-height: 1.55;
 	}
 
-	.tiers li {
-		font-size: 0.92rem;
-	}
-
-	.tiers li :global(svg),
 	.run-card li :global(svg),
 	.pill :global(svg) {
 		width: 1rem;
@@ -1041,7 +900,6 @@
 		flex: none;
 	}
 
-	.tiers li :global(svg),
 	.run-card li :global(svg) {
 		margin-block-start: 0.25rem;
 		color: var(--k-focus);
@@ -1223,12 +1081,16 @@
 	}
 
 	@media (min-width: 48rem) {
+		header {
+			grid-template-columns: auto minmax(0, 1fr) auto auto;
+		}
+
 		header nav {
 			display: flex;
 		}
 
-		.jobs-grid {
-			grid-template-columns: repeat(4, minmax(0, 1fr));
+		.header-lang {
+			display: block;
 		}
 
 		.run-body {
@@ -1236,18 +1098,6 @@
 		}
 
 		.split {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-
-	@media (min-width: 64rem) {
-		.tiers {
-			grid-template-columns: repeat(4, minmax(0, 1fr));
-		}
-	}
-
-	@media (min-width: 48rem) and (max-width: 64rem) {
-		.tiers {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}

@@ -9,7 +9,7 @@
 
 <Seo titleKey="pricing.page_title" descriptionKey="pricing.page_description" path="/pricing" />
 
-<LatentShell>
+<LatentShell current="pricing">
 	<main id="main">
 		<h1 class="visually-hidden">{t('nav.pricing')}</h1>
 		<LandingPricing full />
@@ -19,6 +19,12 @@
 <ScrollToTop />
 
 <style>
+	/* Above the shell's fixed canvas and veil, as on the other document pages. */
+	main {
+		position: relative;
+		z-index: 1;
+	}
+
 	.visually-hidden {
 		position: absolute;
 		width: 1px;
