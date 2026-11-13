@@ -10,10 +10,10 @@ usage: scripts/restore.sh <backup-dir>
 
 Restores a backup made by scripts/backup.sh into a new, empty compose project.
 It verifies SHA256SUMS and refuses if any of database.dump, assets.tar or env
-is missing or does not match, refuses a project that already has a pgdata or
-assets volume, then starts PostgreSQL alone, restores the dump, unpacks
-assets.tar into the new assets volume, and starts the stack with the backup's
-env file (which carries AUTH_MODE, ROOT_KEYS and every other setting).
+is missing or does not match, refuses a project that already has any volume
+the compose file declares, then starts PostgreSQL alone, restores the dump,
+unpacks assets.tar into the new assets volume, and starts the stack with the
+backup's env file (which carries AUTH_MODE, ROOT_KEYS and every other setting).
 
 The target project is COMPOSE_PROJECT_NAME when it is set, else the project
 name recorded in the backup's env file.
@@ -86,11 +86,17 @@ fi
 COMPOSE=(docker compose -p "$PROJECT" --env-file "$ENV_FILE")
 for file in "${FILES[@]}"; do COMPOSE+=(-f "$file"); done
 
-for volume in pgdata assets; do
+# Every volume the compose file declares, so a new volume is guarded without a
+# second list. The profile wildcard is needed: without it, config leaves out the
+# volumes of profiled services (models and hf-cache belong to gpu and rocm). A
+# list that cannot be read refuses, because the guard would then pass anything.
+volumes="$("${COMPOSE[@]}" --profile '*' config --volumes)" \
+	|| die "cannot list the volumes of ${FILES[*]}; refusing to restore into $PROJECT"
+while read -r volume; do
 	if docker volume inspect "${PROJECT}_${volume}" >/dev/null 2>&1; then
 		die "$PROJECT already has a ${volume} volume; restore into a new, empty project (set COMPOSE_PROJECT_NAME)"
 	fi
-done
+done <<<"$volumes"
 
 CREATED=0
 DATA_DONE=0

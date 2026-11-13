@@ -37,7 +37,7 @@ When the backup finishes or fails, the script starts the API again if it was run
 
 ## Restore
 
-Restore into a new, empty project. `restore.sh` refuses a project that already has a `pgdata` or `assets` volume.
+Restore into a new, empty project. `restore.sh` refuses a project that already has any volume the compose file declares, such as `pgdata`, `assets`, `models` or `hf-cache`.
 
 The target project name is `COMPOSE_PROJECT_NAME` when that is set. If it is not set, the script uses the name recorded in the backup's env file. If that is not set either, it uses the name of the compose file's directory.
 

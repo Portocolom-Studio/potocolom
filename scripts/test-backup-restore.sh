@@ -24,6 +24,7 @@ SRC="p693-src-${CI_RUN_TAG:-$$}"
 DST="p693-dst-${CI_RUN_TAG:-$$}"
 NEG="p693-neg-${CI_RUN_TAG:-$$}"
 NOREF="p693-noref-${CI_RUN_TAG:-$$}"
+ONLYMODELS="p693-models-${CI_RUN_TAG:-$$}"
 EMAIL="admin@example.com"
 PASSWORD="backup-restore-proof-password"
 COMPOSE_FILE="$SMOKE_FILE"
@@ -94,16 +95,23 @@ noref() {
 	docker compose -p "$NOREF" --env-file "$BACKUP/env" "${file_flags[@]}" "$@"
 }
 
+# Holds only a hand-made models volume, which restore.sh must refuse.
+onlymodels() {
+	docker compose -p "$ONLYMODELS" --env-file "$BACKUP/env" "${file_flags[@]}" "$@"
+}
+
 cleanup() {
 	status=$?
 	trap - EXIT
-	for project in src dst neg noref; do
+	for project in src dst neg noref onlymodels; do
 		"$project" down -v --remove-orphans >/dev/null 2>&1 || true
 	done
+	# A volume made by hand has no compose label, so down -v does not remove it.
+	docker volume rm -f "${ONLYMODELS}_models" >/dev/null 2>&1 || true
 	# The images are tagged per project and built only by a run that did not
 	# pin published ones; keeping them grows the image list on every run.
 	if [[ -z "${COMPOSE_SMOKE_API_IMAGE:-}" ]]; then
-		for project in "$SRC" "$DST" "$NEG" "$NOREF"; do
+		for project in "$SRC" "$DST" "$NEG" "$NOREF" "$ONLYMODELS"; do
 			docker image rm -f "${project}-api" "${project}-worker-sim" \
 				>/dev/null 2>&1 || true
 		done
@@ -416,6 +424,28 @@ elif ! grep -q "missing database.dump" "$WORK/refuse.log"; then
 	cat "$WORK/refuse.log" >&2
 else
 	pass "restore.sh refused a backup with database.dump removed"
+fi
+
+echo "checking a restore into a project that has only a models volume"
+# The guard checks every volume the compose file declares, not only pgdata and
+# assets. The smoke file declares no models volume, so this check uses the
+# production file, which does. The refusal itself is the check: under the
+# default profiles the failure cleanup does not remove a models volume, so a
+# restore that merely failed would leave it in place.
+docker volume create "${ONLYMODELS}_models" >/dev/null
+if COMPOSE_PROJECT_NAME="$ONLYMODELS" COMPOSE_FILE="$ROOT/deploy/compose/compose.yml" \
+	"$SCRIPTS/restore.sh" "$BACKUP" >"$WORK/refuse-models.log" 2>&1; then
+	fail "restore.sh restored into a project that already had a models volume"
+elif ! grep -qF "already has a models volume" "$WORK/refuse-models.log"; then
+	fail "restore.sh refused the models volume for another reason"
+	cat "$WORK/refuse-models.log" >&2
+else
+	pass "restore.sh refused a project that has only a models volume"
+fi
+if docker volume inspect "${ONLYMODELS}_models" >/dev/null 2>&1; then
+	pass "the models volume survived the refused restore"
+else
+	fail "the models volume survived the refused restore"
 fi
 
 echo "checking a backup whose assets.tar lacks one image"

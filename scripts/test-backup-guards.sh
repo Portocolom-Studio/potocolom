@@ -70,7 +70,12 @@ fake_docker() {
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${DOCKER_LOG:?}"
 case "$*" in
-	"compose version" | "volume inspect"*) exit 1 ;;
+	"compose version") exit 1 ;;
+	*"config --volumes")
+		if [[ -n "${FAKE_CONFIG_FAILS:-}" ]]; then exit 1; fi
+		printf '%s\n' pgdata assets models hf-cache ;;
+	"volume inspect"*"${FAKE_EXISTING_VOLUME:-@none}") exit 0 ;;
+	"volume inspect"*) exit 1 ;;
 esac
 exit 0
 EOF
@@ -107,6 +112,29 @@ restore_project_for() {
 	project_passed_to_compose "$dir/docker.log"
 }
 
+# Refusal before anything is created: restore.sh must exit non-zero and never
+# reach compose up. Arguments after the label are VAR=value pairs for the fake.
+refuses_before_create() {
+	local label="$1" dir backup rc=0
+	shift
+	dir="$(mktemp -d "$tmp/refuse.XXXXXX")"
+	backup="$dir/backup"
+	fake_docker "$dir/bin"
+	mkdir -p "$backup"
+	for name in database.dump assets.tar; do printf 'previous\n' >"$backup/$name"; done
+	printf 'COMPOSE_PROJECT_NAME=guard-project\n' >"$backup/env"
+	(cd "$backup" && sha256sum database.dump assets.tar env >SHA256SUMS)
+	env -u COMPOSE_PROJECT_NAME PATH="$dir/bin:$PATH" DOCKER_LOG="$dir/docker.log" \
+		COMPOSE_FILE="$repo/deploy/compose/compose.yml" "$@" \
+		bash "$repo/scripts/restore.sh" "$backup" >/dev/null 2>&1 || rc=$?
+	if [[ "$rc" -eq 0 ]] || grep -q -- ' up ' "$dir/docker.log"; then
+		printf 'FAIL %s: restore.sh went on to create the project (exit %s)\n' "$label" "$rc"
+		failed=1
+		return
+	fi
+	printf 'ok %s\n' "$label"
+}
+
 # label | env file line | project Compose uses. The plain line is the control;
 # the directory name fallback is "compose", so every other want differs from it.
 forms=(
@@ -128,4 +156,6 @@ for form in "${forms[@]}"; do
 		printf 'ok %s-project-%s\n' "$script" "$label"
 	done
 done
+refuses_before_create restore-refuses-models-only FAKE_EXISTING_VOLUME=_models
+refuses_before_create restore-refuses-unreadable-volume-list FAKE_CONFIG_FAILS=1
 exit "$failed"
