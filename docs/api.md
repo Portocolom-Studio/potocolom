@@ -110,7 +110,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | POST `/api/v1/users/{id}/restore` | implemented | put an account waiting to be deleted back where it was; admin only |
 | GET `/api/v1/users` | implemented | who is on this install and what state they are in; admin only |
 | GET `/api/v1/users/{id}` | implemented | one account, read only, and the read is recorded; admin only |
-| GET `/api/v1/users/{id}/generations` | implemented | that account's work, read only; admin only |
+| GET `/api/v1/users/{id}/generations` | implemented | that account's work, read only, newest first, paged on `cursor`; admin only |
 | GET `/api/v1/audit` | implemented | search the audit; admin only |
 | GET `/api/v1/audit/summary` | implemented | seven days of privileged action, and the gaps in it; admin only |
 | GET `/api/v1/audit/anomalies` | implemented | administrators reading unusually many accounts; admin only |
@@ -516,7 +516,11 @@ GET /api/v1/users                     ?limit= (default 50, max 200) &cursor= &q=
                                       role and state, no work and no credential; recorded for the page
                                       read, not the whole install; an unknown cursor answers 404
 GET /api/v1/users/{id}                one account, plus how much work it holds
-GET /api/v1/users/{id}/generations    that account's generations, read only
+GET /api/v1/users/{id}/generations    that account's generations, read only, newest first, as a bare
+                                      list; ?limit= (default 50, max 200) &cursor= (the last row's id
+                                      of the previous page; a full page may be followed by more, an
+                                      empty page ends the list); an unknown cursor, or one from another
+                                      account, answers 404
 GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
 GET /api/v1/audit/summary             {"actions": {...}, "gaps": [...]} over seven days
 GET /api/v1/audit/anomalies           administrators who opened unusually many accounts
