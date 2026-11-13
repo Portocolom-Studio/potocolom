@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { setupRequiredFrom, setupStepFrom, setupTokenFromHash } from './setup-flow.ts';
 
-const token = 'Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM';
+const token = 'Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM'; // gitleaks:allow (made-up fixture token, not a credential)
 
 test('the setup token is the hash without its marker', () => {
 	assert.equal(setupTokenFromHash(`#${token}`), token);

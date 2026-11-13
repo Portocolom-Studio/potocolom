@@ -11,8 +11,8 @@ import { recordPageEvents } from './studio-test-page.mjs';
 // card against fixtures. Run after `PUBLIC_SITE_MODE= npm run build`.
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const timeoutMs = 15_000;
-const token = 'Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM';
-const otherToken = 'Zk3_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2nQ';
+const token = 'Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM'; // gitleaks:allow (made-up fixture token, not a credential)
+const otherToken = 'Zk3_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2nQ'; // gitleaks:allow (made-up fixture token, not a credential)
 const password = 'a setup password of sixteen characters';
 const contentTypes = {
 	'.html': 'text/html',

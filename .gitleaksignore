@@ -20,14 +20,12 @@ frontend/src/lib/hero-images.json:generic-api-key:117
 # hero-images.json line 189 today: a hero image file name, not a
 # credential.
 frontend/src/lib/hero-images.json:generic-api-key:189
-# setup-flow.test.ts and test-setup-page.mjs in this commit and today: made-up
-# setup link tokens used as test fixtures, not credentials.
+# setup-flow.test.ts and test-setup-page.mjs in this commit: made-up setup link
+# tokens used as test fixtures, not credentials. Their lines in the working tree
+# carry a gitleaks:allow marker instead of a fingerprint.
 a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/src/lib/setup-flow.test.ts:generic-api-key:6
 a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:13
 a1512dcc3eeedcd863a28bf5d172bd8fa88d3340:frontend/scripts/test-setup-page.mjs:generic-api-key:14
-frontend/scripts/test-setup-page.mjs:generic-api-key:14
-frontend/scripts/test-setup-page.mjs:generic-api-key:15
-frontend/src/lib/setup-flow.test.ts:generic-api-key:6
 # worker/worker/hub_lock.json in this commit and today: Hugging Face file
 # hashes (40-character git blob ids and 64-character sha256 values) from the
 # public pinned Hub listings, not credentials. A regenerated lock file moves
