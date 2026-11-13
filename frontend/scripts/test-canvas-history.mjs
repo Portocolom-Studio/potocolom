@@ -3331,7 +3331,8 @@ function stripFixtures(starred = { body: [] }) {
 	};
 }
 
-const LINEAGE_PIXEL = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#dc2626"/></svg>')}`;
+// Same origin, so the page CSP (img-src 'self') lets it load.
+const LINEAGE_PIXEL = '/favicon.svg';
 const LINEAGE_ROOT_JOB = '13000000-0000-4000-8000-000000000001';
 const LINEAGE_FANOUT_JOB = '13000000-0000-4000-8000-000000000002';
 

@@ -663,7 +663,11 @@ function watchBrowser(page) {
 		log.responses.push({ status: response.status(), url: response.url() });
 	});
 	page.on('requestfailed', (request) => {
-		log.requestFailures.push({ url: request.url(), error: request.failure()?.errorText });
+		const error = request.failure()?.errorText;
+		// The studio aborts its own in-flight fetches when the view changes; a
+		// cancellation is not a failure.
+		if (error === 'net::ERR_ABORTED') return;
+		log.requestFailures.push({ url: request.url(), error });
 	});
 	page.on('pageerror', (error) => log.pageErrors.push(error.stack ?? error.message));
 	page.on('console', (message) => {
