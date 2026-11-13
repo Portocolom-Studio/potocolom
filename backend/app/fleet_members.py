@@ -164,6 +164,12 @@ async def revoke_member(
     return Response(status_code=204)
 
 
+# ponytail: one lock for the process, since a pause is a rare admin action. It
+# orders requests on this process only; the live flag of a worker connected to
+# another API process changes at its next connection.
+_PAUSE_LOCK = asyncio.Lock()
+
+
 class PauseRequest(BaseModel):
     paused: bool
 
@@ -178,10 +184,30 @@ async def set_member_paused(
 
     The row is locked for the change, so two pauses cannot both record an event
     for one change. The flag on the live worker is set after the commit, so the
-    scheduler never sees a pause the database does not hold.
+    scheduler never sees a pause the database does not hold, and under one lock
+    with the commit, so an earlier request cannot set it after a later one.
     """
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    async with _PAUSE_LOCK:
+        changed, worker_id = await _store_pause(member_id, body.paused)
+        # The live flag is set even when nothing changed, so a worker that disagrees
+        # with the row is corrected. Resume wakes the admission queue at once, since
+        # a session waiting for this member would otherwise wait for the next sweep.
+        worker = realtime.workers.get(worker_id)
+        if worker is not None:
+            worker.paused = body.paused
+            if not body.paused:
+                realtime.admit_queued()
+    if changed:
+        action = "fleet.member_paused" if body.paused else "fleet.member_resumed"
+        await audit.record(action, actor=admin, object_ids=[str(member_id)])
+    return Response(status_code=204)
+
+
+async def _store_pause(member_id: uuid.UUID, paused: bool) -> tuple[bool, str]:
+    """Write the flag and answer whether it changed and the member's worker id."""
+    assert db.session_factory is not None
     async with db.session_factory() as session:
         async with session.begin():
             row = (await session.execute(
@@ -193,24 +219,13 @@ async def set_member_paused(
                 raise HTTPException(status_code=404, detail="Not Found")
             if row.revoked_at is not None:
                 raise HTTPException(status_code=409, detail="fleet member is revoked")
-            changed = row.paused != body.paused
+            changed = row.paused != paused
             if changed:
                 await session.execute(
                     update(FleetMember).where(FleetMember.id == member_id)
-                    .values(paused=body.paused)
+                    .values(paused=paused)
                 )
-    # The live flag is set even when nothing changed, so a worker that disagrees
-    # with the row is corrected. Resume wakes the admission queue at once, since
-    # a session waiting for this member would otherwise wait for the next sweep.
-    worker = realtime.workers.get(row.worker_id)
-    if worker is not None:
-        worker.paused = body.paused
-        if not body.paused:
-            realtime.admit_queued()
-    if changed:
-        action = "fleet.member_paused" if body.paused else "fleet.member_resumed"
-        await audit.record(action, actor=admin, object_ids=[str(member_id)])
-    return Response(status_code=204)
+    return changed, row.worker_id
 
 
 def _bare_origin(value: str) -> str:

@@ -1944,7 +1944,10 @@ async def fleet(ws: WebSocket) -> None:
                         memory_mode=hello.get("memory_mode"),
                         member_id=member.id if member is not None else None,
                         base_url=member.base_url if member is not None else None,
-                        paused=member.paused if member is not None else False)
+                        # A member is held until its row is read again after
+                        # registration: a pause committed in between must not
+                        # let the admission below give it a session first.
+                        paused=member is not None)
         if "realtime_p95_ms" in hello:
             parsed = parse_frame_p95(hello.get("realtime_p95_ms"))
             worker.admission_p95_ms = parsed if parsed is not None else {}
@@ -2125,6 +2128,8 @@ async def fleet(ws: WebSocket) -> None:
             # Read after registration, so a pause the route commits in between
             # is seen here, and the route's own worker lookup finds this worker.
             worker.paused = live.paused
+            if not live.paused:
+                admit_queued()
         # The registered message is already out, so a slow store cannot delay
         # registration, and inside the try so a failure still reaches cleanup.
         await audit.record(

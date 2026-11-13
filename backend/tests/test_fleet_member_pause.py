@@ -6,6 +6,7 @@ reconnect and an API restart. These tests drive the real fleet socket, the
 browser realtime socket and the job queue against one member.
 """
 
+import asyncio
 import time
 import uuid
 
@@ -14,6 +15,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app import db, fleet_members, jobs, realtime, worker_authority
+from app.storage import get_storage
+from app.tables import User
 from app.main import app
 from tests.test_fleet_member_dispatch import MEMBER_BASE
 from tests.test_fleet_members import (
@@ -30,7 +33,14 @@ from tests.test_fleet_protocol6 import (
     root_keys,
 )
 from tests.test_fleet_protocol6 import hello as protocol6_hello
-from tests.test_jobs import MANIFEST, png_bytes, poll_until, put_upload, webp_bytes
+from tests.test_jobs import (
+    FLEET_HEADERS,
+    MANIFEST,
+    png_bytes,
+    poll_until,
+    put_upload,
+    webp_bytes,
+)
 from tests.test_realtime import answer_ready, expect
 
 __all__ = ["none_mode"]
@@ -255,7 +265,9 @@ def test_registration_reads_the_pause_from_the_database(none_mode):
         client.portal.call(_set_column, member_id, False)
         with _connect(client, credential) as worker:
             _register(client, worker, 5, worker_id, [MANIFEST])
-            assert realtime.workers[worker_id].paused is False
+            # A member is held paused until its row is read again after registration.
+            _wait_for(lambda: realtime.workers[worker_id].paused is False,
+                      "the registration to read the row again")
             assert jobs.pick_job_worker(MANIFEST["id"]) is realtime.workers[worker_id]
 
 
@@ -286,3 +298,171 @@ def test_a_pause_committed_during_the_handshake_is_read_again_at_registration(no
                 assert jobs.pick_job_worker(MANIFEST["id"]) is None
         finally:
             _cleanup(client, worker_id)
+
+
+def test_a_pause_committed_before_registration_admits_no_queued_session(none_mode, monkeypatch):
+    model = _realtime_model()
+    other_id = f"w-pause-other-{uuid.uuid4().hex[:8]}"
+    with TestClient(app, base_url=ORIGIN) as client:
+        member_id, worker_id, credential = _member(client, "Early")
+        try:
+            # Another worker makes the model known and takes nothing, so the
+            # browser's session waits in the queue.
+            with client.websocket_connect("/api/v1/fleet", headers=FLEET_HEADERS) as other:
+                _register(client, other, 5, other_id, [model])
+                realtime.workers[other_id].paused = True
+                with client.websocket_connect("/api/v1/realtime",
+                                              headers={"Origin": ORIGIN}) as browser:
+                    browser.send_json({"type": "open", "model_id": model["id"]})
+                    expect(browser, "queued")
+                    waiting = next(s for s in realtime.sessions.values()
+                                   if s.model_id == model["id"])
+                    real_lookup = fleet_members.member_for_credential
+                    calls = []
+
+                    async def pause_before_the_second_lookup(credential):
+                        calls.append(credential)
+                        if len(calls) == 2:
+                            # Committed between the handshake's read and this one.
+                            await _set_column(member_id, True)
+                        return await real_lookup(credential)
+
+                    monkeypatch.setattr(fleet_members, "member_for_credential",
+                                        pause_before_the_second_lookup)
+                    with _connect(client, credential) as worker:
+                        _register(client, worker, 5, worker_id, [model])
+                        _wait_for(lambda: len(calls) == 2 and worker_id in realtime.workers
+                                  and realtime.workers[worker_id].paused,
+                                  "the registration to read the pause")
+                        assert waiting.state == "queued"
+                        assert waiting.worker is None
+        finally:
+            _cleanup(client, worker_id)
+            client.portal.call(drop_worker_rows, other_id)
+
+
+@pytest.mark.parametrize("protocol", [5, 6])
+def test_a_pause_during_dispatch_preparation_leaves_the_job_queued(none_mode, monkeypatch,
+                                                                   protocol):
+    if protocol == 6:
+        root_keys(monkeypatch)
+    with TestClient(app, base_url=ORIGIN) as client:
+        member_id, worker_id, credential = _member(client, "Preparing")
+        try:
+            with _connect(client, credential) as worker:
+                _register(client, worker, protocol, worker_id, [MANIFEST])
+                storage = get_storage()
+                real_target = storage.upload_target
+
+                async def pause_while_preparing(*args, **kwargs):
+                    # The route's PATCH lands while dispatch awaits its upload address.
+                    realtime.workers[worker_id].paused = True
+                    return await real_target(*args, **kwargs)
+
+                monkeypatch.setattr(storage, "upload_target", pause_while_preparing)
+                job_id = _queue_job(client)
+                client.portal.call(jobs.dispatch_step)
+                assert job_id not in jobs.inflight
+                assert _job_state(client, job_id) == "queued"
+                assert realtime.workers[worker_id].jobs_in_flight == 0
+        finally:
+            _cleanup(client, worker_id)
+
+
+def test_two_pause_requests_leave_the_live_flag_as_the_database_holds_it(none_mode,
+                                                                         monkeypatch):
+    with TestClient(app, base_url=ORIGIN) as client:
+        member_id, worker_id, credential = _member(client, "Racing")
+        try:
+            with _connect(client, credential) as worker:
+                _register(client, worker, 5, worker_id, [MANIFEST])
+                _wait_for(lambda: realtime.workers[worker_id].paused is False,
+                          "the registration to read the row again")
+
+                async def scenario():
+                    async with db.session_factory() as session:
+                        admin = await session.get(User, db.local_user_id)
+                    contended = asyncio.Event()
+                    first_in = asyncio.Event()
+
+                    class Watched(asyncio.Lock):
+                        async def acquire(self):
+                            if self.locked():
+                                contended.set()
+                            return await super().acquire()
+
+                    monkeypatch.setattr(fleet_members, "_PAUSE_LOCK", Watched(), raising=False)
+                    real_factory = db.session_factory
+                    opened = []
+
+                    class Held:
+                        """The first request's session, held open after its commit."""
+
+                        def __init__(self, session, hold):
+                            self.session, self.hold = session, hold
+
+                        async def __aenter__(self):
+                            return await self.session.__aenter__()
+
+                        async def __aexit__(self, *exc):
+                            result = await self.session.__aexit__(*exc)
+                            if self.hold:
+                                # Long enough for the second request to finish, unless
+                                # it waits for this one.
+                                try:
+                                    await asyncio.wait_for(contended.wait(), 2)
+                                except TimeoutError:
+                                    pass
+                            return result
+
+                    def factory():
+                        opened.append(1)
+                        if len(opened) == 1:
+                            first_in.set()
+                        return Held(real_factory(), hold=len(opened) == 1)
+
+                    monkeypatch.setattr(db, "session_factory", factory)
+                    pause = asyncio.create_task(fleet_members.set_member_paused(
+                        uuid.UUID(member_id), fleet_members.PauseRequest(paused=True), admin))
+                    await first_in.wait()
+                    resume = asyncio.create_task(fleet_members.set_member_paused(
+                        uuid.UUID(member_id), fleet_members.PauseRequest(paused=False), admin))
+                    await asyncio.gather(pause, resume)
+                    monkeypatch.setattr(db, "session_factory", real_factory)
+                    async with real_factory() as session:
+                        stored = (await session.execute(
+                            text("SELECT paused FROM fleet_members WHERE id = :id"),
+                            {"id": uuid.UUID(member_id)})).scalar_one()
+                    return stored
+
+                stored = client.portal.call(scenario)
+                assert stored is False
+                assert realtime.workers[worker_id].paused is stored
+        finally:
+            _cleanup(client, worker_id)
+
+
+def test_a_member_that_is_not_paused_takes_a_waiting_session_once_it_registers(none_mode):
+    model = _realtime_model()
+    other_id = f"w-pause-other-{uuid.uuid4().hex[:8]}"
+    with TestClient(app, base_url=ORIGIN) as client:
+        member_id, worker_id, credential = _member(client, "Ready")
+        try:
+            with client.websocket_connect("/api/v1/fleet", headers=FLEET_HEADERS) as other:
+                _register(client, other, 5, other_id, [model])
+                realtime.workers[other_id].paused = True
+                with client.websocket_connect("/api/v1/realtime",
+                                              headers={"Origin": ORIGIN}) as browser:
+                    browser.send_json({"type": "open", "model_id": model["id"]})
+                    expect(browser, "queued")
+                    waiting = next(s for s in realtime.sessions.values()
+                                   if s.model_id == model["id"])
+                    with _connect(client, credential) as worker:
+                        _register(client, worker, 5, worker_id, [model])
+                        # Held until its row is read again, then admitted at once:
+                        # the sweep that would also find it runs every 30 seconds.
+                        opened = expect(worker, "open_session")
+                        assert opened["session_id"] == str(waiting.id)
+        finally:
+            _cleanup(client, worker_id)
+            client.portal.call(drop_worker_rows, other_id)

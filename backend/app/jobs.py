@@ -1724,6 +1724,9 @@ async def dispatch_protocol6(job_id: uuid.UUID, worker: realtime.Worker, epoch: 
             }
         from app import command_store
 
+        # A pause can land during the awaits above; the job stays queued.
+        if not worker.accepts_new_work:
+            return None
         # Publish before the claim commits so cancellation always finds its attempt.
         current = InFlight(
             worker=worker,
@@ -1849,6 +1852,9 @@ async def dispatch(job_id: uuid.UUID) -> bool:
                                                    base_url=worker.base_url)
         thumb_target = await get_storage().upload_target(thumb_storage_key, dispatch_token,
                                                          base_url=worker.base_url)
+        # A pause can land during the awaits above; the job stays queued.
+        if not worker.accepts_new_work:
+            return False
         # Bookkeeping before the send: if the worker dies from here on, its
         # disconnect handler finds the inflight entry and requeues the job.
         worker.jobs_in_flight += 1
