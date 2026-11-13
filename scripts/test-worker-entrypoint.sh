@@ -274,6 +274,62 @@ for cache in "$case_dir/models/hub" "$case_dir/home/hf" "$case_dir/home" "$case_
 done
 if [[ "$overlap_ok" == true ]]; then pass_case refuses-overlapping-cache; fi
 
+# 10b. STATE_DIR is refused when relative, or when it lies inside the host cache, before any chown.
+new_case refuses-bad-state-dir
+owned_models "$case_dir"
+out="$(run_entry "$case_dir" WORKER_UID="$me" WORKER_GID=2000 STATE_DIR=relative/state -- true)" && rc=0 || rc=$?
+out2="$(run_entry "$case_dir" WORKER_UID="$me" WORKER_GID=2000 STATE_DIR="$case_dir/hf/hub/state" -- true)" && rc2=0 || rc2=$?
+if [[ "$rc" -ne 0 && "$out" == *'STATE_DIR must be an absolute path'* && "$rc2" -ne 0 && "$out2" == *'inside or above'* \
+	&& ! -s "$case_dir/chown.log" && ! -s "$case_dir/setpriv.log" ]]; then
+	pass_case refuses-bad-state-dir
+else
+	fail_case refuses-bad-state-dir "rc=$rc/$rc2 $out $out2"
+fi
+
+# 10d. STATE_DIR that is, or is inside or above, /models or the home directory is refused before any chown:
+# a recursive chown of it would change files that are not the worker's state.
+new_case refuses-state-dir-over-owned-paths
+owned_models "$case_dir"
+bad=0
+for state in "$case_dir/models" "$case_dir/models/state" "$case_dir" /; do
+	out="$(run_entry "$case_dir" WORKER_UID="$me" WORKER_GID=2000 STATE_DIR="$state" -- true)" && rc=0 || rc=$?
+	if [[ "$rc" -eq 0 || "$out" != *'STATE_DIR'*'must lie outside'* ]]; then
+		bad=1
+		break
+	fi
+done
+if [[ "$bad" -eq 0 && ! -s "$case_dir/chown.log" && ! -s "$case_dir/setpriv.log" ]]; then
+	pass_case refuses-state-dir-over-owned-paths
+else
+	fail_case refuses-state-dir-over-owned-paths "state=$state rc=$rc $out"
+fi
+
+# 10c. STATE_DIR is chowned only when something in it is not owned by WORKER_UID, as /models is.
+new_case state-dir-owned-not-chowned
+owned_models "$case_dir"
+mkdir -p "$case_dir/state"
+: >"$case_dir/state/fleet-credential.json"
+out="$(run_entry "$case_dir" WORKER_UID="$me" WORKER_GID=2000 STATE_DIR="$case_dir/state" -- true)" && rc=0 || rc=$?
+if [[ "$rc" -eq 0 && "$(grep -c "$case_dir/state" "$case_dir/chown.log")" -eq 0 ]]; then
+	pass_case state-dir-owned-not-chowned
+else
+	fail_case state-dir-owned-not-chowned "rc=$rc $out $(cat "$case_dir/chown.log")"
+fi
+
+new_case state-dir-foreign-chowned
+owned_models "$case_dir"
+if foreign="$(foreign_models "$case_dir")" && [[ -n "$foreign" ]]; then
+	out="$(run_entry "$case_dir" WORKER_UID="$me" WORKER_GID=2000 STATE_DIR="$foreign" -- true)" && rc=0 || rc=$?
+	if [[ "$rc" -eq 0 && "$(grep -c "^-R $me:2000 $foreign\$" "$case_dir/chown.log")" -eq 1 ]]; then
+		pass_case state-dir-foreign-chowned
+	else
+		fail_case state-dir-foreign-chowned "rc=$rc $out $(cat "$case_dir/chown.log")"
+	fi
+else
+	printf 'skip state-dir-foreign-chowned: no file owned by another uid is available (run as root to create one)\n'
+	skips=$((skips + 1))
+fi
+
 # 11. Real setpriv with no device nodes: the process ends up with WORKER_UID, WORKER_GID and that group only.
 if [[ "$me" -eq 0 ]]; then
 	new_case real-setpriv-no-devices

@@ -31,6 +31,16 @@ def test_env_override(monkeypatch):
     assert settings.vram_reserve_mb == 2048
 
 
+def test_join_token_and_state_dir_read_env(monkeypatch):
+    assert Settings().join_token == ""
+    assert Settings().state_dir == ""
+    monkeypatch.setenv("JOIN_TOKEN", "join-secret")
+    monkeypatch.setenv("STATE_DIR", "/var/lib/potocolom-worker")
+    settings = Settings()
+    assert settings.join_token == "join-secret"
+    assert settings.state_dir == "/var/lib/potocolom-worker"
+
+
 def test_vram_reserve_rejects_negative_value():
     with pytest.raises(ValidationError) as error:
         Settings(vram_reserve_mb=-1)

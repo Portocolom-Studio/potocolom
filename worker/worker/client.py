@@ -11,17 +11,20 @@ import contextvars
 import hashlib
 import json
 import logging
+import os
 import random
 import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import websockets
-from websockets.exceptions import SecurityError
+from websockets.exceptions import InvalidStatus, SecurityError
 
 from worker.protocol6 import (
     Protocol6Error,
@@ -42,6 +45,7 @@ from worker.engine import (
 from worker.categorize import categorize_output, enable_categorizer
 from worker.manifests import SIMULATED_MANIFEST, Manifest, load_fleet_manifests
 from worker.model_store import CAPABILITY as MODEL_STORE_CAPABILITY, ModelStore
+from worker.process_lock import acquire_exclusive_lock
 from worker.gpu_metrics import sample_gpu
 from worker.settings import Settings, fleet_url_error, get_settings
 
@@ -1548,12 +1552,14 @@ async def serve_connection(ws, settings: Settings, manifests: list[Manifest],
     await _serve_protocol5(ws, settings, manifests, engine, store, store_supported)
 
 
-def fleet_connect(allow_insecure: bool):
+def fleet_connect(allow_insecure: bool, origin: str | None = None):
     """websockets.connect with the fleet URL policy applied to redirect targets.
 
     The client follows a redirect and sends the same headers again, so a
     permitted address that answers with a redirect to a remote plain ws:// host
-    would carry the fleet token there in clear text.
+    would carry the fleet token there in clear text. With origin set (a worker
+    that joined), a redirect off that origin is refused too: the credential
+    belongs to one installation.
     """
 
     class Connect(websockets.connect):
@@ -1561,11 +1567,183 @@ def fleet_connect(allow_insecure: bool):
             target = super().process_redirect(exc)
             if isinstance(target, str):
                 error = fleet_url_error(target, allow_insecure)
+                if error is None and origin is not None and _fleet_origin(target) != origin:
+                    error = (f"the fleet socket redirected to {_fleet_origin(target)}, but this "
+                             f"worker joined {origin}; not following it")
                 if error is not None:
                     return SecurityError(error)
             return target
 
     return Connect
+
+
+FLEET_CREDENTIAL_FILE = "fleet-credential.json"
+FLEET_STATE_LOCK = "fleet-credential.lock"
+# Open for the life of the process: closing a handle releases its lock. Keyed by
+# folder, because run() can start again in one process and flock does not let
+# a second handle of the same process take a lock the first one holds.
+_STATE_LOCKS: dict[Path, Any] = {}
+
+
+def _hold_state_dir(directory: Path) -> None:
+    """Own STATE_DIR for this process, or refuse to start.
+
+    Two workers on one folder would each spend a join token, and the second
+    save would replace the identity the first is using; or both would connect
+    with one saved identity.
+    """
+    if directory in _STATE_LOCKS or not directory.is_dir():
+        return
+    try:
+        _STATE_LOCKS[directory] = acquire_exclusive_lock(str(directory / FLEET_STATE_LOCK))
+    except BlockingIOError:
+        raise RuntimeError(
+            f"another worker already uses STATE_DIR {directory}; give each worker "
+            "its own state folder") from None
+    except OSError as error:
+        # Without the lock two workers could share the folder, so a saved
+        # credential does not make it safe to go on.
+        raise RuntimeError(
+            f"STATE_DIR {directory} cannot be locked ({type(error).__name__}); "
+            "the join token was not used") from None
+IDENTITY_FIELDS = ("worker_id", "credential")
+ENROLL_TIMEOUT = 10.0
+
+
+def _identity(value: object) -> dict[str, str] | None:
+    if isinstance(value, dict) and all(
+            isinstance(value.get(field), str) and value[field] for field in IDENTITY_FIELDS):
+        return {field: value[field] for field in IDENTITY_FIELDS}
+    return None
+
+
+def _load_credential(path: Path) -> dict[str, str] | None:
+    """The saved identity and the origin it was issued for, or None when there is no file."""
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        saved = None
+    identity = _identity(saved)
+    if identity is not None and isinstance(saved, dict) and isinstance(saved.get("origin"), str) \
+            and saved["origin"]:
+        identity["origin"] = saved["origin"]
+    else:
+        identity = None
+    if identity is None:
+        # Refused rather than enrolled again: the join token behind this file is spent.
+        raise RuntimeError(
+            f"saved fleet credential {path} is unreadable or incomplete; "
+            "remove it only if this machine must join again with a new token")
+    return identity
+
+
+def _save_credential(path: Path, identity: dict[str, str]) -> None:
+    # Written beside the target and then renamed: a crash leaves no file or the whole
+    # file, never a truncated one. The join token that made it is already spent.
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(identity, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary)
+        raise
+    # The rename reaches the disk only once the directory itself is synced.
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _check_writable(directory: Path) -> None:
+    # Before the join token is spent: a credential that cannot be saved is lost
+    # for good, and the token cannot be used a second time.
+    probe = directory / f".write-check.{uuid.uuid4().hex}"
+    try:
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        os.unlink(probe)
+    except OSError as error:
+        raise RuntimeError(
+            f"STATE_DIR {directory} cannot be written ({type(error).__name__}); "
+            "the join token was not used") from None
+
+
+def _fleet_origin(api_url: str) -> str:
+    parts = urlsplit(api_url)
+    scheme = {"ws": "http", "wss": "https"}.get(parts.scheme)
+    if scheme is None:
+        raise RuntimeError("API_URL must start with ws:// or wss:// to join a fleet")
+    # One spelling per origin, so a saved one compares equal to API_URL written
+    # another way: host in lower case, no default port, no userinfo (which the
+    # server refuses), and IPv6 in brackets.
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    default = 443 if scheme == "https" else 80
+    return f"{scheme}://{host}" + (f":{port}" if port is not None and port != default else "")
+
+
+async def _enroll(settings: Settings) -> dict[str, str]:
+    # One attempt only: a retry would present a token the server may already have spent.
+    origin = _fleet_origin(settings.api_url)
+    try:
+        # Redirects are not followed: a redirect would carry the join token to another host.
+        async with httpx.AsyncClient(timeout=ENROLL_TIMEOUT, follow_redirects=False) as client:
+            response = await client.post(
+                f"{origin}/api/v1/fleet/enroll",
+                json={"join_token": settings.join_token, "base_url": origin})
+    except (httpx.HTTPError, OSError) as error:
+        raise RuntimeError(f"fleet enrollment failed ({type(error).__name__})") from None
+    if response.status_code == 403:
+        raise RuntimeError(
+            "the join token is spent, expired or removed; a new one comes from the studio "
+            "(Administration, fleet), set as JOIN_TOKEN")
+    if response.status_code != 200:
+        raise RuntimeError(f"fleet enrollment answered HTTP {response.status_code}")
+    try:
+        identity = _identity(response.json())
+    except ValueError:
+        identity = None
+    if identity is None:
+        raise RuntimeError("fleet enrollment answered without a worker_id and credential")
+    return identity
+
+
+async def _resolve_identity(settings: Settings) -> tuple[Settings, Path | None]:
+    """The identity this start uses, and the saved file it came from (None for FLEET_TOKEN)."""
+    path = Path(settings.state_dir) / FLEET_CREDENTIAL_FILE if settings.state_dir else None
+    if path is not None:
+        _hold_state_dir(path.parent)
+    identity = _load_credential(path) if path is not None else None
+    if identity is not None and identity["origin"] != _fleet_origin(settings.api_url):
+        # Checked before any connection: the credential must not reach another installation.
+        raise RuntimeError(
+            f"saved fleet credential {path} belongs to {identity['origin']}, not to "
+            f"{_fleet_origin(settings.api_url)}; give each installation its own STATE_DIR")
+    if identity is None and settings.join_token:
+        if path is None:
+            raise RuntimeError(
+                "JOIN_TOKEN needs STATE_DIR: without it the credential is lost at the next "
+                "start and the join token is already spent")
+        _check_writable(path.parent)
+        identity = {**await _enroll(settings), "origin": _fleet_origin(settings.api_url)}
+        _save_credential(path, identity)
+    if identity is None:
+        return settings, None
+    # The id logged at process start is the configured one, which a joined worker
+    # does not use.
+    logger.info("fleet identity %s from %s", identity["worker_id"], path)
+    joined = settings.model_copy(update={
+        "worker_id": identity["worker_id"], "fleet_token": identity["credential"]})
+    return joined, path
 
 
 async def run() -> None:
@@ -1574,6 +1752,8 @@ async def run() -> None:
     url_error = fleet_url_error(settings.api_url, settings.allow_insecure_fleet)
     if url_error is not None:
         raise RuntimeError(url_error)
+    # Before build_runtime too, so a refused join loads no engine.
+    settings, credential_path = await _resolve_identity(settings)
     manifests, engine = build_runtime(settings)
     store = None
     if settings.models_dir:
@@ -1581,9 +1761,12 @@ async def run() -> None:
         store = ModelStore(manifests, engine, settings.models_dir)
         await store.scan()
     delay = BACKOFF_INITIAL
-    connect = fleet_connect(settings.allow_insecure_fleet)
+    connect = fleet_connect(
+        settings.allow_insecure_fleet,
+        origin=_fleet_origin(settings.api_url) if credential_path is not None else None)
     try:
         while True:
+            removed = False
             try:
                 warm = list(store.installed.values()) if store is not None else manifests
                 await warmup_realtime(engine, warm, settings.realtime_slots)
@@ -1600,8 +1783,21 @@ async def run() -> None:
                 logger.error("registration rejected (%s); update this worker, not retrying", error)
                 return
             except (OSError, websockets.WebSocketException) as error:
-                logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
-            await asyncio.sleep(delay * (1 + random.random() * BACKOFF_JITTER))
+                # A 403 on the handshake while a credential is in use means the studio
+                # removed this machine. The file stays: only the studio can add it back.
+                removed = (credential_path is not None and isinstance(error, InvalidStatus)
+                           and error.response.status_code == 403)
+                if removed:
+                    logger.error(
+                        "the API refused this machine's credential: it was removed from the "
+                        "install, or this install does not know it; check the studio and the "
+                        "API log, and if it was removed, add it again from the studio and "
+                        "remove %s", credential_path)
+                else:
+                    logger.warning("connection lost (%s), retrying in %.0fs", error, delay)
+            # A removed machine waits the cap: a faster retry is refused the same way.
+            wait = BACKOFF_CAP if removed else delay * (1 + random.random() * BACKOFF_JITTER)
+            await asyncio.sleep(wait)
             delay = min(delay * 2, BACKOFF_CAP)
     finally:
         # build_runtime and the store are made once, so the engine and any download

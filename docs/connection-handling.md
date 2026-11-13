@@ -359,6 +359,14 @@ When `FLEET_TOKEN_KEY` is unset the handshake is refused with HTTP 403. The API 
 
 Revoking a member closes its live socket on the API process that holds it. The close then runs the same cleanup as any socket that ends. A member that is revoked after its credential was read and before its `hello` is registered has no socket for that revoke to close, so the API reads the credential again once the worker is registered: a member that is gone by then is closed 4403 with the reason `fleet member removed`, and a lookup that cannot be answered is closed 1013.
 
+A worker that joined with a one-use join token holds a credential instead of the shared secret. It posts the join token once to `POST /api/v1/fleet/enroll`, with the HTTP origin of its `API_URL` as `base_url`, and the answer carries a `worker_id` and a `credential`. From then on it presents that credential in the same `X-Fleet-Token` header and sends that `worker_id` in `hello`. The worker saves the answer and makes no second enroll call. A worker that holds a credential reads the handshake outcome this way:
+
+- HTTP 403 on the handshake means the API refused the credential: the studio removed the machine, or the installation does not know the credential (for example, a database restored from before the machine joined). The worker logs both causes and points at the studio and the API log, keeps its saved file, and waits 30 seconds before the next attempt.
+- Close code 1013, sent after the socket is accepted, means the API could not check the credential because of an outage. The worker retries with its normal backoff.
+- Close code 4403 can arrive after `registered`: the API reads the credential again once the worker is registered, and closes with 4403 when the machine was removed since the handshake. Its next handshake gets HTTP 403.
+
+A shared-secret worker keeps the normal backoff on HTTP 403, as before.
+
 Signed short-lived tokens were the earlier plan for the cloud fleet and are not built. The cloud fleet uses the same enrollment: see "Fleet workers enroll for a per-worker credential; signed tokens are not built" in `docs/decisions.md`.
 
 ## Close codes

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     vram_reserve_mb: int = Field(default=1536, ge=0)
     api_url: str = "ws://localhost:8000/api/v1/fleet"
     fleet_token: str = ""
+    # One-use token from the studio. The first start exchanges it for a credential
+    # and keeps that credential in state_dir (run() in client.py).
+    join_token: str = ""
+    state_dir: str = ""
     # Opt-in for a private test network: allow plain ws:// to a remote host.
     allow_insecure_fleet: bool = False
     log_format: Literal["plain", "json"] = "plain"

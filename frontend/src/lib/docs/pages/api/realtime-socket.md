@@ -83,16 +83,17 @@ Two errors leave the socket open. Code `4005` means the canvas frame was over th
 
 ## Close codes
 
-| Code | Meaning                                                                                                        | Sent to     |
-| ---- | -------------------------------------------------------------------------------------------------------------- | ----------- |
-| 1000 | Normal close.                                                                                                  | Either side |
-| 4000 | Protocol violation: the first message was not `open`, the JSON was malformed, or the `frame_header` was wrong. | Either side |
-| 4002 | Unsupported worker protocol version.                                                                           | Worker only |
-| 4003 | The account already holds its two realtime sockets.                                                            | Browser     |
-| 4004 | Unknown model.                                                                                                 | Browser     |
-| 4005 | Canvas frame over the 1 MiB cap. Sent as an `error` message, and the socket stays open.                        | Browser     |
-| 4401 | Authentication required, or the session is no longer valid.                                                    | Browser     |
-| 4403 | Signed in, but not allowed to open a realtime session.                                                         | Browser     |
+| Code | Meaning                                                                                                                   | Sent to         |
+| ---- | ------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| 1000 | Normal close.                                                                                                             | Either side     |
+| 4000 | Protocol violation: the first message was not `open`, the JSON was malformed, or the `frame_header` was wrong.            | Either side     |
+| 4002 | Unsupported worker protocol version.                                                                                      | Worker only     |
+| 4003 | The account already holds its two realtime sockets.                                                                       | Browser         |
+| 4004 | Unknown model.                                                                                                            | Browser         |
+| 4005 | Canvas frame over the 1 MiB cap. Sent as an `error` message, and the socket stays open.                                   | Browser         |
+| 4401 | Authentication required, or the session is no longer valid.                                                               | Browser         |
+| 4403 | Signed in, but not allowed to open a realtime session. On the worker socket: the machine was removed after its handshake. | Browser, worker |
+| 1013 | Worker socket only: the API could not check the worker's credential (an outage). The worker retries.                      | Worker only     |
 
 ## Protocol version
 
