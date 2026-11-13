@@ -14,17 +14,28 @@ import random
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 from starlette.responses import Response, StreamingResponse
 
 from app import audit, db, jobs, sessions
 from app.account_lock import hold_the_account
 from app.accounts import _clear
 from app.auth import current_principal, require_accounts_mode, require_role
-from app.tables import Asset, AuthIdentity, AuthToken, Job, Session, User
+from app.tables import (
+    Asset,
+    AuthIdentity,
+    AuthToken,
+    Job,
+    Session,
+    UsageEvent,
+    UsageEventRollup,
+    User,
+)
 
 logger = logging.getLogger("potocolom.deletion")
 
@@ -121,7 +132,17 @@ async def _export_document(user: User) -> AsyncIterator[str]:
              "created_at": created.isoformat() if created else None}
             for provider, subject, created in identities
         ])
-        yield ',"generations":['
+        yield ',"usage":['
+        first = True
+        async for event in _owned_rows(session, user, UsageEvent, UsageEvent.created_at):
+            yield ("" if first else ",") + json.dumps(_exported_usage(event))
+            first = False
+        yield '],"usage_rollups":['
+        first = True
+        async for rollup in _owned_rows(session, user, UsageEventRollup, UsageEventRollup.bucket_date):
+            yield ("" if first else ",") + json.dumps(_exported_rollup(rollup))
+            first = False
+        yield '],"generations":['
         first = True
         after: uuid.UUID | None = None
         while True:
@@ -149,6 +170,67 @@ async def _export_document(user: User) -> AsyncIterator[str]:
                 first = False
             after = page[-1].id
     yield "]}"
+
+
+_Row = TypeVar("_Row", UsageEvent, UsageEventRollup)
+
+
+async def _owned_rows(session: AsyncSession, user: User, model: type[_Row],
+                      when: InstrumentedAttribute) -> AsyncIterator[_Row]:
+    """Every row of one table that belongs to the account, oldest first, paged
+    on (when, id) so each page reads the (user_id, when) index. The account is
+    checked between pages, as generations are."""
+    after: tuple | None = None
+    while True:
+        if (await session.execute(
+                select(User.state).where(User.id == user.id))).scalar_one_or_none() != "active":
+            raise HTTPException(status_code=409, detail="account no longer active")
+        query = select(model).where(model.user_id == user.id)
+        if after is not None:
+            query = query.where(tuple_(when, model.id) > after)
+        rows = list((await session.execute(
+            query.order_by(when, model.id).limit(EXPORT_PAGE))).scalars().all())
+        if not rows:
+            return
+        for row in rows:
+            yield row
+        after = (getattr(rows[-1], when.key), rows[-1].id)
+
+
+def _exported_usage(event: UsageEvent) -> dict:
+    # No user id: the file already belongs to the account. The row holds no
+    # prompt, image or network address, so nothing here needs withholding.
+    return {
+        "id": str(event.id),
+        "kind": event.kind,
+        "action": event.action,
+        "model_id": event.model_id,
+        "tier": event.tier,
+        "category": event.category,
+        "category_score": event.category_score,
+        "gpu_ms": event.gpu_ms,
+        "duration_ms": event.duration_ms,
+        "frames": event.frames,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+    }
+
+
+def _exported_rollup(rollup: UsageEventRollup) -> dict:
+    # Counts and sums over the account's events, kept after the raw rows are pruned.
+    return {
+        "bucket_date": rollup.bucket_date.isoformat(),
+        "kind": rollup.kind,
+        "action": rollup.action,
+        "model_id": rollup.model_id,
+        "tier": rollup.tier,
+        "category": rollup.category,
+        "event_count": rollup.event_count,
+        "category_score_sum": rollup.category_score_sum,
+        "category_score_count": rollup.category_score_count,
+        "gpu_ms_sum": rollup.gpu_ms_sum,
+        "duration_ms_sum": rollup.duration_ms_sum,
+        "frames_sum": rollup.frames_sum,
+    }
 
 
 def _exported_job(job: Job, assets: list[Asset]) -> dict:

@@ -142,19 +142,19 @@ These routes are for the benchmark script. Every route needs an admin. The sessi
 
 ## Account
 
-| Method | Path                                    | Purpose                                                                                  |
-| ------ | --------------------------------------- | ---------------------------------------------------------------------------------------- |
-| GET    | `/api/v1/account`                       | The account, its live sessions, whether a second factor is on, and its linked providers. |
-| POST   | `/api/v1/account/password`              | Change or add a password. Needs recent authentication.                                   |
-| POST   | `/api/v1/account/email`                 | Change the primary email address.                                                        |
-| DELETE | `/api/v1/account/sessions/{id}`         | Sign out one of the account's own sessions.                                              |
-| POST   | `/api/v1/account/totp`                  | Start enrolling a second factor. Needs recent authentication.                            |
-| POST   | `/api/v1/account/totp/confirm`          | Confirm an enrolment with a code from the authenticator.                                 |
-| DELETE | `/api/v1/account/totp`                  | Remove the second factor. Needs recent authentication and a code.                        |
-| POST   | `/api/v1/account/identities/{provider}` | Start linking a provider. Needs recent authentication.                                   |
-| DELETE | `/api/v1/account/identities/{provider}` | Unlink a provider. Refused when it is the last way in.                                   |
-| GET    | `/api/v1/account/export`                | Everything the install holds about the account, as streamed JSON. No secrets.            |
-| DELETE | `/api/v1/account`                       | Stop the account now. Its data is purged after 30 days.                                  |
+| Method | Path                                    | Purpose                                                                                                  |
+| ------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/account`                       | The account, its live sessions, whether a second factor is on, and its linked providers.                 |
+| POST   | `/api/v1/account/password`              | Change or add a password. Needs recent authentication.                                                   |
+| POST   | `/api/v1/account/email`                 | Change the primary email address.                                                                        |
+| DELETE | `/api/v1/account/sessions/{id}`         | Sign out one of the account's own sessions.                                                              |
+| POST   | `/api/v1/account/totp`                  | Start enrolling a second factor. Needs recent authentication.                                            |
+| POST   | `/api/v1/account/totp/confirm`          | Confirm an enrolment with a code from the authenticator.                                                 |
+| DELETE | `/api/v1/account/totp`                  | Remove the second factor. Needs recent authentication and a code.                                        |
+| POST   | `/api/v1/account/identities/{provider}` | Start linking a provider. Needs recent authentication.                                                   |
+| DELETE | `/api/v1/account/identities/{provider}` | Unlink a provider. Refused when it is the last way in.                                                   |
+| GET    | `/api/v1/account/export`                | Everything the install holds about the account, as streamed JSON, with a link to each image. No secrets. |
+| DELETE | `/api/v1/account`                       | Stop the account now. Its data is purged after 30 days.                                                  |
 
 ## Invitations and users
 

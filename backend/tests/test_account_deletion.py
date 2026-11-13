@@ -7,7 +7,7 @@ a purge leaves no user row at all.
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from app import db
 from app.main import app
-from app.tables import Asset, Job, PendingDelete, User
+from app.tables import Asset, Job, PendingDelete, UsageEvent, UsageEventRollup, User
 from tests.test_account_states import _admin, _session_cookie, _set_state, _state_of, _wearing
 from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
 
@@ -87,6 +87,39 @@ async def _owned_work(user_id: uuid.UUID) -> Asset:
         return asset
 
 
+async def _usage(user_id: uuid.UUID, model_id: str) -> None:
+    async with db.session_factory() as session:
+        session.add(
+            UsageEvent(
+                user_id=user_id,
+                kind="job",
+                action="generate",
+                model_id=model_id,
+                category="art",
+                gpu_ms=120,
+                frames=1,
+            )
+        )
+        await session.commit()
+
+
+async def _rollup(user_id: uuid.UUID, model_id: str) -> None:
+    async with db.session_factory() as session:
+        session.add(
+            UsageEventRollup(
+                user_id=user_id,
+                bucket_date=date(2026, 1, 5),
+                kind="job",
+                action="generate",
+                model_id=model_id,
+                category="art",
+                event_count=3,
+                category_score_count=0,
+            )
+        )
+        await session.commit()
+
+
 async def _age_request(user_id: uuid.UUID, days: int) -> None:
     async with db.session_factory() as session:
         await session.execute(
@@ -124,6 +157,53 @@ def test_an_export_carries_no_secret_of_any_kind(library):
     for secret in ("password_hash", "token_hash", "secret_ciphertext", "code_hash",
                    "$argon2", "key_version"):
         assert secret not in flat, secret
+
+
+@pytest.mark.db
+def test_an_export_carries_its_own_usage_rows_and_no_one_elses(library):
+    """The model ids are distinct from any job's, so a row found in the export
+    can only have come from the usage table, or from the rollup table."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "metered@example.com")
+        neighbour = client.portal.call(_make, "neighbour@example.com")
+        client.portal.call(_usage, user.id, "usage-own-model")
+        client.portal.call(_usage, neighbour.id, "usage-other-model")
+        client.portal.call(_rollup, user.id, "rollup-own-model")
+        client.portal.call(_rollup, neighbour.id, "rollup-other-model")
+        assert _login(client, "metered@example.com").status_code == 204
+        body = client.get("/api/v1/account/export").json()
+    assert [row["model_id"] for row in body.get("usage", [])] == ["usage-own-model"]
+    assert [row["model_id"] for row in body.get("usage_rollups", [])] == ["rollup-own-model"]
+
+
+@pytest.mark.db
+def test_an_export_stops_between_pages_of_its_usage_rows(library, monkeypatch):
+    """Usage rows are paged like generations, so an account stopped between
+    two pages must not receive the second one."""
+    from app import deletion
+
+    monkeypatch.setattr(deletion, "EXPORT_PAGE", 1)
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "pagedusage@example.com")
+        client.portal.call(_usage, user.id, "usage-page-one")
+        client.portal.call(_usage, user.id, "usage-page-two")
+        produced: list[str] = []
+
+        async def stopped_after_one_page() -> None:
+            stopped = False
+            async for chunk in deletion._export_document(user):
+                produced.append(chunk)
+                if not stopped and '"model_id": "usage-page-' in chunk:
+                    stopped = True
+                    async with db.session_factory() as session:
+                        await session.execute(
+                            text("UPDATE users SET state = 'deletion_pending' WHERE id = :id"),
+                            {"id": user.id})
+                        await session.commit()
+
+        with pytest.raises(HTTPException):
+            client.portal.call(stopped_after_one_page)
+    assert sum('"model_id": "usage-page-' in chunk for chunk in produced) == 1
 
 
 @pytest.mark.db
@@ -527,19 +607,21 @@ def test_an_export_stops_when_the_account_it_belongs_to_does(library):
 
     with TestClient(app, base_url=ORIGIN) as client:
         user = client.portal.call(_make, "midexport@example.com")
-        client.portal.call(_owned_work, user.id)
+        asset = client.portal.call(_owned_work, user.id)
+        produced: list[str] = []
 
-        async def stopped_stream() -> list[str]:
-            produced: list[str] = []
+        async def stopped_stream() -> None:
             async for chunk in deletion._export_document(user):
                 produced.append(chunk)
-                if len(produced) == 2:
+                if '"generations":[' in chunk:
                     async with db.session_factory() as session:
                         await session.execute(
                             text("UPDATE users SET state = 'deletion_pending' WHERE id = :id"),
                             {"id": user.id})
                         await session.commit()
-            return produced
 
         with pytest.raises(HTTPException):
             client.portal.call(stopped_stream)
+        # The check before the first generations page is the one that must stop
+        # the stream, so the owned job must never have been written out.
+        assert str(asset.job_id) not in "".join(produced)

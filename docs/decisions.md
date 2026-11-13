@@ -195,7 +195,7 @@ Rejected alternatives: a full production mirror (roughly 170 USD per month plus 
 
 ## GDPR: self-serve deletion and export, 30 day purge
 
-Account settings offer deletion (immediate deactivation, hard delete of rows and assets within 30 days) and a data export (JSON plus an archive of images). GDPR makes both obligations; building them into v1 is far cheaper than retrofitting, the purge window doubles as recovery from account takeover, and self-hosted installs inherit both.
+Account settings offer deletion (immediate deactivation, hard delete of rows and assets within 30 days) and a data export (one JSON file with a link to each image; see "Account export is JSON with image links, not an image archive" below). GDPR makes both obligations; building them into v1 is far cheaper than retrofitting, the purge window doubles as recovery from account takeover, and self-hosted installs inherit both.
 
 Rejected alternatives: instant hard delete (no recovery from a hijacked account wiping a paying user's library); handling requests over support email (legal but toil, and a bad signal in a privacy conscious market).
 
@@ -549,7 +549,7 @@ rather than per completed event.
 
 `usage_event_rollups.user_id` uses the same `ON DELETE CASCADE` as raw events.
 The rollup is personal data, dies with the account purge, and belongs in the GDPR
-export when issue #10 implements it. This retains the existing privacy
+export, and the account export includes it. This retains the existing privacy
 commitment; an aggregate-only rollup would not, because a later purge could not
 remove that user's contribution.
 
@@ -2455,3 +2455,9 @@ The rules that follow from it:
 Rejected alternatives: signed short-lived tokens for the cloud, which need a signing key on the minting side, a verification path here and a separate revocation list, for a statelessness the registration path does not have; a key pair made on the worker with a signed challenge at each connection, which protects the credential on a plain `ws://` network where prompts and frames are readable anyway, and adds a step to the wire handshake; the operator's own SSH keys, which need an account and a key on each machine and give no join screen; a relay or tunnel of our own, when the worker already dials out and a mesh VPN covers an API with no public address; discovery on the local network by mDNS or broadcast, which makes every node on that network a candidate with no authentication; a short PIN typed by the operator, which needs a rate limit and an approval step to be safe where a copied command is one step; an end of life for a credential that has not connected for 90 days, which refuses a home server that is off for a season and a machine that stays connected for 91 days at its next reconnect; columns on the existing `workers` table in place of a new one, because any `hello` writes that table and its rows are pruned after 30 days.
 
 > Shipped status (2026-11-11): the member routes and enrollment ship in #894. The fleet socket rules above ship with this entry. The worker-side join (#886), the per-member base address for upload and source-image links, and the studio screen (#887) are not built.
+
+## Account export is JSON with image links, not an image archive
+
+The account export is one streamed JSON document. It holds the account, its sign-in identities, its usage rows, its usage rollups and its generations, and each generation lists its assets. Each asset carries a link to its image, and the image files are not copied into the export. The usage rows and usage rollups are part of it, because they are personal data and the usage decision above says both belong in the GDPR export. The export keeps the same paging and the same rule against secrets.
+
+Rejected alternatives: an image archive built inside the export, which streams each owned asset from storage into one download for both local and S3 storage, with a limit on total size. Rejected because the memory and the download size would grow with the size of the library. A library of thousands of images would have to be read and written in one request, and the process serving it would hold that stream open for the whole time. A link lets the person fetch each image on its own and keeps the export's size tied to the number of rows, not to the bytes of the images. Each link needs a signed-in session of the account, so download the images before you delete the account.
