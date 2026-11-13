@@ -78,6 +78,10 @@ for line in git("show", f"{head}:.github/workflows/docs.yml").splitlines():
         mode = None
 if not push or not changes:
     sys.exit("docs site check: no path filters found in .github/workflows/docs.yml")
+# GitHub applies "!" patterns in order; this matcher treats every entry as an
+# include, so refuse negations rather than pass a path GitHub would skip.
+if any(p.startswith("!") for p in push + changes):
+    sys.exit("docs site check: .github/workflows/docs.yml has a '!' path pattern; teach this check its order")
 
 tracked = set(git("ls-tree", "-r", "--name-only", head).splitlines())
 sources = {}
