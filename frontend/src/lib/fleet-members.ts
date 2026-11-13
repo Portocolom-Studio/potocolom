@@ -129,11 +129,15 @@ export function isSourceBuildImage(image: string): boolean {
 	return /:dev-[a-z]+$/.test(image);
 }
 
+// A join token lives one hour on the server.
+const JOIN_TOKEN_LIFE_MS = 3_600_000;
+
 // Whole seconds, rounded up, so a token with a fraction of a second left
-// still reads as time left rather than expired.
+// still reads as time left rather than expired. Capped at the token's life:
+// the clock that ticks the dialog can lag the server's, which read 60:01.
 export function formatTimeLeft(expiresAt: string, now: number): string {
 	const at = Date.parse(expiresAt);
-	const ms = Number.isFinite(at) ? Math.max(0, at - now) : 0;
+	const ms = Number.isFinite(at) ? Math.min(JOIN_TOKEN_LIFE_MS, Math.max(0, at - now)) : 0;
 	const seconds = Math.ceil(ms / 1000);
 	return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 }

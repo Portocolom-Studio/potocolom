@@ -231,6 +231,10 @@ test('time left counts down in minutes and seconds and never goes negative', () 
 	assert.equal(formatTimeLeft(new Date(NOW + 1).toISOString(), NOW), '0:01');
 	assert.equal(formatTimeLeft(new Date(NOW - 5000).toISOString(), NOW), '0:00');
 	assert.equal(formatTimeLeft('not a date', NOW), '0:00');
+	// The clock that ticks the dialog can lag the server's by a second or more;
+	// a join token never has more than its hour left.
+	assert.equal(formatTimeLeft(new Date(NOW + 3_600_400).toISOString(), NOW), '60:00');
+	assert.equal(formatTimeLeft(new Date(NOW + 3_700_000).toISOString(), NOW), '60:00');
 });
 
 test('a waiting member shows its time left, and reads as expired once the time has run out', () => {
