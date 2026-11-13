@@ -48,7 +48,7 @@ Run `make verify` before you push a branch. Some checks are not part of `make ve
 
 1. Runs lint, type checks and unit tests.
 2. Builds the landing mode and checks the studio preview, the docs, and the footer's contrast and keyboard focus.
-3. Builds the studio only after every landing check passes. It then checks the self-hosted build, studio shell, setup, canvas, sign-in, saved views, owner focus, Models and the first-run tour. The sign-in and setup checks use separate throwaway databases and API processes.
+3. Builds the studio only after every landing check passes. It then checks the self-hosted build, studio shell, setup, canvas, sign-in, saved views, owner focus, Models, the fleet tab and the first-run tour. The sign-in and setup checks use separate throwaway databases and API processes.
 
 CI uses `make -j3 --output-sync=target verify-frontend` to run up to three checks of one build mode at once. Both builds and the static checks stay in order. Plain `make verify-frontend` runs the same checks one at a time.
 
