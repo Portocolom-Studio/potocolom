@@ -2020,7 +2020,7 @@ test('invalid drawing schemas preserve the current bitmap and redo state', async
 			'duplicate-ids',
 			{ operations: [validStroke, { ...validStroke, points: [{ x: 256, y: 256 }] }], cursor: 2 }
 		],
-		['nonfinite-point', { operations: [{ ...validStroke, points: [{ x: 1e400, y: 1 }] }] }],
+		['nonfinite-point', { operations: [{ ...validStroke, points: [{ x: Infinity, y: 1 }] }] }],
 		['invalid-hex-color', { operations: [{ ...validStroke, color: '#12345g' }] }],
 		['invalid-size', { operations: [{ ...validStroke, size: 33 }] }],
 		[

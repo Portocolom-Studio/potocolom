@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-type I18n = typeof import('./i18n.svelte.ts');
-
 const globals = globalThis as unknown as Record<string, unknown>;
 const saved = new Map<string, unknown>();
 

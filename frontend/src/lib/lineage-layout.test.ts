@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	LINEAGE_TILE_HEIGHT,
-	LINEAGE_TILE_WIDTH,
 	layoutLineageTree,
 	lineageAncestorEdgeIds,
 	lineageEdgePath,
