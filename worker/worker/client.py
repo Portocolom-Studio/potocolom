@@ -1595,10 +1595,12 @@ def _hold_state_dir(directory: Path) -> None:
         raise RuntimeError(
             f"another worker already uses STATE_DIR {directory}; give each worker "
             "its own state folder") from None
-    except OSError:
-        # A folder that refuses writes is reported by _check_writable before a
-        # token is spent; a worker with a saved credential can still start.
-        pass
+    except OSError as error:
+        # Without the lock two workers could share the folder, so a saved
+        # credential does not make it safe to go on.
+        raise RuntimeError(
+            f"STATE_DIR {directory} cannot be locked ({type(error).__name__}); "
+            "the join token was not used") from None
 IDENTITY_FIELDS = ("worker_id", "credential")
 ENROLL_TIMEOUT = 10.0
 

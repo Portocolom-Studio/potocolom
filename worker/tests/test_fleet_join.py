@@ -291,6 +291,28 @@ def test_a_second_worker_on_the_same_state_dir_is_refused_before_the_token_is_sp
     assert built == []
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens a read-only file")
+def test_a_lock_that_cannot_be_taken_stops_a_worker_with_a_saved_credential(
+        monkeypatch, tmp_path):
+    (tmp_path / STATE_FILE).write_text(json.dumps(
+        {"worker_id": "m-" + "a" * 32, "credential": "ptc_fleet_saved"}))
+    (tmp_path / STATE_FILE).chmod(0o600)
+    lock = tmp_path / FLEET_STATE_LOCK
+    lock.write_text("")
+    lock.chmod(0o400)
+    requests = _enroll_server(monkeypatch, _issue)
+    connections, built = _offline(monkeypatch, Settings(state_dir=str(tmp_path)))
+
+    with pytest.raises(RuntimeError) as error:
+        asyncio.run(run())
+
+    assert "cannot be locked" in str(error.value)
+    assert "ptc_fleet_saved" not in str(error.value)
+    assert requests == []
+    assert connections == []
+    assert built == []
+
+
 def test_a_spent_join_token_stops_the_worker_with_a_message_for_the_studio(monkeypatch, tmp_path):
     requests = _enroll_server(monkeypatch, lambda _r: httpx.Response(403, json={"detail": "no"}))
     connections, _built = _offline(monkeypatch, Settings(
