@@ -216,7 +216,7 @@
 			firstVisitChecked = false;
 			return;
 		}
-		if (!studio.modelsLoaded) return;
+		if (studio.modelsStatus === 'loading') return;
 		if (studio.tourRequest === 'automatic' && focusIsOccupied()) return;
 		if (awaitingGenerate) {
 			if (studio.shellView !== 'generate') return;
@@ -251,7 +251,7 @@
 	$effect(() => {
 		void studio.tourRequest;
 		void studio.shellView;
-		void studio.modelsLoaded;
+		void studio.modelsStatus;
 		untrack(start);
 	});
 
@@ -319,7 +319,7 @@
 	$effect(() => {
 		if (
 			firstVisitChecked ||
-			!studio.modelsLoaded ||
+			studio.modelsStatus === 'loading' ||
 			studio.shellView !== 'generate' ||
 			studio.gpuCardOpen ||
 			studio.fleetAddRequested

@@ -393,7 +393,7 @@
 	{#if cancelError !== ''}
 		<p role="status" class="text-destructive text-xs">{cancelError}</p>
 	{/if}
-{:else if !studio.historyLoaded}
+{:else if studio.historyStatus === 'loading'}
 	<!-- The strip's shape while the first history page loads; the generate
 	     viewer above announces the wait. -->
 	<div class="flex min-w-0 gap-2 overflow-hidden p-0.5" aria-hidden="true">

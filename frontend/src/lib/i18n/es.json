@@ -1297,6 +1297,8 @@
 	"app.toast.undo": "Deshacer",
 	"app.models.loading": "Cargando modelos...",
 	"app.gen.history_loading": "Cargando tus imágenes...",
+	"app.gen.history_error": "No se pudo cargar tu historial.",
+	"app.models.load_error": "No se pudieron cargar los modelos.",
 	"app.toast.unstarred": "Quitado de Destacados",
 	"app.toast.model_hidden": "{name} ya no aparece en los selectores",
 	"app.toast.canvas_cleared": "Lienzo borrado",

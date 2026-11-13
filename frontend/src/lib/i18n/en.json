@@ -1297,6 +1297,8 @@
 	"app.toast.undo": "Undo",
 	"app.models.loading": "Loading models...",
 	"app.gen.history_loading": "Loading your images...",
+	"app.gen.history_error": "Your history could not load.",
+	"app.models.load_error": "Models could not load.",
 	"app.toast.unstarred": "Removed from Starred",
 	"app.toast.model_hidden": "{name} is hidden from the pickers",
 	"app.toast.canvas_cleared": "Canvas cleared",
