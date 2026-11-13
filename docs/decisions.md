@@ -2080,6 +2080,7 @@ readiness; replacing an unknown database password with a new random value.
 ## The studio, landing and auth pages follow one written design system
 
 > **Partly superseded** by "Studio polish uses readable type and responsive layouts" below: the compact studio sizes no longer hold.
+> **Partly superseded** by "One font and one base token set for every page": the landing and auth pages no longer keep Lato, and the studio tokens are no longer scoped.
 
 PR #774 redesigns the studio shell and views, the landing footer and the
 sign-in and join pages, and records the result in
@@ -2099,6 +2100,8 @@ rules only in component code and a private design canvas (future sessions
 could not find them).
 
 ## Studio polish uses readable type and responsive layouts
+
+> **Partly superseded** by "One font and one base token set for every page": the neutral greys are replaced by a cool near-black ground.
 
 The studio keeps its neutral colours, Geist font, task groups and blue GPU
 actions. Its body text is 14px, labels are 12px, controls have 8px corners,
@@ -2461,3 +2464,13 @@ Rejected alternatives: signed short-lived tokens for the cloud, which need a sig
 The account export is one streamed JSON document. It holds the account, its sign-in identities, its usage rows, its usage rollups and its generations, and each generation lists its assets. Each asset carries a link to its image, and the image files are not copied into the export. The usage rows and usage rollups are part of it, because they are personal data and the usage decision above says both belong in the GDPR export. The export keeps the same paging and the same rule against secrets.
 
 Rejected alternatives: an image archive built inside the export, which streams each owned asset from storage into one download for both local and S3 storage, with a limit on total size. Rejected because the memory and the download size would grow with the size of the library. A library of thousands of images would have to be read and written in one request, and the process serving it would hold that stream open for the whole time. A link lets the person fetch each image on its own and keeps the export's size tied to the number of rows, not to the bytes of the images. Each link needs a signed-in session of the account, so download the images before you delete the account.
+
+## One font and one base token set for every page
+
+The studio, the landing, the sign-in pages and the docs now share one font and one base token set. Geist is the only text font and Geist Mono is for code, ids and seeds; Lato and its package are removed. The base `:root` block in `frontend/src/app.css` holds the one token set: a cool near-black ground (`#0a0c10`), three tone steps above it for panels, controls and hover, cool grey text, and the same brand blue (`#3a64f0`). The studio scope keeps only its density (14px body, tabular figures). The landing keeps its `--k-*` chrome tokens and its light mode, but its dark accent is now the brand blue, and the sign-in pages read the base tokens instead of their own hex values. The heaviest weight is 700.
+
+This follows a review of every surface on 2026-11-11. Three palettes and two fonts made the product read as three products: a visitor went from a Lato navy landing to a Lato sign-in page with its own blues to a neutral grey Geist studio. The owner compared sketch boards of the whole product in one system and chose it.
+
+This supersedes three earlier points. "One shared token set for landing and studio" was rejected because the landing is image-led; the landing keeps its chrome tokens for that reason, and only the font, the accent and the base set are shared. "Near-black panels" were rejected because labels were harder to read; the new text steps are measured against every surface, and the weakest pair (tertiary text on a hovered row) is 4.9:1, with secondary text at 8.2:1 or more. "A new studio palette" was rejected because it would not fix layout problems; the layout changes are separate, later changes, and this one changes no layout.
+
+Rejected alternatives: keep Lato for the landing and the wordmark (two fonts for one product, and a visible change at sign-in); move the landing to the studio's neutral greys (the pictures need a darker, cooler ground); change tokens and layouts in one change (too large to review by screenshot).

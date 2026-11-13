@@ -506,7 +506,7 @@
 
 	.mark {
 		font-size: 1.05rem;
-		font-weight: 800;
+		font-weight: 700;
 		letter-spacing: -0.03em;
 	}
 
@@ -694,7 +694,7 @@
 
 	.orbit-name {
 		min-height: 1.3rem;
-		color: var(--k-accent);
+		color: var(--k-focus);
 		font-family: var(--k-display);
 		font-size: 0.85rem;
 		font-weight: 700;
@@ -963,7 +963,7 @@
 
 	.amount {
 		font-size: clamp(1.9rem, 2.4vw, 2.3rem);
-		font-weight: 800;
+		font-weight: 700;
 		font-variant-numeric: tabular-nums;
 		letter-spacing: -0.04em;
 	}
@@ -979,7 +979,7 @@
 
 	.text-link {
 		justify-self: start;
-		color: var(--k-accent);
+		color: var(--k-focus);
 		font-weight: 700;
 		text-decoration: underline;
 		text-underline-offset: 0.25em;
@@ -1044,7 +1044,7 @@
 	.tiers li :global(svg),
 	.run-card li :global(svg) {
 		margin-block-start: 0.25rem;
-		color: var(--k-accent);
+		color: var(--k-focus);
 	}
 
 	.pill :global(svg) {

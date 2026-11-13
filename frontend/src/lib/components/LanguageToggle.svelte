@@ -21,7 +21,7 @@
 			lang={locale}
 			aria-label={locale === 'en' ? 'English' : 'Espa\u00f1ol'}
 			title={locale === 'en' ? 'English' : 'Espa\u00f1ol'}
-			class="rounded-full px-3 data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+			class="rounded-full px-3 data-[state=on]:bg-hover data-[state=on]:text-foreground"
 		>
 			{#if locale === 'en'}
 				<svg class="size-4 h-4 w-6" aria-hidden="true" width="24" height="16" viewBox="0 0 60 40">

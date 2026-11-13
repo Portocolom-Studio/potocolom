@@ -113,7 +113,7 @@
 
 	details[open] .toggle {
 		border-color: var(--k-accent);
-		color: var(--k-accent);
+		color: var(--k-focus);
 		transform: rotate(180deg);
 	}
 
@@ -127,7 +127,7 @@
 	@media (hover: hover) and (pointer: fine) {
 		summary:hover .toggle {
 			border-color: var(--k-accent);
-			color: var(--k-accent);
+			color: var(--k-focus);
 		}
 	}
 

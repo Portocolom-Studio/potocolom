@@ -369,7 +369,7 @@
 						{#each users as user (user.id)}
 							<tr
 								class={'border-border border-b last:border-b-0 ' +
-									(selectedId === user.id ? 'bg-[#141414]' : 'hover:bg-[#121212]')}
+									(selectedId === user.id ? 'bg-background' : 'hover:bg-background/60')}
 							>
 								<td class="h-11 px-3">
 									<button

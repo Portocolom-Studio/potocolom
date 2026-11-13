@@ -1,111 +1,46 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 @import 'shadcn-svelte/tailwind.css';
-@import '@fontsource/lato/latin-300.css';
-@import '@fontsource/lato/latin-400.css';
-@import '@fontsource/lato/latin-700.css';
-@import '@fontsource/lato/latin-900.css';
 @import '@fontsource/geist/latin-400.css';
 @import '@fontsource/geist/latin-500.css';
 @import '@fontsource/geist/latin-600.css';
+@import '@fontsource/geist/latin-700.css';
 @import '@fontsource/geist-mono/latin-400.css';
 @import '@fontsource/geist-mono/latin-500.css';
 
 @custom-variant dark (&:is(.dark *));
 
-/* Dark is the designed theme (decided): dark values live on :root directly.
-   Light-ready: a future light pass moves these under .dark and puts light
-   values here - the token structure does not change.
-   Trial: Lato + black chrome with dark-navy accents, not a blue fill. */
+/* One system for every page: Geist type, one cool near-black ground, tone
+   steps between surfaces, 8px controls and 12px cards. Brand blue is for the
+   actions that spend GPU time and for links. Dark is the designed theme
+   (decided), so the dark values live on :root. The landing keeps its --k-*
+   chrome tokens (landing-tokens.css) and its light mode on top of these. */
 :root {
-	--radius: 0rem;
-	--background: oklch(0.145 0.012 265);
-	--foreground: oklch(0.985 0.002 265);
-	--card: oklch(0.205 0.012 265);
-	--card-foreground: oklch(0.985 0.002 265);
-	--popover: oklch(0.205 0.012 265);
-	--popover-foreground: oklch(0.985 0.002 265);
-	--primary: oklch(0.32 0.09 265);
-	--primary-foreground: oklch(0.96 0.01 265);
-	--secondary: oklch(0.27 0.012 265);
-	--secondary-foreground: oklch(0.985 0.002 265);
-	--muted: oklch(0.26 0.012 265);
-	--muted-foreground: oklch(0.71 0.02 262);
-	--accent: oklch(0.24 0.04 268);
-	--accent-foreground: oklch(0.985 0.002 265);
-	--destructive: oklch(0.704 0.191 22.2);
-	--border: oklch(1 0 0 / 10%);
-	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.82 0.13 255);
-	/* Categorical chart palette (dark, validated via .local/validate_palette.js;
-	   adjacent-pair CVD checks pass for all six slots) */
-	--chart-1: #5588e8;
-	--chart-2: #30a878;
-	--chart-3: #c08028;
-	--chart-4: #9070c8;
-	--chart-5: #c85878;
-	--chart-6: #a3742d;
-	/* Status semantics (never reuse chart-1..5 hex values) */
-	--status-success: #27a35a;
-	--status-error: #d95f58;
-	--status-running: #45b8d4;
-	--status-warning: #d9a03a;
-	--status-neutral: #7a7f8c;
-	--sidebar: oklch(0.17 0.02 268);
-	--sidebar-foreground: oklch(0.985 0.002 265);
-	--sidebar-primary: oklch(0.32 0.09 265);
-	--sidebar-primary-foreground: oklch(0.96 0.01 265);
-	--sidebar-accent: oklch(0.24 0.05 268);
-	--sidebar-accent-foreground: oklch(0.985 0.002 265);
-	--sidebar-border: oklch(1 0 0 / 10%);
-	--sidebar-ring: oklch(0.82 0.13 255);
-	/* the one flourish that survives the redesign: the hero headline gradient */
-	--gradient-accent: linear-gradient(120deg, #112377, #1e328f);
-	color-scheme: dark;
-}
-
-/* The signed-in studio (/app) runs its own neutral system: Geist type, grey
-   surfaces, solid hairlines, 8px controls and 12px cards. It is scoped to the
-   document while the studio shell is mounted, so portalled menus, tooltips and
-   dialogs pick it up too, and the landing and sign-in pages keep the tokens
-   above. Brand blue is reserved for the actions that spend GPU time. */
-:root:has([data-studio-shell]) {
 	--radius: 0.5rem;
-	--radius-sm: 0.375rem;
-	--radius-md: 0.5rem;
-	--radius-lg: 0.5rem;
-	--radius-xl: 0.75rem;
-	--radius-2xl: 0.75rem;
-	--radius-3xl: 0.75rem;
-	--radius-4xl: 0.5rem;
-	--font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-	--font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-	--text-sm: 0.875rem;
-	--text-sm--line-height: 1.5;
-	--background: oklch(0.191 0 0);
-	--foreground: oklch(0.974 0 0);
-	--card: oklch(0.224 0 0);
-	--card-foreground: oklch(0.974 0 0);
-	--popover: oklch(0.266 0 0);
-	--popover-foreground: oklch(0.974 0 0);
-	--primary: oklch(0.974 0 0);
-	--primary-foreground: oklch(0.191 0 0);
-	--secondary: oklch(0.266 0 0);
-	--secondary-foreground: oklch(0.974 0 0);
-	--muted: oklch(0.266 0 0);
-	--muted-foreground: oklch(0.786 0 0);
-	--accent: oklch(0.308 0 0);
-	--accent-foreground: oklch(0.974 0 0);
+	--background: #0a0c10;
+	--foreground: #f3f5f9;
+	--card: #11141b;
+	--card-foreground: #f3f5f9;
+	--popover: #181c26;
+	--popover-foreground: #f3f5f9;
+	--primary: #f3f5f9;
+	--primary-foreground: #0a0c10;
+	--secondary: #181c26;
+	--secondary-foreground: #f3f5f9;
+	--muted: #181c26;
+	--muted-foreground: #b9bfcc;
+	--accent: #212635;
+	--accent-foreground: #f3f5f9;
 	--destructive: #f85149;
-	--border: oklch(0.316 0 0);
-	--input: oklch(0.385 0 0);
+	--border: #262b39;
+	--input: #394055;
 	--ring: #6e96f8;
-	--panel: oklch(0.224 0 0);
-	--raised: oklch(0.266 0 0);
-	--hover: oklch(0.308 0 0);
-	--line-strong: oklch(0.385 0 0);
-	--dim: oklch(0.699 0 0);
-	--field: oklch(0.205 0 0);
+	--panel: #11141b;
+	--raised: #181c26;
+	--hover: #212635;
+	--line-strong: #394055;
+	--dim: #8b93a7;
+	--field: #0c0e13;
 	--brand: #3a64f0;
 	--brand-foreground: #ffffff;
 	--brand-soft: rgb(58 100 240 / 14%);
@@ -115,21 +50,25 @@
 	--chart-4: #a371f7;
 	--chart-5: #e26d9a;
 	--chart-6: #b08d57;
+	/* Status semantics (never reuse a chart hex value) */
 	--status-success: #3fb950;
 	--status-error: #f85149;
 	--status-running: #4493f8;
 	--status-warning: #d29922;
 	--status-neutral: #707070;
-	--sidebar: oklch(0.224 0 0);
-	--sidebar-foreground: oklch(0.786 0 0);
-	--sidebar-primary: oklch(0.974 0 0);
-	--sidebar-primary-foreground: oklch(0.191 0 0);
-	--sidebar-accent: oklch(0.308 0 0);
-	--sidebar-accent-foreground: oklch(0.974 0 0);
-	--sidebar-border: oklch(0.316 0 0);
+	--sidebar: #11141b;
+	--sidebar-foreground: #b9bfcc;
+	--sidebar-primary: #f3f5f9;
+	--sidebar-primary-foreground: #0a0c10;
+	--sidebar-accent: #212635;
+	--sidebar-accent-foreground: #f3f5f9;
+	--sidebar-border: #262b39;
 	--sidebar-ring: #6e96f8;
+	color-scheme: dark;
 }
 
+/* The signed-in studio (/app) is denser than the public pages: 14px body and
+   tabular figures. Scoped to the document while the studio shell is mounted. */
 :root:has([data-studio-shell]) body {
 	font-size: 0.875rem;
 	line-height: 1.5;
@@ -137,17 +76,18 @@
 	font-feature-settings: 'ss01';
 }
 
-/* Not inline: utilities read these through var(), so the studio scope above
-   can swap the face and the radius scale without touching other pages. */
+/* Not inline: utilities read these through var(). */
 @theme {
-	--font-sans: 'Lato', sans-serif;
-	--radius-sm: calc(var(--radius) - 4px);
-	--radius-md: calc(var(--radius) - 2px);
-	--radius-lg: var(--radius);
-	--radius-xl: calc(var(--radius) + 4px);
-	--radius-2xl: calc(var(--radius) * 1.8);
-	--radius-3xl: calc(var(--radius) * 2.2);
-	--radius-4xl: calc(var(--radius) * 2.6);
+	--font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+	--font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+	--text-sm--line-height: 1.5;
+	--radius-sm: 0.375rem;
+	--radius-md: 0.5rem;
+	--radius-lg: 0.5rem;
+	--radius-xl: 0.75rem;
+	--radius-2xl: 0.75rem;
+	--radius-3xl: 0.75rem;
+	--radius-4xl: 0.5rem;
 }
 
 @theme inline {

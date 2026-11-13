@@ -10,18 +10,20 @@ file in the same PR.
 
 The frontend has three visual surfaces. Keep them apart.
 
-| Surface          | Routes                              | Tokens                                                                                                                                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Studio           | `/app`                              | `frontend/src/app.css`, block `:root:has([data-studio-shell])`                                                                                   | Applies only while the studio shell is mounted, so menus, dialogs and toasts rendered outside the page pick it up too                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Landing and auth | `/`, `/login`, `/join`, legal pages | `frontend/src/landing-tokens.css` (`.landing-surface`, `--k-*` variables) and component styles                                                   | Lato type, its own dark and light modes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Docs             | `/docs` and `/docs/[tab]/[page]`    | Landing token names with local neutral surfaces on `[data-docs-shell]`, plus `--docs-accent` (= `--k-focus`), `--docs-warn` and `--docs-planned` | Lato reading layout with a 264px sidebar, article up to 70ch, and a 190px on-page rail above 1240px. Article text is 17px; resource links are compact rows. Below 860px the sidebar becomes a drawer and the six section tabs scroll in one 60px header. Ctrl/Meta+K opens and focuses search on phones; Escape and Close menu restore Menu focus. The phone drawer fills the dynamic viewport, contains keyboard focus, and fixes the page in place while open; closing restores the exact scroll position and prior body styles. Copy Page uses an icon below 480px, with a checkmark and accessible Copied feedback. Active links and focus keep the existing blue. Markdown output stays under `.prose`, with wrapping links, soft-wrapped commands, aligned text diagrams with local scrolling, and locally scrollable native tables in keyboard-accessible regions. API tables use shared column widths; code values wrap inside cells so a path needs no nested scrollbar. Other tables keep configuration names whole. List markers remain visible; the desktop rail uses a content-height sticky sidebar. |
+| Surface          | Routes                              | Tokens                                                                                                                                           | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Studio           | `/app`                              | `frontend/src/app.css`, the base `:root` block                                                                                                   | The one base token set. The studio shell adds only its density (14px body, tabular figures) while it is mounted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Landing and auth | `/`, `/login`, `/join`, legal pages | `frontend/src/landing-tokens.css` (`.landing-surface`, `--k-*` variables) and component styles                                                   | Geist type, base tokens for sign-in, own dark and light chrome on the landing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Docs             | `/docs` and `/docs/[tab]/[page]`    | Landing token names with local neutral surfaces on `[data-docs-shell]`, plus `--docs-accent` (= `--k-focus`), `--docs-warn` and `--docs-planned` | Geist reading layout with a 264px sidebar, article up to 70ch, and a 190px on-page rail above 1240px. Article text is 17px; resource links are compact rows. Below 860px the sidebar becomes a drawer and the six section tabs scroll in one 60px header. Ctrl/Meta+K opens and focuses search on phones; Escape and Close menu restore Menu focus. The phone drawer fills the dynamic viewport, contains keyboard focus, and fixes the page in place while open; closing restores the exact scroll position and prior body styles. Copy Page uses an icon below 480px, with a checkmark and accessible Copied feedback. Active links and focus keep the existing blue. Markdown output stays under `.prose`, with wrapping links, soft-wrapped commands, aligned text diagrams with local scrolling, and locally scrollable native tables in keyboard-accessible regions. API tables use shared column widths; code values wrap inside cells so a path needs no nested scrollbar. Other tables keep configuration names whole. List markers remain visible; the desktop rail uses a content-height sticky sidebar. |
 
-The base `:root` block in `app.css` holds the older navy shadcn values. Do not
-build new studio UI on them; the studio block overrides them.
+Every page reads the base `:root` block in `app.css`: one font, one ground,
+one brand blue. The landing adds its `--k-*` chrome tokens on top; its dark
+accent is the brand blue. Do not add a second token set or a second font.
 
 ## Principles
 
-1. **Neutral by default.** Greys carry the interface. Colour means something:
+1. **Neutral by default.** Cool greys on a near-black ground carry the
+   interface. Colour means something:
    a status, a selection, or an action that spends GPU time.
 2. **One brand action per screen.** Brand blue (`bg-brand`) is reserved for
    the action that queues GPU work: Generate, Upscale, Connect, Update a live
@@ -35,26 +37,26 @@ build new studio UI on them; the studio block overrides them.
 6. **Keyboard and screen reader first.** Every control is reachable, labelled
    and announced; see Accessibility.
 
-## Tokens (studio)
+## Tokens
 
 Use the Tailwind class, not the raw value.
 
-| Token                       | Class                     | Value              | Use                            |
-| --------------------------- | ------------------------- | ------------------ | ------------------------------ |
-| `--background`              | `bg-background`           | `oklch(0.191 0 0)` | Page                           |
-| `--panel` / `--card`        | `bg-panel`, `bg-card`     | `oklch(0.224 0 0)` | Sidebar, inspectors, cards     |
-| `--raised` / `--popover`    | `bg-raised`, `bg-popover` | `oklch(0.266 0 0)` | Buttons, menus, popovers       |
-| `--hover` / `--accent`      | `bg-hover`, `bg-accent`   | `oklch(0.308 0 0)` | Hover, selected rows and items |
-| `--field`                   | `bg-field`                | `oklch(0.205 0 0)` | Input backgrounds              |
-| `--border`                  | `border-border`           | `oklch(0.316 0 0)` | Hairlines between regions      |
-| `--line-strong` / `--input` | `border-line-strong`      | `oklch(0.385 0 0)` | Control borders                |
-| `--foreground`              | `text-foreground`         | `oklch(0.974 0 0)` | Primary text                   |
-| `--muted-foreground`        | `text-muted-foreground`   | `oklch(0.786 0 0)` | Secondary text, labels         |
-| `--dim`                     | `text-dim`                | `oklch(0.699 0 0)` | Tertiary text, units, captions |
-| `--brand`                   | `bg-brand`, `text-brand`  | `#3a64f0`          | GPU actions, chart series 1    |
-| `--brand-soft`              | `bg-brand-soft`           | brand at 14%       | Selected brand surfaces        |
-| `--ring`                    | `ring-ring`               | `#6e96f8`          | Focus rings                    |
-| `--destructive`             | `text-destructive`        | `#f85149`          | Errors, destructive actions    |
+| Token                       | Class                     | Value        | Use                            |
+| --------------------------- | ------------------------- | ------------ | ------------------------------ |
+| `--background`              | `bg-background`           | `#0a0c10`    | Page                           |
+| `--panel` / `--card`        | `bg-panel`, `bg-card`     | `#11141b`    | Sidebar, inspectors, cards     |
+| `--raised` / `--popover`    | `bg-raised`, `bg-popover` | `#181c26`    | Buttons, menus, popovers       |
+| `--hover` / `--accent`      | `bg-hover`, `bg-accent`   | `#212635`    | Hover, selected rows and items |
+| `--field`                   | `bg-field`                | `#0c0e13`    | Input backgrounds              |
+| `--border`                  | `border-border`           | `#262b39`    | Hairlines between regions      |
+| `--line-strong` / `--input` | `border-line-strong`      | `#394055`    | Control borders                |
+| `--foreground`              | `text-foreground`         | `#f3f5f9`    | Primary text                   |
+| `--muted-foreground`        | `text-muted-foreground`   | `#b9bfcc`    | Secondary text, labels         |
+| `--dim`                     | `text-dim`                | `#8b93a7`    | Tertiary text, units, captions |
+| `--brand`                   | `bg-brand`, `text-brand`  | `#3a64f0`    | GPU actions, chart series 1    |
+| `--brand-soft`              | `bg-brand-soft`           | brand at 14% | Selected brand surfaces        |
+| `--ring`                    | `ring-ring`               | `#6e96f8`    | Focus rings                    |
+| `--destructive`             | `text-destructive`        | `#f85149`    | Errors, destructive actions    |
 
 ### Status colours
 
@@ -79,14 +81,14 @@ must never equal a status colour, so a series is never read as a state.
 
 ## Type
 
-| Role                     | Font                                        | Size and weight                                                      |
-| ------------------------ | ------------------------------------------- | -------------------------------------------------------------------- |
-| Studio UI                | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions                            |
+| Role                     | Font                                        | Size and weight                                                                                           |
+| ------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| UI on every page         | Geist (self-hosted via `@fontsource/geist`) | 14px / 1.5 body, 12px labels and captions                                                                 |
 | Page title (`h1`)        | Geist                                       | 24px for Models, weight 600; Create views and Metrics keep an sr-only `h1` because the top bar names them |
-| KPI value                | Geist                                       | 22 to 24px, tabular figures                                          |
-| Code, IDs, seeds, hashes | Geist Mono                                  | 0.92em of the surrounding text                                       |
-| Wordmark                 | Lato 900                                    | 17px in the studio; separate sizes on the landing and footer         |
-| Landing and auth copy    | Lato                                        | Per landing component                                                |
+| KPI value                | Geist                                       | 22 to 24px, tabular figures                                                                               |
+| Code, IDs, seeds, hashes | Geist Mono                                  | 0.92em of the surrounding text                                                                            |
+| Wordmark                 | Geist 700                                   | 17px in the studio; separate sizes on the landing and footer                                              |
+| Landing and auth copy    | Geist, 700 at most                          | Per landing component; headings track at -0.035em                                                         |
 
 Headings use `text-wrap: balance`; body copy uses `text-wrap: pretty`. Fonts
 are bundled, so the CSP keeps `font-src 'self'`; do not add font CDNs.
@@ -278,7 +280,7 @@ them rather than hand-rolled markup.
   `footer` variant. The home page keeps it inside its entrance gate; the root
   layout supplies it on all other pages, including auth and the studio, and
   on error pages even when the failed route is home.
-  Each page has one footer. Its Lato font and dark colours are self-contained.
+  Each page has one footer. Its dark colours are self-contained.
   The horizon
   sits just above the wordmark, which is `#07090f` so it reads as a silhouette
   against the glow; the bottom row is `#a6abb5` on the dark page and the

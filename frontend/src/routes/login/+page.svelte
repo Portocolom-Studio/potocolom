@@ -381,15 +381,18 @@
 		background: rgb(255 255 255 / 6%);
 	}
 
+	/* The tabs sit on AuthSplit's var(--background). The base tokens in app.css
+	   are dark only, so the text tokens and that surface always come from one
+	   set: secondary text is 10.6:1 on it and the selected tab is 17.9:1. */
 	.auth-tabs button {
 		min-block-size: 2.5rem;
 		padding-inline: 0.75rem;
 		border: 0;
 		border-radius: 999px;
 		background: transparent;
-		color: #a6abb5;
+		color: var(--muted-foreground);
 		font-size: 0.875rem;
-		font-weight: 700;
+		font-weight: 600;
 		cursor: pointer;
 		transition:
 			background-color 160ms ease-out,
@@ -397,12 +400,12 @@
 	}
 
 	.auth-tabs button:hover {
-		color: #f7f8fa;
+		color: var(--foreground);
 	}
 
 	.auth-tabs button[aria-selected='true'] {
-		background: #f7f8fa;
-		color: #07090f;
+		background: var(--foreground);
+		color: var(--background);
 	}
 
 	@media (prefers-reduced-motion: reduce) {
