@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { readFile, stat, access } from 'node:fs/promises';
 import { resolve, join, extname } from 'node:path';
 import puppeteer from 'puppeteer-core';
-import { recordPageEvents } from './studio-test-page.mjs';
+import { newStudioPage, recordPageEvents } from './studio-test-page.mjs';
 
 const root = resolve('build');
 const gib = 1024 ** 3;
@@ -269,8 +269,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			headless: true,
 			args: ['--no-sandbox', '--disable-setuid-sandbox']
 		});
-		const page = await browser.newPage();
-		recordPageEvents(page);
+		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 900 });
 		if (regression === 'panel-viewer') role = 'viewer';
 		if (regression === 'panel-offline' || regression === 'panel-viewer-offline') workerGone = true;
@@ -342,7 +341,6 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		}
 		if (regression === 'spanish' || regression === 'spanish-labels' || regression === 'locale-size')
 			await page.evaluateOnNewDocument(() => localStorage.setItem('locale', 'es'));
-		await page.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
 		const panelResponse =
 			regression === 'panel-protocol6'
 				? page
@@ -1051,9 +1049,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 			return;
 		}
 
-		const second = await browser.newPage();
-		recordPageEvents(second);
-		await second.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
+		const second = await newStudioPage(browser);
 		await second.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`);
 		await second.waitForSelector('[data-model="suggested"] input');
 		holdInstalls = true;
@@ -1305,9 +1301,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		await page.close();
 		role = 'viewer';
 		const before = calls.filter((c) => c === 'GET /api/v1/admin/models').length;
-		const viewer = await browser.newPage();
-		recordPageEvents(viewer);
-		await viewer.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
+		const viewer = await newStudioPage(browser);
 		await viewer.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
 			waitUntil: 'networkidle0'
 		});
@@ -1323,9 +1317,7 @@ test('model management selection, disk margin, progress, cancel and removal', as
 		assert.equal(calls.filter((c) => c === 'GET /api/v1/admin/models').length, before);
 		await user.close();
 		localMode = true;
-		const local = await browser.newPage();
-		recordPageEvents(local);
-		await local.evaluateOnNewDocument(() => localStorage.setItem('potocolom-tour-done', '1'));
+		const local = await newStudioPage(browser);
 		await local.goto(`http://127.0.0.1:${server.address().port}/app?view=admin&tab=models`, {
 			waitUntil: 'domcontentloaded'
 		});

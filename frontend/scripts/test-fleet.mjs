@@ -222,6 +222,15 @@ test('fleet tab lists members, pauses, adds a GPU, connects and removes it', asy
 		});
 		const page = await browser.newPage();
 		await page.setViewport({ width: 1440, height: 900 });
+		// This scenario opens the fleet tab as an administrator's first visit. The
+		// first-run GPU card would cover the Add button, so it is marked done here.
+		await page.evaluateOnNewDocument(() => {
+			try {
+				localStorage.setItem('potocolom-gpu-card-done', '1');
+			} catch {
+				// Blocked storage: the card does not show there either.
+			}
+		});
 		const bodyText = () => page.evaluate(() => document.body.textContent);
 		const waitForText = (needle) =>
 			page.waitForFunction(
