@@ -158,8 +158,15 @@ async function openStudio(
 	const errors = [];
 	page.on('pageerror', (error) => errors.push(error.message));
 	await page.evaluateOnNewDocument(
-		(blocked, refused, done, key, locale) => {
+		(blocked, refused, done, key, locale, gpuCardKey) => {
 			if (locale !== 'en') localStorage.setItem('locale', locale);
+			// The first-run GPU card has its own script (test-gpu-card.mjs). Every
+			// run here is an administrator's first visit, so the card is marked done.
+			try {
+				localStorage.setItem(gpuCardKey, '1');
+			} catch {
+				// Blocked or refusing storage: the card does not show there either.
+			}
 			// The studio opens streams it never reads here; the tour does not use them.
 			window.EventSource = class {
 				addEventListener() {}
@@ -193,7 +200,8 @@ async function openStudio(
 		refuseWrites,
 		tourDone,
 		storageKey,
-		locale
+		locale,
+		'potocolom-gpu-card-done'
 	);
 	await page.goto(`http://127.0.0.1:${server.address().port}${path}`, {
 		waitUntil: 'domcontentloaded'

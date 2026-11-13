@@ -214,6 +214,10 @@ export const studio = $state({
 	// The guided tour is open. Help sets it to play the tour again.
 	tourRequest: null as 'automatic' | 'explicit' | null,
 	tourOpen: false,
+	// The first-run GPU card is open. The automatic tour waits until it closes.
+	gpuCardOpen: false,
+	// Set by the GPU card's "Other computers"; the fleet tab opens its Add dialog once.
+	fleetAddRequested: false,
 	modelId: '',
 	imageToImageModelId: '',
 	upscaleModelId: '',

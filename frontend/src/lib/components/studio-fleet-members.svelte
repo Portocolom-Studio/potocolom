@@ -28,6 +28,7 @@
 	import * as Card from '$lib/components/ui/card';
 	import { Input } from '$lib/components/ui/input';
 	import { Dialog } from 'bits-ui';
+	import { studio } from '$lib/studio.svelte';
 
 	type Created = {
 		id: string;
@@ -153,6 +154,14 @@
 			alive = false;
 			clearTimeout(timer);
 		};
+	});
+
+	// The first-run GPU card sends the user here with the Add dialog already open.
+	// The flag is cleared on use, so a later visit to this tab does not reopen it.
+	$effect(() => {
+		if (!studio.fleetAddRequested) return;
+		studio.fleetAddRequested = false;
+		addOpen = true;
 	});
 
 	function stateText(item: FleetMember): string {
