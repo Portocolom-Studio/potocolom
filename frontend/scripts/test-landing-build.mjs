@@ -125,3 +125,22 @@ test('the install command uses the copied official redirect', async () => {
 		'/install.sh https://github.com/Portocolom-Studio/potocolom/releases/latest/download/install.sh 302\n'
 	);
 });
+
+// The not-found heading in each language, as the error page shows it.
+const notFoundHeadings = () =>
+	Promise.all(
+		['en', 'es'].map(
+			async (locale) =>
+				JSON.parse(
+					await readFile(new URL(`../src/lib/i18n/${locale}.json`, import.meta.url), 'utf8')
+				)['error.title404']
+		)
+	);
+
+test('the built 404 page has a title, a heading and a home link before JavaScript runs', async () => {
+	const html = await built('404');
+	assert.match(html.match(/<title>([^<]*)<\/title>/)?.[1] ?? '', /Page not found/, 'title');
+	const heading = html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/)?.[1] ?? '';
+	for (const text of await notFoundHeadings()) assert.ok(heading.includes(text), text);
+	assert.match(html, /<a\s[^>]*href="\/"/);
+});
