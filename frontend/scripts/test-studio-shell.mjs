@@ -89,6 +89,17 @@ async function serveBuild() {
 	return server;
 }
 
+// The not-found heading in each language, as the error page shows it.
+const notFoundHeadings = () =>
+	Promise.all(
+		['en', 'es'].map(
+			async (locale) =>
+				JSON.parse(
+					await readFile(new URL(`../src/lib/i18n/${locale}.json`, import.meta.url), 'utf8')
+				)['error.title404']
+		)
+	);
+
 let server;
 let browser;
 try {
@@ -129,7 +140,46 @@ try {
 	);
 	await home.close();
 
-	console.log('Studio shell, footer and home redirect checks passed.');
+	// A missing URL gets the not-found page. With JavaScript off that is the static
+	// 404.html, so its heading and home link must show without any script.
+	const plain = await browser.newPage();
+	await plain.setJavaScriptEnabled(false);
+	await plain.goto(`${baseUrl}/no-such-page`, { waitUntil: 'load' });
+	const visibleHeadings = await plain.$$eval('h1', (nodes) =>
+		nodes.filter((node) => node.checkVisibility()).map((node) => node.textContent)
+	);
+	for (const text of await notFoundHeadings()) {
+		assert.ok(
+			visibleHeadings.some((heading) => heading.includes(text)),
+			`JavaScript off heading with ${text}`
+		);
+	}
+	const homeLinks = await plain.$$eval(
+		'a[href="/"]',
+		(nodes) => nodes.filter((node) => node.checkVisibility() && node.textContent.trim()).length
+	);
+	assert.ok(homeLinks > 0, 'JavaScript off visible home link');
+	await plain.close();
+
+	// With JavaScript on the error page replaces the static markup once it mounts.
+	const scripted = await browser.newPage();
+	await scripted.goto(`${baseUrl}/no-such-page`);
+	const [english] = await notFoundHeadings();
+	await scripted.waitForFunction(
+		(text) => [...document.querySelectorAll('h1')].some((node) => node.textContent.includes(text)),
+		{ timeout: 15000 },
+		english
+	);
+	const matches = await scripted.$$eval(
+		'h1',
+		(nodes, text) => nodes.filter((node) => node.textContent.includes(text)).length,
+		english
+	);
+	assert.equal(matches, 1, 'one not-found heading after the page mounts');
+	assert.equal(await scripted.title(), `potocolom - ${english}`);
+	await scripted.close();
+
+	console.log('Studio shell, footer, home redirect and not-found page checks passed.');
 } finally {
 	if (browser) await browser.close();
 	if (server)
