@@ -4,8 +4,11 @@
 </script>
 
 <div class="sketch-switcher">
-	<LanguageToggle />
-	<span class="divider" aria-hidden="true"></span>
+	<!-- From the tablet width up the home header holds the flags. -->
+	<div class="lang">
+		<LanguageToggle />
+		<span class="divider" aria-hidden="true"></span>
+	</div>
 	<ModeToggle />
 </div>
 
@@ -54,6 +57,18 @@
 	.sketch-switcher :global([data-slot='toggle-group-item'][data-state='on']) {
 		background: oklch(0.424 0.199 265.6);
 		color: oklch(0.97 0.014 254.6);
+	}
+
+	.lang {
+		display: flex;
+		align-items: center;
+		gap: 0.15rem;
+	}
+
+	@media (min-width: 48rem) {
+		.lang {
+			display: none;
+		}
 	}
 
 	.divider {

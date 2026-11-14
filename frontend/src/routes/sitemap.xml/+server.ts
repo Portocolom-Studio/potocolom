@@ -12,6 +12,7 @@ const marketingPaths = [
 	'/benchmark',
 	'/whitepaper',
 	'/illusions',
+	'/pricing',
 	...docsIndex.pages.map((page) => docHref(page))
 ];
 
