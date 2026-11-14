@@ -163,8 +163,13 @@ try {
 
 	// With JavaScript on the error page replaces the static markup once it mounts.
 	const scripted = await browser.newPage();
-	await scripted.goto(`${baseUrl}/no-such-page`, { waitUntil: 'networkidle0' });
+	await scripted.goto(`${baseUrl}/no-such-page`);
 	const [english] = await notFoundHeadings();
+	await scripted.waitForFunction(
+		(text) => [...document.querySelectorAll('h1')].some((node) => node.textContent.includes(text)),
+		{ timeout: 15000 },
+		english
+	);
 	const matches = await scripted.$$eval(
 		'h1',
 		(nodes, text) => nodes.filter((node) => node.textContent.includes(text)).length,
