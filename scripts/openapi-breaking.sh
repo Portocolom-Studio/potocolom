@@ -92,7 +92,9 @@ else
 fi
 
 status=0
-"$OASDIFF_BIN" breaking --fail-on ERR --err-ignore "$ALLOW" "$work_dir/base.json" "$SNAPSHOT" || status=$?
+# oasdiff reads every line, so a commented-out exception would still apply.
+grep -v '^[[:space:]]*#' "$ALLOW" >"$work_dir/allow.txt" || true
+"$OASDIFF_BIN" breaking --fail-on ERR --err-ignore "$work_dir/allow.txt" "$work_dir/base.json" "$SNAPSHOT" || status=$?
 if [ "$status" -ne 0 ]; then
 	echo "error: oasdiff exited ${status}. Exit 1 means an error-level change breaks ${BASE_REF}: keep the response compatible, or list the intended break in ${ALLOW} with a decision reference (docs/local-development.md)." >&2
 	exit "$status"
