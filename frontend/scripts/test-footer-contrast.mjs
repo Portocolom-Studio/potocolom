@@ -540,7 +540,43 @@ try {
 	assert.deepEqual(hydrationErrors, [], 'navigation must hydrate without errors');
 	await navigation.close();
 
-	console.log('Footer contrast, focus, navigation, language, and mobile checks passed.');
+	// Nothing reads a sidebar cookie, so toggling the preview's sidebar must not
+	// write one. A fresh context starts with no cookies, which keeps the check
+	// independent of the pages above.
+	const sidebarContext = await browser.createBrowserContext();
+	const sidebarPage = await sidebarContext.newPage();
+	await sidebarPage.setViewport({ width: 1280, height: 900 });
+	await load(sidebarPage, () => sidebarPage.goto(`${baseUrl}/app`, { waitUntil: 'networkidle0' }));
+	await sidebarPage.waitForSelector('[data-studio-preview]');
+	const sidebarCookie = async () =>
+		(await sidebarPage.cookies()).find((cookie) => cookie.name === 'sidebar_state')?.value;
+	const sidebarState = () =>
+		sidebarPage.$eval('[data-slot="sidebar"]', (sidebar) => sidebar.dataset.state);
+	await sidebarPage.waitForFunction(
+		() => document.querySelector('[data-slot="sidebar"]')?.dataset.state === 'expanded'
+	);
+	assert.equal(await sidebarCookie(), undefined, 'a visit to /app must not set sidebar_state');
+	const toggled = await sidebarPage.evaluate(() => {
+		const trigger = [
+			...document.querySelectorAll('button[aria-keyshortcuts="Meta+B Control+B"]')
+		].find((button) => button.offsetParent !== null);
+		if (!trigger) return false;
+		trigger.click();
+		return true;
+	});
+	assert.equal(toggled, true, 'the desktop sidebar trigger must be visible');
+	await sidebarPage.waitForFunction(
+		() => document.querySelector('[data-slot="sidebar"]')?.dataset.state === 'collapsed'
+	);
+	assert.equal(await sidebarState(), 'collapsed');
+	assert.equal(
+		await sidebarCookie(),
+		undefined,
+		'toggling the sidebar must not write sidebar_state'
+	);
+	await sidebarContext.close();
+
+	console.log('Footer contrast, focus, navigation, language, mobile, and sidebar checks passed.');
 } finally {
 	if (browser) await browser.close();
 	if (server)
