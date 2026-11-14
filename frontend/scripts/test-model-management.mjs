@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createServer } from 'node:http';
-import { readFile, stat, access } from 'node:fs/promises';
-import { resolve, join, extname } from 'node:path';
-import puppeteer from 'puppeteer-core';
+import { resolve } from 'node:path';
+import { findChrome, launchChrome, serveBuild } from './browser-kit.mjs';
 import { newStudioPage, recordPageEvents } from './studio-test-page.mjs';
 
 const root = resolve('build');
@@ -61,214 +59,162 @@ let failInventory = process.env.MODEL_REGRESSION === 'error-focus';
 const regression = process.env.MODEL_REGRESSION;
 let awaitingInventory = !regression;
 const op = (n) => `${String(n).padStart(20, '0')}-00000000`;
-const types = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.woff2': 'font/woff2',
-	'.svg': 'image/svg+xml'
-};
 test('model management selection, disk margin, progress, cancel and removal', async () => {
-	const server = createServer(async (req, res) => {
-		const path = new URL(req.url, 'http://localhost').pathname;
-		if (path.startsWith('/api/')) {
-			calls.push(`${req.method} ${path}`);
-			let body = [];
-			if (path === '/api/v1/account')
-				body = localMode
-					? null
-					: {
-							id: '11000000-0000-4000-8000-000000000001',
-							email: 'admin@example.test',
-							role
-						};
-			else if (path === '/api/v1/config')
-				body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
-			else if (path === '/api/v1/studio/gpu' && (workerGone || regression === 'panel-protocol6')) {
-				res
-					.writeHead(503, { 'Content-Type': 'application/json' })
-					.end(JSON.stringify({ detail: 'no worker connected' }));
+	const answerApi = async (req, res, path) => {
+		calls.push(`${req.method} ${path}`);
+		let body = [];
+		if (path === '/api/v1/account')
+			body = localMode
+				? null
+				: {
+						id: '11000000-0000-4000-8000-000000000001',
+						email: 'admin@example.test',
+						role
+					};
+		else if (path === '/api/v1/config')
+			body = { auth_methods: localMode ? [] : ['password'], billing_enabled: false };
+		else if (path === '/api/v1/studio/gpu' && (workerGone || regression === 'panel-protocol6')) {
+			res
+				.writeHead(503, { 'Content-Type': 'application/json' })
+				.end(JSON.stringify({ detail: 'no worker connected' }));
+			return;
+		} else if (path === '/api/v1/admin/models') {
+			if (failInventory) {
+				failInventory = false;
+				res.writeHead(500).end();
 				return;
-			} else if (path === '/api/v1/admin/models') {
-				if (failInventory) {
-					failInventory = false;
-					res.writeHead(500).end();
-					return;
-				}
-				if (delayNext) {
-					delayNext = false;
-					const snapshot = JSON.stringify([worker]);
-					await new Promise((resolve) => {
-						releaseDelayed = resolve;
-					});
-					res.writeHead(200, { 'Content-Type': 'application/json' }).end(snapshot);
-					return;
-				}
-				if (removalPolls > 0 && --removalPolls === 0) {
-					worker.models[2].installed = false;
-					worker.models[2].download = {
-						kind: 'remove',
-						state: 'done',
-						bytes_done: 0,
-						bytes_total: 0,
-						error: null,
-						op_id: removalOp
-					};
-				}
-				if (retryPolls > 0 && --retryPolls === 0)
-					worker.models[0].download = {
-						kind: 'install',
-						state: 'downloading',
-						bytes_done: gib / 2,
-						bytes_total: gib,
-						error: null,
-						op_id: retryOp
-					};
-				body = workerGone
-					? []
-					: [awaitingInventory ? { ...worker, manageable: false, models: [] } : worker];
-			} else if (path.endsWith('/install')) {
-				const opId = op(++opSequence);
-				body = { op_id: opId };
-				installs++;
-				if (failNextInstall) {
-					failNextInstall = false;
-					res
-						.writeHead(409, { 'Content-Type': 'application/json' })
-						.end(JSON.stringify({ detail: 'busy right now' }));
-					return;
-				}
-				if (holdInstalls) {
-					// Keep the previous record until the test publishes a result.
-				} else if (silentInstall) {
-					silentInstall = false;
-				} else if (installs > 1) {
-					retryOp = opId;
-					retryPolls = 6;
-					worker.models[0].download = {
-						kind: 'install',
-						state: 'failed',
-						bytes_done: 0,
-						bytes_total: gib,
-						error: 'download_failed',
-						op_id: op(0)
-					};
-				} else
-					worker.models[0].download = {
-						kind: 'install',
-						state: 'downloading',
-						bytes_done: gib / 2,
-						bytes_total: gib,
-						error: null,
-						op_id: opId
-					};
-			} else if (path.endsWith('/cancel')) {
-				const opId = op(++opSequence);
-				body = { op_id: opId };
+			}
+			if (delayNext) {
+				delayNext = false;
+				const snapshot = JSON.stringify([worker]);
+				await new Promise((resolve) => {
+					releaseDelayed = resolve;
+				});
+				res.writeHead(200, { 'Content-Type': 'application/json' }).end(snapshot);
+				return;
+			}
+			if (removalPolls > 0 && --removalPolls === 0) {
+				worker.models[2].installed = false;
+				worker.models[2].download = {
+					kind: 'remove',
+					state: 'done',
+					bytes_done: 0,
+					bytes_total: 0,
+					error: null,
+					op_id: removalOp
+				};
+			}
+			if (retryPolls > 0 && --retryPolls === 0)
+				worker.models[0].download = {
+					kind: 'install',
+					state: 'downloading',
+					bytes_done: gib / 2,
+					bytes_total: gib,
+					error: null,
+					op_id: retryOp
+				};
+			body = workerGone
+				? []
+				: [awaitingInventory ? { ...worker, manageable: false, models: [] } : worker];
+		} else if (path.endsWith('/install')) {
+			const opId = op(++opSequence);
+			body = { op_id: opId };
+			installs++;
+			if (failNextInstall) {
+				failNextInstall = false;
+				res
+					.writeHead(409, { 'Content-Type': 'application/json' })
+					.end(JSON.stringify({ detail: 'busy right now' }));
+				return;
+			}
+			if (holdInstalls) {
+				// Keep the previous record until the test publishes a result.
+			} else if (silentInstall) {
+				silentInstall = false;
+			} else if (installs > 1) {
+				retryOp = opId;
+				retryPolls = 6;
+				worker.models[0].download = {
+					kind: 'install',
+					state: 'failed',
+					bytes_done: 0,
+					bytes_total: gib,
+					error: 'download_failed',
+					op_id: op(0)
+				};
+			} else
+				worker.models[0].download = {
+					kind: 'install',
+					state: 'downloading',
+					bytes_done: gib / 2,
+					bytes_total: gib,
+					error: null,
+					op_id: opId
+				};
+		} else if (path.endsWith('/cancel')) {
+			const opId = op(++opSequence);
+			body = { op_id: opId };
+			worker.models[2].download = {
+				kind: 'remove',
+				state: 'failed',
+				bytes_done: 0,
+				bytes_total: 0,
+				error: 'remove_failed',
+				op_id: op(0)
+			};
+			worker.models[0].download = {
+				kind: 'cancel',
+				state: 'failed',
+				bytes_done: gib / 2,
+				bytes_total: gib,
+				error: cancelNotRunning ? 'not_running' : 'cancelled',
+				op_id: opId
+			};
+		} else if (req.method === 'DELETE') {
+			removalOp = op(++opSequence);
+			body = { op_id: removalOp };
+			if (refuseRemoval)
 				worker.models[2].download = {
 					kind: 'remove',
 					state: 'failed',
 					bytes_done: 0,
 					bytes_total: 0,
-					error: 'remove_failed',
-					op_id: op(0)
+					error: 'in_use',
+					op_id: removalOp
 				};
-				worker.models[0].download = {
-					kind: 'cancel',
-					state: 'failed',
-					bytes_done: gib / 2,
-					bytes_total: gib,
-					error: cancelNotRunning ? 'not_running' : 'cancelled',
-					op_id: opId
-				};
-			} else if (req.method === 'DELETE') {
-				removalOp = op(++opSequence);
-				body = { op_id: removalOp };
-				if (refuseRemoval)
+			else {
+				removalPolls = regression === 'later-active' || regression === 'later-failed' ? 0 : 3;
+				if (regression === 'removal')
 					worker.models[2].download = {
 						kind: 'remove',
-						state: 'failed',
+						state: 'queued',
 						bytes_done: 0,
 						bytes_total: 0,
-						error: 'in_use',
+						error: null,
 						op_id: removalOp
 					};
-				else {
-					removalPolls = regression === 'later-active' || regression === 'later-failed' ? 0 : 3;
-					if (regression === 'removal')
-						worker.models[2].download = {
-							kind: 'remove',
-							state: 'queued',
-							bytes_done: 0,
-							bytes_total: 0,
-							error: null,
-							op_id: removalOp
-						};
-				}
-			}
-			res
-				.writeHead(path === '/api/v1/account' && localMode ? 404 : body?.op_id ? 202 : 200, {
-					'Content-Type': 'application/json'
-				})
-				.end(JSON.stringify(body));
-			return;
-		}
-		const file = resolve(root, `.${decodeURIComponent(path)}`);
-		if (!file.startsWith(root)) {
-			res.writeHead(404).end();
-			return;
-		}
-		for (const candidate of [
-			file,
-			`${file}.html`,
-			join(file, 'index.html'),
-			join(root, '200.html')
-		]) {
-			if (
-				await stat(candidate).then(
-					(s) => s.isFile(),
-					() => false
-				)
-			) {
-				res
-					.writeHead(200, {
-						'Content-Type': types[extname(candidate)] ?? 'application/octet-stream'
-					})
-					.end(await readFile(candidate));
-				return;
 			}
 		}
-		res.writeHead(404).end();
+		res
+			.writeHead(path === '/api/v1/account' && localMode ? 404 : body?.op_id ? 202 : 200, {
+				'Content-Type': 'application/json'
+			})
+			.end(JSON.stringify(body));
+		return;
+	};
+	const { server } = await serveBuild(root, {
+		fallback: '200.html',
+		api: async (req, res) => {
+			const path = new URL(req.url, 'http://localhost').pathname;
+			if (!path.startsWith('/api/')) return false;
+			await answerApi(req, res, path);
+			return true;
+		}
 	});
-	await new Promise((done) => server.listen(0, '127.0.0.1', done));
 	let browser;
 	try {
-		const candidates = [
-			process.env.PUPPETEER_EXECUTABLE_PATH,
-			process.env.CHROME_PATH,
-			process.env.CHROME_BIN,
-			'/usr/bin/google-chrome',
-			'/usr/bin/chromium',
-			'/usr/bin/chromium-browser'
-		].filter(Boolean);
-		let executablePath;
-		for (const candidate of candidates)
-			if (
-				await access(candidate).then(
-					() => true,
-					() => false
-				)
-			) {
-				executablePath = candidate;
-				break;
-			}
-		assert.ok(executablePath, 'Chrome is required');
-		browser = await puppeteer.launch({
-			executablePath,
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		assert.ok(await findChrome(), 'Chrome is required');
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 900 });
 		if (regression === 'panel-viewer') role = 'viewer';

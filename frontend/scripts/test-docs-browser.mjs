@@ -1,11 +1,9 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { constants } from 'node:fs';
-import { access, readFile, stat } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { printPageEvents, recordPageEvents } from './studio-test-page.mjs';
 
 // Runs against the landing build (PUBLIC_SITE_MODE=landing npm run build) and the real
@@ -20,38 +18,6 @@ const pages = {
 	sharing: '/docs/api/sharing',
 	profiles: '/docs/architecture/deployment-profiles'
 };
-const contentTypes = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.png': 'image/png',
-	'.webp': 'image/webp',
-	'.woff2': 'font/woff2',
-	'.ico': 'image/x-icon'
-};
-
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found; set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
-
 async function requireBuiltPages() {
 	for (const path of Object.values(pages)) {
 		const file = join(build, `${path}.html`);
@@ -62,46 +28,6 @@ async function requireBuiltPages() {
 		});
 		assert.match(html, /data-docs-shell/, `${path} must be the prerendered docs shell`);
 	}
-}
-
-async function serveBuild() {
-	const server = createServer(async (request, response) => {
-		try {
-			const pathname = new URL(request.url, 'http://localhost').pathname;
-			const clean = resolve(build, `.${decodeURIComponent(pathname)}`);
-			if (clean !== build && !clean.startsWith(build + '/')) {
-				response.writeHead(404).end();
-				return;
-			}
-			let found;
-			for (const candidate of [clean, clean + '.html', join(clean, 'index.html')]) {
-				if (
-					await stat(candidate).then(
-						(value) => value.isFile(),
-						() => false
-					)
-				) {
-					found = candidate;
-					break;
-				}
-			}
-			if (!found) {
-				response.writeHead(404).end();
-				return;
-			}
-			response.writeHead(200, {
-				'Content-Type': contentTypes[extname(found)] ?? 'application/octet-stream'
-			});
-			response.end(await readFile(found));
-		} catch (error) {
-			response.writeHead(500).end(String(error));
-		}
-	});
-	await new Promise((resolveListen, reject) => {
-		server.once('error', reject);
-		server.listen(0, '127.0.0.1', resolveListen);
-	});
-	return server;
 }
 
 let lastPage;
@@ -602,13 +528,9 @@ let server;
 let browser;
 try {
 	await requireBuiltPages();
-	server = await serveBuild();
-	const baseUrl = `http://127.0.0.1:${server.address().port}`;
-	browser = await puppeteer.launch({
-		executablePath: await chromeExecutable(),
-		headless: true,
-		args: ['--no-sandbox', '--disable-gpu']
-	});
+	let baseUrl;
+	({ server, baseUrl } = await serveBuild(build));
+	browser = await launchChrome({ args: ['--disable-gpu'] });
 
 	await checkDiagramRows(browser, baseUrl);
 	await checkScrolledDrawer(browser, baseUrl);

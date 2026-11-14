@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createServer } from 'node:http';
-import { readFile, stat, access } from 'node:fs/promises';
-import { resolve, join, extname } from 'node:path';
-import puppeteer from 'puppeteer-core';
+import { findChrome, launchChrome, serveBuild } from './browser-kit.mjs';
+import { resolve } from 'node:path';
 
 // The fleet tab against a mocked API: list, pause, resume, add with the
 // shown-once command, connection, removal, and the address rules. The studio
@@ -13,14 +11,6 @@ import puppeteer from 'puppeteer-core';
 const root = resolve('build');
 const hour = 3600_000;
 const iso = (ms) => new Date(ms).toISOString();
-const types = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.woff2': 'font/woff2',
-	'.svg': 'image/svg+xml'
-};
 
 // The mocked API's join token for the nth member created.
 function issuedToken(n) {
@@ -84,141 +74,95 @@ async function readBody(req) {
 
 test('fleet tab lists members, pauses, adds a GPU, connects and removes it', async () => {
 	members = seedMembers(Date.now());
-	const server = createServer(async (req, res) => {
-		const path = new URL(req.url, 'http://localhost').pathname;
-		if (path.startsWith('/api/')) {
-			const raw = await readBody(req);
-			calls.push(`${req.method} ${path}`);
-			const json = (status, body) =>
-				res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
-			if (path === '/api/v1/account')
-				return json(200, {
-					id: '11000000-0000-4000-8000-000000000001',
-					email: 'admin@example.test',
-					role: 'admin'
-				});
-			if (path === '/api/v1/config')
-				return json(200, { auth_methods: ['password'], billing_enabled: false });
-			if (path === '/api/v1/metrics/gpu/history')
-				return json(200, { from: '', to: '', rollup: 'raw', samples: [] });
-			if (path === '/api/v1/admin/models')
-				return json(200, [{ worker_id: 'm-a1' }, { worker_id: 'builtin-1' }]);
-			if (path === '/api/v1/admin/fleet/members' && req.method === 'GET') return json(200, members);
-			if (path === '/api/v1/admin/fleet/members' && req.method === 'POST') {
-				if (createDenials > 0) {
-					createDenials--;
-					return json(403, { detail: 'recent authentication required' });
-				}
+	const answerApi = async (req, res, path) => {
+		const raw = await readBody(req);
+		calls.push(`${req.method} ${path}`);
+		const json = (status, body) =>
+			res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+		if (path === '/api/v1/account')
+			return json(200, {
+				id: '11000000-0000-4000-8000-000000000001',
+				email: 'admin@example.test',
+				role: 'admin'
+			});
+		if (path === '/api/v1/config')
+			return json(200, { auth_methods: ['password'], billing_enabled: false });
+		if (path === '/api/v1/metrics/gpu/history')
+			return json(200, { from: '', to: '', rollup: 'raw', samples: [] });
+		if (path === '/api/v1/admin/models')
+			return json(200, [{ worker_id: 'm-a1' }, { worker_id: 'builtin-1' }]);
+		if (path === '/api/v1/admin/fleet/members' && req.method === 'GET') return json(200, members);
+		if (path === '/api/v1/admin/fleet/members' && req.method === 'POST') {
+			if (createDenials > 0) {
+				createDenials--;
+				return json(403, { detail: 'recent authentication required' });
+			}
+			const body = JSON.parse(raw);
+			const now = Date.now();
+			created++;
+			const member = {
+				id: `m-new-${created}`,
+				worker_id: `m-new-${created}1`,
+				label: body.label,
+				device: body.device,
+				state: 'waiting',
+				paused: false,
+				created_at: iso(now),
+				enrolled_at: null,
+				last_seen_at: null,
+				join_expires_at: iso(now + 15 * 60_000)
+			};
+			members.push(member);
+			return json(201, {
+				id: member.id,
+				label: member.label,
+				device: member.device,
+				join_token: issuedToken(created),
+				expires_at: member.join_expires_at,
+				worker_image: `ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-${body.device === 'cuda' ? 'cuda' : 'rocm'}`
+			});
+		}
+		const match = path.match(/^\/api\/v1\/admin\/fleet\/members\/([^/]+)$/);
+		if (match) {
+			const member = members.find((entry) => entry.id === decodeURIComponent(match[1]));
+			if (req.method === 'PATCH') {
 				const body = JSON.parse(raw);
-				const now = Date.now();
-				created++;
-				const member = {
-					id: `m-new-${created}`,
-					worker_id: `m-new-${created}1`,
-					label: body.label,
-					device: body.device,
-					state: 'waiting',
-					paused: false,
-					created_at: iso(now),
-					enrolled_at: null,
-					last_seen_at: null,
-					join_expires_at: iso(now + 15 * 60_000)
-				};
-				members.push(member);
-				return json(201, {
-					id: member.id,
-					label: member.label,
-					device: member.device,
-					join_token: issuedToken(created),
-					expires_at: member.join_expires_at,
-					worker_image: `ghcr.io/portocolom-studio/potocolom-worker:v0.1.4-${body.device === 'cuda' ? 'cuda' : 'rocm'}`
-				});
-			}
-			const match = path.match(/^\/api\/v1\/admin\/fleet\/members\/([^/]+)$/);
-			if (match) {
-				const member = members.find((entry) => entry.id === decodeURIComponent(match[1]));
-				if (req.method === 'PATCH') {
-					const body = JSON.parse(raw);
-					patches.push(body);
-					if (member === undefined || member.state === 'revoked')
-						return json(409, { detail: 'member was removed' });
-					if (patchFailures > 0) {
-						patchFailures--;
-						return json(409, { detail: 'fleet busy' });
-					}
-					member.paused = body.paused;
-					return res.writeHead(204).end();
+				patches.push(body);
+				if (member === undefined || member.state === 'revoked')
+					return json(409, { detail: 'member was removed' });
+				if (patchFailures > 0) {
+					patchFailures--;
+					return json(409, { detail: 'fleet busy' });
 				}
-				if (req.method === 'DELETE') {
-					deletes.push(match[1]);
-					if (member) member.state = 'revoked';
-					return res.writeHead(204).end();
-				}
+				member.paused = body.paused;
+				return res.writeHead(204).end();
 			}
-			return json(200, []);
-		}
-		const file = resolve(root, `.${decodeURIComponent(path)}`);
-		if (!file.startsWith(root)) {
-			res.writeHead(404).end();
-			return;
-		}
-		for (const candidate of [
-			file,
-			`${file}.html`,
-			join(file, 'index.html'),
-			join(root, '200.html')
-		]) {
-			if (
-				await stat(candidate).then(
-					(s) => s.isFile(),
-					() => false
-				)
-			) {
-				res
-					.writeHead(200, {
-						'Content-Type': types[extname(candidate)] ?? 'application/octet-stream'
-					})
-					.end(await readFile(candidate));
-				return;
+			if (req.method === 'DELETE') {
+				deletes.push(match[1]);
+				if (member) member.state = 'revoked';
+				return res.writeHead(204).end();
 			}
 		}
-		res.writeHead(404).end();
+		return json(200, []);
+	};
+	const { server } = await serveBuild(root, {
+		fallback: '200.html',
+		api: async (req, res) => {
+			const path = new URL(req.url, 'http://localhost').pathname;
+			if (!path.startsWith('/api/')) return false;
+			await answerApi(req, res, path);
+			return true;
+		}
 	});
-	await new Promise((done) => server.listen(0, '127.0.0.1', done));
 	const port = server.address().port;
 	const localBase = `http://127.0.0.1:${port}`;
 	const lanBase = `http://studio.lan:${port}`;
 	const count = (needle) => calls.filter((call) => call === needle).length;
 	let browser;
 	try {
-		const candidates = [
-			process.env.PUPPETEER_EXECUTABLE_PATH,
-			process.env.CHROME_PATH,
-			process.env.CHROME_BIN,
-			'/usr/bin/google-chrome',
-			'/usr/bin/chromium',
-			'/usr/bin/chromium-browser'
-		].filter(Boolean);
-		let executablePath;
-		for (const candidate of candidates)
-			if (
-				await access(candidate).then(
-					() => true,
-					() => false
-				)
-			) {
-				executablePath = candidate;
-				break;
-			}
-		assert.ok(executablePath, 'Chrome is required');
-		browser = await puppeteer.launch({
-			executablePath,
-			headless: true,
-			args: [
-				'--no-sandbox',
-				'--disable-setuid-sandbox',
-				'--host-resolver-rules=MAP studio.lan 127.0.0.1'
-			]
+		assert.ok(await findChrome(), 'Chrome is required');
+		browser = await launchChrome({
+			args: ['--disable-setuid-sandbox', '--host-resolver-rules=MAP studio.lan 127.0.0.1']
 		});
 		const page = await browser.newPage();
 		await page.setViewport({ width: 1440, height: 900 });

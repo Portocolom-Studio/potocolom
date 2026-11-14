@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
@@ -54,18 +52,6 @@ const MODEL = {
 	}
 };
 
-const CONTENT_TYPES = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.png': 'image/png',
-	'.webp': 'image/webp',
-	'.woff2': 'font/woff2',
-	'.ico': 'image/x-icon'
-};
-
 // The answers a caller did not override, so every existing caller keeps them.
 function defaultApiBody(path) {
 	if (path === '/api/v1/models') return [MODEL];
@@ -93,71 +79,34 @@ function defaultApiBody(path) {
 // key wins, so the starred list can answer differently from the history list.
 // `delayMs` holds the response back, which is how a test loads history before
 // starred items arrive. Paths without an answer keep today's default answers.
-async function serveBuild(apiAnswers = {}) {
-	const server = createServer(async (request, response) => {
-		try {
+function serveCanvasBuild(apiAnswers = {}) {
+	return serveBuild(build, {
+		fallback: ['200.html', 'index.html'],
+		api: async (request, response) => {
 			const url = new URL(request.url, 'http://localhost');
 			const path = url.pathname;
-			if (path.startsWith('/api/')) {
-				const key = `${path}${url.search}`;
-				const answer =
-					apiAnswers[key] ??
-					Object.entries(apiAnswers)
-						.filter(([queryKey]) => queryKey.includes('?') && key.startsWith(queryKey))
-						.sort(([left], [right]) => right.length - left.length)[0]?.[1] ??
-					apiAnswers[path] ??
-					(path === '/api/v1/account'
-						? { status: 404, body: null }
-						: { body: defaultApiBody(path) });
-				if (answer.delayMs) await pause(answer.delayMs);
-				const body =
-					typeof answer.body === 'function' ? await answer.body(url, request) : answer.body;
-				const status =
-					typeof answer.status === 'function'
-						? await answer.status(url, request)
-						: (answer.status ?? 200);
-				response.writeHead(status, { 'Content-Type': 'application/json' });
-				if (status === 204 || status === 304) response.end();
-				else response.end(body === null ? '' : JSON.stringify(body));
-				return;
-			}
-			const clean = resolve(build, '.' + decodeURIComponent(path));
-			if (clean !== build && !clean.startsWith(build + '/')) {
-				response.writeHead(404).end();
-				return;
-			}
-			let found;
-			for (const candidate of [
-				clean,
-				clean + '.html',
-				join(clean, 'index.html'),
-				join(build, '200.html'),
-				join(build, 'index.html')
-			]) {
-				if (
-					await stat(candidate).then(
-						(value) => value.isFile(),
-						() => false
-					)
-				) {
-					found = candidate;
-					break;
-				}
-			}
-			if (!found) {
-				response.writeHead(404).end();
-				return;
-			}
-			response.writeHead(200, {
-				'Content-Type': CONTENT_TYPES[extname(found)] ?? 'application/octet-stream'
-			});
-			response.end(await readFile(found));
-		} catch (error) {
-			response.writeHead(500).end(String(error));
+			if (!path.startsWith('/api/')) return false;
+			const key = `${path}${url.search}`;
+			const answer =
+				apiAnswers[key] ??
+				Object.entries(apiAnswers)
+					.filter(([queryKey]) => queryKey.includes('?') && key.startsWith(queryKey))
+					.sort(([left], [right]) => right.length - left.length)[0]?.[1] ??
+				apiAnswers[path] ??
+				(path === '/api/v1/account' ? { status: 404, body: null } : { body: defaultApiBody(path) });
+			if (answer.delayMs) await pause(answer.delayMs);
+			const body =
+				typeof answer.body === 'function' ? await answer.body(url, request) : answer.body;
+			const status =
+				typeof answer.status === 'function'
+					? await answer.status(url, request)
+					: (answer.status ?? 200);
+			response.writeHead(status, { 'Content-Type': 'application/json' });
+			if (status === 204 || status === 304) response.end();
+			else response.end(body === null ? '' : JSON.stringify(body));
+			return true;
 		}
 	});
-	await new Promise((resolveServer) => server.listen(0, '127.0.0.1', resolveServer));
-	return server;
 }
 
 function viewPrefsStorageKey(owner, section) {
@@ -176,27 +125,6 @@ async function readViewPrefs(page, owner, section) {
 			selectedSection: section
 		}
 	);
-}
-
-async function chromeExecutable() {
-	const candidates = [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean);
-	for (const candidate of candidates) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
 }
 
 function installSocketAdapter(page) {
@@ -288,14 +216,10 @@ async function launchStudio(
 	appPath = '/app',
 	setupArgs = []
 ) {
-	const server = await serveBuild(apiAnswers);
+	const { server } = await serveCanvasBuild(apiAnswers);
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-gpu']
-		});
+		browser = await launchChrome({ args: ['--disable-gpu'] });
 		const page = await newStudioPage(browser);
 		page.setDefaultTimeout(WAIT_MS);
 		const errors = [];

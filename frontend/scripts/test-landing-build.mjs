@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
-import { constants } from 'node:fs';
-import { access, readFile, stat } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import { extname, join, resolve, sep } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 
 test('the built landing /app contains the studio preview', async () => {
 	const html = await readFile(new URL('../build/app.html', import.meta.url), 'utf8');
@@ -147,83 +144,16 @@ test('the install command uses the copied official redirect', async () => {
 // Browser checks for the prompt marquee on the built home page. The build uses
 // root-relative asset URLs, so it is served over HTTP.
 const landingBuild = fileURLToPath(new URL('../build', import.meta.url));
-const contentTypes = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.png': 'image/png',
-	'.webp': 'image/webp',
-	'.woff2': 'font/woff2',
-	'.ico': 'image/x-icon'
-};
 const promptSelector = '#work button[data-prompt]';
 // The gallery wall in the same section has pinned tiles with aria-pressed too.
 const pauseSelector = '#work button[aria-pressed]:not([data-prompt]):not(.work-wall button)';
 let landing;
 
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
-
 async function landingBrowser() {
 	if (!landing) {
-		const server = createServer(async (request, response) => {
-			try {
-				const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-				const clean = resolve(landingBuild, `.${pathname}`);
-				if (clean !== landingBuild && !clean.startsWith(landingBuild + sep)) {
-					response.writeHead(404).end();
-					return;
-				}
-				let found;
-				for (const candidate of [clean, `${clean}.html`, join(clean, 'index.html')]) {
-					if (
-						await stat(candidate).then(
-							(value) => value.isFile(),
-							() => false
-						)
-					) {
-						found = candidate;
-						break;
-					}
-				}
-				if (!found) {
-					response.writeHead(404).end();
-					return;
-				}
-				response.writeHead(200, {
-					'Content-Type': contentTypes[extname(found)] ?? 'application/octet-stream'
-				});
-				response.end(await readFile(found));
-			} catch (error) {
-				response.writeHead(500).end(String(error));
-			}
-		});
-		await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
-		const browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-gpu']
-		});
-		landing = { server, browser, url: `http://127.0.0.1:${server.address().port}` };
+		const { server, baseUrl } = await serveBuild(landingBuild);
+		const browser = await launchChrome({ args: ['--disable-gpu'] });
+		landing = { server, browser, url: baseUrl };
 	}
 	return landing;
 }

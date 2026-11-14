@@ -23,10 +23,10 @@ lock. See [release checks](release-checklist.md).
 
 The frontend gate tests the built drawing canvas in headless Chrome, with
 GPU use disabled and test API and WebSocket adapters. Set
-`PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if the browser is not installed
-at a standard Linux path. A missing browser fails the gate; it does not skip
-the canvas checks. Its sign-in gate boots the real API against a postgres
-service container and creates the backend venv the test drives.
+`PUPPETEER_EXECUTABLE_PATH`, `CHROME_PATH` or `CHROME_BIN` if the browser is
+not installed at a standard Linux path. A missing browser fails the gate; it
+does not skip the canvas checks. Its sign-in gate boots the real API against a
+postgres service container and creates the backend venv the test drives.
 
 Each browser check runs in its own loopback-only network namespace
 (`scripts/isolated-net.sh`, `unshare -rn`). Chrome aborts every in-flight
