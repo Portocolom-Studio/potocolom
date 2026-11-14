@@ -30,7 +30,9 @@
 </script>
 
 <div class="mt-12 overflow-x-clip">
-	<p class="text-muted-foreground px-4 text-center text-sm sm:px-6">{t('gallery.prompts_hint')}</p>
+	<p class="prompt-hint text-muted-foreground px-4 text-center text-sm sm:px-6">
+		{t('gallery.prompts_hint')}
+	</p>
 	<div
 		class="relative mt-5 flex w-full flex-col gap-4 overflow-x-clip"
 		aria-label={t('gallery.prompts_aria')}
@@ -81,3 +83,10 @@
 		</Button>
 	</div>
 </div>
+
+<style>
+	/* The light landing paper needs the landing muted token (--k-muted). Dark keeps the global muted token. */
+	:global(:root[data-landing-mode='light']) .prompt-hint {
+		color: var(--k-muted);
+	}
+</style>
