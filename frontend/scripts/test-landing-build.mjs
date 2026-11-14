@@ -13,6 +13,19 @@ test('the built landing /app contains the studio preview', async () => {
 	assert.match(body, /<div\s[^>]*\bdata-studio-preview(?:\s|[=>])/);
 });
 
+test('the landing /app preview is labelled static and promises no drawing or live output', async () => {
+	const html = await readFile(new URL('../build/app.html', import.meta.url), 'utf8');
+	const body = html.slice(html.indexOf('<body'), html.indexOf('</body>'));
+	const lower = body.toLowerCase();
+	const promises = ['drawing canvas', 'live result', 'render live in the result'];
+	assert.deepEqual(
+		promises.filter((promise) => lower.includes(promise)),
+		[],
+		'live-drawing copy on the landing /app'
+	);
+	assert.ok(/static preview/i.test(body), 'static preview label on the landing /app');
+});
+
 const built = (name) => readFile(new URL(`../build/${name}.html`, import.meta.url), 'utf8');
 
 test('the landing build prerenders the public-site pages', async () => {
