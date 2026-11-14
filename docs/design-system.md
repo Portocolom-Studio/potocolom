@@ -302,6 +302,18 @@ them rather than hand-rolled markup.
   field omits the open-source kicker. Join, reset and recover use the same
   layout and heading as sign-in. Setup commands sit in their own blocks and
   wrap at spaces.
+- **Home sections**: after the orbit hero the home page shows, in order,
+  `LandingStrokes.svelte` (a sketch beside its result), `LandingLineage.svelte`
+  (one image through generate, edit and upscale), the gallery wall,
+  `LandingMeasured.svelte` (seconds per image from `landing-measured.ts`, the
+  same numbers as `/benchmark`), the repository section with the Self-hosted
+  and Cloud split, `LandingPricing.svelte` and the FAQ. Each section is at
+  most 78rem wide. The pictures are product output, stored in
+  `frontend/static/images/landing/`.
+- **Pricing**: `LandingPricing.svelte` reads `pricing-plans.ts`. The home
+  page shows the plan cards; `/pricing` (landing build only) shows the same
+  component with `full`, which adds the hours estimate, the comparison table
+  and the billing questions.
 - **Install command**: the landing uses
   `curl -fsSL https://potocolom.leonfuller.com/install.sh | bash`. The marketing
   site's static redirect sends this URL to the latest published GitHub
