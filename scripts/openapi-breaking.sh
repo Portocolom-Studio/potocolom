@@ -34,6 +34,11 @@ trap cleanup EXIT INT TERM
 
 install_oasdiff() {
 	local tarball="$work_dir/oasdiff.tar.gz"
+	# The pinned asset is the Linux x86_64 build, which CI and the dev host run.
+	if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+		echo "error: the pinned oasdiff build is Linux x86_64; on $(uname -s) $(uname -m) set OASDIFF_BIN to an oasdiff ${OASDIFF_VERSION} binary" >&2
+		exit 2
+	fi
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL -o "$tarball" "$OASDIFF_URL"
 	elif command -v wget >/dev/null 2>&1; then
