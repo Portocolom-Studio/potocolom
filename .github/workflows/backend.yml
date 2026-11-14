@@ -74,6 +74,20 @@ jobs:
             postgresql://potocolom:potocolom@localhost:${{ job.services.postgres.ports['5432'] }}/potocolom_test
       - run: make check-python-deps
         working-directory: .
+      # The shallow checkout has no base branch. Compare with the base commit the pull request
+      # was built on, not the branch tip, which may have moved after the merge commit was made.
+      - name: Fetch the pull request base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+        working-directory: .
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      - name: Check the API against the pull request base
+        if: ${{ github.event_name == 'pull_request' }}
+        run: make check-openapi
+        working-directory: .
+        env:
+          OPENAPI_BASE_REF: ${{ github.event.pull_request.base.sha }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:

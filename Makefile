@@ -1,4 +1,4 @@
-# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make lint-workflows`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference`, `make check-python-deps` and the secret scan.
+# Development entry points. `make verify` runs the backend, worker and frontend gates; CI also runs `make verify-guards`, `make lint-workflows`, `make verify-compose`, `make verify-mermaid`, `make verify-worker-inference`, `make check-python-deps`, `make check-openapi` on pull requests and the secret scan.
 # First time on a machine:
 #   make init                  # host preflight, venvs, GPU extras, secrets, postgres
 #   make dev                   # native studio on :5173 (or make selfhost for :8080)
@@ -18,7 +18,7 @@
 	ensure-venvs ensure-env init dev selfhost \
 	deps deps-all deps-down dco-hook verify verify-backend verify-worker \
 	verify-worker-inference verify-frontend verify-compose verify-guards verify-mermaid \
-	verify-secrets verify-backup shellcheck lint-workflows check-python-deps \
+	verify-secrets verify-backup shellcheck lint-workflows check-python-deps check-openapi \
 	simulate stress test-db-clean dev-db \
 	api worker-rocm worker-cuda worker-sim web web-landing \
 	dev-start dev-stop dev-restart dev-status \
@@ -262,6 +262,12 @@ verify-worker-inference:
 # from its own venv, .ci-audit, so it never enters the project venvs.
 check-python-deps:
 	bash "$(CURDIR)/scripts/check-python-deps.sh"
+
+# The API snapshot is stale, or an error-level change breaks the base branch's API
+# (OPENAPI_BASE_REF, default origin/main). Issue #984; docs/local-development.md.
+check-openapi: ## fail when backend/openapi.json is stale, or a change breaks the base branch's API (issue #984)
+	PYTHONPATH="$(CURDIR)/backend" backend/.venv/bin/python scripts/openapi-snapshot.py --check
+	bash "$(CURDIR)/scripts/openapi-breaking.sh"
 
 # Browser checks run per build mode, each in a loopback-only network
 # (scripts/isolated-net.sh) so Docker network changes cannot abort its requests. Each build waits for every check of the mode

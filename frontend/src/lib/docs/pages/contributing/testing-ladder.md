@@ -4,7 +4,7 @@ subtitle: The test levels, from quick checks to the full gate.
 tab: contributing
 group: Develop
 order: 3
-source: docs/local-development.md "Testing ladder", "First run on a new machine" (make verify-worker-inference), "What rung 1 covers, and what it deliberately does not" (the frontend gate paragraphs), "Continuous integration"; Makefile targets verify, verify-backend, verify-worker, verify-worker-inference, verify-frontend, verify-compose, verify-guards, verify-mermaid, verify-secrets, verify-backup, lint-workflows, check-python-deps
+source: docs/local-development.md "Testing ladder", "First run on a new machine" (make verify-worker-inference), "What rung 1 covers, and what it deliberately does not" (the frontend gate paragraphs), "Continuous integration"; Makefile targets verify, verify-backend, verify-worker, verify-worker-inference, verify-frontend, verify-compose, verify-guards, verify-mermaid, verify-secrets, verify-backup, lint-workflows, check-python-deps, check-openapi
 ---
 
 The project checks a change in levels. Each level is slower than the one before it, and each one is closer to the real product. Start with the cheapest level that covers your change. Climb only as far as the change needs.
@@ -78,6 +78,7 @@ Each component job runs the matching `make verify-<component>` target. Other job
 - A change to the backend, the frontend, the deploy files, the smoke script or the backup scripts runs `make verify-compose`, then `scripts/compose-smoke.sh` and `scripts/test-backup-restore.sh`. A last step removes the stacks of the run, also when a newer push cancels it.
 - A change to the worker runs `make verify-worker-inference`.
 - The backend and worker jobs run `make check-python-deps`, which audits the installed Python packages for known vulnerabilities with pip-audit and fails on any finding that the script does not record.
+- On a pull request, the backend job runs `make check-openapi`. It fails when the committed API snapshot `backend/openapi.json` is stale, or when an error-level change breaks the API of the base branch. The check uses oasdiff, pinned by version and SHA-256. The check sees only the response bodies a route declares with a schema, so a removed key in a plain-dict response passes until the route declares a response model. An intended break is listed in `backend/openapi-breaking-allow.txt`.
 - A change to the backend runs the backend integration tests against a PostgreSQL service container.
 - Every pull request and every push to `main` runs a secret scan.
 - A change to the docs runs `make verify-mermaid`. It also checks that each changed repository doc changed with its /docs page, that every repository Markdown file a /docs page names as a source is in the docs workflow's path filters, and that `AGENTS.md` stays under its size limit.
