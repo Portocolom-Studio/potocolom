@@ -6,7 +6,7 @@ import { access } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import puppeteer from 'puppeteer-core';
+import { launchChrome } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
 
 // The real handoff: a backend on a fresh database, a setup link minted by the
@@ -35,26 +35,6 @@ const ADMIN = {
 
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
-
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
 
 async function runPython(sql, connectUrl) {
 	await new Promise((resolveRun, rejectRun) => {
@@ -403,11 +383,7 @@ async function main() {
 		['settings turns accounts on for a no-accounts install', testSettingsTurnsAccountsOn]
 	];
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-gpu']
-		});
+		browser = await launchChrome({ args: ['--disable-gpu'] });
 		for (const [name, run] of cases) {
 			try {
 				await run(browser);

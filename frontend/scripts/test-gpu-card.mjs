@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
-import { access, readFile, stat } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 
 // The first-run "Where are your GPUs?" card on the product build: who sees it,
 // what each option does, the keyboard path, the failed list, the one-time flag,
@@ -13,14 +11,6 @@ const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', impor
 const timeoutMs = 15_000;
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
-const contentTypes = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.woff2': 'font/woff2'
-};
 const cardKey = 'potocolom-gpu-card-done';
 const model = {
 	id: 'gpu-card-model',
@@ -73,70 +63,6 @@ function apiReply(pathname) {
 	return { status: 200, body: [] };
 }
 
-async function serveBuild() {
-	const server = createServer(async (request, response) => {
-		const url = new URL(request.url, 'http://localhost');
-		if (url.pathname.startsWith('/api/')) {
-			hits.set(url.pathname, count(url.pathname) + 1);
-			const answer = apiReply(url.pathname);
-			response.writeHead(answer.status, {
-				'Content-Type': 'application/json',
-				'Cache-Control': 'no-store'
-			});
-			response.end(JSON.stringify(answer.body));
-			return;
-		}
-		const file = resolve(build, `.${decodeURIComponent(url.pathname)}`);
-		if (file !== build && !file.startsWith(`${build}/`)) {
-			response.writeHead(404).end();
-			return;
-		}
-		const candidates = [file, `${file}.html`, join(file, 'index.html'), join(build, 'index.html')];
-		let selected;
-		for (const candidate of candidates) {
-			if (
-				await stat(candidate).then(
-					(value) => value.isFile(),
-					() => false
-				)
-			) {
-				selected = candidate;
-				break;
-			}
-		}
-		if (!selected) {
-			response.writeHead(404).end();
-			return;
-		}
-		response.writeHead(200, {
-			'Content-Type': contentTypes[extname(selected)] ?? 'application/octet-stream'
-		});
-		response.end(await readFile(selected));
-	});
-	await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
-	return server;
-}
-
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
-
 async function waitFor(predicate, description) {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
@@ -144,6 +70,25 @@ async function waitFor(predicate, description) {
 		await pause(25);
 	}
 	throw new Error(`Timed out waiting for ${description}`);
+}
+
+// The studio's API answers from apiReply; the rest is the build, with the app shell as fallback.
+function serveStudioBuild() {
+	return serveBuild(build, {
+		fallback: 'index.html',
+		api: (request, response) => {
+			const url = new URL(request.url, 'http://localhost');
+			if (!url.pathname.startsWith('/api/')) return false;
+			hits.set(url.pathname, count(url.pathname) + 1);
+			const answer = apiReply(url.pathname);
+			response.writeHead(answer.status, {
+				'Content-Type': 'application/json',
+				'Cache-Control': 'no-store'
+			});
+			response.end(JSON.stringify(answer.body));
+			return true;
+		}
+	});
 }
 
 async function openStudio(context, server, { blockStorage = false, path = '/app' } = {}) {
@@ -427,14 +372,10 @@ async function scenarioBlockedStorage(browser, server) {
 }
 
 async function main() {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			headless: true,
-			executablePath: await chromeExecutable(),
-			args: ['--no-sandbox', '--disable-dev-shm-usage']
-		});
+		browser = await launchChrome({ args: ['--disable-dev-shm-usage'] });
 		await scenarioAdminWithWorker(browser, server);
 		await scenarioAdminNoWorkerKeyboard(browser, server);
 		await scenarioEscapeDismiss(browser, server);

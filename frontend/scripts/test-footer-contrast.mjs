@@ -1,92 +1,13 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { constants } from 'node:fs';
-import { access, readFile, stat } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { recordPageEvents } from './studio-test-page.mjs';
 
 const build = resolve(fileURLToPath(new URL('../build', import.meta.url)));
 const manualUrl = process.env.FOOTER_TEST_URL;
-const contentTypes = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.png': 'image/png',
-	'.webp': 'image/webp',
-	'.woff2': 'font/woff2',
-	'.ico': 'image/x-icon'
-};
-
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found; set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
-
-async function serveBuild() {
-	const server = createServer(async (request, response) => {
-		try {
-			const pathname = new URL(request.url, 'http://localhost').pathname;
-			const clean = resolve(build, `.${decodeURIComponent(pathname)}`);
-			if (clean !== build && !clean.startsWith(build + '/')) {
-				response.writeHead(404).end();
-				return;
-			}
-			let found;
-			for (const candidate of [
-				clean,
-				clean + '.html',
-				join(clean, 'index.html'),
-				join(build, '404.html')
-			]) {
-				if (
-					await stat(candidate).then(
-						(value) => value.isFile(),
-						() => false
-					)
-				) {
-					found = candidate;
-					break;
-				}
-			}
-			if (!found) {
-				response.writeHead(404).end();
-				return;
-			}
-			response.writeHead(200, {
-				'Content-Type': contentTypes[extname(found)] ?? 'application/octet-stream'
-			});
-			response.end(await readFile(found));
-		} catch (error) {
-			response.writeHead(500).end(String(error));
-		}
-	});
-	await new Promise((resolveListen, reject) => {
-		server.once('error', reject);
-		server.listen(0, '127.0.0.1', resolveListen);
-	});
-	return server;
-}
-
 // Chrome aborts in-flight requests with ERR_NETWORK_CHANGED when the host's
 // network changes, loopback included: another CI job starting Docker Compose on
 // the same host is enough. A page that lost its stylesheet that way renders
@@ -195,15 +116,10 @@ let browser;
 try {
 	let baseUrl = manualUrl;
 	if (!baseUrl) {
-		server = await serveBuild();
-		baseUrl = `http://127.0.0.1:${server.address().port}`;
+		({ server, baseUrl } = await serveBuild(build, { fallback: '404.html' }));
 	}
 
-	browser = await puppeteer.launch({
-		executablePath: await chromeExecutable(),
-		headless: true,
-		args: ['--no-sandbox', '--disable-gpu']
-	});
+	browser = await launchChrome({ args: ['--disable-gpu'] });
 	const homeHtml = await readFile(join(build, 'index.html'), 'utf8');
 	const nodeIds = homeHtml
 		.match(/node_ids:\s*\[([\d,\s]+)\]/)?.[1]

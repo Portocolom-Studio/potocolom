@@ -120,6 +120,8 @@ npm run lint && npm run check                    # Prettier, ESLint, then the ty
 
 `npm test` from `frontend/` loads `.svelte.ts` modules through
 `scripts/node-test-loader.mjs`, so the unit tests import the real store modules.
+It also runs the `scripts/*.test.mjs` tests, which guard the browser helper and
+its lint rule.
 
 From the repository root, `make web` runs the same studio dev server on the configured port (5173 in the main checkout). `make web-landing` runs it in landing mode: `/` is the marketing page and `/app` shows the studio preview instead of the studio.
 
@@ -457,9 +459,13 @@ geometry and reading old version 1 and 2 drawing files. Region-erase checks
 cover paper inside the polygon and an untouched stroke outside it, undo and
 redo, a version 3 round trip, and rejection of malformed erase-regions.
 
-Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH` or
-`CHROME_PATH` for a browser outside the standard Linux paths. The gate fails
-if no browser is found.
+Chrome or Chromium is required. Set `PUPPETEER_EXECUTABLE_PATH`, `CHROME_PATH`
+or `CHROME_BIN` for a browser outside the standard Linux paths. The gate fails
+if no browser is found. Every browser check gets its static server and Chrome
+from `frontend/scripts/browser-kit.mjs` (`serveBuild` and `launchChrome`). An
+ESLint rule in `frontend/eslint.config.js` fails a `createServer(` or
+`puppeteer.launch(` call in a `scripts/test-*.mjs` file, so a new check imports
+the helpers instead of copying them.
 
 ### Test reports
 

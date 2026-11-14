@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
-import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import puppeteer from 'puppeteer-core';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
@@ -13,15 +11,6 @@ const WAIT_MS = 20000;
 const REPORT_RENDER_MEASURE = process.env.REPORT_RENDER_MEASURE === '1';
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
-const contentTypes = {
-	'.html': 'text/html',
-	'.js': 'application/javascript',
-	'.css': 'text/css',
-	'.json': 'application/json',
-	'.svg': 'image/svg+xml',
-	'.woff2': 'font/woff2'
-};
-
 const modelIds = Array.from({ length: 9 }, (_, index) => `benchmark-model-${index + 1}`);
 const sessions = [
 	{
@@ -217,13 +206,14 @@ function apiReply(path) {
 	return { status: 200, body: [] };
 }
 
-async function serveBuild() {
+function serveStudioBuild() {
 	resetApiFixtures();
 	requestLog.length = 0;
 	errorLog.length = 0;
 	completedApiLog.length = 0;
-	const server = createServer(async (request, response) => {
-		try {
+	return serveBuild(build, {
+		fallback: ['200.html', 'index.html'],
+		api: async (request, response) => {
 			const url = new URL(request.url, 'http://localhost');
 			if (url.pathname.startsWith('/api/')) {
 				requestLog.push(`${url.pathname}${url.search}`);
@@ -232,7 +222,7 @@ async function serveBuild() {
 				if (gate) {
 					gate.started.resolve();
 					answer = await gate.reply.promise;
-					if (response.destroyed) return;
+					if (response.destroyed) return true;
 				} else {
 					answer = apiReply(url.pathname);
 				}
@@ -240,72 +230,17 @@ async function serveBuild() {
 				completedApiLog.push(url.pathname);
 				response.writeHead(answer.status, { 'Content-Type': 'application/json' });
 				response.end(JSON.stringify(answer.body));
-				return;
+				return true;
 			}
 			if (url.pathname === '/benchmark/results.json' && apiFailures.staticReport) {
 				errorLog.push('/benchmark/results.json:503');
 				response.writeHead(503, { 'Content-Type': 'application/json' });
 				response.end('{}');
-				return;
+				return true;
 			}
-			const file = resolve(build, `.${decodeURIComponent(url.pathname)}`);
-			if (file !== build && !file.startsWith(`${build}/`)) {
-				response.writeHead(404).end();
-				return;
-			}
-			const candidates = [
-				file,
-				`${file}.html`,
-				join(file, 'index.html'),
-				join(build, '200.html'),
-				join(build, 'index.html')
-			];
-			let found;
-			for (const candidate of candidates) {
-				if (
-					await stat(candidate).then(
-						(value) => value.isFile(),
-						() => false
-					)
-				) {
-					found = candidate;
-					break;
-				}
-			}
-			if (!found) {
-				response.writeHead(404).end();
-				return;
-			}
-			response.writeHead(200, {
-				'Content-Type': contentTypes[extname(found)] ?? 'application/octet-stream'
-			});
-			response.end(await readFile(found));
-		} catch (error) {
-			response.writeHead(500).end(String(error));
+			return false;
 		}
 	});
-	await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
-	return server;
-}
-
-async function chromeExecutable() {
-	for (const candidate of [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean)) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
 }
 
 async function waitForText(page, text) {
@@ -703,17 +638,13 @@ function assertBrowserClean(log) {
 }
 
 test('Metrics restores tabs, ranges and sessions with a real benchmark report', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	let page;
 	let browserLog;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		page = await newStudioPage(browser);
 		browserLog = watchBrowser(page);
 		await page.setViewport({ width: 1440, height: 1000 });
@@ -895,15 +826,11 @@ test('Metrics restores tabs, ranges and sessions with a real benchmark report', 
 });
 
 test('Benchmarks warm tab return refreshes sessions once without refetching cached reports', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
@@ -948,15 +875,11 @@ test('Benchmarks warm tab return refreshes sessions once without refetching cach
 });
 
 test('Benchmarks report entry animates one report root and respects reduced motion', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
@@ -1066,16 +989,12 @@ test('Benchmarks report entry animates one report root and respects reduced moti
 });
 
 test('Benchmarks replaces report payloads by selected session and restores fresh geometry', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
 		publishedSessions = [...sessions];
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
@@ -1133,16 +1052,12 @@ test('Benchmarks replaces report payloads by selected session and restores fresh
 });
 
 test('Benchmarks keeps the latest selection through held replies and retries failed reports', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
 		publishedSessions = [...sessions];
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
@@ -1205,16 +1120,12 @@ test('Benchmarks keeps the latest selection through held replies and retries fai
 });
 
 test('Benchmarks ignores a held report reply after the confirmed account changes', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
 		activeAccountFixture = accountFixtures.A;
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.evaluateOnNewDocument(() => {
@@ -1282,15 +1193,11 @@ test('Benchmarks ignores a held report reply after the confirmed account changes
 });
 
 test('Benchmarks list refresh does not restart a pending selected report detail', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
@@ -1365,15 +1272,11 @@ test('Benchmarks list refresh does not restart a pending selected report detail'
 });
 
 test('Benchmarks commits a cold detail that completes before the refreshed session list', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		await page.setViewport({ width: 1440, height: 1000 });
 		await page.goto(`http://127.0.0.1:${port}/app?view=metrics&tab=benchmarks`, {
@@ -1415,15 +1318,11 @@ test('Benchmarks commits a cold detail that completes before the refreshed sessi
 });
 
 test('Metrics tab navigation skips page transitions but view navigation still transitions', async () => {
-	const server = await serveBuild();
+	const { server } = await serveStudioBuild();
 	const { port } = server.address();
 	let browser;
 	try {
-		browser = await puppeteer.launch({
-			executablePath: await chromeExecutable(),
-			headless: true,
-			args: ['--no-sandbox', '--disable-setuid-sandbox']
-		});
+		browser = await launchChrome({ args: ['--disable-setuid-sandbox'] });
 		const page = await newStudioPage(browser);
 		const browserLog = watchBrowser(page);
 		await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);

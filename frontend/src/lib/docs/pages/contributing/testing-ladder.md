@@ -52,7 +52,7 @@ Run `make verify` before you push a branch. Some checks are not part of `make ve
 
 CI uses `make -j3 --output-sync=target verify-frontend` to run up to three checks of one build mode at once. Both builds and the static checks stay in order. Plain `make verify-frontend` runs the same checks one at a time.
 
-The canvas check drives the built studio in headless Chrome. Set `PUPPETEER_EXECUTABLE_PATH` or `CHROME_PATH` if Chrome is not at a standard Linux path. The gate fails when it finds no browser. It does not skip the checks.
+The canvas check drives the built studio in headless Chrome. Set `PUPPETEER_EXECUTABLE_PATH`, `CHROME_PATH` or `CHROME_BIN` if Chrome is not at a standard Linux path. The gate fails when it finds no browser. It does not skip the checks. Every browser check gets its static server and Chrome from `frontend/scripts/browser-kit.mjs`, and a lint rule rejects a private copy of either in a `scripts/test-*.mjs` file.
 
 Each browser check runs in a private network that has only the loopback interface (`scripts/isolated-net.sh`). Chrome cancels its page loads when the machine adds or removes a network, and Docker does that often. The sign-in and setup checks use the normal network, because they connect to PostgreSQL on the host. If your kernel does not allow unprivileged user namespaces, the script warns and uses the normal network. When a browser check fails, it prints the page errors, failed requests and HTTP 400+ responses its pages produced to stderr, so a flaky failure shows what the browser saw first.
 

@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import puppeteer from 'puppeteer-core';
+import { launchChrome } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
@@ -33,27 +33,6 @@ const messages = JSON.parse(
 
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
-
-async function chromeExecutable() {
-	const candidates = [
-		process.env.PUPPETEER_EXECUTABLE_PATH,
-		process.env.CHROME_PATH,
-		process.env.CHROME_BIN,
-		'/usr/bin/google-chrome',
-		'/usr/bin/chromium',
-		'/usr/bin/chromium-browser'
-	].filter(Boolean);
-	for (const candidate of candidates) {
-		if (
-			await access(candidate, constants.X_OK).then(
-				() => true,
-				() => false
-			)
-		)
-			return candidate;
-	}
-	throw new Error('No Chrome executable found. Set PUPPETEER_EXECUTABLE_PATH or CHROME_PATH.');
-}
 
 async function runPython(sql, connectUrl) {
 	// The backend already depends on asyncpg (backend/pyproject.toml), so the
@@ -213,11 +192,7 @@ async function stopApi(api) {
 }
 
 async function launchBrowser() {
-	return puppeteer.launch({
-		executablePath: await chromeExecutable(),
-		headless: true,
-		args: ['--no-sandbox', '--disable-gpu']
-	});
+	return launchChrome({ args: ['--disable-gpu'] });
 }
 
 async function startApi() {

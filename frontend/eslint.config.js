@@ -50,5 +50,51 @@ export default ts.config(
 		// Build-time HTML from this repository: rendered docs Markdown, inline icons and JSON-LD.
 		files: ['src/routes/(public-site)/docs/**/*.svelte', 'src/lib/components/Seo.svelte'],
 		rules: { 'svelte/no-at-html-tags': 'off' }
+	},
+	{
+		// Browser checks take their static server and Chrome from scripts/browser-kit.mjs.
+		// node:net createServer is not listed: the checks use it only to probe a free port.
+		files: ['scripts/test-*.mjs'],
+		rules: {
+			'no-restricted-imports': [
+				'error',
+				{
+					paths: [
+						{
+							name: 'node:http',
+							importNames: ['createServer'],
+							message: 'Use serveBuild from scripts/browser-kit.mjs.'
+						},
+						{
+							name: 'http',
+							importNames: ['createServer'],
+							message: 'Use serveBuild from scripts/browser-kit.mjs.'
+						},
+						{
+							name: 'node:https',
+							importNames: ['createServer'],
+							message: 'Use serveBuild from scripts/browser-kit.mjs.'
+						},
+						{
+							name: 'puppeteer-core',
+							importNames: ['launch'],
+							message: 'Use launchChrome from scripts/browser-kit.mjs.'
+						}
+					]
+				}
+			],
+			'no-restricted-syntax': [
+				'error',
+				{
+					// Any object name, so a namespace or alias import cannot hide the call.
+					selector: "CallExpression[callee.property.name='createServer']",
+					message: 'Use serveBuild from scripts/browser-kit.mjs.'
+				},
+				{
+					selector: "CallExpression[callee.property.name='launch']",
+					message: 'Use launchChrome from scripts/browser-kit.mjs.'
+				}
+			]
+		}
 	}
 );
