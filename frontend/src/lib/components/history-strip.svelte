@@ -30,7 +30,7 @@
 
 	let stripEl = $state<HTMLDivElement | null>(null);
 	let loadingOlder = $state(false);
-	let loadError = $state('');
+	let loadError = $state<'' | 'empty' | 'failed'>('');
 	let cancellingIds = $state<Set<string>>(new Set());
 	let cancelError = $state('');
 	// The roving tab stop, kept as the thumbnail's generation id rather than
@@ -174,14 +174,19 @@
 		if (!stripEl || loadingOlder) return;
 		loadingOlder = true;
 		loadError = '';
-		const loaded = await loadOlderHistory();
-		await tick();
-		if (loaded && stripEl) {
-			stripEl.scrollLeft = stripEl.scrollWidth - stripEl.clientWidth;
-		} else if (!loaded) {
-			loadError = t('app.gen.load_older_empty');
+		try {
+			const result = await loadOlderHistory();
+			await tick();
+			if (result === 'loaded' && stripEl) {
+				stripEl.scrollLeft = stripEl.scrollWidth - stripEl.clientWidth;
+			} else if (result === 'empty') {
+				loadError = 'empty';
+			} else if (result === 'failed') {
+				loadError = 'failed';
+			}
+		} finally {
+			loadingOlder = false;
 		}
-		loadingOlder = false;
 	}
 
 	async function backToRecent(): Promise<void> {
@@ -387,8 +392,13 @@
 			</button>
 		{/if}
 	</div>
-	{#if loadError !== ''}
-		<p role="alert" class="text-muted-foreground text-xs">{loadError}</p>
+	{#if loadError === 'empty'}
+		<p role="alert" class="text-muted-foreground text-xs">{t('app.gen.load_older_empty')}</p>
+	{:else if loadError === 'failed'}
+		<p role="alert" class="text-muted-foreground flex items-center gap-2 text-xs">
+			{t('app.gen.load_older_failed')}
+			<Button variant="outline" size="xs" onclick={loadOlder}>{t('shared.retry')}</Button>
+		</p>
 	{/if}
 	{#if cancelError !== ''}
 		<p role="status" class="text-destructive text-xs">{cancelError}</p>

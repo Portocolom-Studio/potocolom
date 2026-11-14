@@ -1116,3 +1116,73 @@ test('a history retry that loads a running job starts its stream', async () => {
 	assert.equal(sources.length, 1);
 	studio.stopGenerationUpdates();
 });
+
+// A full first page leaves historyHasMore set, so the strip offers Older.
+function fullHistoryPage(prefix: string): Generation[] {
+	return Array.from({ length: 50 }, (_, index) => generation(`${prefix}-${index}`));
+}
+
+async function loadFullHistory(studio: StudioModule): Promise<void> {
+	stub('fetch', () => Promise.resolve(jsonResponse(fullHistoryPage('recent'))));
+	await studio.loadHistory();
+	assert.equal(studio.studio.historyHasMore, true);
+}
+
+test('loadOlderHistory reports loaded when the older page adds rows', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	stub('fetch', () => Promise.resolve(jsonResponse([generation('older-1')])));
+	assert.equal(await studio.loadOlderHistory(), 'loaded');
+	assert.equal(studio.studio.history.at(-1)?.id, 'older-1');
+	assert.equal(studio.studio.historyHasMore, false);
+});
+
+test('loadOlderHistory reports empty when every row is already loaded', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	stub('fetch', () => Promise.resolve(jsonResponse([generation('recent-0')])));
+	assert.equal(await studio.loadOlderHistory(), 'empty');
+	assert.equal(studio.studio.historyHasMore, false);
+});
+
+test('loadOlderHistory reports failed on an HTTP error and keeps has-more set', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	// A JSON array body, so only the status check can turn this into a failure.
+	stub('fetch', () => Promise.resolve(new Response('[]', { status: 500 })));
+	assert.equal(await studio.loadOlderHistory(), 'failed');
+	assert.equal(studio.studio.historyHasMore, true);
+});
+
+test('loadOlderHistory reports failed on a network error instead of throwing', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	stub('fetch', () => Promise.reject(new TypeError('Failed to fetch')));
+	assert.equal(await studio.loadOlderHistory(), 'failed');
+	assert.equal(studio.studio.historyHasMore, true);
+});
+
+test('an older page that arrives after an owner change adds nothing and shows nothing', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	let finish!: (response: Response) => void;
+	stub('fetch', () => new Promise<Response>((resolve) => (finish = resolve)));
+	const pending = studio.loadOlderHistory();
+	studio.activateViewOwner({ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440001' }, 'user');
+	finish(jsonResponse([generation('private-a')]));
+	// 'loaded' is the only result that shows no message in the strip.
+	assert.equal(await pending, 'loaded');
+	assert.deepEqual(studio.studio.history, []);
+});
+
+test('an older page that fails after an owner change shows no retry message', async () => {
+	const studio = await freshStudio();
+	await loadFullHistory(studio);
+	let fail!: (error: Error) => void;
+	stub('fetch', () => new Promise<Response>((_resolve, reject) => (fail = reject)));
+	const pending = studio.loadOlderHistory();
+	studio.activateViewOwner({ kind: 'account', id: '550e8400-e29b-41d4-a716-446655440001' }, 'user');
+	fail(new TypeError('Failed to fetch'));
+	assert.equal(await pending, 'loaded');
+	assert.deepEqual(studio.studio.history, []);
+});
