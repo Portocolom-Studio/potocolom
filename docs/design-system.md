@@ -289,7 +289,8 @@ them rather than hand-rolled markup.
   stacking context so its fixed sidebar cannot cover the footer.
   `npm run test:footer` checks contrast over the live
   sea and over the fallback, focus, footer style parity, page changes,
-  studio footer access and phone-width overflow.
+  studio footer access, phone-width overflow, and the gallery prompt hint
+  (4.5:1 in landing light mode, at least 11.25:1 in dark mode).
 - **Language buttons**: the shared `LanguageToggle.svelte` uses local SVG
   flags for English and Spanish, with language names, keyboard controls and
   a selected state. The selected language remains stored across page loads.

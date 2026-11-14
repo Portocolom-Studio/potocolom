@@ -114,6 +114,7 @@ async function load(page, navigate) {
 
 function contrastRatio(foreground, background) {
 	const luminance = (color) => {
+		assert.ok(color.startsWith('rgb('), `expected an sRGB color, got ${color}`);
 		const channels = color
 			.match(/[\d.]+/g)
 			?.slice(0, 3)
@@ -129,14 +130,29 @@ function contrastRatio(foreground, background) {
 	return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
-async function sampleCopyrightBackground(page, reader) {
-	await page.$eval('footer.horizon .bottom', (notice) =>
-		notice.scrollIntoView({ block: 'center' })
-	);
-	const line = await page.$eval('footer.horizon .bottom > span', (span) => {
-		const box = span.getBoundingClientRect();
-		const foreground = getComputedStyle(span).color;
-		span.style.color = 'transparent';
+// Some tokens compute to oklch(), which contrastRatio cannot read. A 1x1 canvas
+// converts the colour to sRGB.
+async function toSrgb(reader, color) {
+	return reader.evaluate((value) => {
+		const canvas = document.createElement('canvas');
+		canvas.width = 1;
+		canvas.height = 1;
+		const context = canvas.getContext('2d');
+		context.fillStyle = value;
+		context.fillRect(0, 0, 1, 1);
+		const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+		return `rgb(${r}, ${g}, ${b})`;
+	}, color);
+}
+
+// Hides the element's text, screenshots its box and returns the text colour with the
+// lightest background behind it (ignoring the brightest 5% of pixels).
+async function sampleTextBackground(page, reader, selector) {
+	await page.$eval(selector, (element) => element.scrollIntoView({ block: 'center' }));
+	const line = await page.$eval(selector, (element) => {
+		const box = element.getBoundingClientRect();
+		const foreground = getComputedStyle(element).color;
+		element.style.color = 'transparent';
 		return {
 			x: box.left + window.scrollX,
 			y: box.top + window.scrollY,
@@ -149,8 +165,8 @@ async function sampleCopyrightBackground(page, reader) {
 		clip: { x: line.x, y: line.y, width: line.width, height: line.height },
 		encoding: 'base64'
 	});
-	await page.$eval('footer.horizon .bottom > span', (span) => {
-		span.style.color = '';
+	await page.$eval(selector, (element) => {
+		element.style.color = '';
 	});
 	const background = await reader.evaluate(async (data) => {
 		const image = new Image();
@@ -171,7 +187,7 @@ async function sampleCopyrightBackground(page, reader) {
 		const [, r, g, b] = samples[Math.floor(samples.length * 0.95)];
 		return `rgb(${r}, ${g}, ${b})`;
 	}, shot);
-	return { foreground: line.foreground, background };
+	return { foreground: await toSrgb(reader, line.foreground), background };
 }
 
 let server;
@@ -351,9 +367,10 @@ try {
 			const [, r, g, b] = samples[Math.floor(samples.length * 0.95)];
 			return `rgb(${r}, ${g}, ${b})`;
 		}, shot);
+		const foreground = await toSrgb(reader, line.foreground);
 		assert.ok(
-			contrastRatio(line.foreground, background) >= 4.5,
-			`${label} copyright must contrast with the live particle sea (fg ${line.foreground}, bg ${background})`
+			contrastRatio(foreground, background) >= 4.5,
+			`${label} copyright must contrast with the live particle sea (fg ${foreground}, bg ${background})`
 		);
 	}
 	await livePage.close();
@@ -382,7 +399,7 @@ try {
 	);
 	assert.ok(canvasBlocked, 'the test must exercise the footer with its sea canvas unavailable');
 
-	const desktop = await sampleCopyrightBackground(page, reader);
+	const desktop = await sampleTextBackground(page, reader, 'footer.horizon .bottom > span');
 	assert.ok(
 		contrastRatio(desktop.foreground, desktop.background) >= 4.5,
 		`desktop copyright must contrast with its canvas-failure fallback (fg ${desktop.foreground}, bg ${desktop.background})`
@@ -398,7 +415,7 @@ try {
 				requestAnimationFrame(() => requestAnimationFrame(resolveFrame))
 			)
 	);
-	const phone = await sampleCopyrightBackground(page, reader);
+	const phone = await sampleTextBackground(page, reader, 'footer.horizon .bottom > span');
 	const phoneScale = await page.$eval('footer.horizon .particle-sea', (sea) =>
 		Number.parseFloat(getComputedStyle(sea).getPropertyValue('--sea-scale'))
 	);
@@ -424,6 +441,85 @@ try {
 		),
 		'the copyright notice sits above the artwork'
 	);
+
+	// The prompt hint under the gallery sits on the landing's solid paper, not on the
+	// particle sea, so it is sampled like the copyright line. Light mode must reach
+	// 4.5:1 in both languages; dark mode must not drop below its floor (11.25:1, the
+	// dark-paper measurement of 11.255:1 before the light-mode fix, rounded down).
+	const PROMPT_HINT_DARK_FLOOR = 11.25;
+	const hintSelector = '#work > div > p';
+	const hintText = {
+		en: JSON.parse(await readFile(new URL('../src/lib/i18n/en.json', import.meta.url), 'utf8')),
+		es: JSON.parse(await readFile(new URL('../src/lib/i18n/es.json', import.meta.url), 'utf8'))
+	};
+	const hintPage = await browser.newPage();
+	recordPageEvents(hintPage);
+	await load(hintPage, () => hintPage.goto(baseUrl, { waitUntil: 'networkidle0' }));
+	for (const locale of ['en', 'es']) {
+		for (const mode of ['light', 'dark']) {
+			await hintPage.evaluate(
+				({ locale, mode }) => {
+					localStorage.setItem('locale', locale);
+					localStorage.setItem('landing-mode', mode);
+				},
+				{ locale, mode }
+			);
+			for (const [width, height, label] of [
+				[1280, 900, 'desktop'],
+				[390, 844, 'phone']
+			]) {
+				const name = `${label} ${locale} ${mode}`;
+				await hintPage.setViewport({ width, height });
+				await load(hintPage, () => hintPage.goto(baseUrl, { waitUntil: 'networkidle0' }));
+				await hintPage.waitForFunction(() => {
+					const header = document.querySelector('header.landing-content');
+					const main = document.querySelector('main.landing-content');
+					return (
+						header &&
+						!header.hasAttribute('inert') &&
+						!document.querySelector('.landing-loader') &&
+						main &&
+						getComputedStyle(main).opacity === '1'
+					);
+				});
+				assert.equal(await hintPage.evaluate(() => document.documentElement.lang), locale, name);
+				assert.equal(
+					await hintPage.evaluate(() => document.documentElement.dataset.landingMode ?? 'dark'),
+					mode,
+					name
+				);
+				await hintPage.waitForSelector(hintSelector);
+				assert.equal(
+					await hintPage.$eval(hintSelector, (paragraph) => paragraph.textContent.trim()),
+					hintText[locale]['gallery.prompts_hint'],
+					`${name}: the prompt hint must be the paragraph under the gallery`
+				);
+				const uncovered = await hintPage.$eval(hintSelector, (paragraph) => {
+					paragraph.scrollIntoView({ block: 'center' });
+					const box = paragraph.getBoundingClientRect();
+					const target = document.elementFromPoint(
+						box.left + box.width / 2,
+						box.top + box.height / 2
+					);
+					return target === paragraph || paragraph.contains(target);
+				});
+				assert.ok(uncovered, `${name}: the prompt hint must not be covered`);
+				const hint = await sampleTextBackground(hintPage, reader, hintSelector);
+				const ratio = contrastRatio(hint.foreground, hint.background);
+				assert.ok(
+					ratio >= 4.5,
+					`${name}: prompt hint must reach 4.5:1 (fg ${hint.foreground}, bg ${hint.background}, ratio ${ratio.toFixed(2)})`
+				);
+				if (mode === 'dark') {
+					assert.ok(
+						ratio >= PROMPT_HINT_DARK_FLOOR,
+						`${name}: prompt hint must not get worse than ${PROMPT_HINT_DARK_FLOOR} (fg ${hint.foreground}, bg ${hint.background}, ratio ${ratio.toFixed(2)})`
+					);
+				}
+			}
+		}
+	}
+	await hintPage.close();
 
 	const parity = await browser.newPage();
 	recordPageEvents(parity);
@@ -576,7 +672,9 @@ try {
 	);
 	await sidebarContext.close();
 
-	console.log('Footer contrast, focus, navigation, language, mobile, and sidebar checks passed.');
+	console.log(
+		'Footer contrast, focus, navigation, language, mobile, sidebar, and prompt hint checks passed.'
+	);
 } finally {
 	if (browser) await browser.close();
 	if (server)
