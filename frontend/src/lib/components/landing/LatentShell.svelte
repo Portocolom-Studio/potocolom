@@ -12,7 +12,7 @@
 		current,
 		children
 	}: {
-		current?: 'whitepaper' | 'benchmark' | 'illusions';
+		current?: 'whitepaper' | 'benchmark' | 'illusions' | 'pricing';
 		children: Snippet;
 	} = $props();
 </script>
@@ -35,6 +35,9 @@
 			</a>
 			<a href={resolve('/illusions')} aria-current={current === 'illusions' ? 'page' : undefined}>
 				{t('nav.illusions')}
+			</a>
+			<a href={resolve('/pricing')} aria-current={current === 'pricing' ? 'page' : undefined}>
+				{t('nav.pricing')}
 			</a>
 		</nav>
 		<div class="chrome-actions">
@@ -118,10 +121,19 @@
 
 	header nav {
 		display: none;
+		flex-wrap: wrap;
 		justify-content: center;
-		gap: 1.75rem;
+		gap: 0 clamp(0.75rem, calc(4vw - 1.2rem), 1.75rem);
 		color: var(--k-muted);
 		font-size: 0.9rem;
+	}
+
+	/* A 40px pointer target for each link; the row wraps before a link can
+	   run into the mark or the actions. */
+	header nav a {
+		display: inline-flex;
+		align-items: center;
+		min-block-size: 2.5rem;
 	}
 
 	header nav a:hover,

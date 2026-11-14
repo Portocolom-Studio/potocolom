@@ -402,6 +402,8 @@ test('focus inside a prompt pauses its row until focus leaves', async () => {
 });
 
 // Moves the pointer to a viewport point that no marquee row covers, so no row is hovered.
+// A row edge can sit on a fraction of a pixel, and the hit test rounds, so the point
+// keeps one pixel of distance from every row.
 async function parkPointer(page) {
 	const point = await page.evaluate(() => {
 		const masks = [...document.querySelectorAll('.prompt-marquee-mask')].map((el) =>
@@ -409,7 +411,9 @@ async function parkPointer(page) {
 		);
 		for (let y = 0; y < innerHeight; y += 10) {
 			for (let x = 0; x < innerWidth; x += 10) {
-				if (masks.every((r) => x < r.left || x > r.right || y < r.top || y > r.bottom)) {
+				if (
+					masks.every((r) => x < r.left - 1 || x > r.right + 1 || y < r.top - 1 || y > r.bottom + 1)
+				) {
 					return { x, y };
 				}
 			}

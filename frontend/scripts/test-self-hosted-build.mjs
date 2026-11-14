@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 // Run against the self-hosted build (PUBLIC_SITE_MODE empty): build/ holds the app only.
 const removed = [
+	'pricing',
 	'whitepaper',
 	'benchmark',
 	'illusions',
@@ -14,7 +15,7 @@ const removed = [
 	'docs'
 ];
 const kept = ['index', 'app', 'login', 'join', 'reset', 'recover', 'shared'];
-const documentPages = ['whitepaper', 'benchmark', 'illusions', 'legal', 'privacy'];
+const documentPages = ['whitepaper', 'benchmark', 'illusions', 'legal', 'privacy', 'pricing'];
 const publicSite = 'https://potocolom.leonfuller.com';
 
 const buildDir = new URL('../build/', import.meta.url);
