@@ -10119,6 +10119,120 @@ test('Generate keeps the selected image and its metadata reachable on phones', a
 	}
 });
 
+// A full first page leaves the strip's Older button showing. The older-page
+// request is answered by `olderAnswer`, a per-path fixture.
+async function openOlderPageFailure(olderAnswer) {
+	const recent = Array.from({ length: 50 }, (_, index) =>
+		stripGeneration(
+			`recent-${index}`,
+			`Recent prompt ${index + 1}`,
+			String(index + 1),
+			STRIP_COLORS[index % STRIP_COLORS.length]
+		)
+	);
+	const emptyLineage = {
+		ancestors: [],
+		children: [],
+		descendant_count: 0,
+		descendants_truncated: false
+	};
+	const answers = {
+		...stripFixtures(),
+		'/api/v1/generations?limit=50': { body: recent },
+		'/api/v1/generations?limit=50&cursor=': olderAnswer,
+		...Object.fromEntries(
+			recent.map((generation) => [
+				`/api/v1/generations/${generation.id}/lineage`,
+				{ body: emptyLineage }
+			])
+		)
+	};
+	return launchStudio(
+		'en',
+		() => {
+			window.__olderRequests = 0;
+			const originalFetch = window.fetch.bind(window);
+			window.fetch = (input, init) => {
+				const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+				if (url.searchParams.has('cursor')) window.__olderRequests += 1;
+				return originalFetch(input, init);
+			};
+		},
+		answers,
+		'domcontentloaded'
+	);
+}
+
+// Closes the browser after the checks. Page errors are verified only when the
+// checks passed, so a failed check is reported on its own.
+async function checkThenClose(harness, check) {
+	let passed = false;
+	try {
+		await check(harness.page);
+		passed = true;
+	} finally {
+		await harness.close(passed);
+	}
+}
+
+async function assertOlderPageFailed(page) {
+	await page.waitForFunction(() => window.__olderRequests === 1, { timeout: WAIT_MS });
+	// Older is disabled while its page loads, so enabled again means the request settled.
+	await page
+		.waitForFunction(
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(button) => button.textContent?.trim() === 'Older' && !button.disabled
+				),
+			{ timeout: WAIT_MS }
+		)
+		.catch(() => {});
+	const messages = JSON.parse(
+		await readFile(join(build, '..', 'src', 'lib', 'i18n', 'en.json'), 'utf8')
+	);
+	const state = await page.evaluate(() => ({
+		enabled: [...document.querySelectorAll('button')].some(
+			(button) => button.textContent?.trim() === 'Older' && !button.disabled
+		),
+		text: document.body.innerText
+	}));
+	assert.equal(state.enabled, true, 'Older is enabled again after the older page fails');
+	assert.equal(
+		state.text.includes(messages['app.gen.load_older_empty']),
+		false,
+		'a failed page does not say there are no older images'
+	);
+	const retry = messages['app.gen.load_older_failed'];
+	assert.equal(typeof retry, 'string', 'en.json has the app.gen.load_older_failed message');
+	assert.equal(state.text.includes(retry), true, 'the strip shows the retry message');
+}
+
+test('a dropped older-history request re-enables Older and shows the retry message', async () => {
+	const harness = await openOlderPageFailure({
+		body: (_url, request) => {
+			request.socket.destroy();
+			return null;
+		}
+	});
+	await checkThenClose(harness, async (page) => {
+		await waitForStrip(page, 50);
+		await clickButton(page, 'Older');
+		await assertOlderPageFailed(page);
+	});
+});
+
+test('an HTTP 500 for the older page re-enables Older and shows the retry message', async () => {
+	const harness = await openOlderPageFailure({
+		status: 500,
+		body: { detail: 'older page failed' }
+	});
+	await checkThenClose(harness, async (page) => {
+		await waitForStrip(page, 50);
+		await clickButton(page, 'Older');
+		await assertOlderPageFailed(page);
+	});
+});
+
 test('the history strip gives six thumbnails exactly one tab stop', async () => {
 	const harness = await openStudio(stripFixtures());
 	try {

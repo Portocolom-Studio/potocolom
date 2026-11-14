@@ -741,35 +741,38 @@ async function fetchRecentHistory(epoch: number): Promise<boolean> {
 	return true;
 }
 
-export async function loadOlderHistory(): Promise<boolean> {
+export type OlderHistoryResult = 'loaded' | 'empty' | 'failed';
+
+/** 'loaded' is also returned for an owner change, where nothing is shown. */
+export async function loadOlderHistory(): Promise<OlderHistoryResult> {
 	const epoch = ownerEpoch;
-	if (!studio.historyHasMore) return false;
+	if (!studio.historyHasMore) return 'empty';
 	const oldest = studio.history.at(-1);
-	if (!oldest) return false;
+	if (!oldest) return 'empty';
 
 	const existing = new Set(studio.history.map((generation) => generation.id));
-	const fetchPage = async (query: string) => {
-		const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}&${query}`);
-		if (!response.ok) return null;
-		const raw = (await response.json()) as Generation[];
-		return { raw, items: raw };
-	};
+	let page: Generation[] | null = null;
+	try {
+		const response = await fetch(`/api/v1/generations?limit=${HISTORY_LIMIT}&cursor=${oldest.id}`);
+		if (response.ok) page = (await response.json()) as Generation[];
+	} catch {
+		// A dropped connection leaves the page unloaded, so has-more stays set for a retry.
+	}
+	if (epoch !== ownerEpoch) return 'loaded';
+	if (page === null) return 'failed';
 
-	const result = await fetchPage(`cursor=${oldest.id}`);
-	if (result === null || epoch !== ownerEpoch) return false;
-
-	const unique = result.items.filter((generation) => !existing.has(generation.id));
+	const unique = page.filter((generation) => !existing.has(generation.id));
 
 	if (unique.length === 0) {
 		studio.historyHasMore = false;
-		return false;
+		return 'empty';
 	}
 
 	studio.history = [...studio.history, ...unique];
-	studio.historyHasMore = result.raw.length === HISTORY_LIMIT;
+	studio.historyHasMore = page.length === HISTORY_LIMIT;
 	studio.historyExtended = studio.history.length > studio.historyRecent.length;
 	reconcileStarredExtras();
-	return true;
+	return 'loaded';
 }
 
 export function generationById(id: string): Generation | undefined {

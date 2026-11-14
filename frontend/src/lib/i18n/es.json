@@ -528,6 +528,7 @@
 	"app.gen.badge_working": "en curso",
 	"app.gen.load_older": "Anteriores",
 	"app.gen.load_older_empty": "No hay imágenes más antiguas.",
+	"app.gen.load_older_failed": "Error al cargar las anteriores.",
 	"app.gen.back_to_recent": "Recientes",
 	"app.gen.insert_prompt": "Insertar prompt",
 	"app.gen.star": "Destacar",

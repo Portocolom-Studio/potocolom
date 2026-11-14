@@ -528,6 +528,7 @@
 	"app.gen.badge_working": "working",
 	"app.gen.load_older": "Older",
 	"app.gen.load_older_empty": "No older images to load.",
+	"app.gen.load_older_failed": "Older images did not load.",
 	"app.gen.back_to_recent": "Recent",
 	"app.gen.insert_prompt": "Insert prompt",
 	"app.gen.star": "Star",
