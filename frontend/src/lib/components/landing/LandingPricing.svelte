@@ -408,6 +408,7 @@
 
 	input[type='range'] {
 		width: 100%;
+		min-block-size: 2.5rem;
 		accent-color: var(--k-accent);
 	}
 

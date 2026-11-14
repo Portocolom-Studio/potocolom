@@ -4,7 +4,7 @@
 </script>
 
 <div class="sketch-switcher">
-	<!-- From the tablet width up the home header holds the flags. -->
+	<!-- From 64rem up the home header holds the flags. -->
 	<div class="lang">
 		<LanguageToggle />
 		<span class="divider" aria-hidden="true"></span>
@@ -65,7 +65,7 @@
 		gap: 0.15rem;
 	}
 
-	@media (min-width: 48rem) {
+	@media (min-width: 64rem) {
 		.lang {
 			display: none;
 		}

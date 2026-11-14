@@ -465,20 +465,40 @@
 
 	header nav {
 		display: none;
+		flex-wrap: wrap;
 		justify-content: center;
-		gap: 1.6rem;
+		gap: 0 clamp(0.75rem, calc(4vw - 1.2rem), 1.6rem);
 		color: var(--k-muted);
 		font-size: 0.9rem;
+	}
+
+	/* A 40px pointer target for each link; the row wraps before a link can
+	   run into the mark or the actions. */
+	header nav a {
+		display: inline-flex;
+		align-items: center;
+		min-block-size: 2.5rem;
 	}
 
 	header nav a:hover {
 		color: var(--k-ink);
 	}
 
-	/* The flags sit in the header from the tablet width up; below it they stay
-	   in the bottom dock, where a thumb reaches them. */
+	/* The flags sit in the header from 64rem up, where they fit beside five
+	   links on one row; below it they stay in the bottom dock, where a thumb
+	   reaches them. */
 	.header-lang {
 		display: none;
+	}
+
+	@media (min-width: 64rem) {
+		header {
+			grid-template-columns: auto minmax(0, 1fr) auto auto;
+		}
+
+		.header-lang {
+			display: block;
+		}
 	}
 
 	.header-lang :global([data-slot='toggle-group']) {
@@ -1081,16 +1101,8 @@
 	}
 
 	@media (min-width: 48rem) {
-		header {
-			grid-template-columns: auto minmax(0, 1fr) auto auto;
-		}
-
 		header nav {
 			display: flex;
-		}
-
-		.header-lang {
-			display: block;
 		}
 
 		.run-body {

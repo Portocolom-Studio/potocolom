@@ -155,7 +155,9 @@
 
 	.bars a {
 		display: inline-flex;
-		margin-block-start: 1.75rem;
+		align-items: center;
+		min-block-size: 2.5rem;
+		margin-block-start: 1.25rem;
 		color: var(--k-ink);
 		font-weight: 500;
 		text-decoration: underline;

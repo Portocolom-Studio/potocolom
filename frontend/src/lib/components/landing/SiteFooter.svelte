@@ -139,8 +139,14 @@
 
 	.columns div {
 		display: grid;
-		gap: 0.55rem;
 		align-content: start;
+	}
+
+	/* A 40px pointer target for each link; the rows carry the spacing. */
+	.columns a {
+		display: flex;
+		align-items: center;
+		min-block-size: 2.5rem;
 	}
 
 	footer.horizon h2 {

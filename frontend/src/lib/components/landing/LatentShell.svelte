@@ -121,10 +121,19 @@
 
 	header nav {
 		display: none;
+		flex-wrap: wrap;
 		justify-content: center;
-		gap: 1.75rem;
+		gap: 0 clamp(0.75rem, calc(4vw - 1.2rem), 1.75rem);
 		color: var(--k-muted);
 		font-size: 0.9rem;
+	}
+
+	/* A 40px pointer target for each link; the row wraps before a link can
+	   run into the mark or the actions. */
+	header nav a {
+		display: inline-flex;
+		align-items: center;
+		min-block-size: 2.5rem;
 	}
 
 	header nav a:hover,
