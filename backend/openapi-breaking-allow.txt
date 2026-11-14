@@ -1,0 +1,4 @@
+# Intended API breaks that scripts/openapi-breaking.sh lets pass (issue #984). Empty: no break is intended.
+# One line per break: METHOD PATH, the change text oasdiff prints for it, then "# decision" with the
+# decision that accepts it. Lines that start with # are comments. Copy the change text exactly
+# as oasdiff printed it in the failing run.

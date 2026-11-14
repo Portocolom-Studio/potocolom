@@ -49,11 +49,13 @@ potocolom is AGPL-3.0. The project sells commercial exceptions ([COMMERCIAL.md](
 - Match the existing style of the file you edit.
 - Reviewers apply [CODING_STANDARDS.md](https://github.com/Portocolom-Studio/potocolom/blob/main/CODING_STANDARDS.md) to every diff.
 - Run `make verify` before you open or update a PR. It runs the backend, worker and frontend gates. For the test levels, read [the testing ladder](/docs/contributing/testing-ladder).
+- An API change regenerates `backend/openapi.json` in the same PR with `PYTHONPATH=backend backend/.venv/bin/python scripts/openapi-snapshot.py`. On a pull request, CI runs `make check-openapi`, which fails when the snapshot is stale or when an error-level change breaks the API of the base branch. The check sees only the response bodies a route declares with a schema, so a removed key in a plain-dict response passes until the route declares a response model. An intended break goes on one line of `backend/openapi-breaking-allow.txt`, with a decision reference. Never loosen the check to pass.
 - CI also runs these checks. Each one has its own requirement:
   - `make verify-guards` needs Python 3.11 or newer with venv support.
   - `make lint-workflows` needs curl or wget. It downloads pinned actionlint and zizmor.
   - `make verify-worker-inference` needs the inference extras.
   - `make verify-mermaid` needs mmdc and Chrome.
+  - `make check-openapi` needs network access to download pinned oasdiff. Locally it compares the API with `origin/main`. CI compares with the base commit of the pull request.
   - `make verify-compose` needs Docker.
   - The secret scan behind `make verify-secrets`.
   - Deploy CI also runs the Docker-based release-check tests.
