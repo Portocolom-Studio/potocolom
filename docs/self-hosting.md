@@ -417,6 +417,12 @@ run a single API process, as self-hosted Compose does. A scaled deployment must 
 An install that already exists is decided at upgrade: it keeps accounts if it had them,
 and it is `none` if it holds any user or work, so an upgrade never shows the setup page.
 
+After the choice the studio opens and a card continues the setup once for an
+administrator: the connected GPUs, the first models to download (the model the install
+suggests for each use, with its size and the free disk space), and a summary that says
+the studio is ready only when a model that makes images is installed. "Set up later"
+closes it, and "Finish setup" in the user menu opens it again.
+
 The compose file passes the sign-in and mail settings to the API: `OAUTH_PROVIDERS`,
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
 `EMAIL_BACKEND`, `MAIL_FROM` and the `SMTP_*` keys. All are empty or at their defaults

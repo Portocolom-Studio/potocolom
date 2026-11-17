@@ -4,14 +4,17 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchChrome, serveBuild } from './browser-kit.mjs';
 
-// The first-run "Where are your GPUs?" card on the product build: who sees it,
-// what each option does, the keyboard path, the failed list, the one-time flag,
-// and that the guided tour waits until the card is finished.
+// The first-run setup card in the studio on the product build, steps 2 to 4: who
+// sees it, the GPU step, the model step and its installs, the ready step, the
+// keyboard path, the failed list, the one-time flag, the tour order, and the user
+// menu entry that opens the card again.
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
 const timeoutMs = 15_000;
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
+const GIB = 1024 ** 3;
 const cardKey = 'potocolom-gpu-card-done';
+const tourKey = 'potocolom-tour-done';
 const model = {
 	id: 'gpu-card-model',
 	name: 'Card model',
@@ -27,18 +30,128 @@ const english = JSON.parse(
 );
 const tourTitle = english['app.tour.canvas_title'];
 const unreadable = english['app.gpu_card.unreadable'];
+const readyTitle = english['app.gpu_card.ready_title'];
+const downloadingTitle = english['app.gpu_card.downloading_title'];
+const tokenText = english['app.gpu_card.failed_token'];
 
-// Scenario state, changed between scenarios.
+// The models the mock workers offer, shaped like GET /api/v1/admin/models.
+const catalog = {
+	sdxl: {
+		id: 'sdxl',
+		name: 'SDXL',
+		capabilities: ['text_to_image'],
+		download_bytes: 7 * GIB,
+		min_vram_gb: 8,
+		tier: 'standard',
+		fits: true
+	},
+	fast: {
+		id: 'fast',
+		name: 'SDXL Fast',
+		capabilities: ['realtime'],
+		download_bytes: 6 * GIB,
+		min_vram_gb: 8,
+		tier: 'standard',
+		fits: true
+	},
+	esrgan: {
+		id: 'esrgan',
+		name: 'Real-ESRGAN',
+		capabilities: ['upscale'],
+		download_bytes: GIB / 4,
+		min_vram_gb: 2,
+		tier: 'draft',
+		fits: true
+	}
+};
+const hardware = {
+	gpu_name: 'Mock GPU',
+	vram_total_bytes: 16 * GIB,
+	disk_total_bytes: 500 * GIB,
+	disk_free_bytes: 200 * GIB
+};
+
+// One worker as the admin models list answers it. `only` picks the offered models,
+// `installed` and `gated` pick models by id.
+function worker({
+	manageable = true,
+	suggested = {},
+	installed = [],
+	gated = [],
+	only = Object.keys(catalog)
+} = {}) {
+	return {
+		worker_id: 'm-a1',
+		device: 'rocm',
+		manageable,
+		reason: manageable ? null : 'Update this worker to manage models here',
+		hardware,
+		disk_free_bytes: 200 * GIB,
+		suggested,
+		models: manageable
+			? only.map((id) => ({
+					...catalog[id],
+					installed: installed.includes(id),
+					needs_token: gated.includes(id),
+					suggested: Object.values(suggested).includes(id),
+					download: null
+				}))
+			: []
+	};
+}
+
+// The scenario's workers, and the installs the mock has seen since the scenario began.
 let accountMode = 'admin';
 let workers = [];
 let workersFail = false;
 let hits = new Map();
+let installs = freshInstalls();
+
+function freshInstalls() {
+	return { downloading: new Set(), released: false, posts: [] };
+}
 
 function count(path) {
 	return hits.get(path) ?? 0;
 }
 
-function apiReply(pathname) {
+// A model that a POST started is downloading until the test releases it, then installed.
+function modelsReply() {
+	return workers.map((template) => ({
+		...template,
+		models: template.models.map((entry) => {
+			const started = installs.downloading.has(entry.id);
+			const done = started && installs.released;
+			return {
+				...entry,
+				installed: entry.installed || done,
+				download:
+					started && !done
+						? {
+								kind: 'install',
+								state: 'downloading',
+								bytes_done: entry.download_bytes / 2,
+								bytes_total: entry.download_bytes,
+								error: null,
+								op_id: '1'
+							}
+						: null
+			};
+		})
+	}));
+}
+
+function installReply(id) {
+	const template = workers[0];
+	const entry = template?.models.find((item) => item.id === id);
+	if (!entry) return { status: 404, body: { detail: 'unknown model' } };
+	if (entry.needs_token) return { status: 409, body: { detail: 'needs_token' } };
+	installs.posts.push(id);
+	installs.downloading.add(id);
+	return { status: 202, body: { op_id: '1' } };
+}
+
+function apiReply(pathname, method) {
 	if (pathname === '/api/v1/account')
 		return accountMode === 'local'
 			? { status: 404, body: {} }
@@ -55,8 +168,10 @@ function apiReply(pathname) {
 	if (pathname === '/api/v1/generations/models') return { status: 200, body: { models: [model] } };
 	if (pathname === '/api/v1/admin/models') {
 		if (workersFail) return { status: 500, body: { detail: 'boom' } };
-		return { status: 200, body: workers };
+		return { status: 200, body: modelsReply() };
 	}
+	const install = /^\/api\/v1\/admin\/workers\/[^/]+\/models\/([^/]+)\/install$/.exec(pathname);
+	if (install && method === 'POST') return installReply(decodeURIComponent(install[1]));
 	if (pathname === '/api/v1/admin/fleet/members') return { status: 200, body: [] };
 	if (pathname === '/api/v1/metrics/gpu/history')
 		return { status: 200, body: { from: '', to: '', rollup: 'raw', samples: [] } };
@@ -80,7 +195,7 @@ function serveStudioBuild() {
 			const url = new URL(request.url, 'http://localhost');
 			if (!url.pathname.startsWith('/api/')) return false;
 			hits.set(url.pathname, count(url.pathname) + 1);
-			const answer = apiReply(url.pathname);
+			const answer = apiReply(url.pathname, request.method);
 			response.writeHead(answer.status, {
 				'Content-Type': 'application/json',
 				'Cache-Control': 'no-store'
@@ -138,6 +253,19 @@ const storedFlag = (page, key) =>
 			return 'blocked';
 		}
 	}, key);
+const cardText = (page) =>
+	page.evaluate(() => document.querySelector('[data-testid="gpu-card"]')?.textContent ?? '');
+const stepNumber = (page) =>
+	page.evaluate(
+		() => document.querySelector('[data-testid="first-run-frame"]')?.dataset.step ?? null
+	);
+const waitForStep = (page, number) =>
+	waitFor(async () => (await stepNumber(page)) === String(number), `step ${number}`);
+const rowText = (page, id) =>
+	page.evaluate((model) => {
+		const row = document.querySelector(`[data-testid="gpu-card-row"][data-model="${model}"]`);
+		return row ? row.textContent.replace(/\s+/g, ' ').trim() : '';
+	}, id);
 
 // The studio asks for the models before the tour may start. Waiting for that
 // request, then a settle pause, makes "no tour" a real claim rather than a race.
@@ -171,19 +299,38 @@ async function tabTo(page, testid) {
 	throw new Error(`Tab never reached ${testid}`);
 }
 
+// Show tour and Finish setup live in the sidebar's user menu, the last menu button in the footer.
+async function openUserMenu(page) {
+	await page.waitForSelector('[data-sidebar="footer"] [data-sidebar="menu-button"]');
+	const triggers = await page.$$('[data-sidebar="footer"] [data-sidebar="menu-button"]');
+	await triggers.at(-1).click();
+	await page.waitForSelector('[role="menu"]');
+}
+
+async function clickMenuItem(page, label) {
+	await page.evaluate((text) => {
+		const item = [...document.querySelectorAll('[role="menuitem"]')].find(
+			(element) => element.textContent.trim() === text
+		);
+		if (!item) throw new Error(`No "${text}" menu item`);
+		item.click();
+	}, label);
+}
+
 async function scenarioAdminWithWorker(browser, server) {
 	accountMode = 'admin';
-	workers = [{ worker_id: 'm-a1' }];
+	workers = [worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	assert.equal(await checked(page, 'gpu-card-this'), true, '"This computer" is the default');
 	await page.waitForSelector('[data-testid="gpu-card-worker"]');
-	assert.equal(
-		await page.$eval('[data-testid="gpu-card-worker"]', (item) => item.textContent.trim()),
-		'm-a1',
-		'the connected worker is listed'
+	assert.match(
+		await page.$eval('[data-testid="gpu-card-worker"]', (item) => item.textContent),
+		/Mock GPU.*16\.00 GiB.*ROCm/s,
+		'the connected worker shows its GPU, memory and device'
 	);
 
 	// Focus stays inside the dialog while the user tabs.
@@ -198,10 +345,14 @@ async function scenarioAdminWithWorker(browser, server) {
 	await settleAfterModels(page);
 	assert.equal(await tourOpen(page), false, 'the tour waits behind the card');
 
+	// The only model is installed, so step 3 is passed over and Continue is step 4.
 	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	await waitFor(async () => (await cardText(page)).includes(readyTitle), 'the ready step');
+	await page.click('[data-testid="gpu-card-open"]');
 	await page.waitForSelector('[data-studio-tour] h2', { hidden: false });
 	await waitFor(async () => (await tourHeading(page)) === tourTitle, 'the tour after the card');
-	await waitFor(async () => !(await cardOpen(page)), 'the card closes on Continue');
+	await waitFor(async () => !(await cardOpen(page)), 'the card closes on Open the studio');
 	assert.equal(await storedFlag(page, cardKey), '1', 'the card flag is written');
 
 	await page.keyboard.press('Escape');
@@ -219,6 +370,7 @@ async function scenarioAdminNoWorkerKeyboard(browser, server) {
 	accountMode = 'admin';
 	workers = [];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
@@ -263,8 +415,9 @@ async function scenarioAdminNoWorkerKeyboard(browser, server) {
 
 async function scenarioEscapeDismiss(browser, server) {
 	accountMode = 'admin';
-	workers = [{ worker_id: 'm-a1' }];
+	workers = [worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
@@ -284,6 +437,7 @@ async function scenarioFailedList(browser, server) {
 	accountMode = 'admin';
 	workers = [];
 	workersFail = true;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
@@ -304,8 +458,9 @@ async function scenarioFailedList(browser, server) {
 
 async function scenarioAccessLostWhileOpen(browser, server) {
 	accountMode = 'admin';
-	workers = [{ worker_id: 'm-a1' }];
+	workers = [worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
@@ -326,6 +481,7 @@ async function scenarioViewer(browser, server) {
 	accountMode = 'viewer';
 	workers = [];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await waitFor(() => count('/api/v1/account') > 0, 'the account probe');
@@ -341,8 +497,9 @@ async function scenarioViewer(browser, server) {
 
 async function scenarioNoneMode(browser, server) {
 	accountMode = 'local';
-	workers = [{ worker_id: 'm-a1' }];
+	workers = [worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
@@ -351,7 +508,11 @@ async function scenarioNoneMode(browser, server) {
 		true,
 		'the implicit administrator gets the card'
 	);
+	await settleAfterModels(page);
 	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	assert.match(await cardText(page), /This computer, no sign in/, 'the account row is local');
+	await page.click('[data-testid="gpu-card-open"]');
 	await waitFor(() => cardOpen(page).then((open) => !open), 'the card to close');
 	assert.deepEqual(errors, []);
 	await context.close();
@@ -362,11 +523,203 @@ async function scenarioBlockedStorage(browser, server) {
 	accountMode = 'admin';
 	workers = [];
 	workersFail = false;
+	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server, { blockStorage: true });
 	await settleAfterModels(page);
 	assert.equal(await cardOpen(page), false, 'blocked storage never shows the card');
 	assert.equal(await tourOpen(page), false, 'blocked storage never auto-starts the tour');
+	assert.deepEqual(errors, []);
+	await context.close();
+}
+
+// Step 3 lists the suggested models with their sizes; Download and continue posts one
+// install per ticked model; step 4 shows the progress, then Ready after the poll.
+async function scenarioModelDownloads(browser, server) {
+	accountMode = 'admin';
+	workers = [worker({ suggested: { text_to_image: 'sdxl', realtime: 'fast', upscale: 'esrgan' } })];
+	workersFail = false;
+	installs = freshInstalls();
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	await settleAfterModels(page);
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 3);
+
+	const boxes = await page.$$eval('[data-testid="gpu-card-model"]', (inputs) =>
+		inputs.map((input) => ({
+			id: input.dataset.model,
+			checked: input.checked,
+			disabled: input.disabled
+		}))
+	);
+	assert.deepEqual(
+		boxes,
+		[
+			{ id: 'sdxl', checked: true, disabled: false },
+			{ id: 'fast', checked: true, disabled: false },
+			{ id: 'esrgan', checked: true, disabled: false }
+		],
+		'every suggested model is listed and ticked'
+	);
+	const listed = await cardText(page);
+	for (const size of ['7.00 GiB', '6.00 GiB', '0.25 GiB']) {
+		assert.ok(listed.includes(size), `${size} is shown on its model`);
+	}
+	assert.ok(listed.includes('13.25 GiB to download'), 'the total of the ticked sizes is shown');
+	assert.ok(listed.includes('200.00 GiB free on this disk'), 'the free disk space is shown');
+
+	await page.click('input[data-model="esrgan"]');
+	assert.equal(
+		await page.$eval('input[data-model="esrgan"]', (input) => input.checked),
+		false,
+		'an unticked model stays unticked'
+	);
+	await page.click('[data-testid="gpu-card-download"]');
+	await waitForStep(page, 4);
+	assert.deepEqual(installs.posts, ['sdxl', 'fast'], 'one install per ticked model, in order');
+
+	await waitFor(
+		async () =>
+			(await page.$('[data-testid="gpu-card-row"][data-model="sdxl"] [role="progressbar"]')) !==
+			null,
+		'a progress bar while the model downloads'
+	);
+	assert.ok((await cardText(page)).includes(downloadingTitle), 'the models are still downloading');
+	assert.equal(
+		await page.$('[data-testid="gpu-card-row"][data-model="esrgan"]'),
+		null,
+		'an unticked model has no row'
+	);
+
+	installs.released = true;
+	await waitFor(
+		async () =>
+			(await rowText(page, 'sdxl')).includes('Ready') &&
+			(await rowText(page, 'fast')).includes('Ready'),
+		'Ready on both rows after the poll'
+	);
+	await waitFor(async () => (await cardText(page)).includes(readyTitle), 'the ready title');
+	assert.deepEqual(errors, []);
+	await context.close();
+}
+
+// A worker that cannot manage models passes step 3 over.
+async function scenarioUnmanageableWorker(browser, server) {
+	accountMode = 'admin';
+	workers = [worker({ manageable: false })];
+	workersFail = false;
+	installs = freshInstalls();
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	await settleAfterModels(page);
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	assert.equal(await page.$('[data-testid="gpu-card-model"]'), null, 'no model step is shown');
+	assert.ok((await cardText(page)).includes('Mock GPU'), 'the GPU row names the worker');
+	assert.ok(
+		(await cardText(page)).includes(english['app.gpu_card.no_model_title']),
+		'with nothing installed or downloading, step 4 sends the user to the Models screen'
+	);
+	assert.deepEqual(installs.posts, [], 'nothing is installed');
+	assert.deepEqual(errors, []);
+	await context.close();
+}
+
+// A token-gated model answers 409; the card stays on step 3 and names the model.
+async function scenarioTokenGated(browser, server) {
+	accountMode = 'admin';
+	workers = [worker({ suggested: { upscale: 'esrgan' }, only: ['esrgan'], gated: ['esrgan'] })];
+	workersFail = false;
+	installs = freshInstalls();
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	await settleAfterModels(page);
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 3);
+	await page.click('[data-testid="gpu-card-download"]');
+	await waitFor(
+		async () => (await page.$('[data-testid="gpu-card"] [role="alert"]')) !== null,
+		'the install alert'
+	);
+	const alert = await page.$eval('[data-testid="gpu-card"] [role="alert"]', (node) =>
+		node.textContent.trim()
+	);
+	assert.ok(alert.includes('Real-ESRGAN'), 'the alert names the model');
+	assert.ok(alert.includes(tokenText), 'the alert gives the token reason');
+	assert.equal(await stepNumber(page), '3', 'the card stays on step 3');
+	assert.deepEqual(installs.posts, [], 'nothing was started');
+	assert.deepEqual(errors, []);
+	await context.close();
+}
+
+// The tour switch off sets the tour flag, and the tour does not start. Finish setup
+// in the user menu then opens the card again at step 2.
+async function scenarioTourSwitchAndReopen(browser, server) {
+	accountMode = 'admin';
+	workers = [worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })];
+	workersFail = false;
+	installs = freshInstalls();
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	await settleAfterModels(page);
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	await page.click('[data-testid="gpu-card-tour"]');
+	assert.equal(await checked(page, 'gpu-card-tour'), false, 'the switch is off');
+	await page.click('[data-testid="gpu-card-open"]');
+	await waitFor(async () => !(await cardOpen(page)), 'the card to close');
+	await frames(page);
+	assert.equal(await tourOpen(page), false, 'the tour does not start');
+	assert.equal(await storedFlag(page, tourKey), '1', 'the tour flag is written');
+
+	await openUserMenu(page);
+	await clickMenuItem(page, english['app.gpu_card.reopen']);
+	await waitFor(() => cardOpen(page), 'the card to reopen');
+	await waitForStep(page, 2);
+	assert.equal(await checked(page, 'gpu-card-this'), true, 'the card reopens on step 2');
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	assert.equal(
+		await page.$('[data-testid="gpu-card-tour"]'),
+		null,
+		'a reopened card offers no tour switch: the tour would not start after it'
+	);
+	await page.click('[data-testid="gpu-card-later"]');
+	await waitFor(async () => !(await cardOpen(page)), 'the card to close again');
+	await frames(page);
+	assert.equal(await tourOpen(page), false, 'the tour stays shut');
+	assert.deepEqual(errors, []);
+	await context.close();
+}
+
+// "Start drawing" appears only when a realtime model is installed.
+async function scenarioStartDrawing(browser, server, { realtime }) {
+	accountMode = 'admin';
+	workers = [
+		realtime
+			? worker({ suggested: { realtime: 'fast' }, installed: ['fast'] })
+			: worker({ suggested: { text_to_image: 'sdxl' }, installed: ['sdxl'] })
+	];
+	workersFail = false;
+	installs = freshInstalls();
+	const context = await browser.createBrowserContext();
+	const { page, errors } = await openStudio(context, server);
+	await page.waitForSelector('[data-testid="gpu-card"]');
+	await settleAfterModels(page);
+	await page.click('[data-testid="gpu-card-continue"]');
+	await waitForStep(page, 4);
+	const start = await page.$('[data-testid="gpu-card-start"]');
+	assert.equal(start !== null, realtime, '"Start drawing" shows only with a realtime model');
+	if (realtime) {
+		await page.click('[data-testid="gpu-card-start"]');
+		await waitFor(() => page.url().includes('view=realtime_canvas'), 'the realtime canvas');
+		await waitFor(async () => !(await cardOpen(page)), 'the card to close on Start drawing');
+	}
 	assert.deepEqual(errors, []);
 	await context.close();
 }
@@ -384,8 +737,14 @@ async function main() {
 		await scenarioViewer(browser, server);
 		await scenarioNoneMode(browser, server);
 		await scenarioBlockedStorage(browser, server);
+		await scenarioModelDownloads(browser, server);
+		await scenarioUnmanageableWorker(browser, server);
+		await scenarioTokenGated(browser, server);
+		await scenarioTourSwitchAndReopen(browser, server);
+		await scenarioStartDrawing(browser, server, { realtime: false });
+		await scenarioStartDrawing(browser, server, { realtime: true });
 		console.log(
-			'GPU card browser checks passed: default option, worker list, focus, both endings, dismissal, failed list, lost access, viewer, none mode, blocked storage and the tour order'
+			'GPU card browser checks passed: default option, worker list, focus, both endings, dismissal, failed list, lost access, viewer, none mode, blocked storage, the tour order, the GPU and model steps with installs and progress, an unmanageable worker, a token-gated model, the tour switch, Finish setup, and Start drawing'
 		);
 	} finally {
 		await browser?.close();
