@@ -439,7 +439,9 @@ POST /api/v1/auth/setup      {"token": "...", "mode": "accounts", "email": "ana@
                              mode "accounts" (the default) claims the administrator account and
                              records accounts; email and password are then required
 POST /api/v1/auth/setup/status {"token": "..."}
-                             200 {"claimed": true | false} for a live setup link, without spending it
+                             200 {"claimed": true | false, "expires_in": 3412} for a live setup link,
+                                 without spending it; expires_in is whole seconds left, by the
+                                 database clock
                              403 with the setup route's identical refusal for an unknown, spent or
                                  expired link; 503 if the database is unavailable
 POST /api/v1/auth/setup      {"token": "...", "mode": "none"}
@@ -556,7 +558,7 @@ POST   /api/v1/admin/workers/{worker_id}/models/{model_id}/cancel    202
 DELETE /api/v1/admin/workers/{worker_id}/models/{model_id}           202; refused in the download list, see below
 ```
 
-- Each entry of `GET /api/v1/admin/models` has `worker_id`, `manageable`, `hardware`, `disk_free_bytes`, `suggested` (one model id or null for each of `realtime`, `text_to_image` and `upscale`) and `models`. A worker that predates model management has `manageable: false`, a `reason`, and no models; no command is sent to it (`409` on the routes above).
+- Each entry of `GET /api/v1/admin/models` has `worker_id`, `device` (`cuda`, `rocm` or `cpu`: from the worker's `hello`, or, for an older worker whose `hello` names none, from its first heartbeat GPU sample; null until either arrives), `manageable`, `hardware`, `disk_free_bytes`, `suggested` (one model id or null for each of `realtime`, `text_to_image` and `upscale`) and `models`. A worker that predates model management has `manageable: false`, a `reason`, and no models; no command is sent to it (`409` on the routes above).
 - Each model carries its catalog fields, `installed`, `download_bytes`, `needs_token`, `fits` (its `min_vram_gb` is at most the worker's VRAM), `suggested`, and `download`: the last `store_status` entry for it (`kind`, `state`, `bytes_done`, `bytes_total`, `error`, `op_id`), or null. The `kind` is `install`, `remove` or `cancel` and identifies the reported operation.
 - Suggestions are computed from the catalog and the VRAM the worker reported. For each class the default model is offered when it fits, else the fitting model with the largest `min_vram_gb`. Benchmark-only and token-gated models are never offered. A class with no fitting model has no suggestion.
 - A removal that the worker refuses shows in `download` as `state: "failed"` with `error: "in_use"`, not as an HTTP error, because the worker decides whether a session or job holds the model.

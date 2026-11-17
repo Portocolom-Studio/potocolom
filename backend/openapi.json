@@ -663,6 +663,24 @@
         "title": "SetupRequest",
         "type": "object"
       },
+      "SetupStatus": {
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "boolean"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "claimed",
+          "expires_in"
+        ],
+        "title": "SetupStatus",
+        "type": "object"
+      },
       "SetupStatusRequest": {
         "properties": {
           "token": {
@@ -2034,11 +2052,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "boolean"
-                  },
-                  "title": "Response Setup Status Api V1 Auth Setup Status Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/SetupStatus"
                 }
               }
             },

@@ -162,8 +162,11 @@ def _admin_as(client, email: str) -> None:
 
 
 def test_a_worker_without_the_capability_is_not_manageable():
-    view = worker_models.worker_view(fake_worker(capabilities=["command_dedupe"]))
+    worker = fake_worker(capabilities=["command_dedupe"])
+    worker.device = "cuda"
+    view = worker_models.worker_view(worker)
     assert view["manageable"] is False
+    assert view["device"] == "cuda"
     assert view["models"] == []
     assert view["reason"] == "worker predates model management"
 
@@ -180,6 +183,7 @@ def test_a_capable_worker_view_marks_fit_and_suggestion():
     view = worker_models.worker_view(worker)
     (model,) = view["models"]
     assert view["manageable"] is True
+    assert view["device"] is None  # this worker's hello named no device
     assert model["fits"] is False  # 10 GB needed, 8 GB present
     assert model["suggested"] is False
     assert view["suggested"]["text_to_image"] is None
