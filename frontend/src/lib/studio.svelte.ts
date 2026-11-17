@@ -218,6 +218,8 @@ export const studio = $state({
 	tourOpen: false,
 	// The first-run GPU card is open. The automatic tour waits until it closes.
 	gpuCardOpen: false,
+	// Set with gpuCardOpen by the user menu's "Finish setup", so closing returns focus there.
+	gpuCardFromMenu: false,
 	// Set by the GPU card's "Other computers"; the fleet tab opens its Add dialog once.
 	fleetAddRequested: false,
 	modelId: '',

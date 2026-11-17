@@ -107,8 +107,15 @@ let workersFail = false;
 let hits = new Map();
 let installs = freshInstalls();
 
+// Continue is disabled while the worker list loads; a click before then does nothing.
+async function clickContinue(page) {
+	await page.waitForSelector('[data-testid="gpu-card-continue"]:not(:disabled)');
+	await page.click('[data-testid="gpu-card-continue"]');
+}
+
 function freshInstalls() {
-	return { downloading: new Set(), released: false, posts: [] };
+	// attempts: every install request, refused or not. posts: the accepted ones.
+	return { downloading: new Set(), released: false, posts: [], attempts: [] };
 }
 
 function count(path) {
@@ -144,6 +151,7 @@ function modelsReply() {
 function installReply(id) {
 	const template = workers[0];
 	const entry = template?.models.find((item) => item.id === id);
+	installs.attempts.push(id);
 	if (!entry) return { status: 404, body: { detail: 'unknown model' } };
 	if (entry.needs_token) return { status: 409, body: { detail: 'needs_token' } };
 	installs.posts.push(id);
@@ -346,7 +354,7 @@ async function scenarioAdminWithWorker(browser, server) {
 	assert.equal(await tourOpen(page), false, 'the tour waits behind the card');
 
 	// The only model is installed, so step 3 is passed over and Continue is step 4.
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	await waitFor(async () => (await cardText(page)).includes(readyTitle), 'the ready step');
 	await page.click('[data-testid="gpu-card-open"]');
@@ -509,7 +517,7 @@ async function scenarioNoneMode(browser, server) {
 		'the implicit administrator gets the card'
 	);
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	assert.match(await cardText(page), /This computer, no sign in/, 'the account row is local');
 	await page.click('[data-testid="gpu-card-open"]');
@@ -544,7 +552,7 @@ async function scenarioModelDownloads(browser, server) {
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 3);
 
 	const boxes = await page.$$eval('[data-testid="gpu-card-model"]', (inputs) =>
@@ -593,12 +601,17 @@ async function scenarioModelDownloads(browser, server) {
 		'an unticked model has no row'
 	);
 
+	const catalogReads = count('/api/v1/models');
 	installs.released = true;
 	await waitFor(
 		async () =>
 			(await rowText(page, 'sdxl')).includes('Ready') &&
 			(await rowText(page, 'fast')).includes('Ready'),
 		'Ready on both rows after the poll'
+	);
+	await waitFor(
+		async () => count('/api/v1/models') > catalogReads,
+		'the studio model list read again once a model is installed'
 	);
 	await waitFor(async () => (await cardText(page)).includes(readyTitle), 'the ready title');
 	assert.deepEqual(errors, []);
@@ -615,7 +628,7 @@ async function scenarioUnmanageableWorker(browser, server) {
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	assert.equal(await page.$('[data-testid="gpu-card-model"]'), null, 'no model step is shown');
 	assert.ok((await cardText(page)).includes('Mock GPU'), 'the GPU row names the worker');
@@ -631,14 +644,22 @@ async function scenarioUnmanageableWorker(browser, server) {
 // A token-gated model answers 409; the card stays on step 3 and names the model.
 async function scenarioTokenGated(browser, server) {
 	accountMode = 'admin';
-	workers = [worker({ suggested: { upscale: 'esrgan' }, only: ['esrgan'], gated: ['esrgan'] })];
+	// Three picks in use order: the first is accepted, the second refused, the third
+	// must never be asked for, because the loop stops at the first refusal.
+	workers = [
+		worker({
+			suggested: { text_to_image: 'sdxl', realtime: 'fast', upscale: 'esrgan' },
+			only: ['sdxl', 'fast', 'esrgan'],
+			gated: ['fast']
+		})
+	];
 	workersFail = false;
 	installs = freshInstalls();
 	const context = await browser.createBrowserContext();
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 3);
 	await page.click('[data-testid="gpu-card-download"]');
 	await waitFor(
@@ -648,10 +669,11 @@ async function scenarioTokenGated(browser, server) {
 	const alert = await page.$eval('[data-testid="gpu-card"] [role="alert"]', (node) =>
 		node.textContent.trim()
 	);
-	assert.ok(alert.includes('Real-ESRGAN'), 'the alert names the model');
+	assert.ok(alert.includes('SDXL Fast'), 'the alert names the refused model');
 	assert.ok(alert.includes(tokenText), 'the alert gives the token reason');
 	assert.equal(await stepNumber(page), '3', 'the card stays on step 3');
-	assert.deepEqual(installs.posts, [], 'nothing was started');
+	assert.deepEqual(installs.posts, ['sdxl'], 'the install before the refusal still started');
+	assert.deepEqual(installs.attempts, ['sdxl', 'fast'], 'nothing after the refusal was asked for');
 	assert.deepEqual(errors, []);
 	await context.close();
 }
@@ -667,7 +689,7 @@ async function scenarioTourSwitchAndReopen(browser, server) {
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	await page.click('[data-testid="gpu-card-tour"]');
 	assert.equal(await checked(page, 'gpu-card-tour'), false, 'the switch is off');
@@ -682,7 +704,7 @@ async function scenarioTourSwitchAndReopen(browser, server) {
 	await waitFor(() => cardOpen(page), 'the card to reopen');
 	await waitForStep(page, 2);
 	assert.equal(await checked(page, 'gpu-card-this'), true, 'the card reopens on step 2');
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	assert.equal(
 		await page.$('[data-testid="gpu-card-tour"]'),
@@ -693,6 +715,11 @@ async function scenarioTourSwitchAndReopen(browser, server) {
 	await waitFor(async () => !(await cardOpen(page)), 'the card to close again');
 	await frames(page);
 	assert.equal(await tourOpen(page), false, 'the tour stays shut');
+	await waitFor(
+		() =>
+			page.evaluate(() => document.activeElement?.hasAttribute('data-user-menu-trigger') ?? false),
+		'focus back on the user menu that opened the card'
+	);
 	assert.deepEqual(errors, []);
 	await context.close();
 }
@@ -711,7 +738,7 @@ async function scenarioStartDrawing(browser, server, { realtime }) {
 	const { page, errors } = await openStudio(context, server);
 	await page.waitForSelector('[data-testid="gpu-card"]');
 	await settleAfterModels(page);
-	await page.click('[data-testid="gpu-card-continue"]');
+	await clickContinue(page);
 	await waitForStep(page, 4);
 	const start = await page.$('[data-testid="gpu-card-start"]');
 	assert.equal(start !== null, realtime, '"Start drawing" shows only with a realtime model');

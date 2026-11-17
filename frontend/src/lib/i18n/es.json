@@ -1006,6 +1006,7 @@
 	"app.gpu_card.row_account": "Cuenta",
 	"app.gpu_card.account_local": "Este equipo, sin iniciar sesión",
 	"app.gpu_card.row_gpu": "GPU",
+	"app.gpu_card.gpu_gone": "La GPU elegida en el paso 2 ya no está conectada",
 	"app.gpu_card.no_gpu": "Todavía no hay GPU conectada",
 	"app.gpu_card.ready": "Lista",
 	"app.gpu_card.progress": "{done} de {total}",

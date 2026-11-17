@@ -78,6 +78,7 @@
 							size="lg"
 							class="data-[state=open]:bg-sidebar-accent h-12 gap-2.5 px-1.5 group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-0.5!"
 							tooltipContent={account.email}
+							data-user-menu-trigger
 							{...props}
 						>
 							<Avatar.Root class="size-7 rounded-full">
@@ -98,6 +99,7 @@
 						<Sidebar.MenuButton
 							class="data-[state=open]:bg-sidebar-accent text-sidebar-foreground h-9 gap-2.5 px-2 font-medium group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-2.5!"
 							tooltipContent={t('app.shell.help')}
+							data-user-menu-trigger
 							{...props}
 						>
 							<CircleQuestionMarkIcon />
@@ -156,6 +158,7 @@
 						onclick={() => {
 							dialogChosen = true;
 							void navigate(() => {
+								studio.gpuCardFromMenu = true;
 								studio.gpuCardOpen = true;
 							});
 						}}

@@ -35,7 +35,7 @@
 	} from '$lib/model-management';
 	import { Button } from '$lib/components/ui/button';
 	import { markTourDone, shouldAutoStart } from '$lib/studio-tour';
-	import { openAdmin, openService, studio } from '$lib/studio.svelte';
+	import { loadModels, openAdmin, openService, studio } from '$lib/studio.svelte';
 	import { Dialog } from 'bits-ui';
 
 	type Step = 2 | 3 | 4;
@@ -72,6 +72,8 @@
 	// first open of this page load, with the tour not yet done.
 	let firstOpen = studio.gpuCardOpen;
 	let tourOffered = $state(false);
+	// Read when the card closes, so focus can return to the user menu.
+	let openedFromMenu = false;
 	// Bumped on every open. An install loop from an earlier open stops at its next await.
 	let opening = 0;
 	let installing = $state(false);
@@ -91,7 +93,9 @@
 			? setupWorker(list)
 			: (list.find((worker) => worker.worker_id === setupId) ?? null)
 	);
-	const gpuWorker = $derived(setup ?? list.at(0) ?? null);
+	// Once step 2 pinned a worker, the summary names only that worker: a missing one
+	// shows as gone, never as another GPU.
+	const gpuWorker = $derived(setupId === null ? (setup ?? list.at(0) ?? null) : setup);
 	const offered = $derived(setup ? firstModels(setup) : []);
 	const ready = $derived(readyCopy(workers));
 	const hasRealtime = $derived(hasCapability(list, 'realtime'));
@@ -151,7 +155,14 @@
 	const delay = $derived.by(() => {
 		if (workers === null || !studio.gpuCardOpen) return null;
 		if (step === 2) return list.some((worker) => worker.hardware === null) ? 2000 : null;
-		if (step === 3) return sizesKnown ? null : 2000;
+		if (step === 3) {
+			// Sizes still unknown, or another install still running: either can change
+			// whether the free-space rule allows the download.
+			const running = setup?.models.some(
+				(model) => model.download !== null && shouldPoll([model.download.state])
+			);
+			return sizesKnown && reserved !== null && freeBytes !== null && !running ? null : 2000;
+		}
 		return pollInterval(true, shouldPoll(rowStates));
 	});
 
@@ -177,6 +188,8 @@
 			tourOffered = firstOpen && shouldAutoStart(() => localStorage);
 			firstOpen = false;
 			opening++;
+			openedFromMenu = studio.gpuCardFromMenu;
+			studio.gpuCardFromMenu = false;
 			setupId = null;
 			installAlert = null;
 			installing = false;
@@ -186,13 +199,29 @@
 		});
 	});
 
+	function installedCount(list: AdminWorker[] | null): number {
+		return (list ?? []).reduce(
+			(sum, worker) => sum + worker.models.filter((model) => model.installed).length,
+			0
+		);
+	}
+
 	async function refresh(): Promise<void> {
 		const current = ++version;
 		try {
 			const response = await apiFetch('/api/v1/admin/models', {
 				signal: AbortSignal.timeout(10_000)
 			});
-			if (response.ok && current === version) workers = (await response.json()) as AdminWorker[];
+			if (response.ok) {
+				const body = (await response.json()) as AdminWorker[];
+				// Checked after the body: a reopen while it was read starts a newer request.
+				if (current === version) {
+					// A model that became installed must reach the studio's pickers too,
+					// which read their own list.
+					if (installedCount(workers) < installedCount(body)) void loadModels();
+					workers = body;
+				}
+			}
 		} catch {
 			// A failed or slow list keeps what the card shows. A first load that failed
 			// shows the "could not be read" note.
@@ -303,7 +332,8 @@
 	}
 
 	const gpuValue = $derived.by(() => {
-		if (gpuWorker === null) return t('app.gpu_card.no_gpu');
+		if (gpuWorker === null)
+			return setupId === null ? t('app.gpu_card.no_gpu') : t('app.gpu_card.gpu_gone');
 		if (gpuWorker.hardware === null) return t('app.gpu_card.reading_gpu');
 		return `${gpuWorker.hardware.gpu_name}, ${memoryText(gpuWorker.hardware.vram_total_bytes)}`;
 	});
@@ -630,6 +660,13 @@
 				// The question, not the language switch that comes first in the frame.
 				event.preventDefault();
 				titleRef?.focus();
+			}}
+			onCloseAutoFocus={(event) => {
+				// Opened from the user menu: focus goes back to that menu's trigger, which
+				// the menu itself left when the card took focus.
+				if (!openedFromMenu) return;
+				event.preventDefault();
+				document.querySelector<HTMLElement>('[data-user-menu-trigger]')?.focus();
 			}}
 			class="bg-popover text-popover-foreground fixed top-1/2 left-1/2 z-50 max-h-[90vh] w-[calc(100%-2rem)] max-w-3xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border p-6 shadow-lg"
 		>
