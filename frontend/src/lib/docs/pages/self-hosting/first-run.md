@@ -23,7 +23,7 @@ The link is good for one hour and works once. Only a hash of it is stored. Keep 
 
 ## Choose how the install works
 
-Whoever opens the link in a browser chooses one of two modes:
+Whoever opens the link in a browser answers one question, "Who will use this studio?". Neither answer is chosen for you, and the page shows how long the link has left. The two answers are the two modes:
 
 - **An administrator account.** You give an email and a password. Passwords must be 10 to 128 characters and must not appear in the bundled blocklist. The claimant takes over the implicit local user, so every job and asset made before accounts existed belongs to that administrator. Nothing is stranded and nothing is copied.
 - **No accounts.** Every request resolves to one local administrator. This suits a single operator. Anyone who can reach the API can do anything the install can do, so keep it on a trusted network. Give `FLEET_SECRET` only to workers you trust, as described in [Remote GPU workers](/docs/self-hosting/remote-gpu-workers).

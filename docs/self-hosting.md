@@ -388,7 +388,8 @@ that named them and the user row are gone, in that order.
 
 A new install starts unclaimed. The installer generates every secret, including the
 root key ring, starts the API, and prints a one-use setup link. The link is good for one
-hour and works once. Whoever opens it in a browser chooses how the install works:
+hour and works once. Whoever opens it in a browser chooses how the install works. The
+setup page preselects neither answer and shows how long the link has left:
 
 - an administrator account, with an email and a password. The claimant adopts the
   implicit local user, so every job and asset made before accounts existed belongs to
