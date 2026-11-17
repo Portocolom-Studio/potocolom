@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { setupRequiredFrom, setupStepFrom, setupTokenFromHash } from './setup-flow.ts';
+import {
+	minutesLeft,
+	setupExpiryFrom,
+	setupRequiredFrom,
+	setupStepFrom,
+	setupTokenFromHash
+} from './setup-flow.ts';
 
 const token = 'Qx7_vB2-kL9mN4pR8sT1uW3yZ6aC0dE5fG7hJ9iK2lM'; // gitleaks:allow (made-up fixture token, not a credential)
 
@@ -50,4 +56,30 @@ test('an install an override decided as none is already set up', () => {
 	assert.equal(setupStepFrom({ setup_required: false }), 'decided');
 	assert.equal(setupStepFrom(null), 'decided');
 	assert.equal(setupStepFrom({ setup_required: false, auth_methods: 'password' }), 'decided');
+});
+
+test('the link expiry is the whole seconds the status answer gives', () => {
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: 3120 }), 3120);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: 0 }), 0);
+});
+
+test('an absent or malformed expiry has no timer', () => {
+	assert.equal(setupExpiryFrom({ claimed: false }), null);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: 3.5 }), null);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: -1 }), null);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: '3120' }), null);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: null }), null);
+	assert.equal(setupExpiryFrom({ claimed: false, expires_in: Infinity }), null);
+	assert.equal(setupExpiryFrom(null), null);
+	assert.equal(setupExpiryFrom('3120'), null);
+});
+
+test('minutes left round up to the next whole minute', () => {
+	assert.equal(minutesLeft(3120), 52);
+	assert.equal(minutesLeft(3119), 52);
+	assert.equal(minutesLeft(3060), 51);
+	assert.equal(minutesLeft(61), 2);
+	assert.equal(minutesLeft(60), 1);
+	assert.equal(minutesLeft(1), 1);
+	assert.equal(minutesLeft(0), 0);
 });

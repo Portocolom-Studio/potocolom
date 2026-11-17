@@ -29,3 +29,16 @@ export function setupStepFrom(config: unknown): SetupStep {
 	const methods = (config as { auth_methods?: unknown }).auth_methods;
 	return Array.isArray(methods) && methods.length > 0 ? 'claim' : 'decided';
 }
+
+// The whole seconds the status answer gives the link to live. Anything but a
+// whole, non-negative count is treated as absent, so an older API shows no timer.
+export function setupExpiryFrom(body: unknown): number | null {
+	if (typeof body !== 'object' || body === null) return null;
+	const seconds = (body as { expires_in?: unknown }).expires_in;
+	return typeof seconds === 'number' && Number.isInteger(seconds) && seconds >= 0 ? seconds : null;
+}
+
+// Rounded up, so the card never shows 0 min while the link still works.
+export function minutesLeft(seconds: number): number {
+	return Math.ceil(seconds / 60);
+}

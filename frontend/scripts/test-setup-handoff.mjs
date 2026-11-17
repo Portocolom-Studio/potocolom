@@ -219,20 +219,24 @@ async function accountOf(page) {
 	});
 }
 
+// The setup page offers its two answers as radio cards; nothing is preselected.
+async function chooseMode(page, mode) {
+	const selector = `input[name="setup-mode"][value="${mode}"]`;
+	await page.waitForSelector(selector);
+	await page.click(selector);
+}
+
 async function testAdminClaimReachesTheStudio(browser) {
 	await withFreshInstall(async ({ link }) => {
 		const context = await browser.createBrowserContext();
 		try {
 			const { page, errors } = await openLink(context, link);
-			await waitForButton(page, 'Create an admin account');
+			await chooseMode(page, 'accounts');
 			assert.equal(await page.evaluate(() => location.hash), '', 'the link left the address bar');
-			await clickButton(page, 'Create an admin account');
 			await page.type('#setup-email', ADMIN.email);
 			await page.type('#setup-password', ADMIN.password);
 			await page.type('#setup-confirm', ADMIN.password);
-			await clickButton(page, 'Create admin account');
-			await waitForText(page, 'Setup is complete.');
-			await page.click('a[href="/app"]');
+			await clickButton(page, 'Create the administrator account');
 			await page.waitForFunction(() => location.pathname === '/app');
 			await waitForText(page, ADMIN.email);
 			const account = await accountOf(page);
@@ -262,11 +266,8 @@ async function testAdminClaimReachesTheStudio(browser) {
 
 // Chooses no accounts on the page the link opened, and waits for the studio.
 async function chooseNoAccounts(page) {
-	await waitForButton(page, 'Use without accounts');
-	await clickButton(page, 'Use without accounts');
+	await chooseMode(page, 'none');
 	await clickButton(page, 'Continue without accounts');
-	await waitForText(page, 'Models are next');
-	await page.click('a[href="/app"]');
 	await page.waitForFunction(() => location.pathname === '/app');
 	await page.waitForFunction(() => document.querySelector('[data-studio-shell]') !== null);
 	await waitForButton(page, 'Settings');
@@ -294,19 +295,19 @@ async function testStaleTabAfterNoneChoice(browser) {
 		const context = await browser.createBrowserContext();
 		try {
 			const first = await openLink(context, link);
-			await waitForButton(first.page, 'Use without accounts');
+			await first.page.waitForSelector('input[name="setup-mode"]');
 			const second = await openLink(context, link);
-			await waitForButton(second.page, 'Use without accounts');
+			await second.page.waitForSelector('input[name="setup-mode"]');
 			await first.page.bringToFront();
-			await clickButton(first.page, 'Use without accounts');
+			await chooseMode(first.page, 'none');
 			await clickButton(first.page, 'Continue without accounts');
-			await waitForText(first.page, 'Models are next');
+			await first.page.waitForFunction(() => location.pathname === '/app');
 			await second.page.bringToFront();
-			await clickButton(second.page, 'Create an admin account');
+			await chooseMode(second.page, 'accounts');
 			await second.page.type('#setup-email', ADMIN.email);
 			await second.page.type('#setup-password', ADMIN.password);
 			await second.page.type('#setup-confirm', ADMIN.password);
-			await clickButton(second.page, 'Create admin account');
+			await clickButton(second.page, 'Create the administrator account');
 			await waitForText(second.page, 'This install is already set up.');
 			assert.notEqual(await second.page.$('a[href="/app"]'), null);
 			assert.deepEqual(first.errors, []);
