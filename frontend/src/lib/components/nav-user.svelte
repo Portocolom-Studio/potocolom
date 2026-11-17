@@ -5,6 +5,7 @@
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
 	import CircleQuestionMarkIcon from '@lucide/svelte/icons/circle-question-mark';
+	import CpuIcon from '@lucide/svelte/icons/cpu';
 	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
 	import MapIcon from '@lucide/svelte/icons/map';
@@ -34,8 +35,12 @@
 	const canTour = $derived(
 		PUBLIC_SITE_MODE !== 'landing' && sectionNeeds('generate', account?.role ?? null) === null
 	);
-	// The menu would hand focus back to its trigger after the tour has taken it.
-	let tourChosen = false;
+	// Setup needs an administrator, or the local user in none mode. The landing build has no studio card.
+	const canSetUp = $derived(
+		PUBLIC_SITE_MODE !== 'landing' && (accountState.localModeConfirmed || account?.role === 'admin')
+	);
+	// The menu would hand focus back to its trigger after the tour or the card has taken it.
+	let dialogChosen = false;
 
 	let logOutFailed = $state(false);
 
@@ -73,6 +78,7 @@
 							size="lg"
 							class="data-[state=open]:bg-sidebar-accent h-12 gap-2.5 px-1.5 group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-0.5!"
 							tooltipContent={account.email}
+							data-user-menu-trigger
 							{...props}
 						>
 							<Avatar.Root class="size-7 rounded-full">
@@ -93,6 +99,7 @@
 						<Sidebar.MenuButton
 							class="data-[state=open]:bg-sidebar-accent text-sidebar-foreground h-9 gap-2.5 px-2 font-medium group-data-[collapsible=icon]:size-9! group-data-[collapsible=icon]:p-2.5!"
 							tooltipContent={t('app.shell.help')}
+							data-user-menu-trigger
 							{...props}
 						>
 							<CircleQuestionMarkIcon />
@@ -108,8 +115,8 @@
 				align="end"
 				sideOffset={8}
 				onCloseAutoFocus={(event) => {
-					if (tourChosen) event.preventDefault();
-					tourChosen = false;
+					if (dialogChosen) event.preventDefault();
+					dialogChosen = false;
 				}}
 			>
 				{#if account}
@@ -136,7 +143,7 @@
 				{#if canTour}
 					<DropdownMenu.Item
 						onclick={() => {
-							tourChosen = true;
+							dialogChosen = true;
 							void navigate(() => {
 								studio.tourRequest = 'explicit';
 							});
@@ -144,6 +151,20 @@
 					>
 						<MapIcon />
 						{t('app.shell.show_tour')}
+					</DropdownMenu.Item>
+				{/if}
+				{#if canSetUp}
+					<DropdownMenu.Item
+						onclick={() => {
+							dialogChosen = true;
+							void navigate(() => {
+								studio.gpuCardFromMenu = true;
+								studio.gpuCardOpen = true;
+							});
+						}}
+					>
+						<CpuIcon />
+						{t('app.gpu_card.reopen')}
 					</DropdownMenu.Item>
 				{/if}
 				<DropdownMenu.Item>

@@ -420,7 +420,7 @@ then builds with `PUBLIC_SITE_MODE=landing` and checks the studio preview, docs,
 footer contrast, keyboard focus and the gallery prompt hint contrast. Only after
 all landing checks pass does it build with an empty `PUBLIC_SITE_MODE`. It then
 checks the self-hosted build, studio shell, setup, drawing canvas, sign-in,
-saved views, owner focus, Models, the fleet tab, the first-run GPU card and the
+saved views, owner focus, Models, the fleet tab, the first-run card and the
 first-run tour. The sign-in and setup handoff checks use separate throwaway
 databases and API processes.
 

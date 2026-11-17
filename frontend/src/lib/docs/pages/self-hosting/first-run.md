@@ -36,6 +36,16 @@ Until the link is spent, every API route answers `503` with `{"detail": "setup_r
 
 The setup page does not show the worker's hardware. `GET /api/v1/admin/models` answers `503` until setup is complete.
 
+## After the choice
+
+The studio opens and continues the setup in a card, once, for an administrator:
+
+1. **Where is the GPU?** The card lists the GPU workers that are connected now, with the GPU name, memory and device. Choose "Another computer" to get the command that connects a GPU on another machine. See [Remote GPU workers](/docs/self-hosting/remote-gpu-workers).
+2. **What do you want to make first?** One option per use, each with the model the install suggests for this GPU and its download size. The card checks the free disk space and starts the downloads. "Draw live" appears only when a worker offers a realtime model. The bundled catalog has none.
+3. **Ready.** The account, the GPU, and each model with its download progress. The card says the studio is ready only when a model that makes images is installed. A switch decides whether the guided tour starts.
+
+"Set up later" closes the card. To open it again, choose "Finish setup" in the user menu. Downloads go on in the background either way. Administration, Models shows them too.
+
 ## The AUTH_MODE override
 
 `AUTH_MODE` in `deploy/compose/.env` is an optional override. Leave it empty. The API then follows the recorded choice.
