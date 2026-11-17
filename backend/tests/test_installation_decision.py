@@ -248,7 +248,10 @@ def test_setup_status_requires_a_live_link_and_does_not_spend_it(decision):
         token = client.portal.call(enable.mint_setup_token)
         def status(value):
             return client.post("/api/v1/auth/setup/status", json={"token": value})
-        assert status(token).json() == {"claimed": False}
+        fresh = status(token).json()
+        assert fresh["claimed"] is False
+        # Whole seconds left on the one-hour link, by the database clock.
+        assert 3540 < fresh["expires_in"] <= 3600
         wrong = status("not-a-real-link")
         assert wrong.status_code == 403
         client.portal.call(age, token)
@@ -257,11 +260,11 @@ def test_setup_status_requires_a_live_link_and_does_not_spend_it(decision):
         token = client.portal.call(enable.mint_setup_token)
         other = "another-live-link"
         client.portal.call(_plant_link, other)
-        assert status(token).json() == {"claimed": False}
+        assert status(token).json()["claimed"] is False
         assert _choose(client, token, mode="accounts", email=EMAIL, password=PASSWORD).status_code == 204
         spent = status(token)
         assert spent.status_code == 403 and spent.json() == wrong.json()
-        assert status(other).json() == {"claimed": True}
+        assert status(other).json()["claimed"] is True
 
 
 @pytest.mark.db

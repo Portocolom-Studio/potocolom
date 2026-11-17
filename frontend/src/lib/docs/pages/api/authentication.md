@@ -87,7 +87,7 @@ To run without accounts, send `mode` set to `none` with the token only:
 
 The answer is `204` with no cookies. The install then runs in `none` mode.
 
-`POST /api/v1/auth/setup/status` takes the same token and answers `200` with `{"claimed": true}` or `{"claimed": false}`. It does not spend the link. An unknown, spent or expired link answers `403`.
+`POST /api/v1/auth/setup/status` takes the same token and answers `200` with `claimed` (`true` or `false`) and `expires_in`, the whole seconds left on the link. It does not spend the link. An unknown, spent or expired link answers `403`.
 
 A refusal never spends the link. A bad email or password answers `400`. An unknown, spent or expired link answers `403`, and so does every link on an install that has accounts. An install that runs without accounts answers `404`. A live link on an install that is already decided answers `409`. If `ROOT_KEYS` is empty, the answer is `503` with `root_keys_missing`. Run `scripts/ensure-env.sh` or the installer, recreate the API container, and then use the link again.
 

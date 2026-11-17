@@ -177,6 +177,7 @@ def worker_view(worker: Worker) -> dict:
     if not manageable(worker):
         return {
             "worker_id": worker.id,
+            "device": worker.device,
             "manageable": False,
             "reason": "worker predates model management",
             "hardware": worker.hardware,
@@ -189,6 +190,7 @@ def worker_view(worker: Worker) -> dict:
     suggested = {model_id for model_id in picks.values() if model_id is not None}
     return {
         "worker_id": worker.id,
+        "device": worker.device,
         "manageable": True,
         "hardware": worker.hardware,
         "disk_free_bytes": worker.disk_free_bytes,

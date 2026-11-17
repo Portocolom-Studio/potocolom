@@ -75,12 +75,12 @@ The fleet socket also carries the worker model store. The API sends `"model_stor
 
 These routes are for admins. They install, cancel and remove the model weights on one connected worker. Each accepted action answers `202` with an `op_id`. The worker does the work afterwards, so read `GET /api/v1/admin/models` for the result.
 
-| Method | Path                                                          | Purpose                                                                                                   |
-| ------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/v1/admin/models`                                        | One entry per connected worker: its hardware, free disk, suggested models and each model's install state. |
-| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/install` | Queue a download. Answers `409` with `needs_token` when the model is gated and `HF_TOKEN` is unset.       |
-| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/cancel`  | Skip a queued install, or stop a running one at its next chunk.                                           |
-| DELETE | `/api/v1/admin/workers/{worker_id}/models/{model_id}`         | Remove the model's files. Refused while a session or a job uses the model.                                |
+| Method | Path                                                          | Purpose                                                                                                                                                                         |
+| ------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/admin/models`                                        | One entry per connected worker: its device (`cuda`, `rocm`, `cpu`, or null until the worker reports one), hardware, free disk, suggested models and each model's install state. |
+| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/install` | Queue a download. Answers `409` with `needs_token` when the model is gated and `HF_TOKEN` is unset.                                                                             |
+| POST   | `/api/v1/admin/workers/{worker_id}/models/{model_id}/cancel`  | Skip a queued install, or stop a running one at its next chunk.                                                                                                                 |
+| DELETE | `/api/v1/admin/workers/{worker_id}/models/{model_id}`         | Remove the model's files. Refused while a session or a job uses the model.                                                                                                      |
 
 - A worker that predates model management is listed with `manageable: false`, a `reason` and no models. The routes answer `409` for it.
 - A removal that the worker refuses is not an HTTP error. It shows in the model's `download` field as `state: "failed"` with `error: "in_use"`.

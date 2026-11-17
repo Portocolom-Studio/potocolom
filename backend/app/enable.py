@@ -271,24 +271,34 @@ class SetupStatusRequest(BaseModel):
     token: StorableStr
 
 
+class SetupStatus(BaseModel):
+    claimed: bool
+    expires_in: int
+
+
 @router.post("/api/v1/auth/setup/status")
-async def setup_status(request: SetupStatusRequest) -> dict[str, bool]:
+async def setup_status(request: SetupStatusRequest) -> SetupStatus:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
             await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
                                   {"key": SETUP_LOCK})
-            valid = (await session.execute(select(AuthToken.id).where(
+            # statement_timestamp, not now(): now() is fixed when the transaction
+            # starts, before the lock wait above, so a link could expire in the wait.
+            valid = (await session.execute(select(
+                func.floor(func.extract(
+                    "epoch", AuthToken.expires_at - func.statement_timestamp()))
+            ).where(
                 AuthToken.token_hash == _token_hash(request.token),
                 AuthToken.purpose == SETUP_PURPOSE,
                 AuthToken.consumed_at.is_(None),
-                AuthToken.expires_at > func.now(),
+                AuthToken.expires_at > func.statement_timestamp(),
             ))).first()
             if valid is None:
                 raise HTTPException(status_code=403, detail=INVALID_LINK)
             claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
-            return {"claimed": claimed is not None}
+            return SetupStatus(claimed=claimed is not None, expires_in=int(valid[0]))
 
 
 class SetupRequest(BaseModel):
