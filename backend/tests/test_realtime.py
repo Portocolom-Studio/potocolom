@@ -1838,6 +1838,7 @@ def test_reaper_closes_silent_workers():
 def test_origin_allowed_only_for_no_origin_and_configured_origins(monkeypatch):
     # Browsers always send Origin and cannot forge it; workers send none.
     settings = get_settings()
+    monkeypatch.setattr(settings, "allowed_origins", "")
     assert origin_allowed(FakeHeaders(None))
     assert origin_allowed(FakeHeaders(settings.public_url))
     assert origin_allowed(FakeHeaders(settings.public_url + "/"))
@@ -2546,7 +2547,7 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             assert spare_ws.sent[0]["session_id"] == str(newer.id)
             complete_attempt(newer)
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
-            await pump_writer(newer)
+            await asyncio.wait_for(browser_new.sent_event.wait(), timeout=5)
             assert newer.state == "live"
             assert newer.worker is spare
             assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
@@ -2594,11 +2595,11 @@ def test_schedule_reassign_starts_only_one_placement():
             tasks = realtime._reassign_tasks - before
             assert len(tasks) == 1
             await asyncio.wait_for(spare_ws.sent_event.wait(), timeout=5)
-            opens = [m for m in spare_ws.sent if m.get("type") == "open_session"]
-            assert len(opens) == 1
             assert session.state == "assigning"
             complete_attempt(session)
             await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            opens = [m for m in spare_ws.sent if m.get("type") == "open_session"]
+            assert len(opens) == 1
             assert session.state == "live"
             assert session.worker is spare
         finally:
