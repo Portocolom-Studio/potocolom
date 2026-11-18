@@ -135,10 +135,12 @@ class FakeSocket:
 
     def __init__(self):
         self.sent = []
+        self.sent_event = asyncio.Event()
         self.close_code = None
 
     async def send_json(self, message):
         self.sent.append(message)
+        self.sent_event.set()
 
     async def close(self, code=1000):
         self.close_code = code
@@ -1630,7 +1632,7 @@ def test_assign_does_not_decrement_again_when_release_already_did(monkeypatch):
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.assign(session, worker))
-            await asyncio.sleep(0.01)  # the open is in flight
+            await asyncio.wait_for(ws.sent_event.wait(), timeout=5)
             assert worker.slots_in_use == 1
             # What the realtime handler's teardown does when the browser
             # leaves while the assignment is in flight.
@@ -1766,7 +1768,7 @@ def test_reassign_moves_the_session_with_correct_accounting():
         session.writer = asyncio.create_task(realtime.browser_writer(session))
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
+            await asyncio.wait_for(replacement_ws.sent_event.wait(), timeout=5)
             assert replacement_ws.sent[0]["type"] == "open_session"
             assert replacement_ws.sent[0]["session_id"] == str(session.id)
             complete_attempt(session)
@@ -1804,7 +1806,7 @@ def test_reassign_sends_the_same_seed_to_the_replacement_worker():
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)  # interrupted posted, open_session in flight
+            await asyncio.wait_for(replacement_ws.sent_event.wait(), timeout=5)
             opened = replacement_ws.sent[0]
             assert opened["type"] == "open_session"
             assert opened["params"]["seed"] == 77
@@ -1833,7 +1835,7 @@ def test_reaper_closes_silent_workers():
         realtime.workers.pop("w-fresh", None)
 
 
-def test_origin_allowed_only_for_no_origin_and_configured_origins():
+def test_origin_allowed_only_for_no_origin_and_configured_origins(monkeypatch):
     # Browsers always send Origin and cannot forge it; workers send none.
     settings = get_settings()
     assert origin_allowed(FakeHeaders(None))
@@ -1841,6 +1843,10 @@ def test_origin_allowed_only_for_no_origin_and_configured_origins():
     assert origin_allowed(FakeHeaders(settings.public_url + "/"))
     assert not origin_allowed(FakeHeaders("https://evil.example"))
     assert not origin_allowed(FakeHeaders("http://localhost:5173"))
+    monkeypatch.setattr(settings, "public_url", "http://studio.example.com:8000")
+    assert origin_allowed(FakeHeaders("http://studio.example.com:8000"))
+    assert not origin_allowed(FakeHeaders("http://evil.example.com:8000"))
+    assert not origin_allowed(FakeHeaders("http://example.com:8000"))
 
 
 def test_origin_allowed_honours_the_configured_extra_origins(monkeypatch):
@@ -2165,12 +2171,12 @@ def test_session_refused_reassigns_to_another_protocol_4_worker():
         realtime.sessions[session.id] = session
         try:
             task = asyncio.create_task(realtime.place_session(session))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(first_ws.sent_event.wait(), timeout=5)
             assert first_ws.sent[0]["type"] == "open_session"
             assert first_ws.sent[0]["control_generation"] == 1
             session.attempt_ok = False
             session.ready.set()
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(spare_ws.sent_event.wait(), timeout=5)
             assert spare_ws.sent[0]["type"] == "open_session"
             assert spare_ws.sent[0]["session_id"] == str(session.id)
             assert spare_ws.sent[0]["control_generation"] == 2
@@ -2292,7 +2298,7 @@ def test_stale_close_generation_is_not_sent_after_reassign():
             realtime.workers.update({old.id: old, replacement.id: replacement})
             realtime.sessions[session.id] = session
             task = asyncio.create_task(realtime.reassign(session))
-            await asyncio.sleep(0.01)
+            await asyncio.wait_for(replacement_ws.sent_event.wait(), timeout=5)
             close = old_ws.sent[0]
             assert close["type"] == "close_session"
             assert close["control_generation"] == 1
@@ -2529,14 +2535,18 @@ def test_heartbeat_p95_increase_reassigns_newest_protocol_4_session():
             realtime.sessions.update({older.id: older, newer.id: newer})
             newer.writer = asyncio.create_task(realtime.browser_writer(newer))
             worker.admission_p95_ms["sd-sim"] = 300
+            before = set(realtime._reassign_tasks)
             realtime.schedule_shed_over_capacity(worker)
-            await asyncio.sleep(0.01)
+            tasks = realtime._reassign_tasks - before
+            assert len(tasks) == 1
+            await asyncio.wait_for(spare_ws.sent_event.wait(), timeout=5)
             assert newer.state == "assigning"
             assert older.state == "live"
             assert spare_ws.sent[0]["type"] == "open_session"
             assert spare_ws.sent[0]["session_id"] == str(newer.id)
             complete_attempt(newer)
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+            await pump_writer(newer)
             assert newer.state == "live"
             assert newer.worker is spare
             assert [m["type"] for m in browser_new.sent][:1] == ["interrupted"]
@@ -2578,14 +2588,17 @@ def test_schedule_reassign_starts_only_one_placement():
             realtime.sessions.clear()
             realtime.workers.update({old.id: old, spare.id: spare})
             realtime.sessions[session.id] = session
+            before = set(realtime._reassign_tasks)
             realtime.schedule_reassign(session)
             realtime.schedule_reassign(session)
-            await asyncio.sleep(0.01)
+            tasks = realtime._reassign_tasks - before
+            assert len(tasks) == 1
+            await asyncio.wait_for(spare_ws.sent_event.wait(), timeout=5)
             opens = [m for m in spare_ws.sent if m.get("type") == "open_session"]
             assert len(opens) == 1
             assert session.state == "assigning"
             complete_attempt(session)
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
             assert session.state == "live"
             assert session.worker is spare
         finally:
