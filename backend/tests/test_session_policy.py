@@ -20,6 +20,7 @@ ORIGIN = "http://localhost:8000"
 def accounts(portal_runner, monkeypatch):
     monkeypatch.setenv("ROOT_KEYS", "1:" + "A" * 43 + "=")
     monkeypatch.setenv("PUBLIC_URL", ORIGIN)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "")
     get_settings.cache_clear()
     assert portal_runner(db.connect()) is True
     portal_runner(db.enable_accounts_mode(db.session_factory))
@@ -190,6 +191,8 @@ def test_an_unsafe_cookie_request_needs_an_exact_origin(accounts, monkeypatch):
         for forged in ("http://evil.example.com:8000", "http://example.com:8000"):
             assert client.post("/api/v1/auth/logout",
                                headers={**headers, "Origin": forged}).status_code == 403
+        assert client.post("/api/v1/auth/logout", headers={
+            **headers, "Origin": "http://studio.example.com:8000"}).status_code == 204
 
 
 @pytest.mark.db
@@ -259,6 +262,9 @@ def test_an_account_lists_and_revokes_its_other_sessions(accounts):
         listed = client.get("/api/v1/account").json()["sessions"]
         assert len(listed) == 3
         other_id = client.portal.call(_session_id, other.token)
+        third_id = client.portal.call(_session_id, third.token)
+        assert [row["id"] not in {other_id, third_id} for row in listed] == [
+            row["current"] for row in listed]
         target = next(row for row in listed if row["id"] == other_id)
         assert client.delete(f"/api/v1/account/sessions/{target['id']}",
                              headers=_csrf(client)).status_code == 204
@@ -374,7 +380,7 @@ def test_the_host_prefix_appears_when_the_install_is_served_over_https(accounts,
         session_header = next(h for h in raw if h.startswith("__Host-potocolom_session="))
         csrf_header = next(h for h in raw if h.startswith("__Host-potocolom_csrf="))
         for header in (session_header, csrf_header):
-            assert "Secure" in header and "Path=/" in header
+            assert "Secure" in header and "Path=/" in header.split("; ")
             assert "samesite=lax" in header.lower()
             assert "domain=" not in header.lower()
         assert "HttpOnly" in session_header
