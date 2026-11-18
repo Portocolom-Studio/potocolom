@@ -112,6 +112,28 @@ def test_minting_again_invalidates_the_link_it_replaces(accounts):
         assert _claim(client, second).status_code == 204
 
 
+@pytest.mark.db
+def test_a_claim_whose_session_cannot_be_written_claims_nothing(accounts, monkeypatch):
+    """The session is written with the adoption. A mint after the commit that
+    failed would leave the install claimed and the link spent with nobody
+    signed in."""
+    from app import sessions
+
+    token = accounts(enable.mint_setup_token())
+    real = sessions.mint_in
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("the session insert failed")
+
+    monkeypatch.setattr(sessions, "mint_in", failing)
+    with pytest.raises(RuntimeError):
+        accounts(enable.claim(token, EMAIL, PASSWORD))
+    assert accounts(_identities()) == []
+    monkeypatch.setattr(sessions, "mint_in", real)
+    adopted, issued = accounts(enable.claim(token, EMAIL, PASSWORD))
+    assert accounts(sessions.resolve(issued.token)).user.id == adopted
+
+
 def _claim(client, token, email=EMAIL, password=PASSWORD):
     return client.post("/api/v1/auth/setup",
                        json={"token": token, "email": email, "password": password})

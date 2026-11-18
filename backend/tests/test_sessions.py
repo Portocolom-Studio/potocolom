@@ -178,19 +178,6 @@ def test_revoking_every_session_leaves_none_of_them_usable(connected):
 
 
 @pytest.mark.db
-def test_rotation_replaces_the_session_rather_than_adding_one(connected):
-    """A credential or role change must not leave the old cookie working."""
-    user = _user(connected)
-    first = connected(sessions.mint(user, remember_me=True))
-    row = connected(_row(first.token))
-    second = connected(sessions.rotate(row.id, user))
-    assert connected(sessions.resolve(first.token)) is None
-    assert connected(sessions.resolve(second.token)) is not None
-    # Remembered stays remembered across a rotation.
-    assert connected(_row(second.token)).remember_me is True
-
-
-@pytest.mark.db
 def test_a_fresh_session_carries_no_recent_authentication_by_default(connected):
     """Setup proves a link, not a person, so it must not open the window that
     guards credential changes."""
@@ -257,15 +244,3 @@ def test_a_stale_session_still_slides_before_it_idles_out(connected, monkeypatch
     now += timedelta(minutes=20)
     assert connected(sessions.resolve(issued.token)) is not None
     assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
-
-
-@pytest.mark.db
-def test_rotating_a_session_that_is_already_gone_mints_nothing(connected):
-    """Rotation replaces a live credential. Given a dead one it would be
-    turning something revoked back into something usable."""
-    user = _user(connected)
-    issued = connected(sessions.mint(user, remember_me=False))
-    row = connected(_row(issued.token))
-    connected(sessions.revoke(row.id))
-    with pytest.raises(RuntimeError):
-        connected(sessions.rotate(row.id, user))

@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from starlette.websockets import WebSocketDisconnect
 
-from app import auth_mode, db, enable, keyring, realtime
+from app import auth_mode, db, enable, keyring, realtime, sessions
 from app.main import app
 from app.settings import Settings, get_settings
 from app.tables import AuthIdentity, AuthToken, InstallationAuthState
@@ -392,7 +392,8 @@ def test_a_stale_unclaimed_view_cannot_switch_an_accounts_install_to_none(decisi
     assert refused.value.status_code == 409
     assert decision(_row()) == "accounts"
     # The refused choice left the link unspent, so the administrator can still claim.
-    adopted = decision(enable.claim(token, EMAIL, PASSWORD))
+    adopted, issued = decision(enable.claim(token, EMAIL, PASSWORD))
+    assert decision(sessions.resolve(issued.token)).user.id == adopted
     assert adopted is not None
 
 

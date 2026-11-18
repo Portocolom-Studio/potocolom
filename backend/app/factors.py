@@ -25,7 +25,7 @@ from app.account_lock import hold_the_account as _hold_the_account
 from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
 from app.manifests import StorableStr
 from app.settings import Settings, get_settings
-from app.tables import AuthFactor, AuthToken, RecoveryCode, User
+from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
@@ -98,8 +98,56 @@ async def enrolled_factor(session, user_id: uuid.UUID) -> AuthFactor | None:
     )).scalar_one_or_none()
 
 
+@dataclass(frozen=True)
+class PrimaryProof:
+    """The identity a primary sign-in checked, as it stood when it was checked.
+
+    The check runs outside the account gate, so a reset, a password or address
+    change, or an unlink can commit before the session is minted, end every
+    session the account had, and still lose to this one.
+    """
+
+    identity_id: uuid.UUID
+    subject: str
+    password_hash: str | None
+
+    @classmethod
+    def of(cls, identity: AuthIdentity) -> "PrimaryProof":
+        return cls(identity.id, identity.subject, identity.password_hash)
+
+
+class StaleProof(Exception):
+    """What the sign-in proved changed before it could be acted on."""
+
+
+async def _still_proved(session: AsyncSession, user_id: uuid.UUID,
+                        proof: PrimaryProof | None) -> User:
+    """The account as it stands now, under the gate the caller holds."""
+    user = await session.get(User, user_id)
+    if user is None or user.state in CANNOT_SIGN_IN:
+        raise StaleProof
+    if proof is not None:
+        identity = await session.get(AuthIdentity, proof.identity_id)
+        if (identity is None or identity.user_id != user_id
+                or identity.subject != proof.subject
+                or identity.password_hash != proof.password_hash):
+            raise StaleProof
+    return user
+
+
+async def _mint_gated(session: AsyncSession, user_id: uuid.UUID, remember_me: bool,
+                      expected: uuid.UUID | None,
+                      proof: PrimaryProof | None) -> sessions.Issued | None:
+    user = await _still_proved(session, user_id, proof)
+    current = await enrolled_factor(session, user_id)
+    if (current.id if current is not None else None) != expected:
+        return None
+    return sessions.mint_in(session, user, remember_me, authenticated=True)
+
+
 async def mint_behind_the_gate(user: User, remember_me: bool,
-                               expected: uuid.UUID | None) -> sessions.Issued | None:
+                               expected: uuid.UUID | None,
+                               proof: PrimaryProof) -> sessions.Issued | None:
     """A sign-in session, and only while the account's factor is still the one
     this request got past. None when it is not, and then nothing was written.
 
@@ -114,7 +162,8 @@ async def mint_behind_the_gate(user: User, remember_me: bool,
     and the revocation sees no session.
 
     Expected is the factor the caller proved, or None for a password login,
-    which passed the gate by there being nothing to prove.
+    which passed the gate by there being nothing to prove. Raises StaleProof
+    when the identity or the account changed after the caller checked it.
 
     The key is released with this transaction, before the caller decides what
     to do about a gate it found closed. begin_challenge takes the same key in
@@ -127,13 +176,10 @@ async def mint_behind_the_gate(user: User, remember_me: bool,
     async with db.session_factory() as session:
         async with session.begin():
             await _hold_the_account(session, user.id, "too many sign-ins at once")
-            current = await enrolled_factor(session, user.id)
-            if (current.id if current is not None else None) != expected:
-                return None
-            return sessions.mint_in(session, user, remember_me, authenticated=True)
+            return await _mint_gated(session, user.id, remember_me, expected, proof)
 
 
-async def begin_challenge(user: User, remember_me: bool,
+async def begin_challenge(user: User, remember_me: bool, proof: PrimaryProof,
                           redirect_to: str | None = None) -> Response:
     """The pre-session capability a primary login hands back instead of a
     session. It carries no authority of its own and authorizes nothing."""
@@ -152,6 +198,7 @@ async def begin_challenge(user: User, remember_me: bool,
             # cannot starve the pool: the caller is told to come back rather
             # than handed a challenge that skipped the carry.
             await _hold_the_account(session, user.id, "too many sign-ins at once")
+            await _still_proved(session, user.id, proof)
             # The budget belongs to the account, not to one challenge. Minted
             # per challenge it counts nothing, because starting another is
             # free to anyone who already has the password.
@@ -231,15 +278,38 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
     proof = await _verify(body.code, user, factor)
     if proof is None:
         raise REFUSED
+    remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
+    issued = await _finish_challenge(claimed.id, user.id, factor, proof, remembered)
+    response = Response(status_code=204)
+    from app.accounts import issue_session
+
+    issue_session(response, issued)
+    _clear_challenge(response, settings)
+    return response
+
+
+async def _finish_challenge(challenge_id: uuid.UUID, user_id: uuid.UUID, factor: AuthFactor,
+                            proof: "Proof", remember_me: bool) -> sessions.Issued:
+    """Spends the challenge and the code, and mints, in one transaction behind
+    the account gate.
+
+    Split across two, a reset or a factor change that commits between them
+    ends every session and spends every challenge, and still loses to the
+    session minted afterwards (issue #435). The gate comes first, before any
+    row lock, like every other holder of it.
+    """
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
         async with session.begin():
+            await _hold_the_account(session, user_id, "too many sign-ins at once")
             # The session is contingent on winning this. The attempt was
             # counted and committed before the code was checked, so a second
             # request carrying the same challenge reaches here too, and only
             # the one that actually spends the token is let in (issue #421).
             won = (await session.execute(
                 update(AuthToken)
-                .where(AuthToken.id == claimed.id, AuthToken.consumed_at.is_(None))
+                .where(AuthToken.id == challenge_id, AuthToken.consumed_at.is_(None))
                 .values(consumed_at=func.now())
                 .returning(AuthToken.id)
             )).first()
@@ -272,24 +342,16 @@ async def answer_challenge(body: CodeRequest, request: Request) -> Response:
                 update(AuthFactor).where(AuthFactor.id == factor.id,
                                          AuthFactor.replace_attempts > 0)
                 .values(replace_attempts=0))
-    remembered = request.cookies.get(f"{_cookie_name(settings)}_remember") == "1"
-    # The factor this proved is the one the account still has to have. A
-    # replacement or a removal that commits between the proof and the session
-    # revokes what exists at that moment, so a session minted afterwards is one
-    # it could not reach (issue #435).
-    issued = await mint_behind_the_gate(user, remembered, factor.id)
-    if issued is None:
-        # Refused the way every other failure on this route is: the code was
-        # good for a factor this account no longer has, so there is nothing to
-        # tell apart. What the proof cost went with the factor it belonged to,
-        # because both routes that close this gate take the codes with them.
-        raise REFUSED
-    response = Response(status_code=204)
-    from app.accounts import issue_session
-
-    issue_session(response, issued)
-    _clear_challenge(response, settings)
-    return response
+            # The factor this proved is the one the account still has to have.
+            try:
+                issued = await _mint_gated(session, user_id, remember_me, factor.id, None)
+            except StaleProof:
+                raise REFUSED from None
+            if issued is None:
+                # Refused the way every other failure on this route is: the
+                # code was good for a factor this account no longer has.
+                raise REFUSED
+            return issued
 
 
 def _clear_challenge(response: Response, settings: Settings) -> None:

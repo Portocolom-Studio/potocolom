@@ -194,6 +194,14 @@ async def complete(request: CompleteRequest) -> Response:
             )).first()
             if spent is None or spent.user_id is None:
                 raise HTTPException(status_code=403, detail=INVALID_LINK)
+            # A sign-in waiting on its second factor proved the password this
+            # replaces, so it ends with the sessions below.
+            await session.execute(
+                update(AuthToken)
+                .where(AuthToken.user_id == spent.user_id, AuthToken.purpose == "challenge",
+                       AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now())
+            )
             from app import command_store
 
             await command_store.erase_account_commands(session, {spent.user_id})

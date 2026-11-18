@@ -140,6 +140,34 @@ def test_an_invitation_can_be_accepted_once(accounts):
 
 
 @pytest.mark.db
+def test_a_registration_whose_session_cannot_be_written_creates_nothing(
+        accounts, monkeypatch):
+    """The session is written with the account. A failed write leaves the
+    invitation unspent and no account behind."""
+    from app import sessions
+
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        token = client.post("/api/v1/invitations", headers=headers,
+                            json={"email": "unlucky@example.com", "role": "user"}).json()["token"]
+    real = sessions.mint_in
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("the session insert failed")
+
+    monkeypatch.setattr(sessions, "mint_in", failing)
+    with TestClient(app) as client:
+        with pytest.raises(RuntimeError):
+            client.post("/api/v1/auth/register", headers={"Origin": ORIGIN},
+                        json={"token": token, "password": PASSWORD})
+        monkeypatch.setattr(sessions, "mint_in", real)
+        accepted = client.post("/api/v1/auth/register", headers={"Origin": ORIGIN},
+                               json={"token": token, "password": PASSWORD})
+        assert accepted.status_code == 204, accepted.text
+        assert client.get("/api/v1/account").json()["email"] == "unlucky@example.com"
+
+
+@pytest.mark.db
 def test_the_invited_address_is_the_account_that_gets_made(accounts):
     """Email-bound: the claimant cannot redirect the invitation elsewhere."""
     with TestClient(app) as client:

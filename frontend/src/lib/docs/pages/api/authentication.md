@@ -160,7 +160,7 @@ To turn one on, a signed-in account does two calls:
 
 An enrolment that is never confirmed expires after 30 minutes, and it does not change a factor that already works. If the account already has a factor, the confirm call also needs `current_code`, a code from the factor being replaced or one of its recovery codes. Ten `current_code` attempts end replacement of that factor, whether or not each attempt was right.
 
-At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own.
+At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own. A password reset, a change of password, address or second factor, or an account leaving `active` ends any challenge that is still open.
 
 ## Password reset and administrator recovery
 
@@ -175,7 +175,7 @@ Open the link and send its token with a new password to `POST /api/v1/auth/reset
 { "token": "...", "password": "..." }
 ```
 
-The answer is `204`. Completing either kind of link sets the password, revokes every session the account held, and returns the user to the login screen. It does not sign anyone in.
+The answer is `204`. Completing either kind of link sets the password, revokes every session the account held, ends any sign-in still waiting for its second factor, and returns the user to the login screen. A sign-in that checked the old password while the reset completed is refused if the reset commits first; if the sign-in's session commits first, the reset revokes it. It does not sign anyone in.
 
 ## Changing credentials
 

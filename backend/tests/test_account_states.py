@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from app import db
 from app.main import app
 from app.tables import AssetShare, Session, User
-from tests.test_totp_flow import ORIGIN, _csrf, _login, _make, accounts
+from tests.test_totp_flow import ORIGIN, _begin, _challenges, _csrf, _login, _make, accounts
 
 __all__ = ["accounts"]
 
@@ -142,10 +142,17 @@ def test_leaving_active_ends_every_session_the_account_held(accounts):
         assert _login(client, "evicted@example.com").status_code == 204
         theirs = _session_cookie(client)
         assert client.get("/api/v1/account").status_code == 200
+        # A sign-in waiting on its second factor would otherwise outlive the
+        # state and finish once the account is back.
+        client.portal.call(_begin, subject)
 
+        client.cookies.clear()
         _admin(client)
+        assert client.portal.call(_live_sessions, subject.id) == 1
         assert _set_state(client, subject.id, "suspended").status_code == 204
         assert client.portal.call(_live_sessions, subject.id) == 0
+        waiting = [c for c in client.portal.call(_challenges) if c.user_id == subject.id]
+        assert waiting and all(c.consumed_at is not None for c in waiting)
 
         _wearing(client, theirs)
         assert client.get("/api/v1/account").status_code == 401

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
 
 from app import db, factors, keyring, sessions, totp
 from app.account_lock import budget_lock
@@ -70,6 +70,16 @@ async def _make(email: str, role: str = "user") -> User:
                                  subject=email.lower(), password_hash=hash_password(PASSWORD)))
         await session.commit()
         return user
+
+
+async def _begin(user: User, remember_me: bool = False):
+    """A challenge, started the way a password login starts one."""
+    async with db.session_factory() as session:
+        identity = (await session.execute(
+            select(AuthIdentity).where(AuthIdentity.user_id == user.id,
+                                       AuthIdentity.provider == "password")
+        )).scalar_one()
+    return await factors.begin_challenge(user, remember_me, factors.PrimaryProof.of(identity))
 
 
 async def _factors() -> list[AuthFactor]:
@@ -526,7 +536,7 @@ def test_the_guess_budget_survives_logins_that_overlap(accounts):
     import asyncio
 
     user = accounts(_make("racer@example.com"))
-    accounts(factors.begin_challenge(user, remember_me=False))
+    accounts(_begin(user))
     accounts(_spend(7))
 
     started = asyncio.Event()
@@ -544,7 +554,7 @@ def test_the_guess_budget_survives_logins_that_overlap(accounts):
         if waiting == 4:
             started.set()
         await started.wait()
-        await factors.begin_challenge(user, remember_me=False)
+        await _begin(user)
 
     async def overlapping() -> None:
         await asyncio.gather(*[begin() for _ in range(4)])
@@ -1617,11 +1627,20 @@ def _while_the_gate_moves(monkeypatch, signing_in, factor_change):
     real_gate = factors.mint_behind_the_gate
     real_revoke = sessions.rotate_and_revoke_others
 
-    async def announced(user, remember_me, expected):
+    real_finish = factors._finish_challenge
+
+    async def announced(*args):
         at_the_gate.set()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(holding.wait(), 10)
-        return await real_gate(user, remember_me, expected)
+
+    async def announced_gate(*args):
+        await announced()
+        return await real_gate(*args)
+
+    async def announced_finish(*args):
+        await announced()
+        return await real_finish(*args)
 
     async def revoked_and_waiting(db_session, resolved, spend_capabilities=True):
         issued = await real_revoke(db_session, resolved, spend_capabilities)
@@ -1635,7 +1654,8 @@ def _while_the_gate_moves(monkeypatch, signing_in, factor_change):
             await asyncio.wait_for(finished.wait(), 1)
         return issued
 
-    monkeypatch.setattr(factors, "mint_behind_the_gate", announced)
+    monkeypatch.setattr(factors, "mint_behind_the_gate", announced_gate)
+    monkeypatch.setattr(factors, "_finish_challenge", announced_finish)
     monkeypatch.setattr(sessions, "rotate_and_revoke_others", revoked_and_waiting)
 
     async def together():
@@ -1806,3 +1826,230 @@ def test_a_login_with_nothing_racing_reads_and_mints_in_one_transaction(accounts
     assert len(read_it) == 1, read_it
     assert any(statement.startswith("insert into sessions") for statement in read_it[0]), \
         read_it[0]
+
+
+
+OTHER_PASSWORD = "another-long-enough-account-password"
+
+
+async def _reset(user_id: uuid.UUID) -> None:
+    """The real reset route: new password, every session and challenge ended."""
+    from app import recovery
+
+    async with db.session_factory() as session:
+        email = (await session.get(User, user_id)).email
+    token = await recovery.mint_reset(email)
+    async with _caller() as caller:
+        done = await caller.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                                 json={"token": token, "password": OTHER_PASSWORD})
+    assert done.status_code == 204, done.text
+
+
+async def _disable(user_id: uuid.UUID) -> None:
+    async with db.session_factory() as session:
+        await session.execute(update(User).where(User.id == user_id).values(state="disabled"))
+        await session.commit()
+
+
+async def _move_address(user_id: uuid.UUID) -> None:
+    async with db.session_factory() as session:
+        await session.execute(update(AuthIdentity).where(AuthIdentity.user_id == user_id)
+                              .values(subject="moved-away@example.com"))
+        await session.commit()
+
+
+async def _unlink(user_id: uuid.UUID) -> None:
+    async with db.session_factory() as session:
+        await session.execute(delete(AuthIdentity).where(AuthIdentity.user_id == user_id))
+        await session.commit()
+
+
+def _paused(monkeypatch, name: str):
+    """Hold the sign-in just before factors.<name>, so a change commits there."""
+    import asyncio
+
+    real = getattr(factors, name)
+    there, go = asyncio.Event(), asyncio.Event()
+
+    async def held(*args, **kwargs):
+        there.set()
+        await asyncio.wait_for(go.wait(), 10)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(factors, name, held)
+    return there, go
+
+
+def _racing(request, there, go, change, user_id):
+    import asyncio
+
+    async def race():
+        pending = asyncio.create_task(request())
+        try:
+            await asyncio.wait_for(there.wait(), 10)
+            await change(user_id)
+        except BaseException:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            raise
+        go.set()
+        return await pending
+
+    return race
+
+
+async def _password_login(email: str, cookies: dict[str, str] | None = None,
+                          remember_me: bool = False):
+    async with _caller(cookies) as caller:
+        return await caller.post("/api/v1/auth/login", headers={"Origin": ORIGIN},
+                                 json={"email": email, "password": PASSWORD,
+                                       "remember_me": remember_me})
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("change", [_reset, _disable, _move_address, _unlink])
+def test_a_change_after_the_password_was_checked_mints_nothing(accounts, monkeypatch, change):
+    """The password is checked outside the account gate. A reset, a disable, an
+    address change or an unlink that commits before the mint ended every session
+    the account had, and the login in flight must not open a new one. Nor may
+    the refusal sign the browser out of the account it was already in."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        already = client.portal.call(_make, "already-in@example.com")
+        assert _login(client, "already-in@example.com").status_code == 204
+        held = {c.name: c.value for c in client.cookies.jar}
+        user = client.portal.call(_make, "in-flight@example.com")
+        there, go = _paused(monkeypatch, "mint_behind_the_gate")
+        response = client.portal.call(_racing(
+            lambda: _password_login("in-flight@example.com", held), there, go, change, user.id))
+        assert response.status_code == 401, response.text
+        assert not response.cookies
+        assert client.portal.call(_live_sessions_for, user.id) == []
+        assert client.portal.call(_challenges) == []
+        assert len(client.portal.call(_live_sessions_for, already.id)) == 1
+
+
+@pytest.mark.db
+def test_a_reset_before_the_challenge_starts_starts_none(accounts, monkeypatch):
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "challenged@example.com")
+        assert _login(client, "challenged@example.com").status_code == 204
+        _enrol(client)
+        there, go = _paused(monkeypatch, "begin_challenge")
+        response = client.portal.call(_racing(
+            lambda: _password_login("challenged@example.com"), there, go, _reset, user.id))
+        assert response.status_code == 401, response.text
+        assert not response.cookies
+        assert [c for c in client.portal.call(_challenges) if c.consumed_at is None] == []
+
+
+def _answer(challenge_cookies: dict[str, str], code: str):
+    async def answer():
+        async with _caller(challenge_cookies) as caller:
+            return await caller.post("/api/v1/auth/totp", headers={"Origin": ORIGIN},
+                                     json={"code": code})
+    return answer
+
+
+def _challenged(client, email: str) -> tuple[uuid.UUID, str, dict[str, str]]:
+    """An enrolled account and a challenge another browser holds for it."""
+    user = client.portal.call(_make, email)
+    assert _login(client, email).status_code == 204
+    secret, _ = _enrol(client)
+
+    async def other_browser():
+        async with _caller() as other:
+            started = await other.post("/api/v1/auth/login", headers={"Origin": ORIGIN},
+                                       json={"email": email, "password": PASSWORD})
+            assert started.json() == {"totp_required": True}
+            return {c.name: c.value for c in other.cookies.jar}
+
+    return user.id, secret, client.portal.call(other_browser)
+
+
+@pytest.mark.db
+def test_a_reset_while_the_answer_is_in_flight_mints_nothing(accounts, monkeypatch):
+    """The code was right and the challenge was won, and a reset committed
+    before the mint. Spending and minting are one transaction behind the gate."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user_id, secret, held = _challenged(client, "answering@example.com")
+        there, go = _paused(monkeypatch, "_finish_challenge")
+        response = client.portal.call(_racing(
+            _answer(held, _next_code(secret)), there, go, _reset, user_id))
+        assert response.status_code == 403, response.text
+        assert client.portal.call(_live_sessions_for, user_id) == []
+
+
+@pytest.mark.db
+def test_the_challenge_is_spent_in_the_transaction_that_mints(accounts, monkeypatch):
+    """Spent in one transaction and minted in the next, a reset that commits in
+    between ends every session and still loses to the mint that follows. Seen
+    from another connection at the moment of the mint, the challenge must not
+    be spent yet."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user_id, secret, held = _challenged(client, "spent@example.com")
+        real_mint = factors._mint_gated
+        seen = []
+
+        async def looking(*args):
+            seen.append([c.consumed_at for c in await _challenges() if c.user_id == user_id])
+            return await real_mint(*args)
+
+        monkeypatch.setattr(factors, "_mint_gated", looking)
+        answered = client.portal.call(_answer(held, _next_code(secret)))
+        assert answered.status_code == 204, answered.text
+        assert seen == [[None]]
+        spent = [c.consumed_at for c in client.portal.call(_challenges) if c.user_id == user_id]
+        assert len(spent) == 1 and spent[0] is not None
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("route,body", [
+    ("/api/v1/account/password", {"password": OTHER_PASSWORD, "current_password": PASSWORD}),
+    ("/api/v1/account/email", {"email": "elsewhere@example.com"}),
+])
+def test_a_credential_change_ends_a_challenge_waiting_for_its_code(accounts, route, body):
+    with TestClient(app, base_url=ORIGIN) as client:
+        user_id, secret, held = _challenged(client, "waiting@example.com")
+        changed = client.post(route, headers=_csrf(client), json=body)
+        assert changed.status_code == 204, changed.text
+        owner = _session_cookie(client)
+        answered = client.portal.call(_answer(held, _next_code(secret)))
+        assert answered.status_code == 403, answered.text
+        assert [s.token_hash for s in client.portal.call(_live_sessions_for, user_id)] == [
+            sessions.token_hash(owner)]
+
+
+
+@pytest.mark.db
+def test_the_mint_reads_the_role_as_it_stands(accounts, monkeypatch):
+    """An administrator session takes the short idle window. A promotion that
+    lands after the password check must still get it."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "promoted@example.com")
+        there, go = _paused(monkeypatch, "mint_behind_the_gate")
+
+        async def promote(user_id):
+            async with db.session_factory() as session:
+                await session.execute(update(User).where(User.id == user_id).values(role="admin"))
+                await session.commit()
+
+        response = client.portal.call(_racing(
+            lambda: _password_login("promoted@example.com", remember_me=True),
+            there, go, promote, user.id))
+        assert response.status_code == 204, response.text
+        [row] = client.portal.call(_live_sessions_for, user.id)
+        assert row.remember_me is False
+        assert row.idle_expires_at is not None
+
+
+@pytest.mark.db
+def test_replacing_the_factor_ends_a_challenge_waiting_for_its_code(accounts):
+    """The challenge was started against the factor being replaced. Answered
+    afterwards it would load the new one, and a code from it would do."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user_id, secret, held = _challenged(client, "replacing@example.com")
+        new_secret, replaced = _replace(client, None, current=_next_code(secret))
+        assert replaced.status_code == 204, replaced.text
+        answered = client.portal.call(
+            _answer(held, totp.code_at(new_secret, int(_now()) + totp.STEP)))
+        assert answered.status_code == 403, answered.text

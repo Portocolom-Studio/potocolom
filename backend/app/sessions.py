@@ -177,25 +177,26 @@ async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved
     await command_store.erase_realtime_commands(
         db_session, resolved.user.id, keep_auth_session_id=resolved.session.id
     )
-    if spend_capabilities:
-        # Reset and recovery links go with them. Changing a credential after a
-        # mailbox is compromised is meant to end what that mailbox can still
-        # do, and a link already sent to it is exactly that.
-        #
-        # Spent before the session rows are locked, never after. operator.collapse
-        # deletes auth_tokens before sessions, so a caller taking them the other
-        # way round is a cycle: measured on PostgreSQL, a credential change
-        # overlapping a collapse was a DeadlockDetected that killed the collapse.
-        # Nothing between here and the lock below reads or writes what the other
-        # touches, and the 409 further down still rolls this back with the rest
-        # of the transaction.
-        await db_session.execute(
-            update(AuthToken)
-            .where(AuthToken.user_id == resolved.user.id,
-                   AuthToken.purpose.in_(("reset", "recovery")),
-                   AuthToken.consumed_at.is_(None))
-            .values(consumed_at=func.now())
-        )
+    # Reset and recovery links go with them. Changing a credential after a
+    # mailbox is compromised is meant to end what that mailbox can still do, and
+    # a link already sent to it is exactly that. A factor change keeps those
+    # links (spend_capabilities=False). Every change ends a sign-in waiting on
+    # its second factor: it was started against what this change replaces.
+    purposes = ("reset", "recovery", "challenge") if spend_capabilities else ("challenge",)
+    # Spent before the session rows are locked, never after. operator.collapse
+    # deletes auth_tokens before sessions, so a caller taking them the other
+    # way round is a cycle: measured on PostgreSQL, a credential change
+    # overlapping a collapse was a DeadlockDetected that killed the collapse.
+    # Nothing between here and the lock below reads or writes what the other
+    # touches, and the 409 further down still rolls this back with the rest
+    # of the transaction.
+    await db_session.execute(
+        update(AuthToken)
+        .where(AuthToken.user_id == resolved.user.id,
+               AuthToken.purpose.in_(purposes),
+               AuthToken.consumed_at.is_(None))
+        .values(consumed_at=func.now())
+    )
     # Every transaction takes the account's session rows in one order, or two
     # credential changes racing on the same account deadlock: each revocation
     # holds the row the other one is about to rotate.
@@ -343,38 +344,6 @@ async def live_among(session_ids: set[uuid.UUID]) -> set[uuid.UUID]:
             )
         )).scalars().all()
     return set(rows)
-
-
-async def rotate(session_id: uuid.UUID, user: User) -> Issued:
-    if db.session_factory is None:
-        raise RuntimeError("database unavailable")
-    from app import command_store
-    from app.account_lock import hold_the_account
-
-    async with db.session_factory() as session:
-        async with session.begin():
-            await hold_the_account(session, user.id, wait=True)
-            row = (await session.execute(
-                select(Session.user_id, Session.remember_me)
-                .where(Session.id == session_id, Session.revoked_at.is_(None)).with_for_update()
-            )).mappings().one_or_none()
-            if row is None or row["user_id"] != user.id:
-                remembered = None
-            else:
-                await command_store.erase_realtime_commands(
-                    session, user.id, auth_session_ids={session_id}
-                )
-                remembered = row["remember_me"]
-                await session.execute(
-                    update(Session)
-                    .where(Session.id == session_id, Session.revoked_at.is_(None))
-                    .values(revoked_at=_now())
-                )
-    if remembered is None:
-        # Nothing was revoked, so there was nothing to rotate. Minting here
-        # would turn an unknown or already dead session into a live one.
-        raise RuntimeError("no live session to rotate")
-    return await mint(user, remember_me=bool(remembered))
 
 
 def is_recent(session: Session) -> bool:

@@ -459,7 +459,14 @@ def test_clear_factor_command_removes_it_and_ends_the_sessions(library, capsys):
                 secret_ciphertext=ring.encrypt(factors.TOTP_PURPOSE, b"S" * 32, user_id.bytes),
                 key_version=ring.active_version, confirmed_at=func.now()))
             session.add(RecoveryCode(user_id=user_id, code_hash=b"h" * 32))
+            session.add(AuthToken(user_id=user_id, purpose="challenge", token_hash=b"c" * 32,
+                                  expires_at=func.now() + text("interval '10 minutes'")))
             await session.commit()
+
+    async def open_challenges() -> int:
+        async with db.session_factory() as session:
+            return len((await session.execute(select(AuthToken).where(
+                AuthToken.purpose == "challenge", AuthToken.consumed_at.is_(None)))).scalars().all())
 
     async def counts() -> tuple[int, int, int]:
         async with db.session_factory() as session:
@@ -496,6 +503,7 @@ def test_clear_factor_command_removes_it_and_ends_the_sessions(library, capsys):
     factors_before, codes_before, sessions_before = library(counts())
     assert (factors_before, codes_before) == (1, 1)
     assert sessions_before >= 1
+    assert library(open_challenges()) == 1
 
     operator.main(["clear-factor", "nophone@example.com"])
     assert "Removed" in capsys.readouterr().out
@@ -503,6 +511,7 @@ def test_clear_factor_command_removes_it_and_ends_the_sessions(library, capsys):
     # anything read afterwards needs one of its own.
     library(db.connect(serving=False))
     assert library(counts()) == (0, 0, 0)
+    assert library(open_challenges()) == 0
     # Also the proof that this suite can see an audit event at all, which is
     # what makes the empty reading after the second run below mean something.
     assert library(recorded()) == ["factor.cleared"]

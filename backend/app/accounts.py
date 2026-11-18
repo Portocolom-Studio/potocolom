@@ -75,24 +75,30 @@ async def login(request: LoginRequest, http: Request) -> Response:
     matched = await to_thread.run_sync(verify_password, stored, request.password)
     if found is None or not matched:
         raise REFUSED
-    _, user = found
+    identity, user = found
     if user.state in {"disabled", "deletion_pending", "purging"}:
         raise REFUSED
-    # Session fixation: a token planted in this browser before authentication
-    # must not be the token that comes out of it. Only the session presented
-    # here is retired, so signing in on one device does not sign out another.
-    if presented is not None:
-        await sessions.revoke(presented.session.id)
     # Read and minted together, or a factor enrolled while this login was in
     # flight commits between the two, and the revocation it runs cannot reach a
     # session that is not there yet (issue #435).
-    issued = await factors.mint_behind_the_gate(user, request.remember_me, None)
-    if issued is None:
-        # The password was right, and that is not enough for this account. What
-        # comes back is a capability to answer a challenge, never a session.
-        return await factors.begin_challenge(user, request.remember_me)
-    response = Response(status_code=204)
-    issue_session(response, issued)
+    proof = factors.PrimaryProof.of(identity)
+    try:
+        issued = await factors.mint_behind_the_gate(user, request.remember_me, None, proof)
+        # The password was right, and without a session that is not enough for
+        # this account. What comes back is a capability to answer a challenge.
+        response = (await factors.begin_challenge(user, request.remember_me, proof)
+                    if issued is None else Response(status_code=204))
+    except factors.StaleProof:
+        # A reset, a change or a disable committed after the password was checked.
+        raise REFUSED from None
+    # Session fixation: a token planted in this browser before authentication
+    # must not be the token that comes out of it. Only the session presented
+    # here is retired, so signing in on one device does not sign out another,
+    # and only once this sign-in is accepted, so a refused one signs nobody out.
+    if presented is not None:
+        await sessions.revoke(presented.session.id)
+    if issued is not None:
+        issue_session(response, issued)
     return response
 
 
