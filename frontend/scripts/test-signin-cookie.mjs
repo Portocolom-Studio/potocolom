@@ -263,7 +263,7 @@ test('a real browser signs in on the built /login and the next unsafe request ca
 		const { publicUrl, token } = server;
 		const setup = await fetch(`${publicUrl}/api/v1/auth/setup`, {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
+			headers: { 'Content-Type': 'application/json', Origin: publicUrl },
 			body: JSON.stringify({ token, email: EMAIL, password: PASSWORD })
 		});
 		assert.equal(setup.status, 204, `setup claim answered ${setup.status}`);

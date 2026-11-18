@@ -315,7 +315,7 @@ class SetupRequest(BaseModel):
 
 
 @router.post("/api/v1/auth/setup", status_code=204,
-             dependencies=[Depends(require_setup_mode)])
+             dependencies=[Depends(require_setup_mode), Depends(check_origin)])
 async def setup(request: SetupRequest) -> Response:
     if request.mode == "none":
         await decline_accounts(request.token)
@@ -427,6 +427,7 @@ def main() -> None:
     print("administrator account within one hour:")
     print()
     print(f"  curl -X POST {base}/api/v1/auth/setup \\")
+    print(f"    -H 'Origin: {base}' \\")
     print("    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"token\": \"{token}\",")
     print("         \"email\": \"you@example.com\",")

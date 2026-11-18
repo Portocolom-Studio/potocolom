@@ -26,6 +26,7 @@ def accounts(portal_runner, monkeypatch):
     accounts mode, because the startup guard refuses the other way round.
     """
     monkeypatch.setenv("ROOT_KEYS", ROOT_KEYS)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "")
     get_settings.cache_clear()
     assert portal_runner(db.connect()) is True
     portal_runner(db.enable_accounts_mode(db.session_factory))
@@ -137,6 +138,24 @@ def test_a_claim_whose_session_cannot_be_written_claims_nothing(accounts, monkey
 def _claim(client, token, email=EMAIL, password=PASSWORD):
     return client.post("/api/v1/auth/setup",
                        json={"token": token, "email": email, "password": password})
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("origin", ["https://evil.example", None])
+def test_a_claim_from_another_origin_is_refused_and_spends_nothing(accounts, origin):
+    """A page could otherwise sign the operator's browser in to an account
+    whose link the page holds."""
+    token = accounts(enable.mint_setup_token())
+    with TestClient(app) as client:
+        allowed = client.headers.pop("origin")
+        headers = {"Origin": origin} if origin else {}
+        refused = client.post("/api/v1/auth/setup", headers=headers,
+                              json={"token": token, "email": EMAIL, "password": PASSWORD})
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "origin not allowed"
+        assert not refused.cookies
+        client.headers["origin"] = allowed
+        assert _claim(client, token).status_code == 204
 
 
 @pytest.mark.db

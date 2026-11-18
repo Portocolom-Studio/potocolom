@@ -19,7 +19,7 @@ from starlette.responses import Response
 from app import audit, db, mail, sessions
 from app.accounts import issue_session
 from app.enable import _checked_email
-from app.auth import current_principal, require_accounts_mode, require_role
+from app.auth import check_origin, current_principal, require_accounts_mode, require_role
 from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -202,7 +202,7 @@ class RegisterRequest(BaseModel):
     password: StorableStr
 
 
-@router.post("/api/v1/auth/register", status_code=204)
+@router.post("/api/v1/auth/register", status_code=204, dependencies=[Depends(check_origin)])
 async def register(request: RegisterRequest) -> Response:
     """Claims an invitation and returns a clean session.
 

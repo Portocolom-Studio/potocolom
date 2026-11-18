@@ -386,6 +386,7 @@ def _run_reclaim(parsed: argparse.Namespace) -> None:
     print("Any setup link still outstanding was retired to mint it.")
     print()
     print(f"  curl -X POST {base}/api/v1/auth/setup \\")
+    print(f"    -H 'Origin: {base}' \\")
     print("    -H 'Content-Type: application/json' \\")
     print(f"    -d '{{\"token\": \"{token}\",")
     print("         \"email\": \"you@example.com\",")

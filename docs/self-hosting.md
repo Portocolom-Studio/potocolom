@@ -516,8 +516,8 @@ lost both the authenticator and every recovery code. Anyone who still holds
 either takes it off themselves with `DELETE /api/v1/account/totp`; this is the
 case where nothing over HTTP can help, because a route that removes a factor
 without asking for one is a route worth stealing a session for. It removes the
-factor and its codes, ends every session the account had open, and records an
-audit row. A canvas still drawing on one of those sessions closes within half a
+factor and its codes, ends every session the account had open and any sign-in
+still waiting for its second factor, and records an audit row. A canvas still drawing on one of those sessions closes within half a
 minute, when the API next asks the database which of its sockets are still
 signed in; the command runs in its own process and cannot reach them itself. The account keeps its password and its role, and can enrol again.
 

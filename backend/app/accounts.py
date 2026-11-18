@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from starlette.responses import Response
 
 from app import db, factors, rate_limit, sessions
-from app.auth import UNAUTHENTICATED, current_principal, require_accounts_mode
+from app.auth import UNAUTHENTICATED, check_origin, current_principal, require_accounts_mode
 from app.manifests import StorableStr
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
@@ -58,7 +58,7 @@ def _clear(response: Response) -> None:
     response.delete_cookie(csrf_name, path="/", samesite="lax", secure=secure)
 
 
-@router.post("/api/v1/auth/login", status_code=204)
+@router.post("/api/v1/auth/login", status_code=204, dependencies=[Depends(check_origin)])
 async def login(request: LoginRequest, http: Request) -> Response:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")

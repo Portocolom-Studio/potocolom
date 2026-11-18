@@ -61,6 +61,8 @@ A request that changes data (`POST`, `PUT` or `DELETE`) and uses the session coo
 
 If either is missing or wrong, the API answers `403`. An unsafe request with no `Origin` is refused.
 
+The routes that hand out a session need the same `Origin` header, although they carry no session yet: `POST /api/v1/auth/login`, `POST /api/v1/auth/totp`, `POST /api/v1/auth/register` and `POST /api/v1/auth/setup`. A missing or other `Origin` answers `403` before the route spends a link or charges a sign-in attempt. Checks that come first still answer first: a route the install's mode does not offer answers `404` (or `503` while the install is unclaimed), and a body that is not valid JSON answers `422`. A script that signs in sends the install's public address as its `Origin`.
+
 In `none` mode a `POST`, `PUT`, `PATCH` or `DELETE` needs only the `Origin` header, which must be the public address or one of `ALLOWED_ORIGINS`. Otherwise it answers `403`. Scripts that call the API in `none` mode send the same header.
 
 A request that sends `Authorization: Bearer <token>` needs neither header. A bearer is presented deliberately rather than sent along by the browser. A bearer wins over the cookie. An invalid bearer gets `401`, and the API never falls back to the cookie.
@@ -160,7 +162,7 @@ To turn one on, a signed-in account does two calls:
 
 An enrolment that is never confirmed expires after 30 minutes, and it does not change a factor that already works. If the account already has a factor, the confirm call also needs `current_code`, a code from the factor being replaced or one of its recovery codes. Ten `current_code` attempts end replacement of that factor, whether or not each attempt was right.
 
-At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own. A password reset, a change of password, address or second factor, or an account leaving `active` ends any challenge that is still open.
+At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own. A password reset, a change of password, address or second factor, linking or unlinking a provider, `make auth-clear-factor`, or an account leaving `active` ends any challenge that is still open.
 
 ## Password reset and administrator recovery
 
