@@ -22,6 +22,7 @@ ROOT_KEYS = "1:" + "A" * 43 + "="
 def accounts(portal_runner, monkeypatch):
     monkeypatch.setenv("ROOT_KEYS", ROOT_KEYS)
     monkeypatch.setenv("PUBLIC_URL", ORIGIN)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "")
     get_settings.cache_clear()
     keyring.get_key_ring.cache_clear()
     assert portal_runner(db.connect()) is True

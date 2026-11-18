@@ -26,6 +26,7 @@ def accounts(portal_runner, monkeypatch):
     accounts mode, because the startup guard refuses the other way round.
     """
     monkeypatch.setenv("ROOT_KEYS", ROOT_KEYS)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "")
     get_settings.cache_clear()
     assert portal_runner(db.connect()) is True
     portal_runner(db.enable_accounts_mode(db.session_factory))
