@@ -2054,6 +2054,8 @@ def test_replacing_the_factor_ends_a_challenge_waiting_for_its_code(accounts):
             _answer(held, totp.code_at(new_secret, int(_now()) + totp.STEP)))
         assert answered.status_code == 403, answered.text
 
+
+@pytest.mark.db
 @pytest.mark.parametrize("origin", [
     "https://evil.example", "https://evil.studio.example.com", "https://example.com",
     "http://studio.example.com", None])
