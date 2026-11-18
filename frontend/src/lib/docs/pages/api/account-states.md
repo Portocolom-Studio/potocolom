@@ -50,7 +50,7 @@ Any other move answers `409`.
 
 - The check and the write happen in one transaction. Setting an account to the state it already has answers `204` and changes nothing, so a retry after a timeout is not a second event.
 - The request cannot set `purging`. The deletion sweep sets it, and only after 30 days.
-- When an account leaves `active`, the server revokes every session it holds, closes its realtime sockets, spends its outstanding reset and recovery links, and cancels its queued and running jobs.
+- When an account leaves `active`, the server revokes every session it holds, closes its realtime sockets, spends its outstanding reset and recovery links, ends any sign-in still waiting for its second factor, and cancels its queued and running jobs.
 - An administrator cannot change their own state, and the last active administrator cannot be suspended. An install with no administrator can only be recovered offline.
 - A suspended account keeps its own work and account settings, and can read them. It cannot change anything, and it cannot hold a GPU slot.
 

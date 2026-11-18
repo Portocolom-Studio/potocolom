@@ -162,7 +162,7 @@ To turn one on, a signed-in account does two calls:
 
 An enrolment that is never confirmed expires after 30 minutes, and it does not change a factor that already works. If the account already has a factor, the confirm call also needs `current_code`, a code from the factor being replaced or one of its recovery codes. Ten `current_code` attempts end replacement of that factor, whether or not each attempt was right.
 
-At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own. A password reset, a change of password, address or second factor, or an account leaving `active` ends any challenge that is still open.
+At sign-in, `POST /api/v1/auth/totp` takes a `code` from the authenticator app or one unused recovery code. A correct answer returns the session. The challenge lasts ten minutes and allows ten attempts. A challenge carries no authority of its own. A password reset, a change of password, address or second factor, linking or unlinking a provider, `make auth-clear-factor`, or an account leaving `active` ends any challenge that is still open.
 
 ## Password reset and administrator recovery
 
