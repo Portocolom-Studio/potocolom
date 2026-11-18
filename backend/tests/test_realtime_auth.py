@@ -90,6 +90,19 @@ def test_a_browser_with_no_cookie_never_reaches_the_socket(accounts):
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("origin", ["http://foreign.example", "http://evil.example.com:8000"])
+def test_a_signed_in_browser_with_a_foreign_origin_is_refused(accounts, monkeypatch, origin):
+    monkeypatch.setenv("PUBLIC_URL", "http://studio.example.com:8000")
+    get_settings.cache_clear()
+    with TestClient(app) as client:
+        _signed_in(client, "origin@example.com")
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/v1/realtime", headers={"Origin": origin}):
+                pass
+    assert realtime.sessions == {}
+
+
+@pytest.mark.db
 def test_an_expired_or_forged_cookie_closes_unauthorized(accounts):
     with TestClient(app) as client:
         client.cookies.set("potocolom_session", "not-a-real-session")

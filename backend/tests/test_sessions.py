@@ -123,24 +123,16 @@ def _about(moment: datetime, window: timedelta) -> bool:
 
 
 @pytest.mark.db
-def test_resolving_a_session_returns_its_account_and_moves_the_idle_window(connected):
+def test_resolving_a_session_returns_its_account_and_moves_the_idle_window(connected, monkeypatch):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(sessions, "_now", lambda: now)
     admin = _user(connected, role="admin")
     issued = connected(sessions.mint(admin, remember_me=False))
-    before = connected(_row(issued.token)).idle_expires_at
-
-    async def older() -> None:
-        async with db.session_factory() as session:
-            await session.execute(
-                text("UPDATE sessions SET idle_expires_at = :soon, last_seen_at = :then"),
-                {"soon": datetime.now(timezone.utc) + timedelta(minutes=5),
-                 "then": datetime.now(timezone.utc) - timedelta(minutes=25)},
-            )
-            await session.commit()
-
-    connected(older())
+    assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
+    now += timedelta(minutes=25)
     resolved = connected(sessions.resolve(issued.token))
     assert resolved is not None and resolved.user.id == admin.id
-    assert connected(_row(issued.token)).idle_expires_at > before - timedelta(minutes=1)
+    assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
 
 
 @pytest.mark.db
@@ -256,23 +248,15 @@ def test_resolving_does_not_write_on_every_single_request(connected):
 
 
 @pytest.mark.db
-def test_a_stale_session_still_slides_before_it_idles_out(connected):
+def test_a_stale_session_still_slides_before_it_idles_out(connected, monkeypatch):
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(sessions, "_now", lambda: now)
     admin = _user(connected, role="admin")
     issued = connected(sessions.mint(admin, remember_me=False))
     connected(sessions.resolve(issued.token))
-
-    async def go_quiet() -> None:
-        async with db.session_factory() as session:
-            await session.execute(
-                text("UPDATE sessions SET last_seen_at = :then, idle_expires_at = :soon"),
-                {"then": datetime.now(timezone.utc) - timedelta(minutes=20),
-                 "soon": datetime.now(timezone.utc) + timedelta(minutes=10)},
-            )
-            await session.commit()
-
-    connected(go_quiet())
+    now += timedelta(minutes=20)
     assert connected(sessions.resolve(issued.token)) is not None
-    assert _about(connected(_row(issued.token)).idle_expires_at, sessions.ADMIN_IDLE)
+    assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
 
 
 @pytest.mark.db

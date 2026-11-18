@@ -20,6 +20,7 @@ ORIGIN = "http://localhost:8000"
 def accounts(portal_runner, monkeypatch):
     monkeypatch.setenv("ROOT_KEYS", "1:" + "A" * 43 + "=")
     monkeypatch.setenv("PUBLIC_URL", ORIGIN)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "")
     get_settings.cache_clear()
     assert portal_runner(db.connect()) is True
     portal_runner(db.enable_accounts_mode(db.session_factory))
@@ -81,6 +82,12 @@ def test_a_password_login_sets_a_session_and_a_readable_csrf_cookie(accounts):
         raw = response.headers.get_list("set-cookie")
         session_header = next(h for h in raw if h.startswith("potocolom_session="))
         csrf_header = next(h for h in raw if h.startswith("potocolom_csrf="))
+        assert len(raw) == 2
+        for header in (session_header, csrf_header):
+            assert "Path=/" in header.split("; ")
+            assert "samesite=lax" in header.lower()
+            assert "domain=" not in header.lower()
+            assert "Secure" not in header
         assert "HttpOnly" in session_header
         assert "samesite=lax" in session_header.lower()
         assert "Path=/" in session_header
@@ -158,18 +165,34 @@ def test_an_unsafe_cookie_request_needs_the_csrf_header(accounts):
         wrong = client.post("/api/v1/auth/logout",
                             headers={"Origin": ORIGIN, "X-CSRF-Token": "not-the-value"})
         assert wrong.status_code == 403
+        headers = _csrf(client)
+        csrf_cookie = next(c for c in client.cookies.jar if c.name == "potocolom_csrf")
+        client.cookies.jar.clear(csrf_cookie.domain, csrf_cookie.path, csrf_cookie.name)
+        assert client.post("/api/v1/auth/logout", headers=headers).status_code == 403
+        client.cookies.set("potocolom_csrf", headers["X-CSRF-Token"])
         assert client.post("/api/v1/auth/logout", headers=_csrf(client)).status_code == 204
 
 
 @pytest.mark.db
-def test_an_unsafe_cookie_request_needs_an_exact_origin(accounts):
+def test_an_unsafe_cookie_request_needs_an_exact_origin(accounts, monkeypatch):
     _account(accounts, "origin@example.com")
     with TestClient(app) as client:
         assert _login(client, "origin@example.com").status_code == 204
         headers = _csrf(client)
-        for forged in ("http://evil.example", ORIGIN + ".evil.example", "null"):
+        for forged in ("http://evil.example", ORIGIN + ".evil.example", "null",
+                       "http://localhost", "https://localhost:8000"):
             assert client.post("/api/v1/auth/logout",
                                headers={**headers, "Origin": forged}).status_code == 403
+        client.headers.pop("origin", None)
+        assert client.post("/api/v1/auth/logout",
+                           headers={"X-CSRF-Token": headers["X-CSRF-Token"]}).status_code == 403
+        monkeypatch.setenv("PUBLIC_URL", "http://studio.example.com:8000")
+        get_settings.cache_clear()
+        for forged in ("http://evil.example.com:8000", "http://example.com:8000"):
+            assert client.post("/api/v1/auth/logout",
+                               headers={**headers, "Origin": forged}).status_code == 403
+        assert client.post("/api/v1/auth/logout", headers={
+            **headers, "Origin": "http://studio.example.com:8000"}).status_code == 204
 
 
 @pytest.mark.db
@@ -235,13 +258,21 @@ def test_an_account_lists_and_revokes_its_other_sessions(accounts):
     with TestClient(app) as client:
         assert _login(client, "many@example.com").status_code == 204
         other = client.portal.call(sessions.mint, user, False)
+        third = client.portal.call(sessions.mint, user, False)
         listed = client.get("/api/v1/account").json()["sessions"]
-        assert len(listed) == 2
-        target = next(row for row in listed if not row["current"])
+        assert len(listed) == 3
+        other_id = client.portal.call(_session_id, other.token)
+        third_id = client.portal.call(_session_id, third.token)
+        assert [row["id"] not in {other_id, third_id} for row in listed] == [
+            row["current"] for row in listed]
+        target = next(row for row in listed if row["id"] == other_id)
         assert client.delete(f"/api/v1/account/sessions/{target['id']}",
                              headers=_csrf(client)).status_code == 204
         assert client.get("/api/v1/account",
                           headers={"Authorization": f"Bearer {other.token}"}).status_code == 401
+        assert client.get("/api/v1/account").status_code == 200
+        assert client.get("/api/v1/account",
+                          headers={"Authorization": f"Bearer {third.token}"}).status_code == 200
 
 
 @pytest.mark.db
@@ -344,10 +375,16 @@ def test_the_host_prefix_appears_when_the_install_is_served_over_https(accounts,
                                json={"email": "secure@example.com", "password": PASSWORD,
                                      "remember_me": False})
         assert response.status_code == 204
-        header = next(h for h in response.headers.get_list("set-cookie")
-                      if h.startswith("__Host-potocolom_session="))
-        assert "Secure" in header and "HttpOnly" in header and "Path=/" in header
-        assert "Domain" not in header
+        raw = response.headers.get_list("set-cookie")
+        assert len(raw) == 2
+        session_header = next(h for h in raw if h.startswith("__Host-potocolom_session="))
+        csrf_header = next(h for h in raw if h.startswith("__Host-potocolom_csrf="))
+        for header in (session_header, csrf_header):
+            assert "Secure" in header and "Path=/" in header.split("; ")
+            assert "samesite=lax" in header.lower()
+            assert "domain=" not in header.lower()
+        assert "HttpOnly" in session_header
+        assert "HttpOnly" not in csrf_header
 
 
 @pytest.mark.db
