@@ -363,45 +363,52 @@ async def _sign_in(provider: str, identity: ProviderIdentity,
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
-        user = (await session.execute(
-            select(User)
+        found = (await session.execute(
+            select(User, AuthIdentity)
             .join(AuthIdentity, AuthIdentity.user_id == User.id)
             .where(AuthIdentity.provider == provider,
                    AuthIdentity.subject == identity.subject)
-        )).scalar_one_or_none()
-    if user is None or user.state in CANNOT_SIGN_IN:
+        )).first()
+    if found is None or found[0].state in CANNOT_SIGN_IN:
         raise REFUSED
+    user, linked = found
+    proof = factors.PrimaryProof.of(linked)
+    # The same gate the password login passes, and read in the transaction that
+    # mints for the same reason: a factor enrolled while this callback was in
+    # flight revokes the account's sessions and cannot reach one that is not
+    # there yet (issue #435).
+    try:
+        issued = await factors.mint_behind_the_gate(user, False, None, proof)
+        if issued is None:
+            # Every primary login passes the same gate. A provider proving who
+            # somebody is does not answer for the factor they enrolled.
+            #
+            # The browser arrived here by navigation, not by fetch, so it is
+            # sent back to a page that can ask for the code. Answering with
+            # JSON would leave the person looking at raw JSON with nowhere to
+            # type it.
+            redirect_to = f"{settings.public_url.rstrip('/')}/login?totp=required"
+            if search:
+                redirect_to += "&next=" + quote("/app" + search, safe="")
+            response: Response = await factors.begin_challenge(
+                user, remember_me=False, proof=proof, redirect_to=redirect_to)
+        elif search:
+            response = RedirectResponse(
+                f"{settings.public_url.rstrip('/')}/app{search}", status_code=307)
+        else:
+            response = RedirectResponse(settings.public_url, status_code=307)
+    except factors.StaleProof:
+        raise REFUSED from None
     # Parity with the password route: a token planted in this browser before
-    # authentication must not be the token that comes out of it.
+    # authentication must not be the token that comes out of it, and it is
+    # retired only once this sign-in is accepted.
     presented = request.cookies.get(sessions.cookie_names(settings.public_url)[0])
     if presented:
         resolved = await sessions.resolve(presented)
         if resolved is not None:
             await sessions.revoke(resolved.session.id)
-    # The same gate the password login passes, and read in the transaction that
-    # mints for the same reason: a factor enrolled while this callback was in
-    # flight revokes the account's sessions and cannot reach one that is not
-    # there yet (issue #435).
-    issued = await factors.mint_behind_the_gate(user, remember_me=False, expected=None)
-    if issued is None:
-        # Every primary login passes the same gate. A provider proving who
-        # somebody is does not answer for the factor they enrolled.
-        #
-        # The browser arrived here by navigation, not by fetch, so it is
-        # sent back to a page that can ask for the code. Answering with
-        # JSON would leave the person looking at raw JSON with nowhere to
-        # type it.
-        redirect_to = f"{settings.public_url.rstrip('/')}/login?totp=required"
-        if search:
-            redirect_to += "&next=" + quote("/app" + search, safe="")
-        return await factors.begin_challenge(
-            user, remember_me=False, redirect_to=redirect_to)
-    if search:
-        response = RedirectResponse(
-            f"{settings.public_url.rstrip('/')}/app{search}", status_code=307)
-    else:
-        response = RedirectResponse(settings.public_url, status_code=307)
-    issue_session(response, issued)
+    if issued is not None:
+        issue_session(response, issued)
     return response
 
 

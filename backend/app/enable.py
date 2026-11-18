@@ -142,7 +142,7 @@ async def _spend(session: AsyncSession, token: str) -> None:
         raise HTTPException(status_code=403, detail=INVALID_LINK)
 
 
-async def _adopt(session: AsyncSession, address: str, password: str) -> uuid.UUID:
+async def _adopt(session: AsyncSession, address: str, password: str) -> User:
     """Makes the implicit administrator this account, with a password identity."""
     claimed = (await session.execute(select(AuthIdentity.id).limit(1))).first()
     if claimed is not None:
@@ -164,7 +164,6 @@ async def _adopt(session: AsyncSession, address: str, password: str) -> uuid.UUI
     )).scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=503, detail="database unavailable")
-    adopted = user.id
     user.email = address
     user.role = "admin"
     user.state = "active"
@@ -176,11 +175,15 @@ async def _adopt(session: AsyncSession, address: str, password: str) -> uuid.UUI
         subject=address.lower(),
         password_hash=password_hash,
     ))
-    return adopted
+    return user
 
 
-async def claim(token: str, email: str, password: str) -> uuid.UUID:
-    """Consumes the link, adopts the implicit account and records accounts, or raises."""
+async def claim(token: str, email: str, password: str) -> tuple[uuid.UUID, sessions.Issued]:
+    """Consumes the link, adopts the implicit account and records accounts, or raises.
+
+    The session is minted in the same transaction, so an offline recovery that
+    replaces the password cannot commit between the adoption and the mint.
+    """
     address = _checked_email(email)
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -204,7 +207,8 @@ async def claim(token: str, email: str, password: str) -> uuid.UUID:
                 raise HTTPException(status_code=409, detail="installation already decided")
             adopted = await _adopt(session, address, password)
             await db.record_mode(session, auth_mode.ACCOUNTS)
-    return adopted
+            issued = sessions.mint_in(session, adopted, False)
+    return adopted.id, issued
 
 
 async def decline_accounts(token: str) -> None:
@@ -230,7 +234,7 @@ async def decline_accounts(token: str) -> None:
             await db.record_mode(session, auth_mode.NONE)
 
 
-async def turn_accounts_on(email: str, password: str) -> uuid.UUID:
+async def turn_accounts_on(email: str, password: str) -> tuple[uuid.UUID, sessions.Issued]:
     """The runtime enable: the implicit administrator names an account, no link needed.
 
     The recorded mode is read under the lock. make auth-enable may have moved the
@@ -251,7 +255,8 @@ async def turn_accounts_on(email: str, password: str) -> uuid.UUID:
                 raise HTTPException(status_code=409, detail="installation already decided")
             adopted = await _adopt(session, address, password)
             await db.record_mode(session, auth_mode.ACCOUNTS)
-    return adopted
+            issued = sessions.mint_in(session, adopted, False)
+    return adopted.id, issued
 
 
 async def require_setup_mode() -> None:
@@ -318,24 +323,18 @@ async def setup(request: SetupRequest) -> Response:
         await audit.record("POST /api/v1/auth/setup")
         return Response(status_code=204)
     try:
-        adopted = await claim(request.token, request.email, request.password)
+        adopted, issued = await claim(request.token, request.email, request.password)
     except KeyRingError:
         if get_settings().root_keys:
             raise
         return _missing_root_keys()
     auth_mode.load(auth_mode.ACCOUNTS)
     await audit.record("POST /api/v1/auth/setup", target_user_id=adopted)
-    if db.session_factory is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    async with db.session_factory() as session:
-        owner = await session.get(User, adopted)
-    if owner is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
     # A clean session, and deliberately no recent-authentication grant: the
     # link proved a capability, not a person, so it must not open the window
     # that guards credential changes.
     response = Response(status_code=204)
-    issue_session(response, await sessions.mint(owner, remember_me=False))
+    issue_session(response, issued)
     return response
 
 
@@ -363,7 +362,7 @@ async def enable_accounts(
         # accounts this switch records. Refusing here leaves nothing to undo.
         raise HTTPException(status_code=409, detail=OVERRIDE_REFUSAL)
     try:
-        adopted = await turn_accounts_on(request.email, request.password)
+        adopted, issued = await turn_accounts_on(request.email, request.password)
     except KeyRingError:
         if get_settings().root_keys:
             raise
@@ -374,20 +373,9 @@ async def enable_accounts(
     from app import realtime
     await realtime.close_none_mode_sockets()
     await audit.record("POST /api/v1/auth/enable", target_user_id=adopted)
-    owner = await _owner(adopted)
     response = Response(status_code=204)
-    issue_session(response, await sessions.mint(owner, remember_me=False))
+    issue_session(response, issued)
     return response
-
-
-async def _owner(user_id: uuid.UUID) -> User:
-    if db.session_factory is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    async with db.session_factory() as session:
-        owner = await session.get(User, user_id)
-    if owner is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    return owner
 
 
 async def _ensure_claimable(factory) -> None:

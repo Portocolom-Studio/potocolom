@@ -236,8 +236,9 @@ async def register(request: RegisterRequest) -> Response:
             except PasswordRejected as rejected:
                 raise HTTPException(status_code=400,
                                     detail="password does not meet the policy") from rejected
-            session.add(User(id=user_id, email=claimed.email, role=claimed.role,
-                             state="active", mail_verified=False))
+            owner = User(id=user_id, email=claimed.email, role=claimed.role,
+                         state="active", mail_verified=False)
+            session.add(owner)
             await session.flush()
             session.add(AuthIdentity(user_id=user_id, provider="password",
                                      subject=claimed.email.lower(),
@@ -247,10 +248,8 @@ async def register(request: RegisterRequest) -> Response:
                 .where(Invitation.id == claimed.id)
                 .values(accepted_user_id=user_id)
             )
-    async with db.session_factory() as session:
-        owner = await session.get(User, user_id)
-    if owner is None:
-        raise HTTPException(status_code=503, detail="database unavailable")
+            # With the account, so nothing can disable or remove it in between.
+            issued = sessions.mint_in(session, owner, remember_me=False)
     response = Response(status_code=204)
-    issue_session(response, await sessions.mint(owner, remember_me=False))
+    issue_session(response, issued)
     return response

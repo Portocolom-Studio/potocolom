@@ -88,7 +88,7 @@ async def change_state(
                 await session.execute(
                     update(AuthToken)
                     .where(AuthToken.user_id == user_id,
-                           AuthToken.purpose.in_(("reset", "recovery")),
+                           AuthToken.purpose.in_(("reset", "recovery", "challenge")),
                            AuthToken.consumed_at.is_(None))
                     .values(consumed_at=func.now())
                 )

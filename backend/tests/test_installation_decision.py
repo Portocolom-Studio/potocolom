@@ -392,7 +392,7 @@ def test_a_stale_unclaimed_view_cannot_switch_an_accounts_install_to_none(decisi
     assert refused.value.status_code == 409
     assert decision(_row()) == "accounts"
     # The refused choice left the link unspent, so the administrator can still claim.
-    adopted = decision(enable.claim(token, EMAIL, PASSWORD))
+    adopted, _ = decision(enable.claim(token, EMAIL, PASSWORD))
     assert adopted is not None
 
 
