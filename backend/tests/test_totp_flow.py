@@ -2053,3 +2053,23 @@ def test_replacing_the_factor_ends_a_challenge_waiting_for_its_code(accounts):
         answered = client.portal.call(
             _answer(held, totp.code_at(new_secret, int(_now()) + totp.STEP)))
         assert answered.status_code == 403, answered.text
+
+@pytest.mark.parametrize("origin", [
+    "https://evil.example", "https://evil.studio.example.com", "https://example.com",
+    "http://studio.example.com", None])
+@pytest.mark.parametrize("route,body", [
+    ("/api/v1/auth/login", {"email": "origin@example.com", "password": PASSWORD}),
+    ("/api/v1/auth/totp", {"code": "000000"}),
+    ("/api/v1/auth/register", {"token": "x", "password": PASSWORD}),
+])
+def test_a_route_that_hands_out_a_session_needs_an_exact_origin(accounts, route, body, origin):
+    """SameSite does not stop a sibling host, and a request that sets a session
+    cookie can sign a browser in to the sender's own account."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "origin@example.com")
+        client.headers.pop("origin", None)
+        headers = {"Origin": origin} if origin else {}
+        refused = client.post(route, headers=headers, json=body)
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"] == "origin not allowed"
+        assert not refused.cookies

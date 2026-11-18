@@ -22,7 +22,7 @@ from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app import db, keyring, sessions, totp
 from app.account_lock import hold_the_account as _hold_the_account
-from app.auth import CANNOT_SIGN_IN, current_principal, require_accounts_mode
+from app.auth import CANNOT_SIGN_IN, check_origin, current_principal, require_accounts_mode
 from app.manifests import StorableStr
 from app.settings import Settings, get_settings
 from app.tables import AuthFactor, AuthIdentity, AuthToken, RecoveryCode, User
@@ -246,7 +246,7 @@ class ConfirmRequest(BaseModel):
     current_code: StorableStr | None = None
 
 
-@router.post("/api/v1/auth/totp", status_code=204)
+@router.post("/api/v1/auth/totp", status_code=204, dependencies=[Depends(check_origin)])
 async def answer_challenge(body: CodeRequest, request: Request) -> Response:
     settings = get_settings()
     if db.session_factory is None:

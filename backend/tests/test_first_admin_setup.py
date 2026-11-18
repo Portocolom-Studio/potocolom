@@ -140,6 +140,24 @@ def _claim(client, token, email=EMAIL, password=PASSWORD):
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("origin", ["https://evil.example", None])
+def test_a_claim_from_another_origin_is_refused_and_spends_nothing(accounts, origin):
+    """A page could otherwise sign the operator's browser in to an account
+    whose link the page holds."""
+    token = accounts(enable.mint_setup_token())
+    with TestClient(app) as client:
+        allowed = client.headers.pop("origin")
+        headers = {"Origin": origin} if origin else {}
+        refused = client.post("/api/v1/auth/setup", headers=headers,
+                              json={"token": token, "email": EMAIL, "password": PASSWORD})
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "origin not allowed"
+        assert not refused.cookies
+        client.headers["origin"] = allowed
+        assert _claim(client, token).status_code == 204
+
+
+@pytest.mark.db
 def test_the_first_claimant_adopts_the_implicit_account(accounts):
     original = accounts(_user()).id
     token = accounts(enable.mint_setup_token())
