@@ -183,6 +183,12 @@ async def clear_factor(email: str) -> bool:
             from app import command_store
 
             await command_store.erase_realtime_commands(session, target.id)
+            # A sign-in waiting on the factor this removes ends with it.
+            await session.execute(
+                update(AuthToken).where(AuthToken.user_id == target.id,
+                                        AuthToken.purpose == "challenge",
+                                        AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now()))
             await session.execute(
                 delete(RecoveryCode).where(RecoveryCode.user_id == target.id))
             await session.execute(

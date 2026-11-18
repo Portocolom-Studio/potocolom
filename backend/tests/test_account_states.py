@@ -146,7 +146,9 @@ def test_leaving_active_ends_every_session_the_account_held(accounts):
         # state and finish once the account is back.
         client.portal.call(_begin, subject)
 
+        client.cookies.clear()
         _admin(client)
+        assert client.portal.call(_live_sessions, subject.id) == 1
         assert _set_state(client, subject.id, "suspended").status_code == 204
         assert client.portal.call(_live_sessions, subject.id) == 0
         waiting = [c for c in client.portal.call(_challenges) if c.user_id == subject.id]
