@@ -22,7 +22,7 @@ SITES = {
     "roles.py": 1,
     "states.py": 1,
     "oauth.py": 1,
-    "operator.py": 2,
+    "operator.py": 3,
 }
 
 

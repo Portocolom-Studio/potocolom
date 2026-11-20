@@ -190,10 +190,16 @@ async def complete(request: CompleteRequest) -> Response:
                     AuthToken.expires_at > func.now(),
                 )
                 .values(consumed_at=func.now())
-                .returning(AuthToken.user_id)
+                .returning(AuthToken.user_id, AuthToken.purpose)
             )).first()
             if spent is None or spent.user_id is None:
                 raise HTTPException(status_code=403, detail=INVALID_LINK)
+            if spent.purpose == "reset":
+                role = (await session.execute(
+                    select(User.role).where(User.id == spent.user_id)
+                )).scalar_one()
+                if role == "admin":
+                    raise HTTPException(status_code=403, detail=INVALID_LINK)
             # A sign-in waiting on its second factor proved the password this
             # replaces, so it ends with the sessions below.
             await session.execute(

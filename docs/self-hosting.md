@@ -526,7 +526,9 @@ been claimed, because the setup link adopts the implicit local user and the
 claim route allows that only while nobody holds an identity. A link minted for
 a claimed install would be refused the moment somebody spends it. `auth-recover` is for an administrator who forgot a password. `auth-reclaim EMAIL=`
 is for an install where every administrator was suspended, deleted or demoted at
-once and there is nobody left to press the button that would fix it. `CLAIM=1`
+once and there is nobody left to press the button that would fix it. Like the HTTP
+role route, the promotion ends every session the account held and spends any
+outstanding reset, recovery and challenge links in the same transaction. `CLAIM=1`
 mints a new setup link and retires whatever was outstanding, because whoever held
 the old one is not who is standing at the machine.
 

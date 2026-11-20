@@ -96,7 +96,7 @@ make auth-clear-factor EMAIL=someone@example.com   # take a second factor off an
 Use each command for one case:
 
 - `make auth-recover EMAIL=<address>` is for an administrator who forgot a password. The link works once and lasts ten minutes.
-- `make auth-reclaim EMAIL=<address>` is for an install where every administrator was suspended, deleted or demoted at once. It makes that account an active administrator again.
+- `make auth-reclaim EMAIL=<address>` is for an install where every administrator was suspended, deleted or demoted at once. It makes that account an active administrator again. Like the HTTP role route, the promotion ends every session the account held and spends any outstanding reset, recovery and challenge links in the same transaction.
 - `make auth-reclaim CLAIM=1` mints a new setup link and retires any setup link that is still open. The person who held the old link is not necessarily the person at the machine, so the old link stops working.
 - `make auth-configure` prints what mail and OAuth would do if the API started now. It changes nothing.
 - `make auth-clear-factor EMAIL=<address>` is for an account whose authenticator and every recovery code are gone. It removes the second factor and its codes, ends every session that the account had open and any sign-in still waiting for its second factor, and records an audit row. The account keeps its password and role, and can enrol a new factor. An open realtime canvas on one of those sessions closes within half a minute, when the API next checks which of its sockets are still signed in. If the person still has the authenticator or a recovery code, they can remove the factor themselves with `DELETE /api/v1/account/totp`.

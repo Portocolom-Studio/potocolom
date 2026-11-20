@@ -295,6 +295,61 @@ def test_due_account_purge_erases_and_fences_before_delete(accounts, monkeypatch
 
 
 @pytest.mark.db
+def test_operator_reclaim_restore_erases_live_realtime_commands(accounts, monkeypatch):
+    from app import operator
+
+    root_keys(monkeypatch)
+    email = f"s1-restore-{uuid.uuid4()}@example.test"
+    worker_id = f"s1-restore-{uuid.uuid4()}"
+    model_id = f"s1-restore-model-{uuid.uuid4()}"
+
+    with protocol6_client(worker_id) as client:
+        user = client.portal.call(make_account_user, email)
+        issued = client.portal.call(account_sessions.mint, user, False)
+        cookie, csrf = account_sessions.cookie_names(get_settings().public_url)
+        client.cookies.set(cookie, issued.token)
+        client.cookies.set(csrf, issued.csrf)
+        worker_ws, worker, _grant, open_command, browser_ws, browser, fleet = (
+            open_live_session(client, worker_id, model_id)
+        )
+        try:
+            browser_ws.send_json({"type": "update_params", "params": {"prompt": "pending"}})
+            update_command = worker_ws.receive_json()
+
+            async def suspend() -> None:
+                async with db.session_factory() as session:
+                    await session.execute(
+                        text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                        {"id": user.id})
+                    await session.commit()
+
+            client.portal.call(suspend)
+            assert client.portal.call(operator.reclaim_restore, f"  {email}  ") == "suspended"
+
+            async def inspect():
+                async with db.session_factory() as session:
+                    command = (await session.execute(
+                        text("SELECT state, encrypted_body FROM worker_commands "
+                             "WHERE worker_id = :worker_id AND incarnation = :incarnation "
+                             "AND command_sequence = :sequence"),
+                        {"worker_id": worker_id, "incarnation": worker.incarnation,
+                         "sequence": update_command["command_sequence"]},
+                    )).mappings().one()
+                    closed_at = await session.scalar(
+                        text("SELECT closed_at FROM worker_connections "
+                             "WHERE worker_id = :worker_id AND incarnation = :incarnation"),
+                        {"worker_id": worker_id, "incarnation": worker.incarnation},
+                    )
+                    return command["state"], command["encrypted_body"], closed_at
+
+            state, body, closed_at = client.portal.call(inspect)
+            assert state == "erased" and body is None and closed_at is not None
+        finally:
+            browser.__exit__(None, None, None)
+            fleet.__exit__(None, None, None)
+
+
+@pytest.mark.db
 def test_operator_clear_factor_erases_live_realtime_commands(accounts, monkeypatch):
     from app import factors, keyring, operator
     from app.tables import AuthFactor

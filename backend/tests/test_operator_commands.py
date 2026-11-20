@@ -12,13 +12,14 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text, update
 
-from app import db, keyring, operator, sessions
+from app import db, keyring, operator, recovery, sessions
 from app.account_lock import hold_the_account
 from app.main import app
 from app.tables import AuthIdentity, AuthToken, Job, Session as AuthSession, User
 from app.passwords import hash_password
+from tests.test_s1_transaction_races import _wait_for_blocker
 from tests.test_totp_flow import (
-    ORIGIN, PASSWORD, ROOT_KEYS, _csrf, _factors, _login, _make, accounts,
+    ORIGIN, PASSWORD, ROOT_KEYS, _csrf, _factors, _login, _make, _session_cookie, accounts,
 )
 
 __all__ = ["accounts"]
@@ -146,6 +147,149 @@ def test_reclaiming_restores_one_account_to_an_active_administrator(library):
         row = client.portal.call(reread)
         assert (row.state, row.role) == ("active", "admin")
         assert _login(client, "lockedout@example.com").status_code == 204
+
+
+@pytest.mark.db
+def test_reclaim_restore_ends_sessions_and_spends_capabilities(library):
+    """Promotion must match the HTTP role route: sessions end and mailed
+    capabilities are spent in the same transaction."""
+    import hashlib
+    import secrets
+    from datetime import datetime, timedelta, timezone
+
+    async def suspend(user_id: uuid.UUID) -> None:
+        async with db.session_factory() as session:
+            await session.execute(
+                text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                {"id": user_id})
+            await session.commit()
+
+    async def add_recovery_and_challenge(user_id: uuid.UUID) -> None:
+        token = secrets.token_urlsafe(32)
+        async with db.session_factory() as session:
+            session.add(AuthToken(
+                user_id=user_id, purpose="recovery",
+                token_hash=hashlib.sha256(token.encode()).digest(),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)))
+            session.add(AuthToken(user_id=user_id, purpose="challenge", token_hash=b"c" * 32,
+                                  expires_at=func.now() + text("interval '10 minutes'")))
+            await session.commit()
+
+    async def open_tokens(user_id: uuid.UUID, purposes: tuple[str, ...]) -> int:
+        async with db.session_factory() as session:
+            return int(await session.scalar(
+                select(func.count()).select_from(AuthToken).where(
+                    AuthToken.user_id == user_id,
+                    AuthToken.purpose.in_(purposes),
+                    AuthToken.consumed_at.is_(None),
+                )) or 0)
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        target = client.portal.call(_make, "restored-cap@example.com")
+        client.portal.call(_make, "bystander@example.com")
+        assert _login(client, "restored-cap@example.com", remember_me=True).status_code == 204
+        theirs = _session_cookie(client)
+        assert client.portal.call(sessions.resolve, theirs) is not None
+        reset_token = client.portal.call(recovery.mint_reset, "restored-cap@example.com")
+        assert reset_token
+        client.portal.call(add_recovery_and_challenge, target.id)
+        assert client.portal.call(open_tokens, target.id, ("reset", "recovery", "challenge")) == 3
+        assert _login(client, "bystander@example.com").status_code == 204
+        bystander = _session_cookie(client)
+        client.portal.call(suspend, target.id)
+        client.portal.call(operator.reclaim_restore, "restored-cap@example.com")
+        assert client.portal.call(sessions.resolve, theirs) is None
+        assert client.portal.call(sessions.resolve, bystander) is not None
+        assert client.portal.call(open_tokens, target.id, ("reset", "recovery", "challenge")) == 0
+        assert client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                           json={"token": reset_token,
+                                 "password": "another-long-enough-password"}).status_code == 403
+
+
+@pytest.mark.db
+def test_reclaim_restore_waits_for_the_account_gate(library):
+    import asyncio
+
+    async def suspend(user_id: uuid.UUID) -> None:
+        async with db.session_factory() as session:
+            await session.execute(
+                text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                {"id": user_id})
+            await session.commit()
+
+    async def race(user_id: uuid.UUID) -> str:
+        holder_pid: dict[str, int] = {}
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_gate() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    holder_pid["pid"] = await session.scalar(text("SELECT pg_backend_pid()"))
+                    await hold_the_account(session, user_id, wait=True)
+                    holding.set()
+                    await release.wait()
+
+        held = asyncio.create_task(hold_gate())
+        await holding.wait()
+        restoring = asyncio.create_task(operator.reclaim_restore("waiting-restore@example.com"))
+        try:
+            assert await _wait_for_blocker(holder_pid["pid"])
+        finally:
+            release.set()
+        was = await asyncio.wait_for(restoring, 10)
+        await held
+        return was
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "waiting-restore@example.com")
+        client.portal.call(suspend, user.id)
+        assert client.portal.call(race, user.id) == "suspended"
+
+
+@pytest.mark.db
+def test_reclaim_restore_refuses_when_the_address_changes_under_the_gate(library):
+    import asyncio
+
+    async def suspend(user_id: uuid.UUID) -> None:
+        async with db.session_factory() as session:
+            await session.execute(
+                text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                {"id": user_id})
+            await session.commit()
+
+    async def role_of(user_id: uuid.UUID) -> str:
+        async with db.session_factory() as session:
+            return (await session.execute(
+                select(User.role).where(User.id == user_id))).scalar_one()
+
+    async def race(user_id: uuid.UUID) -> None:
+        holding = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_and_rename() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await hold_the_account(session, user_id, wait=True)
+                    await session.execute(
+                        text("UPDATE users SET email = 'renamed@example.com' WHERE id = :id"),
+                        {"id": user_id})
+                    holding.set()
+                    await release.wait()
+
+        held = asyncio.create_task(hold_and_rename())
+        await holding.wait()
+        restoring = asyncio.create_task(operator.reclaim_restore("rename-race@example.com"))
+        release.set()
+        with pytest.raises(LookupError):
+            await asyncio.wait_for(restoring, 10)
+        await held
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "rename-race@example.com")
+        client.portal.call(suspend, user.id)
+        client.portal.call(race, user.id)
+        assert client.portal.call(role_of, user.id) == "user"
 
 
 @pytest.mark.db
