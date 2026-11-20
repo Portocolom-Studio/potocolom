@@ -85,9 +85,14 @@
 
 	function roleLabelKey(
 		role: Role
-	): 'app.admin.role_admin' | 'app.admin.role_viewer' | 'app.admin.role_user' {
+	):
+		| 'app.admin.role_admin'
+		| 'app.admin.role_viewer'
+		| 'app.admin.role_user'
+		| 'app.admin.role_billing' {
 		if (role === 'admin') return 'app.admin.role_admin';
 		if (role === 'viewer') return 'app.admin.role_viewer';
+		if (role === 'billing') return 'app.admin.role_billing';
 		return 'app.admin.role_user';
 	}
 
@@ -481,7 +486,7 @@
 						role="group"
 						aria-labelledby="admin-role-label"
 					>
-						{#each ['viewer', 'user', 'admin'] as const as role (role)}
+						{#each ['viewer', 'user', 'billing', 'admin'] as const as role (role)}
 							<button
 								type="button"
 								aria-pressed={selectedRole === role}

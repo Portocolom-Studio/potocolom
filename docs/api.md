@@ -11,7 +11,8 @@ Every call a customer's browser makes, from first page load to account deletion.
 - While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. A browser WebSocket is closed before it is accepted, so its handshake fails instead of answering `503`. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
 - Authorization is the `role` column on the user. Each stored role holds a fixed
   capability bundle, not a rank: `viewer` holds none, `user` holds `generate`,
-  `edit_own_work` and `view_own_usage`, and `admin` holds those plus `administer`.
+  `edit_own_work` and `view_own_usage`, `billing` holds `view_subject_usage`
+  only, and `admin` holds every capability.
   An unknown role holds none. A route whose capability the caller lacks answers
   403 `insufficient role`. The studio calls the stored `user` role "member".
 - A request string that PostgreSQL cannot store, one holding U+0000 or a lone surrogate,
@@ -394,6 +395,16 @@ GET /api/v1/usage/me                member and admin only, 403 for a viewer; ?fr
                                         counts as an event and is left out of the averages; the
                                         median is percentile_cont(0.5). Sorted by events
                                         descending, then by name.
+GET /api/v1/usage/subject           accounts mode only. The caller's billing binding
+                                        decides the account. The route takes no subject
+                                        id; a query parameter that names one is ignored.
+                                        Totals only, {events, gpu_ms, frames}, over the
+                                        same ?from&to window as /usage/me. No category,
+                                        model, prompt or account list. 403 account
+                                        suspended when the caller is not active. 404,
+                                        one body, when the caller has no binding or the
+                                        subject is not an active member or administrator.
+                                        404 in none mode.
 GET  /api/v1/benchmark/models          admin only; list benchmarkable models (BENCHMARK_API-gated)
 GET  /api/v1/benchmark/gpu             admin only; live GPU status from a connected worker
 POST /api/v1/benchmark/gpu/load        admin only; load a model for scripts/benchmark.py
@@ -529,6 +540,26 @@ GET /api/v1/users/{id}/generations    that account's generations, read only, new
                                       of the previous page; a full page may be followed by more, an
                                       empty page ends the list); an unknown cursor, or one from another
                                       account, answers 404
+GET /api/v1/users/{id}/billing-subject  the billing binding for that account, or 404
+                                      when it has none. Reading it records user.read
+                                      against that account, as GET /users/{id} does.
+PUT /api/v1/users/{id}/billing-subject  {"subject_user_id": "<uuid>"}. Recent
+                                      authentication. Both accounts are locked in
+                                      uuid order, then checked again: the delegate's
+                                      role is billing, the subject exists and is a
+                                      member or an administrator, the two accounts
+                                      differ, and the caller is neither of them.
+                                      One subject has one billing account. 403 when
+                                      the caller is either account or is the
+                                      current subject of a binding it would
+                                      replace, 409 when another check fails, 404
+                                      when an account is missing,
+                                      403 recent authentication required when the
+                                      session is stale. Records billing.granted or
+                                      billing.replaced at high severity.
+DELETE /api/v1/users/{id}/billing-subject  204. Recent authentication. The caller
+                                      is neither endpoint. Records billing.revoked
+                                      at high severity. 404 when there is no binding.
 GET /api/v1/audit                     ?actor_user_id= &target_user_id= &action= &limit=
 GET /api/v1/audit/summary             {"actions": {...}, "gaps": [...]} over seven days
 GET /api/v1/audit/anomalies           administrators who opened unusually many accounts
@@ -651,6 +682,10 @@ GET    /api/v1/account            profile, capabilities, active sessions with cr
 DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
 GET    /api/v1/account/export     200 application/json, streamed:
                                   {"account": {...}, "identities": [...],
+                                   "billing_bindings": [{"delegate_user_id",
+                                   "subject_user_id", "created_at"}],
+                                   "billing_grants": [{"delegate_user_id",
+                                   "subject_user_id", "created_at"}],
                                    "usage": [{...}, ...],
                                    "usage_rollups": [{...}, ...],
                                    "generations": [{..., "assets": [...]}, ...]}
@@ -660,7 +695,7 @@ POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an accoun
                                   one that passed its 30 day window
 ```
 
-- `capabilities` is the effective bundle, sorted. While the account is `active` it is the role's bundle. While it is `suspended` it is that bundle without `generate` and `edit_own_work`. Any other state is an empty list. The `role` field stays, for display. In `none` mode this route answers `404`, so the field is absent and the studio treats the install as the local administrator.
+- `capabilities` is the effective bundle, sorted. While the account is `active` it is the role's bundle. While it is `suspended` it is that bundle without `generate`, `edit_own_work` and `view_subject_usage`. Any other state is an empty list. The `role` field stays, for display. In `none` mode this route answers `404`, so the field is absent and the studio treats the install as the local administrator.
 
 - The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The file holds the account's data, not its images: each asset carries a `url` to its image, and the image bytes are not copied into the stream. Each link needs a signed-in session of the account, so download the images before you delete the account. The `usage` rows hold the model, the action, the output category, GPU time and frame count of each event, and no prompt, image or network address. Days older than the 90 day raw window are in `usage_rollups` instead, one row per day and dimension, with counts and sums in place of single events. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
 - Deleting an account stops it immediately: the state becomes `deletion_pending`, every session is revoked, every outstanding link is spent, and the queued and running jobs are cancelled with reason `account deleted`, in one transaction. The realtime sockets close after that commit. A restore puts the account back and does not start a cancelled job again. Nothing is destroyed yet.

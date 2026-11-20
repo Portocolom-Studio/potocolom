@@ -10,7 +10,7 @@ source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administrati
 > [!PLANNED]
 > Other endpoints are designed, and their request and response shapes are fixed in [docs/blueprint.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/blueprint.md). This page lists only the routes that ship.
 
-Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. The health, configuration, authentication and share-resolving rows need no session, except `enable`, which needs an administrator. While the install is unclaimed, most routes answer `503` with `setup_required`; see the [authentication page](/docs/api/authentication). In `AUTH_MODE=none` the account routes answer `404`. The `user` role can generate and change its own work, `viewer` is read only, and `admin` covers install settings and other accounts. Those are fixed capability bundles, listed on the [authentication page](/docs/api/authentication).
+Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. The health, configuration, authentication and share-resolving rows need no session, except `enable`, which needs an administrator. While the install is unclaimed, most routes answer `503` with `setup_required`; see the [authentication page](/docs/api/authentication). In `AUTH_MODE=none` the account routes answer `404`. The `user` role can generate and change its own work, `viewer` is read only, `billing` reads one named account's usage totals, and `admin` covers install settings and other accounts. Those are fixed capability bundles, listed on the [authentication page](/docs/api/authentication).
 
 ## Health and configuration
 
@@ -69,6 +69,7 @@ The fleet socket also carries the worker model store. The API sends `"model_stor
 | GET    | `/api/v1/studio/gpu`          | Live GPU snapshot and the models loaded on it. Admin only. `gpu` is `null` when workers are connected but none can answer; the route answers `503` when no worker is connected, or when the worker answers without GPU metrics. |
 | GET    | `/api/v1/metrics/gpu/history` | GPU samples over a time range. Admin only.                                                                                                                                                                                      |
 | GET    | `/api/v1/usage/me`            | The caller's own usage totals, by model and category.                                                                                                                                                                           |
+| GET    | `/api/v1/usage/subject`       | Totals for the one account bound to the caller. Accounts mode only. No subject id, and no category or prompt.                                                                                                                   |
 | GET    | `/api/v1/telemetry/preview`   | The anonymous telemetry payload for the previous UTC day. Admin only.                                                                                                                                                           |
 
 ## Worker models
@@ -161,18 +162,21 @@ These routes are for the benchmark script. Every route needs an admin. The sessi
 
 These routes are for admins.
 
-| Method | Path                              | Purpose                                                                                                         |
-| ------ | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/v1/invitations`             | Invite an address to a role. The link is returned once.                                                         |
-| GET    | `/api/v1/invitations`             | Open invitations, without their links.                                                                          |
-| DELETE | `/api/v1/invitations/{id}`        | Revoke an open invitation.                                                                                      |
-| POST   | `/api/v1/invitations/{id}/reveal` | Make a new link and retire the previous one.                                                                    |
-| GET    | `/api/v1/users`                   | Accounts with their role and state. Cursor paging and an email search.                                          |
-| GET    | `/api/v1/users/{id}`              | One account. The read is audited.                                                                               |
-| GET    | `/api/v1/users/{id}/generations`  | One account's generations, newest first. Cursor is the last id; empty ends.                                     |
-| POST   | `/api/v1/users/{id}/role`         | Change an account's role. A change to `viewer` cancels that account's queued and running jobs.                  |
-| POST   | `/api/v1/users/{id}/state`        | Suspend, disable, reactivate or mark an account for deletion. Leaving `active` cancels queued and running jobs. |
-| POST   | `/api/v1/users/{id}/restore`      | Put back an account that is waiting for deletion, inside its 30-day window.                                     |
+| Method | Path                                 | Purpose                                                                                                         |
+| ------ | ------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/v1/invitations`                | Invite an address to a role. The link is returned once.                                                         |
+| GET    | `/api/v1/invitations`                | Open invitations, without their links.                                                                          |
+| DELETE | `/api/v1/invitations/{id}`           | Revoke an open invitation.                                                                                      |
+| POST   | `/api/v1/invitations/{id}/reveal`    | Make a new link and retire the previous one.                                                                    |
+| GET    | `/api/v1/users`                      | Accounts with their role and state. Cursor paging and an email search.                                          |
+| GET    | `/api/v1/users/{id}`                 | One account. The read is audited.                                                                               |
+| GET    | `/api/v1/users/{id}/generations`     | One account's generations, newest first. Cursor is the last id; empty ends.                                     |
+| POST   | `/api/v1/users/{id}/role`            | Change an account's role. A change to `viewer` or `billing` cancels that account's queued and running jobs.     |
+| GET    | `/api/v1/users/{id}/billing-subject` | The billing binding for that account. The read is audited.                                                      |
+| PUT    | `/api/v1/users/{id}/billing-subject` | Bind or replace that account's subject. Needs recent authentication.                                            |
+| DELETE | `/api/v1/users/{id}/billing-subject` | Remove the binding. Needs recent authentication.                                                                |
+| POST   | `/api/v1/users/{id}/state`           | Suspend, disable, reactivate or mark an account for deletion. Leaving `active` cancels queued and running jobs. |
+| POST   | `/api/v1/users/{id}/restore`         | Put back an account that is waiting for deletion, inside its 30-day window.                                     |
 
 ## Audit
 

@@ -1,11 +1,13 @@
-import type { StudioTab, ShellView } from './studio-view';
+import type { MetricsTab, ShellView, StudioTab } from './studio-view';
 
-export type Role = 'admin' | 'user' | 'viewer';
+export type Role = 'admin' | 'billing' | 'user' | 'viewer';
 
-export type Capability = 'generate' | 'edit_own_work' | 'view_own_usage' | 'administer';
+export type Capability =
+	'generate' | 'edit_own_work' | 'view_own_usage' | 'view_subject_usage' | 'administer';
 
 const roleLabelKeys = {
 	admin: 'app.shell.role_admin',
+	billing: 'app.shell.role_billing',
 	user: 'app.shell.role_user',
 	viewer: 'app.shell.role_viewer'
 } as const satisfies Record<Role, string>;
@@ -14,12 +16,14 @@ const capabilityNames = new Set<string>([
 	'generate',
 	'edit_own_work',
 	'view_own_usage',
+	'view_subject_usage',
 	'administer'
 ]);
 
 const legacyRoleCapabilities = {
 	viewer: [],
 	user: ['generate', 'edit_own_work', 'view_own_usage'],
+	billing: ['view_subject_usage'],
 	admin: ['generate', 'edit_own_work', 'view_own_usage', 'administer']
 } as const satisfies Record<Role, readonly Capability[]>;
 
@@ -86,6 +90,7 @@ export type GatedSection =
 	| 'metrics_usage'
 	| 'metrics_benchmarks'
 	| 'metrics_mine'
+	| 'metrics_subject'
 	| 'admin';
 
 const sectionCapability = {
@@ -98,6 +103,7 @@ const sectionCapability = {
 	metrics_usage: 'administer',
 	metrics_benchmarks: 'administer',
 	metrics_mine: 'view_own_usage',
+	metrics_subject: 'view_subject_usage',
 	admin: 'administer'
 } as const satisfies Record<GatedSection, Capability>;
 
@@ -137,6 +143,18 @@ export function sectionNeeds(
 	section: GatedSection,
 	capabilities: ReadonlySet<Capability> | null
 ): 'user' | 'admin' | null {
+	// The subject totals are for a billing account. An administrator holds the
+	// capability and does not use this view: they have the install-wide one.
+	if (section === 'metrics_subject') {
+		if (
+			capabilities !== null &&
+			capabilities.has('view_subject_usage') &&
+			!capabilities.has('administer')
+		) {
+			return null;
+		}
+		return 'user';
+	}
 	if (capabilities === null) return section === 'admin' ? 'admin' : null;
 	const needed = sectionCapability[section];
 	if (capabilities.has(needed)) return null;
@@ -146,13 +164,42 @@ export function sectionNeeds(
 function metricsSection(tab: StudioTab): GatedSection {
 	if (tab === 'benchmarks') return 'metrics_benchmarks';
 	if (tab === 'mine') return 'metrics_mine';
+	if (tab === 'subject') return 'metrics_subject';
 	return 'metrics_usage';
 }
 
 // Every refusal lands here: generate first, and images for an account locked
 // out of generate.
 function refusedView(capabilities: ReadonlySet<Capability> | null): ShellView {
-	return sectionNeeds('generate', capabilities) === null ? 'generate' : 'images';
+	if (sectionNeeds('generate', capabilities) === null) return 'generate';
+	if (sectionNeeds('metrics_subject', capabilities) === null) return 'metrics';
+	return 'images';
+}
+
+const metricsTabSection = {
+	usage: 'metrics_usage',
+	benchmarks: 'metrics_benchmarks',
+	mine: 'metrics_mine',
+	subject: 'metrics_subject'
+} as const satisfies Record<MetricsTab, GatedSection>;
+
+// The tab the capabilities may actually open. A billing account's refusal
+// lands on the subject totals, which is the only metrics tab it can use.
+export function metricsTabFor(
+	tab: StudioTab,
+	capabilities: ReadonlySet<Capability> | null
+): MetricsTab {
+	const wanted: MetricsTab =
+		tab === 'benchmarks' || tab === 'mine' || tab === 'subject' ? tab : 'usage';
+	if (sectionNeeds(metricsTabSection[wanted], capabilities) === null) return wanted;
+	if (sectionNeeds('metrics_subject', capabilities) === null) return 'subject';
+	if (
+		sectionNeeds('metrics_mine', capabilities) === null &&
+		sectionNeeds('metrics_usage', capabilities) !== null
+	) {
+		return 'mine';
+	}
+	return 'usage';
 }
 
 // A view the capabilities may use stays; otherwise fall back to generate, the

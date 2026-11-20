@@ -800,7 +800,7 @@ erDiagram
     users {
         uuid id PK
         text email
-        text role "viewer, user (member), or admin"
+        text role "viewer, user (member), admin, or billing"
         timestamptz deleted_at "starts 30 day purge"
         timestamptz created_at
     }
@@ -850,7 +850,7 @@ erDiagram
     invitations {
         uuid id PK
         text email
-        text role "viewer, user, or admin"
+        text role "viewer, user, admin, or billing"
         uuid invited_by FK
         uuid accepted_user_id FK
         bytea token_hash UK

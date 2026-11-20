@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
 	accountInitial,
 	accountRoleLabelKey,
+	metricsTabFor,
 	openViewFor,
 	accountOwnerId,
 	parseAccount,
@@ -32,6 +33,7 @@ test('each role maps to its own i18n label key', () => {
 	assert.equal(accountRoleLabelKey('admin'), 'app.shell.role_admin');
 	assert.equal(accountRoleLabelKey('user'), 'app.shell.role_user');
 	assert.equal(accountRoleLabelKey('viewer'), 'app.shell.role_viewer');
+	assert.equal(accountRoleLabelKey('billing'), 'app.shell.role_billing');
 });
 
 test('parseAccount keeps a well-formed account and refuses anything else', () => {
@@ -64,7 +66,7 @@ test('a known role with an empty capability list cannot generate', () => {
 test('an unknown role with a valid id holds no generate and is not the local-mode path', () => {
 	const parsed = parseAccount({
 		email: 'a@example.com',
-		role: 'billing',
+		role: 'cashier',
 		id: '550e8400-e29b-41d4-a716-446655440000'
 	});
 	assert.ok(parsed);
@@ -136,6 +138,18 @@ test('openViewFor sends a viewer from generate to images', () => {
 	assert.equal(openViewFor('generate', 'usage', bundle('viewer')), 'images');
 });
 
+test('openViewFor lands a billing account on metrics and the subject tab', () => {
+	const billing = bundle('billing');
+	assert.equal(openViewFor('generate', 'usage', billing), 'metrics');
+	assert.equal(openViewFor('metrics', 'usage', billing), 'metrics');
+	assert.equal(openViewFor('metrics', 'subject', billing), 'metrics');
+	assert.equal(openViewFor('images', 'usage', billing), 'images');
+	assert.equal(metricsTabFor('usage', billing), 'subject');
+	assert.equal(metricsTabFor('subject', billing), 'subject');
+	assert.equal(sectionNeeds('metrics_subject', billing), null);
+	assert.equal(sectionNeeds('generate', billing), 'user');
+});
+
 test('openViewFor sends a viewer from metrics to images', () => {
 	assert.equal(openViewFor('metrics', 'usage', bundle('viewer')), 'images');
 	assert.equal(openViewFor('metrics', 'benchmarks', bundle('viewer')), 'images');
@@ -175,7 +189,7 @@ test('openViewFor keeps models and images open to a viewer', () => {
 });
 
 test('openViewFor keeps the account view for every signed-in role', () => {
-	for (const role of ['viewer', 'user', 'admin'] as const) {
+	for (const role of ['viewer', 'user', 'billing', 'admin'] as const) {
 		assert.equal(openViewFor('account', 'usage', bundle(role)), 'account');
 	}
 });

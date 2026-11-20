@@ -102,7 +102,8 @@
 		const metricsTabs = [
 			['usage', 'metrics_usage', 'app.metrics.tab_usage'],
 			['benchmarks', 'metrics_benchmarks', 'app.metrics.tab_benchmarks'],
-			['mine', 'metrics_mine', 'app.metrics.mine_tab']
+			['mine', 'metrics_mine', 'app.metrics.mine_tab'],
+			['subject', 'metrics_subject', 'app.metrics.subject_tab']
 		] as const;
 		for (const [tab, section, key] of metricsTabs) {
 			if (sectionNeeds(section, access) !== null) continue;

@@ -11,6 +11,7 @@ class Capability(StrEnum):
     GENERATE = "generate"
     EDIT_OWN_WORK = "edit_own_work"
     VIEW_OWN_USAGE = "view_own_usage"
+    VIEW_SUBJECT_USAGE = "view_subject_usage"
     ADMINISTER = "administer"
 
 
@@ -21,6 +22,7 @@ ROLE_CAPABILITIES: dict[str, frozenset[Capability]] = {
         Capability.EDIT_OWN_WORK,
         Capability.VIEW_OWN_USAGE,
     }),
+    "billing": frozenset({Capability.VIEW_SUBJECT_USAGE}),
     "admin": frozenset(Capability),
 }
 PRIVILEGED = frozenset({Capability.ADMINISTER})
@@ -43,5 +45,7 @@ def effective_capabilities(user) -> frozenset[Capability]:
     if user.state == "active":
         return bundle
     if user.state == "suspended":
-        return bundle - WRITE_CAPABILITIES
+        # The subject read needs an active caller too, so a suspended billing
+        # account is not offered a tab that answers 403.
+        return bundle - WRITE_CAPABILITIES - {Capability.VIEW_SUBJECT_USAGE}
     return frozenset()

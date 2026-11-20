@@ -326,3 +326,329 @@ def test_promotion_logout_and_repeating_a_role_keep_queued_work(library):
 async def _one_state(job_id: uuid.UUID) -> str:
     async with db.session_factory() as session:
         return await session.scalar(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+
+
+def _subject(client, headers, delegate_id, subject_id):
+    return client.put(
+        f"/api/v1/users/{delegate_id}/billing-subject",
+        headers=headers,
+        json={"subject_user_id": str(subject_id)},
+    )
+
+
+async def _binding(delegate_id):
+    from app.tables import BillingBinding
+    async with db.session_factory() as session:
+        row = await session.get(BillingBinding, delegate_id)
+        if row is None:
+            return None
+        return (str(row.subject_user_id), None if row.granted_by is None else str(row.granted_by))
+
+
+@pytest.mark.db
+def test_a_billing_account_reads_only_its_bound_subject(library):
+    """Delegate D, subject A, unrelated B. Scoped usage is the other test.
+    Here: no election of B, no prompts or assets, no generation, no drawing,
+    no invitation, no role change, no cancelling A's work, no admin read.
+    """
+    from app import realtime
+    from tests.test_account_deletion import _owned_work
+
+    delegate = _account(library, "delegate@example.com", role="user")
+    subject_a = _account(library, "subject-a@example.com", role="user")
+    other = _account(library, "subject-b@example.com", role="user")
+    with TestClient(app) as client:
+        headers = _admin(library, client)
+        admin = client.get("/api/v1/account").json()
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        granted = _subject(client, headers, delegate.id, subject_a.id)
+        assert granted.status_code == 200, granted.text
+        assert granted.json()["delegate_user_id"] == str(delegate.id)
+        assert granted.json()["subject_user_id"] == str(subject_a.id)
+        assert granted.json()["granted_by"] == admin["id"]
+        replaced = _subject(client, headers, delegate.id, other.id)
+        assert replaced.status_code == 200
+        assert replaced.json()["subject_user_id"] == str(other.id)
+        # B was a replacement of the binding, not a second one D chose alone.
+        assert client.portal.call(_binding, delegate.id)[0] == str(other.id)
+        inspected = client.get(f"/api/v1/users/{delegate.id}/billing-subject")
+        assert inspected.status_code == 200
+        assert inspected.json()["subject_user_id"] == str(other.id)
+        rows = client.portal.call(_audit)
+        actions = [row["action"] for row in rows]
+        assert "billing.granted" in actions
+        assert "billing.replaced" in actions
+        assert any(row["action"] == "user.read" and row["target_user_id"] == str(delegate.id)
+                   and row["actor_user_id"] == admin["id"] for row in rows)
+        for row in rows:
+            if row["action"] in ("billing.granted", "billing.replaced"):
+                assert row["severity"] == "high"
+
+        own = client.portal.call(_owned_work, delegate.id)
+        theirs = client.portal.call(_owned_work, subject_a.id)
+        delegate_headers = _sign_in(client, "delegate@example.com")
+        listed = client.get("/api/v1/generations")
+        assert listed.status_code == 200
+        assert str(own.job_id) in {row["id"] for row in listed.json()}
+        assert str(theirs.job_id) not in {row["id"] for row in listed.json()}
+        own_asset = client.get(f"/api/v1/assets/{own.id}")
+        assert own_asset.status_code == 404
+        assert own_asset.json()["detail"] == "no such file"
+        foreign_asset = client.get(f"/api/v1/assets/{theirs.id}")
+        assert foreign_asset.status_code == 404
+        assert foreign_asset.json()["detail"] == "no such asset"
+        foreign_job = client.get(f"/api/v1/generations/{theirs.job_id}")
+        assert foreign_job.status_code == 404
+        cancelled = client.post(f"/api/v1/generations/{theirs.job_id}/cancel",
+                                headers=delegate_headers)
+        assert cancelled.status_code == 404
+        assert cancelled.json()["detail"] == "no such generation"
+
+        generated = client.post("/api/v1/generations", headers=delegate_headers, json={})
+        assert generated.status_code == 403
+        assert generated.json()["detail"] == "insufficient role"
+        invited = client.post("/api/v1/invitations", headers=delegate_headers,
+                              json={"email": "nobody@example.com", "role": "user"})
+        assert invited.status_code == 403
+        assert invited.json()["detail"] == "insufficient role"
+        role = _change(client, delegate_headers, other.id, role="viewer")
+        assert role.status_code == 403
+        assert role.json()["detail"] == "insufficient role"
+        directory = client.get("/api/v1/users")
+        assert directory.status_code == 403
+        assert directory.json()["detail"] == "insufficient role"
+        gpu = client.get("/api/v1/studio/gpu")
+        assert gpu.status_code == 403
+        assert gpu.json()["detail"] == "insufficient role"
+        with client.websocket_connect("/api/v1/realtime") as ws:
+            message = ws.receive_json()
+        assert message["code"] == realtime.CLOSE_FORBIDDEN
+
+        # The delegate cannot move its own binding. A stale administrator
+        # cannot grant one, and neither endpoint may be the actor.
+        own_put = _subject(client, delegate_headers, delegate.id, subject_a.id)
+        assert own_put.status_code == 403
+        assert own_put.json()["detail"] == "insufficient role"
+        own_delete = client.delete(f"/api/v1/users/{delegate.id}/billing-subject",
+                                   headers=delegate_headers)
+        assert own_delete.status_code == 403
+        assert own_delete.json()["detail"] == "insufficient role"
+
+
+@pytest.mark.db
+def test_binding_writes_need_recent_auth_and_a_cookie_origin(accounts):
+    delegate = _account(accounts, "cookie-delegate@example.com", role="user")
+    subject = _account(accounts, "cookie-subject@example.com", role="user")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        foreign = client.put(
+            f"/api/v1/users/{delegate.id}/billing-subject",
+            headers={"Origin": "http://evil.example"},
+            json={"subject_user_id": str(subject.id)},
+        )
+        assert foreign.status_code == 403
+        assert foreign.json()["detail"] == "origin not allowed"
+        origin_only = client.put(
+            f"/api/v1/users/{delegate.id}/billing-subject",
+            headers={"Origin": "http://localhost:8000"},
+            json={"subject_user_id": str(subject.id)},
+        )
+        assert origin_only.status_code == 403
+        assert origin_only.json()["detail"] == "missing or mismatched CSRF token"
+        self_subject = _subject(client, headers, delegate.id, client.get("/api/v1/account").json()["id"])
+        assert self_subject.status_code == 403
+        assert self_subject.json()["detail"] == "an administrator cannot bind their own account"
+        self_delegate = client.put(
+            f"/api/v1/users/{client.get('/api/v1/account').json()['id']}/billing-subject",
+            headers=headers,
+            json={"subject_user_id": str(subject.id)},
+        )
+        assert self_delegate.status_code == 403
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+
+        async def go_stale():
+            from datetime import datetime, timedelta, timezone
+            from sqlalchemy import text
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE sessions SET recent_auth_at = :past"),
+                    {"past": datetime.now(timezone.utc) - sessions.RECENT_AUTH
+                     - timedelta(minutes=1)})
+                await session.commit()
+
+        client.portal.call(go_stale)
+        stale = _subject(client, headers, delegate.id, subject.id)
+        assert stale.status_code == 403
+        assert stale.json()["detail"] == "recent authentication required"
+        stale_delete = client.delete(
+            f"/api/v1/users/{delegate.id}/billing-subject", headers=headers)
+        assert stale_delete.status_code == 403
+        assert stale_delete.json()["detail"] == "recent authentication required"
+        assert client.portal.call(_binding, delegate.id) is not None
+
+
+@pytest.mark.db
+def test_a_billing_subject_must_be_a_member_or_administrator(accounts):
+    delegate = _account(accounts, "finance@example.com", role="user")
+    viewer = _account(accounts, "reader@example.com", role="viewer")
+    second = _account(accounts, "second-finance@example.com", role="user")
+    subject = _account(accounts, "payer@example.com", role="admin", mail_verified=True)
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _change(client, headers, second.id, role="billing").status_code == 204
+        refused = _subject(client, headers, delegate.id, viewer.id)
+        assert refused.status_code == 409
+        assert client.portal.call(_binding, delegate.id) is None
+        billing_subject = _subject(client, headers, delegate.id, second.id)
+        assert billing_subject.status_code == 409
+        granted = _subject(client, headers, delegate.id, subject.id)
+        assert granted.status_code == 200
+        taken = _subject(client, headers, second.id, subject.id)
+        assert taken.status_code == 409
+        assert taken.json()["detail"] == "that account already has a billing account"
+
+
+@pytest.mark.db
+def test_a_role_round_trip_does_not_bring_the_binding_back(accounts):
+    delegate = _account(accounts, "round@example.com", role="user")
+    subject = _account(accounts, "round-subject@example.com", role="user")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+        assert _change(client, headers, delegate.id, role="user").status_code == 204
+        assert client.portal.call(_binding, delegate.id) is None
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert client.portal.call(_binding, delegate.id) is None
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+        assert _change(client, headers, subject.id, role="viewer").status_code == 204
+        assert client.portal.call(_binding, delegate.id) is None
+        assert _change(client, headers, subject.id, role="user").status_code == 204
+        assert client.portal.call(_binding, delegate.id) is None
+
+
+@pytest.mark.db
+def test_a_grant_waits_out_a_demotion_and_then_refuses(accounts):
+    import asyncio
+    import threading
+    import time
+
+    from sqlalchemy import text
+
+    from app.account_lock import hold_the_account
+
+    delegate = _account(accounts, "race-delegate@example.com", role="user")
+    subject = _account(accounts, "race-subject@example.com", role="user")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        held = asyncio.Event()
+        release = asyncio.Event()
+        pid = {}
+
+        async def demote_while_holding() -> None:
+            async with db.session_factory() as session:
+                async with session.begin():
+                    await hold_the_account(session, delegate.id, wait=True)
+                    pid["value"] = await session.scalar(text("SELECT pg_backend_pid()"))
+                    held.set()
+                    await release.wait()
+                    row = await session.get(User, delegate.id)
+                    previous = row.role
+                    row.role = "user"
+                    from app.billing import drop_invalid_bindings
+                    await drop_invalid_bindings(session, delegate.id, previous, "user")
+
+        async def waiting() -> bool:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                async with db.session_factory() as session:
+                    count = await session.scalar(text(
+                        "SELECT count(*) FROM pg_stat_activity a "
+                        "WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() "
+                        "AND a.wait_event_type = 'Lock' "
+                        "AND :holder = ANY(pg_blocking_pids(a.pid)) "
+                        "AND a.query ILIKE '%pg_advisory_xact_lock%'"
+                    ), {"holder": pid["value"]})
+                if count:
+                    return True
+                await asyncio.sleep(0.02)
+            return False
+
+        task = client.portal.start_task_soon(demote_while_holding)
+        result = {}
+        thread = None
+
+        def put() -> None:
+            result["response"] = _subject(client, headers, delegate.id, subject.id)
+
+        try:
+            client.portal.call(held.wait)
+            thread = threading.Thread(target=put)
+            thread.start()
+            assert client.portal.call(waiting) is True
+        finally:
+            client.portal.call(release.set)
+            if thread is not None:
+                thread.join(timeout=10)
+            task.result(timeout=10)
+        assert result["response"].status_code == 409
+        assert client.portal.call(_binding, delegate.id) is None
+
+
+@pytest.mark.db
+def test_binding_a_billing_account_to_an_admin_grants_no_recovery(accounts):
+    from app.recovery import NoSuchAdministrator, mint_admin_recovery
+
+    delegate = _account(accounts, "recover-delegate@example.com", role="user")
+    subject = _account(accounts, "recover-admin@example.com", role="admin", mail_verified=True)
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+
+        async def reset_for() -> list[str]:
+            from sqlalchemy import select
+
+            from app.recovery import _deliver_reset
+            from app.tables import AuthToken
+            await _deliver_reset("recover-delegate@example.com")
+            await _deliver_reset("recover-admin@example.com")
+            async with db.session_factory() as session:
+                rows = (await session.execute(
+                    select(User.email)
+                    .join(AuthToken, AuthToken.user_id == User.id)
+                    .where(AuthToken.purpose == "reset", AuthToken.consumed_at.is_(None))
+                )).scalars().all()
+                return sorted(rows)
+
+        # A billing account gets the ordinary reset token. The admin it is
+        # bound to does not, and the binding does not change that.
+        assert client.portal.call(reset_for) == ["recover-delegate@example.com"]
+        with pytest.raises(NoSuchAdministrator):
+            client.portal.call(mint_admin_recovery, "recover-delegate@example.com")
+
+
+@pytest.mark.db
+def test_an_administrator_cannot_move_the_binding_that_names_them(accounts):
+    """DELETE already refuses the subject; a PUT to another subject is the
+    same change by another route."""
+    delegate = _account(accounts, "named-delegate@example.com", role="billing")
+    other = _account(accounts, "named-other@example.com", role="user")
+    with TestClient(app) as client:
+        first = _admin(accounts, client, email="first-admin@example.com")
+        named = client.portal.call(_make_admin, "named-admin@example.com")
+        assert _subject(client, first, delegate.id, named).status_code == 200
+        client.cookies.clear()
+        own = _sign_in(client, "named-admin@example.com")
+        moved = _subject(client, own, delegate.id, other.id)
+        assert moved.status_code == 403
+        assert client.portal.call(_binding, delegate.id)[0] == str(named)
+
+
+async def _make_admin(email: str) -> uuid.UUID:
+    from tests.test_totp_flow import _make
+    user = await _make(email, "admin")
+    return user.id

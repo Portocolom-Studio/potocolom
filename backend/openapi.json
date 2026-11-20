@@ -130,6 +130,20 @@
         "title": "BenchmarkInput",
         "type": "object"
       },
+      "BillingSubject": {
+        "properties": {
+          "subject_user_id": {
+            "format": "uuid",
+            "title": "Subject User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject_user_id"
+        ],
+        "title": "BillingSubject",
+        "type": "object"
+      },
       "CodeRequest": {
         "properties": {
           "code": {
@@ -341,7 +355,8 @@
             "enum": [
               "viewer",
               "user",
-              "admin"
+              "admin",
+              "billing"
             ],
             "title": "Role",
             "type": "string"
@@ -619,7 +634,8 @@
             "enum": [
               "viewer",
               "user",
-              "admin"
+              "admin",
+              "billing"
             ],
             "title": "Role",
             "type": "string"
@@ -3540,6 +3556,71 @@
         "summary": "Usage Me"
       }
     },
+    "/api/v1/usage/subject": {
+      "get": {
+        "description": "Totals for the account this caller is bound to.\n\nThe subject is the binding row joined in this query. The route takes no\nsubject id, and a query parameter naming one is not read. A suspended\ncaller is refused before that query. An unbound caller, and a subject\nthat is not an active member or administrator, are one 404.",
+        "operationId": "usage_subject_api_v1_usage_subject_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Usage Subject Api V1 Usage Subject Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Usage Subject"
+      }
+    },
     "/api/v1/users": {
       "get": {
         "description": "Who is on this install, and what state they are in. Not a gallery: it\ncarries no work and no credential, only what user management needs.\n\nOne page at a time, keyset on (created_at, id) the way\njobs.list_generations pages, so a long account list costs a page per\nread and not the whole install.\n\nRecorded like every other privileged read, but only for the page\nactually read: that is what the route reached, not what it could have.",
@@ -3616,6 +3697,129 @@
           }
         },
         "summary": "List Users"
+      }
+    },
+    "/api/v1/users/{delegate_id}/billing-subject": {
+      "delete": {
+        "operationId": "revoke_billing_subject_api_v1_users__delegate_id__billing_subject_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delegate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delegate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Billing Subject"
+      },
+      "get": {
+        "operationId": "read_billing_subject_api_v1_users__delegate_id__billing_subject_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delegate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delegate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Billing Subject Api V1 Users  Delegate Id  Billing Subject Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Billing Subject"
+      },
+      "put": {
+        "operationId": "grant_billing_subject_api_v1_users__delegate_id__billing_subject_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delegate_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delegate Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BillingSubject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Grant Billing Subject Api V1 Users  Delegate Id  Billing Subject Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Billing Subject"
       }
     },
     "/api/v1/users/{user_id}": {

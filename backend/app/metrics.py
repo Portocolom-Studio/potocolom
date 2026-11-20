@@ -3,14 +3,14 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import Float, cast, func, select
+from sqlalchemy import Float, and_, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, gpu_samples
-from app.auth import require
+from app.auth import require, require_accounts_mode
 from app.capabilities import Capability
 from app.manifests import StorableStr
-from app.tables import UsageEvent, User
+from app.tables import BillingBinding, UsageEvent, User
 
 router = APIRouter()
 
@@ -77,7 +77,11 @@ async def usage_me(
 ) -> dict:
     """One member's own usage events; a viewer creates nothing, so it is a 403."""
     to_ts = _parse_ts(to, "to") if to is not None else datetime.now(timezone.utc)
-    from_ts = _parse_ts(from_, "from") if from_ is not None else to_ts - USAGE_DEFAULT_WINDOW
+    try:
+        from_ts = _parse_ts(from_, "from") if from_ is not None else to_ts - USAGE_DEFAULT_WINDOW
+    except OverflowError as error:
+        # A "to" near year 1 has no default window before it.
+        raise HTTPException(status_code=422, detail="invalid to timestamp") from error
     if to_ts <= from_ts:
         raise HTTPException(status_code=422, detail="to must be after from")
     if to_ts - from_ts > USAGE_MAX_WINDOW:
@@ -163,4 +167,71 @@ async def usage_me(
             }
             for row in by_model_category
         ],
+    }
+
+
+def _usage_window(from_: str | None, to: str | None) -> tuple[datetime, datetime]:
+    to_ts = _parse_ts(to, "to") if to is not None else datetime.now(timezone.utc)
+    try:
+        from_ts = _parse_ts(from_, "from") if from_ is not None else to_ts - USAGE_DEFAULT_WINDOW
+    except OverflowError as error:
+        # A "to" near year 1 has no default window before it.
+        raise HTTPException(status_code=422, detail="invalid to timestamp") from error
+    if to_ts <= from_ts:
+        raise HTTPException(status_code=422, detail="to must be after from")
+    if to_ts - from_ts > USAGE_MAX_WINDOW:
+        raise HTTPException(status_code=422, detail="window longer than 366 days")
+    return from_ts, to_ts
+
+
+@router.get("/api/v1/usage/subject")
+async def usage_subject(
+    from_: StorableStr | None = Query(default=None, alias="from"),
+    to: StorableStr | None = Query(default=None),
+    _: None = Depends(require_accounts_mode),
+    user: User = Depends(require(Capability.VIEW_SUBJECT_USAGE)),
+    session: AsyncSession = Depends(db.get_session),
+) -> dict:
+    """Totals for the account this caller is bound to.
+
+    The subject is the binding row joined in this query. The route takes no
+    subject id, and a query parameter naming one is not read. A suspended
+    caller is refused before that query. An unbound caller, and a subject
+    that is not an active member or administrator, are one 404.
+    """
+    if user.state != "active":
+        raise HTTPException(status_code=403, detail="account suspended")
+    from_ts, to_ts = _usage_window(from_, to)
+    eligible = and_(
+        User.id == BillingBinding.subject_user_id,
+        User.state == "active",
+        User.role.in_(("user", "admin")),
+    )
+    in_window = and_(
+        UsageEvent.user_id == BillingBinding.subject_user_id,
+        UsageEvent.created_at >= from_ts,
+        UsageEvent.created_at < to_ts,
+    )
+    row = (await session.execute(
+        select(
+            func.count(UsageEvent.id).label("events"),
+            func.coalesce(func.sum(UsageEvent.gpu_ms), 0).label("gpu_ms"),
+            func.coalesce(func.sum(UsageEvent.frames), 0).label("frames"),
+        )
+        .select_from(BillingBinding)
+        .join(User, eligible)
+        .outerjoin(UsageEvent, in_window)
+        .where(BillingBinding.delegate_user_id == user.id)
+        .group_by(BillingBinding.subject_user_id)
+    )).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return {
+        "from": from_ts.isoformat(),
+        "to": to_ts.isoformat(),
+        "totals": {
+            "events": int(row.events),
+            "gpu_ms": int(row.gpu_ms),
+            "frames": int(row.frames),
+        },
     }

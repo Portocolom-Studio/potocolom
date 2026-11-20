@@ -11,7 +11,7 @@ const SHELL_VIEWS = [
 	'admin',
 	'account'
 ] as const;
-const METRICS_TABS = ['usage', 'benchmarks', 'mine'] as const;
+const METRICS_TABS = ['usage', 'benchmarks', 'mine', 'subject'] as const;
 export const ADMIN_TABS = ['users', 'audit', 'fleet', 'banner', 'invitations', 'models'] as const;
 
 export type ShellView = (typeof SHELL_VIEWS)[number];
@@ -38,7 +38,8 @@ export function studioViewSearch(search: string, view: ShellView, tab: StudioTab
 	// current search and openView can skip it as a no-op.
 	if (view === 'generate') params.delete('view');
 	else params.set('view', view);
-	if (view === 'metrics' && (tab === 'benchmarks' || tab === 'mine')) params.set('tab', tab);
+	if (view === 'metrics' && (tab === 'benchmarks' || tab === 'mine' || tab === 'subject'))
+		params.set('tab', tab);
 	else if (
 		view === 'admin' &&
 		(tab === 'audit' ||

@@ -59,7 +59,7 @@ def _minted(
 
 class InviteRequest(BaseModel):
     email: StorableStr
-    role: Literal["viewer", "user", "admin"]
+    role: Literal["viewer", "user", "admin", "billing"]
 
 
 @router.post("/api/v1/invitations", status_code=201)

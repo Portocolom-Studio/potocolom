@@ -154,10 +154,14 @@ async def reclaim_restore(email: str) -> str:
                 update(Session).where(Session.user_id == target_id,
                                       Session.revoked_at.is_(None))
                 .values(revoked_at=func.now()))
+            previous = target.role
             target.state = "active"
             target.role = "admin"
             target.prior_state = None
             target.deletion_requested_at = None
+            from app.billing import drop_invalid_bindings
+
+            await drop_invalid_bindings(session, target.id, previous, "admin")
     await sessions.close_sockets(target_id)
     return was
 

@@ -21,13 +21,14 @@ This page covers `accounts` mode.
 
 ## Roles
 
-Each account has one role: `viewer`, `user` or `admin`. The role is not a rank. It holds a fixed set of capabilities.
+Each account has one role: `viewer`, `user`, `billing` or `admin`. The role is not a rank. It holds a fixed set of capabilities.
 
 - A `viewer` holds none. It reads its own work and cannot change it.
 - A `user` holds `generate`, `edit_own_work` and `view_own_usage`.
-- An `admin` holds those three and `administer`, which covers install settings and the routes that read other accounts.
+- A `billing` account holds `view_subject_usage` only. An administrator with recent authentication binds it to one member or one administrator. It then reads that account's usage totals and nothing else.
+- An `admin` holds every capability, which covers install settings and the routes that read other accounts.
 
-A route the caller cannot do answers `403` with `insufficient role`. `GET /api/v1/account` includes `capabilities`, the effective set, sorted. While the account is active that is the role's bundle. While it is suspended the two write capabilities are left out. Any other state is an empty list. The role is still in the response, for display.
+A route the caller cannot do answers `403` with `insufficient role`. `GET /api/v1/account` includes `capabilities`, the effective set, sorted. While the account is active that is the role's bundle. While it is suspended the two write capabilities and `view_subject_usage` are left out. Any other state is an empty list. The role is still in the response, for display.
 
 Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target account or an explicit `attested` flag. An administrator cannot change their own role, and the last administrator cannot be demoted. A role change ends every session the account holds, because an old session carries the old role.
 
@@ -49,6 +50,7 @@ Session lengths:
 - A normal session lasts 12 hours.
 - Remember-me lasts 30 days, with a 7-day idle window.
 - An administrator's session lasts 12 hours, with a 30-minute idle window. An administrator cannot be remembered.
+- A billing account uses that same window. It cannot be remembered. Password reset is the ordinary mailed link. The binding does not let it recover the account it reviews.
 
 Recent authentication is a separate grant. It lasts 30 minutes and signing in grants it. Routes that change how an account is proved need it.
 

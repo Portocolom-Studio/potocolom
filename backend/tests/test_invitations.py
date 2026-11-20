@@ -459,6 +459,50 @@ def test_a_mail_outage_does_not_stop_anyone_signing_in(accounts, monkeypatch):
                                  "remember_me": False}).status_code == 204
 
 
+@pytest.mark.db
+def test_a_billing_invitation_is_accepted_unbound_and_needs_no_recent_auth(accounts):
+    """Acceptance does not create a binding, and the invite itself is not an
+    administrator promotion, so a stale session may still send it."""
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+
+        async def go_stale():
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE sessions SET recent_auth_at = :past"),
+                    {"past": datetime.now(timezone.utc) - timedelta(minutes=31)})
+                await session.commit()
+
+        client.portal.call(go_stale)
+        created = client.post("/api/v1/invitations", headers=headers,
+                              json={"email": "finance-guest@example.com", "role": "billing"})
+        assert created.status_code == 201, created.text
+        token = created.json()["token"]
+    with TestClient(app) as client:
+        accepted = client.post("/api/v1/auth/register", headers={"Origin": ORIGIN},
+                               json={"token": token, "password": PASSWORD})
+        assert accepted.status_code == 204
+        me = client.get("/api/v1/account").json()
+        assert me["role"] == "billing"
+        assert me["recent_auth"] is False
+        assert me["capabilities"] == ["view_subject_usage"]
+
+        async def stored():
+            from app.tables import BillingBinding, Session
+            async with db.session_factory() as session:
+                binding = (await session.execute(select(BillingBinding))).scalar_one_or_none()
+                row = (await session.execute(
+                    select(Session).where(Session.user_id == uuid.UUID(me["id"]))
+                )).scalar_one()
+                return binding, row
+
+        binding, row = client.portal.call(stored)
+        assert binding is None
+        assert row.remember_me is False
+        assert row.idle_expires_at is not None
+        assert row.idle_expires_at - row.created_at < timedelta(hours=1)
+
+
 async def _outbox():
     from sqlalchemy import select
 

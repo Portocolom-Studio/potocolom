@@ -52,15 +52,20 @@
 	const usageNeeds = $derived(sectionNeeds('metrics_usage', access));
 	const benchmarksNeeds = $derived(sectionNeeds('metrics_benchmarks', access));
 	const mineNeeds = $derived(sectionNeeds('metrics_mine', access));
+	const subjectNeeds = $derived(sectionNeeds('metrics_subject', access));
 	// Only a viewer is refused every tab, and the member gate is the one that
 	// stops them first, so that is the reason a locked entry gives.
 	const metricsLocked = $derived(
-		usageNeeds !== null && benchmarksNeeds !== null && mineNeeds !== null
+		usageNeeds !== null && benchmarksNeeds !== null && mineNeeds !== null && subjectNeeds !== null
 	);
-	// A member opens on My usage: the other two tabs would be refused by the
-	// URL the entry is about to build, and land them on generate.
+	// A member opens on My usage, and a billing account on the subject totals.
+	// The other tabs would be refused by the URL the entry is about to build.
 	const metricsEntryTab = $derived(
-		mineNeeds === null && usageNeeds !== null ? 'mine' : studio.metricsTab
+		subjectNeeds === null && usageNeeds !== null
+			? 'subject'
+			: mineNeeds === null && usageNeeds !== null
+				? 'mine'
+				: studio.metricsTab
 	);
 	const adminNeeds = $derived(account.localModeConfirmed ? null : sectionNeeds('admin', access));
 

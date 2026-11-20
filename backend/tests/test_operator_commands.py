@@ -977,3 +977,56 @@ def test_collapse_waits_behind_an_overlapping_change_instead_of_deadlocking(libr
                     raise error
 
         client.portal.call(race)
+
+
+@pytest.mark.db
+def test_restoring_a_billing_account_drops_its_outgoing_binding(library):
+    """Leaving billing, including the offline restore to administrator, ends
+    the binding. Restoring the subject does not: an administrator can still
+    be the named account."""
+    from datetime import datetime, timezone
+
+    from app.tables import BillingBinding
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        delegate = client.portal.call(_make, "restore-delegate@example.com", "billing")
+        subject = client.portal.call(_make, "restore-subject@example.com", "user")
+
+        async def bind() -> None:
+            async with db.session_factory() as session:
+                session.add(BillingBinding(
+                    delegate_user_id=delegate.id,
+                    subject_user_id=subject.id,
+                    granted_by=None,
+                    created_at=datetime.now(timezone.utc),
+                ))
+                await session.commit()
+
+        async def suspend(user_id) -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                    {"id": user_id})
+                await session.commit()
+
+        async def bound_to():
+            async with db.session_factory() as session:
+                row = await session.get(BillingBinding, delegate.id)
+                if row is None:
+                    return None
+                return row.subject_user_id
+
+        client.portal.call(bind)
+        client.portal.call(suspend, subject.id)
+        client.portal.call(operator.reclaim_restore, "restore-subject@example.com")
+        assert client.portal.call(bound_to) == subject.id
+
+        async def role_of(user_id) -> str:
+            async with db.session_factory() as session:
+                return (await session.execute(
+                    select(User.role).where(User.id == user_id))).scalar_one()
+
+        assert client.portal.call(role_of, subject.id) == "admin"
+        client.portal.call(operator.reclaim_restore, "restore-delegate@example.com")
+        assert client.portal.call(bound_to) is None
+        assert client.portal.call(role_of, delegate.id) == "admin"
