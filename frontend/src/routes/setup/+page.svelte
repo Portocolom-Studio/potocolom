@@ -228,6 +228,12 @@
 				return;
 			}
 			if (response.status === 403) {
+				const parsed = await parseAuthError(response);
+				if (!isCurrent(attempt)) return;
+				if (parsed.kind === 'origin_not_allowed') {
+					error = t('auth.error.origin_not_allowed');
+					return;
+				}
 				refuse();
 				return;
 			}

@@ -10,14 +10,41 @@ import {
 	createSubmitGuard,
 	initialAuthView,
 	loginSearchFor,
+	ORIGIN_NOT_ALLOWED_DETAIL,
+	parseAuthError,
 	readInviteTokenFromHash,
 	resetJustHappened,
 	shouldShowChallenge,
 	studioReturnSearch
 } from './auth-flow.ts';
 
+function mockResponse(
+	status: number,
+	detail?: string,
+	headers: Record<string, string> = {}
+): Response {
+	return {
+		status,
+		headers: { get: (name: string) => headers[name] ?? null },
+		json: async () => ({ detail })
+	} as Response;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const joinSource = readFileSync(join(here, '../routes/join/+page.svelte'), 'utf8');
+
+test('parseAuthError classifies an origin refusal before other 403 answers', async () => {
+	const parsed = await parseAuthError(mockResponse(403, ORIGIN_NOT_ALLOWED_DETAIL));
+	assert.equal(parsed.kind, 'origin_not_allowed');
+	assert.equal(parsed.message, ORIGIN_NOT_ALLOWED_DETAIL);
+});
+
+test('parseAuthError keeps other 403 answers on the invalid branch', async () => {
+	const parsed = await parseAuthError(mockResponse(403, 'invalid or expired setup link'));
+	assert.equal(parsed.kind, 'invalid');
+	const challenge = await parseAuthError(mockResponse(403, 'that code is not valid'));
+	assert.equal(challenge.kind, 'invalid');
+});
 
 test('login submit issues one fetch even when clicked twice before resolve', async () => {
 	const guard = createSubmitGuard();

@@ -1145,6 +1145,7 @@
 	"auth.error.busy": "El acceso está ocupado. Prueba otra vez en breve.",
 	"auth.error.busy_seconds": "El acceso está ocupado. Prueba otra vez en {seconds} segundos.",
 	"auth.error.challenge_ended": "Demasiados códigos incorrectos. Inicia sesión con tu contraseña otra vez.",
+	"auth.error.origin_not_allowed": "Esta dirección no es la dirección pública de esta instalación. Abre potocolom en su PUBLIC_URL, o añade esta dirección a ALLOWED_ORIGINS.",
 	"auth.login.forgot": "¿Olvidaste tu contraseña?",
 	"auth.login.reset_done": "Tu contraseña se restableció. Ya puedes iniciar sesión.",
 	"auth.reset.title": "Restablecer contraseña",

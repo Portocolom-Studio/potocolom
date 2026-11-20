@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
+
+const messages = JSON.parse(
+	readFileSync(new URL('../src/lib/i18n/en.json', import.meta.url), 'utf8')
+);
 
 // Mocked API, real build: /setup, the /app guard and the none-mode settings
 // card against fixtures. Run after `PUBLIC_SITE_MODE= npm run build`.
@@ -769,6 +774,34 @@ async function testOlderApiShowsNoExpiry(browser, server) {
 	}
 }
 
+async function testOriginRefusalKeepsToken(browser, server) {
+	resetFixture();
+	queues['/api/v1/auth/setup'].push(
+		{ status: 403, body: { detail: 'origin not allowed' } },
+		{ status: 204 }
+	);
+	const { page, errors } = await open(browser, server, `/setup#${token}`);
+	try {
+		await pickMode(page, 'accounts');
+		await page.type('#setup-email', 'ana@example.com');
+		await page.type('#setup-password', password);
+		await page.type('#setup-confirm', password);
+		await clickButton(page, 'Create the administrator account');
+		await waitForText(page, messages['auth.error.origin_not_allowed']);
+		assert.notEqual(await page.$('#setup-email'), null, 'origin refusal keeps the form');
+		afterSetup('accounts');
+		await clickButton(page, 'Create the administrator account');
+		await waitForStudio(page);
+		const posts = postsTo('/api/v1/auth/setup');
+		assert.equal(posts.length, 2);
+		assert.equal(posts[0]?.body?.token, token);
+		assert.equal(posts[1]?.body?.token, token);
+		assert.deepEqual(errors, []);
+	} finally {
+		await page.close();
+	}
+}
+
 async function testZeroExpiryShowsInstruction(browser, server) {
 	resetFixture();
 	fixture.status = { status: 200, body: { claimed: false, expires_in: 0 } };
@@ -827,7 +860,11 @@ async function main() {
 		],
 		['the claim case shows no only-me option', testClaimCaseHasNoOnlyMeOption],
 		['an older API without expires_in shows no expiry line', testOlderApiShowsNoExpiry],
-		['an expired link shows the instruction', testZeroExpiryShowsInstruction]
+		['an expired link shows the instruction', testZeroExpiryShowsInstruction],
+		[
+			'an origin refusal keeps the token and a later submit can succeed',
+			testOriginRefusalKeepsToken
+		]
 	];
 	try {
 		browser = await launchChrome({ args: ['--disable-dev-shm-usage'] });
