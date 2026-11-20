@@ -33,7 +33,7 @@ Promoting an account to `admin` needs recent authentication from the caller, and
 
 ## Sessions and cookies
 
-A session token is 32 random bytes. The server stores only its SHA-256 hash, so a copy of the database does not hand out live sessions. In accounts mode the API reads that row on every request and on every realtime admission. It does not keep a copy of a successful lookup. A revoked or expired token is refused on the next request.
+A session token is 32 random bytes. The server stores only its SHA-256 hash, so a copy of the database does not hand out live sessions. In accounts mode the API reads that row on every request that authenticates with a session token, and on every realtime admission. Routes that do not authenticate the session, such as `GET /api/v1/config`, do not read it. It does not keep a copy of a successful lookup. A revoked or expired token is refused on the next authenticated request. An open realtime socket is not re-checked on each frame: the API process that commits the revocation closes the sockets it holds, and a sweep every 30 seconds closes any that remain open, unless the sweep cannot read the session table.
 
 The browser holds two cookies. The names depend on the scheme:
 
