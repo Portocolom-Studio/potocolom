@@ -15,7 +15,8 @@ from starlette.responses import Response
 
 from app import audit, db, jobs, sessions
 from app.account_lock import hold_the_account
-from app.auth import require_accounts_mode, require_role
+from app.auth import require, require_accounts_mode
+from app.capabilities import Capability
 from app.tables import AuthToken, Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
@@ -45,7 +46,7 @@ class StateChange(BaseModel):
 async def change_state(
     user_id: uuid.UUID,
     change: StateChange,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """Compare and set, and idempotent: the state an account already holds is
     not a second event, and a transition that was never legal is a conflict

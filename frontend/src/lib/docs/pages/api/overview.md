@@ -30,7 +30,7 @@ The potocolom API is one HTTP surface and two WebSocket endpoints. The studio in
 
 ## Roles in one line
 
-- **Roles:** `viewer` only reads, `user` also changes its own work, and `admin` also manages the install and other accounts. A write endpoint answers `403` to a `viewer`.
+- **Roles:** `viewer` only reads, `user` also generates and changes its own work, and `admin` also manages the install and other accounts. Each role holds a fixed capability bundle. A route the caller cannot do answers `403`.
 
 ## Example responses
 

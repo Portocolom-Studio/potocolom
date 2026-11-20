@@ -539,6 +539,7 @@
 	"app.gen.upscale_quality": "Quality",
 	"app.gen.coming_soon": "Coming soon",
 	"app.gen.members_only": "Members only",
+	"app.gen.not_available": "Not available for this account",
 	"app.gen.admins_only": "Admins only",
 	"app.gen.cancel": "Cancel",
 	"app.gen.cancel_failed": "The job could not be cancelled.",

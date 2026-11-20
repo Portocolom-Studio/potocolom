@@ -216,7 +216,39 @@ def test_an_administrator_calling_off_someone_elses_job_is_recorded(library):
         # The second call found the job already cancelled and changed nothing.
         assert len(client.portal.call(_events, "generation.cancelled")) == 1
     assert recorded[0].target_user_id == subject.id
+    assert recorded[0].severity == "high"
     assert str(asset.job_id) in recorded[0].object_ids
+
+
+@pytest.mark.db
+def test_a_viewer_cancels_their_own_job_and_a_foreign_one_stays_hidden(library):
+    """Cancellation is ownership, not a capability. A viewer stops their own
+    queued job, twice, and a job they do not own is the same 404 as a missing one."""
+    from tests.test_account_deletion import _owned_work
+
+    async def queued(job_id: uuid.UUID) -> None:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            await session.execute(update(Job).where(Job.id == job_id).values(state="queued"))
+            await session.commit()
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        viewer = client.portal.call(_make, "viewer-cancel@example.com", "viewer")
+        own = client.portal.call(_owned_work, viewer.id)
+        other = client.portal.call(_make, "viewer-foreign@example.com")
+        foreign = client.portal.call(_owned_work, other.id)
+        client.portal.call(queued, own.job_id)
+        client.portal.call(queued, foreign.job_id)
+        assert _login(client, "viewer-cancel@example.com").status_code == 204
+        for _ in range(2):
+            assert client.post(
+                f"/api/v1/generations/{own.job_id}/cancel", headers=_csrf(client)
+            ).status_code == 204
+        hidden = client.post(
+            f"/api/v1/generations/{foreign.job_id}/cancel", headers=_csrf(client)
+        )
+        assert hidden.status_code == 404
+        assert hidden.json()["detail"] == "no such generation"
 
 
 @pytest.mark.db

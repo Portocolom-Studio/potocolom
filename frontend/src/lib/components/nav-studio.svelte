@@ -14,7 +14,7 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-	import { sectionNeeds, type GatedSection } from '$lib/account-display';
+	import { presentedCapabilities, sectionNeeds, type GatedSection } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { prefetchView } from '$lib/studio-prefetch';
 	import { t } from '$lib/i18n.svelte';
@@ -33,7 +33,7 @@
 	let { navigate = (run) => run() }: { navigate?: (run: () => unknown) => unknown } = $props();
 
 	const sidebar = Sidebar.useSidebar();
-	const role = $derived(account.current?.role ?? null);
+	const access = $derived(presentedCapabilities(account.current, account.localModeConfirmed));
 
 	type CreateView = Extract<
 		GatedSection,
@@ -46,12 +46,12 @@
 		{ view: 'realtime_canvas', label: t('app.service.realtime_canvas'), icon: PenToolIcon }
 	]);
 
-	const workspaceNeeds = $derived(sectionNeeds('generate', role));
+	const workspaceNeeds = $derived(sectionNeeds('generate', access));
 	const prompts = $derived(recentPrompts());
 
-	const usageNeeds = $derived(sectionNeeds('metrics_usage', role));
-	const benchmarksNeeds = $derived(sectionNeeds('metrics_benchmarks', role));
-	const mineNeeds = $derived(sectionNeeds('metrics_mine', role));
+	const usageNeeds = $derived(sectionNeeds('metrics_usage', access));
+	const benchmarksNeeds = $derived(sectionNeeds('metrics_benchmarks', access));
+	const mineNeeds = $derived(sectionNeeds('metrics_mine', access));
 	// Only a viewer is refused every tab, and the member gate is the one that
 	// stops them first, so that is the reason a locked entry gives.
 	const metricsLocked = $derived(
@@ -62,10 +62,16 @@
 	const metricsEntryTab = $derived(
 		mineNeeds === null && usageNeeds !== null ? 'mine' : studio.metricsTab
 	);
-	const adminNeeds = $derived(account.localModeConfirmed ? null : sectionNeeds('admin', role));
+	const adminNeeds = $derived(account.localModeConfirmed ? null : sectionNeeds('admin', access));
 
+	// A suspended member is locked out of the member sections too, and
+	// "Members only" would name the wrong reason.
 	function lockReason(needs: 'user' | 'admin'): string {
-		return needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only');
+		if (needs === 'admin') return t('app.gen.admins_only');
+		const role = account.current?.role;
+		return role === 'user' || role === 'admin'
+			? t('app.gen.not_available')
+			: t('app.gen.members_only');
 	}
 
 	function openImages(starred: boolean): void {
@@ -113,7 +119,7 @@
 	</Sidebar.GroupLabel>
 	<Sidebar.Menu class="gap-0">
 		{#each createItems as item (item.view)}
-			{@const needs = sectionNeeds(item.view, role)}
+			{@const needs = sectionNeeds(item.view, access)}
 			<Sidebar.MenuItem>
 				<Sidebar.MenuButton
 					class={itemClass}

@@ -10,7 +10,7 @@ source: docs/api.md "Endpoint catalogue", "Implemented endpoints", "Administrati
 > [!PLANNED]
 > Other endpoints are designed, and their request and response shapes are fixed in [docs/blueprint.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/blueprint.md). This page lists only the routes that ship.
 
-Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. The health, configuration, authentication and share-resolving rows need no session, except `enable`, which needs an administrator. While the install is unclaimed, most routes answer `503` with `setup_required`; see the [authentication page](/docs/api/authentication). In `AUTH_MODE=none` the account routes answer `404`. The `user` role can write its own work, `viewer` is read only, and `admin` covers install settings and other accounts. See the [authentication page](/docs/api/authentication) for the rules.
+Every REST path below starts with `/api/v1`. Unless a row says otherwise, the caller must be signed in. The health, configuration, authentication and share-resolving rows need no session, except `enable`, which needs an administrator. While the install is unclaimed, most routes answer `503` with `setup_required`; see the [authentication page](/docs/api/authentication). In `AUTH_MODE=none` the account routes answer `404`. The `user` role can generate and change its own work, `viewer` is read only, and `admin` covers install settings and other accounts. Those are fixed capability bundles, listed on the [authentication page](/docs/api/authentication).
 
 ## Health and configuration
 
@@ -57,7 +57,7 @@ The fleet socket also carries the worker model store. The API sends `"model_stor
 
 | Method | Path                     | Purpose                                                                 |
 | ------ | ------------------------ | ----------------------------------------------------------------------- |
-| POST   | `/api/v1/shares`         | Create a link to one asset, for 1, 7 or 30 days. Needs the `user` role. |
+| POST   | `/api/v1/shares`         | Create a link to one asset, for 1, 7 or 30 days. Needs `edit_own_work`. |
 | DELETE | `/api/v1/shares/{id}`    | Revoke a link. The link stops resolving.                                |
 | POST   | `/api/v1/shared`         | Resolve a link token. Needs no account.                                 |
 | GET    | `/api/v1/shared-picture` | Picture bytes for a resolved share. Needs no account.                   |

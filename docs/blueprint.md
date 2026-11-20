@@ -387,7 +387,7 @@ async def create_generation(req, user = require_user()):
 
 ```python
 @app.post("/api/v1/users/{user_id}/state")            # admin only
-async def change_state(user_id, req, actor = require_role("admin")):
+async def change_state(user_id, req, actor = require(Capability.ADMINISTER)):
     if user_id == actor.id:
         raise Forbidden("an administrator cannot change their own state")
     async with db.transaction():

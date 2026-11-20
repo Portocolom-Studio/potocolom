@@ -3,8 +3,8 @@
 An administrator reads any one account completely and mutates none of them,
 except to call off a job (jobs.py, cancel_generation).
 There is no view that crosses accounts: the way in is always a named user, and
-naming one is recorded against that user, because the role check that guards
-these routes cannot know which account a read reached.
+naming one is recorded against that user, because the capability check that
+guards these routes cannot know which account a read reached.
 """
 
 import time
@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import audit, db, jobs
-from app.auth import require_accounts_mode, require_role
+from app.auth import require, require_accounts_mode
+from app.capabilities import Capability
 from app.manifests import StorableStr
 from app.tables import Asset, Job, User
 
@@ -110,7 +111,7 @@ async def list_users(
     limit: int = Query(default=50, ge=1),
     cursor: uuid.UUID | None = None,
     q: StorableStr | None = Query(default=None, max_length=200),
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     """Who is on this install, and what state they are in. Not a gallery: it
@@ -147,7 +148,7 @@ async def list_users(
 @router.get("/api/v1/users/{user_id}")
 async def read_user(
     user_id: uuid.UUID,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     target = await session.get(User, user_id)
@@ -168,7 +169,7 @@ async def read_user_generations(
     user_id: uuid.UUID,
     limit: int = 50,
     cursor: uuid.UUID | None = None,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     """The same view the account has of its own work, read only.
@@ -203,14 +204,14 @@ async def read_audit(
     target_user_id: uuid.UUID | None = None,
     action: StorableStr | None = None,
     limit: int = Query(default=audit.SEARCH_LIMIT),
-    _admin: User = Depends(require_role("admin")),
+    _admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> list[dict]:
     return await audit.search(actor_user_id=actor_user_id, target_user_id=target_user_id,
                               action=action, limit=limit)
 
 
 @router.get("/api/v1/audit/summary")
-async def read_summary(_admin: User = Depends(require_role("admin"))) -> dict:
+async def read_summary(_admin: User = Depends(require(Capability.ADMINISTER))) -> dict:
     """Seven days of privileged action, and the gaps in it.
 
     A gap is what an audit outage left behind. It is reported here rather than
@@ -221,7 +222,7 @@ async def read_summary(_admin: User = Depends(require_role("admin"))) -> dict:
 
 
 @router.get("/api/v1/audit/anomalies")
-async def read_anomalies(_admin: User = Depends(require_role("admin"))) -> list[dict]:
+async def read_anomalies(_admin: User = Depends(require(Capability.ADMINISTER))) -> list[dict]:
     return anomalies()
 
 
@@ -231,7 +232,7 @@ async def export_audit(
     target_user_id: uuid.UUID | None = None,
     action: StorableStr | None = None,
     limit: int = Query(default=audit.SEARCH_LIMIT),
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     body = await audit.export(actor=actor, actor_user_id=actor_user_id,
                               target_user_id=target_user_id, action=action, limit=limit)

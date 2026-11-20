@@ -14,7 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.settings import get_settings
 from app.tables import TelemetryState, UsageEvent, User, WorkerIdentity
 
@@ -94,7 +95,7 @@ async def payload_for_day(session: AsyncSession, day: date) -> dict:
 
 @router.get("/api/v1/telemetry/preview")
 async def telemetry_preview(
-    _user: User = Depends(require_role("admin")),
+    _user: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     return await payload_for_day(session, datetime.now(timezone.utc).date() - timedelta(days=1))

@@ -13,7 +13,7 @@ The studio opens this socket while a person draws. The browser sends canvas fram
 
 `WS /api/v1/realtime`
 
-- **Sign-in:** with `AUTH_MODE=accounts`, the session cookie authenticates the upgrade. With no cookie, the handshake fails with HTTP 403. A cookie that matches no session closes the socket with `4401`. An account that is not `active`, or that has the `viewer` role, closes with `4403`. With `AUTH_MODE=none`, the socket belongs to the implicit local user. While the installation is unclaimed, the upgrade is refused and no socket opens.
+- **Sign-in:** with `AUTH_MODE=accounts`, the session cookie authenticates the upgrade. With no cookie, the handshake fails with HTTP 403. A cookie that matches no session closes the socket with `4401`. An account that is not `active`, or that does not hold `generate`, closes with `4403`. A `viewer` does not hold it. With `AUTH_MODE=none`, the socket belongs to the implicit local user. While the installation is unclaimed, the upgrade is refused and no socket opens.
 - **Revocation:** logout, a role change, a suspension, a disable or a deletion closes the live socket with `4401`. Turning accounts on with `POST /api/v1/auth/enable` closes every socket that was opened without a session, with `4401` as well.
 - **Origin:** if the handshake carries an `Origin` header that is not the install's public address or one of its `ALLOWED_ORIGINS`, the handshake fails with HTTP 403. A handshake with no `Origin` is accepted.
 - **Limit:** one account may hold two realtime sockets at once. A third is refused with `4003`.

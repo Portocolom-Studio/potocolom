@@ -13,7 +13,8 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.settings import get_settings
 from app.manifests import StorableStr, json_finite, json_non_finite
 from app.tables import BenchmarkMeasurement, BenchmarkSession, User
@@ -159,7 +160,7 @@ def require_benchmark_api() -> None:
 async def create_benchmark_session(
     report: BenchmarkInput,
     _: None = Depends(require_benchmark_api),
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     row = BenchmarkSession(
@@ -191,7 +192,7 @@ async def create_benchmark_session(
 async def list_benchmark_sessions(
     limit: int = Query(default=50, ge=1),
     cursor: uuid.UUID | None = None,
-    _user: User = Depends(require_role("admin")),
+    _user: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> list[dict]:
     query = select(BenchmarkSession)
@@ -231,7 +232,7 @@ async def list_benchmark_sessions(
 @router.get("/api/v1/benchmark/sessions/{session_id}")
 async def get_benchmark_session(
     session_id: uuid.UUID,
-    _user: User = Depends(require_role("admin")),
+    _user: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     row = await session.get(BenchmarkSession, session_id)

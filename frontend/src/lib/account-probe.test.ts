@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 
+import { openViewFor } from './account-display.ts';
 import { probeAccount } from './account-probe.ts';
 
 const accountA = {
@@ -38,10 +39,55 @@ test('account probe returns a validated UUID owner without changing state', asyn
 
 	assert.deepEqual(await probeAccount(), {
 		kind: 'account',
-		current: { email: 'owner@example.com', role: 'admin' },
+		current: {
+			email: 'owner@example.com',
+			role: 'admin',
+			capabilities: new Set(['administer', 'edit_own_work', 'generate', 'view_own_usage'])
+		},
 		ownerId: accountA.id
 	});
 	assert.deepEqual(requests, ['/api/v1/account']);
+});
+
+test('probeAccount carries capabilities through to the view gate', async (context) => {
+	const id = '550e8400-e29b-41d4-a716-446655440099';
+	const setFetch = mockFetch(context, async (input) => {
+		if (String(input) === '/api/v1/config') return jsonResponse({ auth_methods: [] });
+		return jsonResponse({ id, email: 'admin@example.com', role: 'admin', capabilities: [] });
+	});
+	const empty = await probeAccount();
+	assert.equal(empty.kind, 'account');
+	if (empty.kind === 'account') {
+		assert.equal(empty.current.capabilities.size, 0);
+		assert.equal(openViewFor('generate', 'usage', empty.current.capabilities), 'images');
+	}
+
+	setFetch(async () => jsonResponse({ id, email: 'user@example.com', role: 'user' }));
+	const legacy = await probeAccount();
+	assert.equal(legacy.kind, 'account');
+	if (legacy.kind === 'account') {
+		assert.equal(legacy.current.capabilities.has('generate'), true);
+		assert.equal(openViewFor('generate', 'usage', legacy.current.capabilities), 'generate');
+	}
+
+	setFetch(async () =>
+		jsonResponse({ id, email: 'billing@example.com', role: 'billing', capabilities: [] })
+	);
+	const unknown = await probeAccount();
+	assert.equal(unknown.kind, 'account');
+	if (unknown.kind === 'account') {
+		assert.equal(openViewFor('generate', 'usage', unknown.current.capabilities), 'images');
+	}
+
+	setFetch(async (input) =>
+		String(input) === '/api/v1/account'
+			? jsonResponse({ detail: 'local mode' }, 404)
+			: jsonResponse({ auth_methods: [] })
+	);
+	const local = await probeAccount();
+	assert.equal(local.kind, 'local');
+	assert.equal(openViewFor('generate', 'usage', null, true), 'generate');
+	assert.equal(openViewFor('admin', 'users', null, true), 'generate');
 });
 
 test('bad UUID keeps a valid display role as unknown, while invalid account data is unknown', async (context) => {
@@ -49,7 +95,11 @@ test('bad UUID keeps a valid display role as unknown, while invalid account data
 	mockFetch(context, async () => jsonResponse(body));
 	assert.deepEqual(await probeAccount(), {
 		kind: 'unknown',
-		current: { email: 'owner@example.com', role: 'admin' }
+		current: {
+			email: 'owner@example.com',
+			role: 'admin',
+			capabilities: new Set(['administer', 'edit_own_work', 'generate', 'view_own_usage'])
+		}
 	});
 
 	body = { email: '', role: 'admin' };

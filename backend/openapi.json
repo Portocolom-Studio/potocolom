@@ -3362,7 +3362,7 @@
     },
     "/api/v1/shares": {
       "post": {
-        "description": "Minting a public link is a mutation, so it belongs to the user tier.\n\nRevoking one stays open to a viewer: an account demoted while a link was\nlive must still be able to take it down.",
+        "description": "Minting a public link is a mutation, so it needs edit_own_work.\n\nRevoking one stays open to a viewer: an account demoted while a link was\nlive must still be able to take it down.",
         "operationId": "share_api_v1_shares_post",
         "requestBody": {
           "content": {

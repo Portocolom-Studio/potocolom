@@ -7,7 +7,8 @@ from sqlalchemy import Float, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db, gpu_samples
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.manifests import StorableStr
 from app.tables import UsageEvent, User
 
@@ -47,7 +48,7 @@ async def gpu_history(
     to: StorableStr = Query(),
     rollup: gpu_samples.RollupMode = "auto",
     worker_id: StorableStr | None = None,
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require(Capability.ADMINISTER)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     del user  # studio scope is this install; auth keeps the route consistent.
@@ -71,7 +72,7 @@ async def gpu_history(
 async def usage_me(
     from_: StorableStr | None = Query(default=None, alias="from"),
     to: StorableStr | None = Query(default=None),
-    user: User = Depends(require_role("member")),
+    user: User = Depends(require(Capability.VIEW_OWN_USAGE)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     """One member's own usage events; a viewer creates nothing, so it is a 403."""

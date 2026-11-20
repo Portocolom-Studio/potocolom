@@ -21,13 +21,13 @@ This page covers `accounts` mode.
 
 ## Roles
 
-Each account has one role. From lowest to highest they are `viewer`, `user` and `admin`.
+Each account has one role: `viewer`, `user` or `admin`. The role is not a rank. It holds a fixed set of capabilities.
 
-- A `viewer` reads, and cannot change anything.
-- A `user` creates and changes its own work.
-- An `admin` can do everything, including install settings and the routes that read other accounts.
+- A `viewer` holds none. It reads its own work and cannot change it.
+- A `user` holds `generate`, `edit_own_work` and `view_own_usage`.
+- An `admin` holds those three and `administer`, which covers install settings and the routes that read other accounts.
 
-Write endpoints need the `user` or `admin` role. A `viewer` gets `403` from them.
+A route the caller cannot do answers `403` with `insufficient role`. `GET /api/v1/account` includes `capabilities`, the effective set, sorted. While the account is active that is the role's bundle. While it is suspended the two write capabilities are left out. Any other state is an empty list. The role is still in the response, for display.
 
 Promoting an account to `admin` needs recent authentication from the caller, and either a verified address on the target account or an explicit `attested` flag. An administrator cannot change their own role, and the last administrator cannot be demoted. A role change ends every session the account holds, because an old session carries the old role.
 

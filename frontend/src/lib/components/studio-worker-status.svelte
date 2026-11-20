@@ -5,6 +5,7 @@
 	// the card only while their own jobs are queued or running, and then with
 	// nothing but those counts.
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
+	import { mayReadInstallGpu } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
@@ -14,7 +15,7 @@
 	// marketing build has no API to ask. The poll itself is shared with the
 	// views that explain why an action is unavailable.
 	const mayReadGpu = $derived(
-		PUBLIC_SITE_MODE !== 'landing' && (account.current === null || account.current.role === 'admin')
+		PUBLIC_SITE_MODE !== 'landing' && mayReadInstallGpu(account.current, account.localModeConfirmed)
 	);
 	// null until the first answer: unknown is not the same as offline.
 	const online = $derived(worker.online);

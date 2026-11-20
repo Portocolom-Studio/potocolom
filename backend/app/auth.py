@@ -8,12 +8,12 @@ seam).
 
 import secrets
 from collections.abc import Awaitable, Callable
-from typing import Literal
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import audit, auth_mode, db, sessions
+from app.capabilities import PRIVILEGED, Capability, capabilities_of
 from app.settings import get_settings
 from app.tables import User
 
@@ -131,10 +131,6 @@ async def current_user(
     return user
 
 
-RoleTier = Literal["viewer", "member", "admin"]
-_ROLE_RANK = {"viewer": 0, "user": 1, "admin": 2}
-
-
 # A safe method changes nothing, and the studio polls two of these admin reads
 # every two seconds, which would bury real administrator work under millions of
 # rows a caller drives for free. A read that reaches another user's data is a
@@ -150,25 +146,22 @@ def _action(request: Request) -> str:
     return f"{request.method} {path}"
 
 
-def require_role(minimum: RoleTier) -> Callable[..., Awaitable[User]]:
-    """Require a role tier while preserving "user" as the stored member value.
+def require(capability: Capability) -> Callable[..., Awaitable[User]]:
+    """Require one capability from the role's fixed bundle.
 
-    Administrator work is audited here rather than in each route: a route added
-    later cannot forget, and no route can be audited under a name that has
-    drifted from the path it actually serves.
+    A privileged capability on an unsafe method is audited here, including
+    the refusal, the same way an administrator tier was. The refusal detail
+    stays "insufficient role".
     """
-    required = "user" if minimum == "member" else minimum
 
-    async def role_user(request: Request, user: User = Depends(current_user)) -> User:
-        unsafe_admin = required == "admin" and request.method not in SAFE_METHODS
-        if _ROLE_RANK.get(user.role, -1) < _ROLE_RANK[required]:
-            if unsafe_admin:
-                # Someone with an account reaching for privileged work they do
-                # not have is the signal an audit exists to carry.
+    async def allowed(request: Request, user: User = Depends(current_user)) -> User:
+        unsafe_privileged = capability in PRIVILEGED and request.method not in SAFE_METHODS
+        if capability not in capabilities_of(user.role):
+            if unsafe_privileged:
                 await audit.record(_action(request), actor=user, severity="high")
             raise HTTPException(status_code=403, detail="insufficient role")
-        if unsafe_admin:
+        if unsafe_privileged:
             await audit.record(_action(request), actor=user)
         return user
 
-    return role_user
+    return allowed

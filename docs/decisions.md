@@ -756,6 +756,8 @@ Rejected alternatives: keeping session history solely as committed static JSON, 
 
 ## Roles: three tiers on the user row
 
+> **Partly superseded** by "Access is a fixed capability bundle per role" below. The rank ordering no longer decides access. One role per account, the three stored roles, resource ownership, and the none-mode local administrator still stand.
+
 Access is a single `role` column on `users` with three values, checked by a dependency beside `current_user` rather than inside each endpoint: `admin` (everything, including install configuration), `user` (the member tier: generate, star, upload, manage their own work) and `viewer` (read-only over its own work; the metrics section and benchmark history are install-wide reads and stay admin only, as `docs/api.md` lists them). The `AUTH_MODE=none` local user is an admin, and an existing local user is promoted on startup, so a single-user self-hosted install behaves exactly as before. This covers the requirement that a friend on someone's install may look without spending their GPU, and the cloud requirement that install-wide reads are not open to every customer.
 
 Rejected alternatives: a per-resource permission table, and admin-assignable per-tab grants, both of which add a matrix nobody has asked for and can be layered on these tiers later if a real need appears; no roles at all, which cannot express read-only access and leaves install-wide endpoints open to any authenticated account once the cloud has more than one.
@@ -2529,3 +2531,13 @@ Rejected alternatives:
 - A Redis counter. The self-hosted profile has no Redis, and the job rows are already the authority a restart has to read.
 - A cap per session. Two sessions of one account would then hold twice the backlog, which is the accumulation this bound exists to stop.
 - A request-rate limit and nothing else. Arrivals over time still leave a growing queue while no worker is taking jobs.
+
+## Access is a fixed capability bundle per role
+
+Supersedes the rank ordering in "Roles: three tiers on the user row". One role stays on the user row, and the three stored values stay `viewer`, `user` and `admin`. What a role may do is a fixed bundle, not a rank: `generate`, `edit_own_work`, `view_own_usage` and `administer`. A viewer holds none of them. A user holds the first three. An admin holds all four. An unknown role holds none. `GET /api/v1/account` lists the effective set, sorted: the bundle while the account is active, the bundle without `generate` and `edit_own_work` while it is suspended, and nothing otherwise. The API still enforces the role bundle together with the existing state checks. A suspended account's safe reads stay, and its writes still answer `account suspended`.
+
+A studio that does not see `capabilities` derives the bundle from a known role. An unknown role with no field is an empty set, so it cannot fall into the permissive path reserved for confirmed local mode. Confirmed local mode has no account response. The install keeps the implicit local administrator.
+
+`administer` on an unsafe method is audited, including a refusal, and the refusal detail stays `insufficient role`. Realtime admission and the worker's owner check both require `generate` and an active account. Reading another account's asset requires `administer`. The last administrator, recovery, the administrator session policy, an administrator invitation's recent authentication, and the none-mode bootstrap stay checks of the role column itself.
+
+Rejected alternatives: editable ACLs, which add a matrix nobody has asked to edit; per-tab grants, which split one product permission across screens the API would still have to enforce one by one; more ranks, which cannot give a finance role usage without also giving it generation.

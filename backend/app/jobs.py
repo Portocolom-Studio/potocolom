@@ -40,7 +40,8 @@ from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
 from app.account_lock import hold_the_account
-from app.auth import CANNOT_SIGN_IN, current_user, require_role
+from app.auth import CANNOT_SIGN_IN, current_user, require
+from app.capabilities import Capability, capabilities_of, generating_roles
 from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
@@ -372,7 +373,7 @@ def _generation_download_name(
 @router.post("/api/v1/generations", status_code=202)
 async def create_generation(
     request: GenerationRequest,
-    user: User = Depends(require_role("member")),
+    user: User = Depends(require(Capability.GENERATE)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
     models = registry.for_jobs()
@@ -473,7 +474,7 @@ async def create_generation(
         raise HTTPException(status_code=401, detail="authentication required")
     if principal["state"] == "suspended":
         raise HTTPException(status_code=403, detail="account suspended")
-    if principal["role"] not in {"user", "admin"}:
+    if Capability.GENERATE not in capabilities_of(principal["role"]):
         raise HTTPException(status_code=403, detail="insufficient role")
     outstanding = await session.scalar(
         select(func.count()).select_from(Job).where(
@@ -1440,7 +1441,7 @@ async def _set_star(
 @router.post("/api/v1/generations/{job_id}/star", status_code=204)
 async def star_generation(
     job_id: uuid.UUID,
-    user: User = Depends(require_role("member")),
+    user: User = Depends(require(Capability.EDIT_OWN_WORK)),
     session: AsyncSession = Depends(db.get_session),
 ) -> Response:
     await _set_star(session, job_id, user, func.coalesce(Job.starred_at, func.now()))
@@ -1450,7 +1451,7 @@ async def star_generation(
 @router.delete("/api/v1/generations/{job_id}/star", status_code=204)
 async def unstar_generation(
     job_id: uuid.UUID,
-    user: User = Depends(require_role("member")),
+    user: User = Depends(require(Capability.EDIT_OWN_WORK)),
     session: AsyncSession = Depends(db.get_session),
 ) -> Response:
     await _set_star(session, job_id, user, None)
@@ -1473,7 +1474,8 @@ async def cancel_generation(
     async with db.session_factory() as session:
         owner = (await session.execute(
             select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
-    if owner is None or (owner != user.id and user.role != "admin"):
+    if owner is None or (owner != user.id
+                             and Capability.ADMINISTER not in capabilities_of(user.role)):
         raise HTTPException(status_code=404, detail="no such generation")
     cancelled = await cancel(job_id, reason="cancelled by the owner"
                              if owner == user.id else "cancelled by an administrator")
@@ -2931,7 +2933,7 @@ async def _cancel_ineligible_owners() -> None:
         owner_ids = list((await session.execute(
             select(Job.user_id).join(User, User.id == Job.user_id)
             .where(Job.state.in_(("queued", "running")),
-                   or_(User.role.not_in(("user", "admin")), User.state != "active"))
+                   or_(User.role.not_in(generating_roles()), User.state != "active"))
             .distinct()
         )).scalars().all())
     for user_id in sorted(owner_ids):

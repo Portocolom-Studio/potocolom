@@ -77,6 +77,7 @@ def test_install_operations_are_not_available_to_non_admin(monkeypatch, role):
         for route, body in routes:
             response = client.get(route)
             assert response.status_code == 403, (role, route, response.status_code)
+            assert response.json()["detail"] == "insufficient role"
 
 
 @pytest.mark.parametrize("role", ("viewer", "user"))
@@ -94,6 +95,7 @@ def test_benchmark_routes_are_not_available_to_non_admin(monkeypatch, role):
         for route, method, body in routes:
             response = getattr(client, method)(route, json=body) if body is not None else getattr(client, method)(route)
             assert response.status_code == 403, (role, route, response.status_code)
+            assert response.json()["detail"] == "insufficient role"
 
 
 @pytest.mark.db
@@ -103,10 +105,12 @@ def test_benchmark_session_routes_are_not_available_to_non_admin(monkeypatch, ro
     get_settings.cache_clear()
     principal = _principal(role, f"benchmark-session-{role}")
     with _client(principal) as client:
-        assert client.get("/api/v1/benchmark/sessions").status_code == 403
-        assert client.get(
-            "/api/v1/benchmark/sessions/00000000-0000-0000-0000-000000000000"
-        ).status_code == 403
+        listed = client.get("/api/v1/benchmark/sessions")
+        assert listed.status_code == 403
+        assert listed.json()["detail"] == "insufficient role"
+        one = client.get("/api/v1/benchmark/sessions/00000000-0000-0000-0000-000000000000")
+        assert one.status_code == 403
+        assert one.json()["detail"] == "insufficient role"
 
 
 @pytest.mark.db
@@ -166,7 +170,9 @@ def test_asset_id_read_is_session_bound_and_owner_scoped(tmp_path, monkeypatch):
         assert owner_response.content == b"asset-bytes"
         assert key not in owner_response.request.url.path
         app.dependency_overrides[current_user] = lambda: other
-        assert client.get(f"/api/v1/assets/{asset_id}").status_code == 404
+        foreign = client.get(f"/api/v1/assets/{asset_id}")
+        assert foreign.status_code == 404
+        assert foreign.json()["detail"] == "no such asset"
         app.dependency_overrides[current_user] = lambda: admin
         assert client.get(f"/api/v1/assets/{asset_id}").status_code == 200
 

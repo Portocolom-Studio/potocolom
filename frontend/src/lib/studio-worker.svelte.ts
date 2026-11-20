@@ -1,4 +1,5 @@
 import { PUBLIC_SITE_MODE } from '$env/static/public';
+import { mayReadInstallGpu } from '$lib/account-display';
 import { account } from '$lib/account.svelte';
 import type { GpuHardware } from '$lib/studio-gpu-sampler';
 
@@ -16,9 +17,13 @@ export function watchWorker(): () => void {
 	if (watchers === 1) {
 		stopWatching = $effect.root(() => {
 			$effect(() => {
+				// Read local mode only once an account exists. A probe that clears
+				// confirmed local mode leaves current null, and reading that flag
+				// here would start a second GPU poll.
+				const current = account.current;
 				if (
 					PUBLIC_SITE_MODE === 'landing' ||
-					(account.current !== null && account.current.role !== 'admin')
+					(current !== null && !mayReadInstallGpu(current, account.localModeConfirmed))
 				) {
 					worker.online = null;
 					worker.gpu = null;

@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.realtime import connected_workers, gpu_command, pick_any_worker
 from app.tables import User
 
@@ -10,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/api/v1/studio/gpu")
-async def studio_gpu(_user: User = Depends(require_role("admin"))) -> dict:
+async def studio_gpu(_user: User = Depends(require(Capability.ADMINISTER))) -> dict:
     """Live GPU snapshot from the connected worker."""
     worker = pick_any_worker()
     if worker is None:

@@ -423,8 +423,41 @@ async function main() {
 		assert.deepEqual(local.errors, []);
 		await local.page.close();
 
+		fixture.account = {
+			status: 200,
+			body: {
+				id: '550e8400-e29b-41d4-a716-446655440043',
+				email: 'restricted@example.com',
+				role: 'billing',
+				capabilities: []
+			}
+		};
+		fixture.config = { status: 200, body: { auth_methods: ['password'] } };
+		fixture.row = rowA;
+		const restrictedStart = requests.length;
+		const restricted = await newPage(browser, server, { path: '/app?view=generate' });
+		await restricted.page.waitForFunction(
+			() => document.querySelector('[aria-current="page"]')?.textContent?.trim() === 'Images',
+			{ timeout: timeoutMs }
+		);
+		const restrictedRequests = requests.slice(restrictedStart);
+		assert.ok(restrictedRequests.includes('/api/v1/account'));
+		assert.ok(
+			!restrictedRequests.some((path) => path.startsWith('/api/v1/studio/gpu')),
+			'a restricted account does not poll the install GPU'
+		);
+		const restrictedFocus = await dueFocus(restricted.page);
+		assert.equal(restrictedFocus[0], '/api/v1/account');
+		assert.equal(
+			await restricted.page.$eval('[aria-current="page"]', (element) => element.textContent.trim()),
+			'Images',
+			'a direct Generate URL stays on images for an empty capability list'
+		);
+		assert.deepEqual(restricted.errors, []);
+		await restricted.page.close();
+
 		console.log(
-			'owner-focus browser checks passed: same-owner order, duplicate events, A-to-B late history and stream fencing, failed probe retry, 401, invalid UUID, and local-mode outcomes'
+			'owner-focus browser checks passed: same-owner order, duplicate events, A-to-B late history and stream fencing, failed probe retry, 401, invalid UUID, local-mode outcomes, and a restricted Generate URL'
 		);
 	} finally {
 		await browser?.close();

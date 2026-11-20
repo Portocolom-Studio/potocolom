@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { sectionNeeds } from '$lib/account-display';
+	import { presentedCapabilities, sectionNeeds } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import StudioHeaderTabs from '$lib/components/studio-header-tabs.svelte';
@@ -8,28 +8,32 @@
 	import { useStudioHeader } from '$lib/studio-chrome.svelte';
 	import type { MetricsTab } from '$lib/studio-view';
 
-	const role = $derived(account.current?.role ?? null);
+	const access = $derived(presentedCapabilities(account.current, account.localModeConfirmed));
 
 	function lockReason(needs: 'user' | 'admin' | null): string | null {
 		if (needs === null) return null;
-		return needs === 'user' ? t('app.gen.members_only') : t('app.gen.admins_only');
+		if (needs === 'admin') return t('app.gen.admins_only');
+		const role = account.current?.role;
+		return role === 'user' || role === 'admin'
+			? t('app.gen.not_available')
+			: t('app.gen.members_only');
 	}
 
 	const tabs = $derived([
 		{
 			value: 'usage',
 			label: t('app.metrics.tab_usage'),
-			locked: lockReason(sectionNeeds('metrics_usage', role))
+			locked: lockReason(sectionNeeds('metrics_usage', access))
 		},
 		{
 			value: 'benchmarks',
 			label: t('app.metrics.tab_benchmarks'),
-			locked: lockReason(sectionNeeds('metrics_benchmarks', role))
+			locked: lockReason(sectionNeeds('metrics_benchmarks', access))
 		},
 		{
 			value: 'mine',
 			label: t('app.metrics.mine_tab'),
-			locked: lockReason(sectionNeeds('metrics_mine', role))
+			locked: lockReason(sectionNeeds('metrics_mine', access))
 		}
 	]);
 

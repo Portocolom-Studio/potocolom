@@ -25,7 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import audit, auth_mode, db, sessions
 from app.accounts import issue_session
-from app.auth import check_origin, require_none_mode, require_role
+from app.auth import check_origin, require, require_none_mode
+from app.capabilities import Capability
 from app.keyring import KeyRingError
 from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
@@ -348,7 +349,7 @@ class EnableRequest(BaseModel):
 async def enable_accounts(
     request: EnableRequest,
     http_request: Request,
-    user: User = Depends(require_role("admin")),
+    user: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """An administrator of a none install turns accounts on, with no restart.
 

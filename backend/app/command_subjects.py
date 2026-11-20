@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 from app import auth_mode, db
 from app.account_lock import hold_the_account
+from app.capabilities import Capability, capabilities_of
 
 MAX_SEQUENCE = 2**63 - 1
 SUBJECT_FIELDS = {
@@ -54,9 +55,11 @@ async def current_owner(session, account_user_id: uuid.UUID) -> bool:
         text("SELECT role, state FROM users WHERE id = :user_id FOR SHARE"),
         {"user_id": account_user_id},
     )).mappings().one_or_none()
-    return principal is not None and principal["role"] in {"user", "admin"} and principal[
-        "state"
-    ] == "active"
+    return (
+        principal is not None
+        and Capability.GENERATE in capabilities_of(principal["role"])
+        and principal["state"] == "active"
+    )
 
 
 async def lock_browser_binding(

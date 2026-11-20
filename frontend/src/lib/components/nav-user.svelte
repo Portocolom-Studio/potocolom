@@ -15,7 +15,14 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
 	import { apiFetch } from '$lib/api';
-	import { accountInitial, accountRoleLabelKey, sectionNeeds } from '$lib/account-display';
+	import {
+		accountInitial,
+		accountRoleLabelKey,
+		isKnownRole,
+		mayAdministerAccounts,
+		presentedCapabilities,
+		sectionNeeds
+	} from '$lib/account-display';
 	import { account as accountState, type Account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { activateViewOwner, openAccount, studio } from '$lib/studio.svelte';
@@ -30,14 +37,19 @@
 	const sidebar = Sidebar.useSidebar();
 	const repoUrl = 'https://github.com/portocolom-studio/potocolom';
 	const initial = $derived(account ? accountInitial(account.email) : '');
-	const roleLabel = $derived(account ? t(accountRoleLabelKey(account.role)) : '');
+	const roleLabel = $derived(
+		account && isKnownRole(account.role) ? t(accountRoleLabelKey(account.role)) : ''
+	);
 	// The landing preview renders this menu too, but it has no tour to replay.
 	const canTour = $derived(
-		PUBLIC_SITE_MODE !== 'landing' && sectionNeeds('generate', account?.role ?? null) === null
+		PUBLIC_SITE_MODE !== 'landing' &&
+			sectionNeeds('generate', presentedCapabilities(account, accountState.localModeConfirmed)) ===
+				null
 	);
-	// Setup needs an administrator, or the local user in none mode. The landing build has no studio card.
+	// Setup needs administer, or the local user in none mode. The landing build has no studio card.
 	const canSetUp = $derived(
-		PUBLIC_SITE_MODE !== 'landing' && (accountState.localModeConfirmed || account?.role === 'admin')
+		PUBLIC_SITE_MODE !== 'landing' &&
+			mayAdministerAccounts(account, accountState.localModeConfirmed)
 	);
 	// The menu would hand focus back to its trigger after the tour or the card has taken it.
 	let dialogChosen = false;

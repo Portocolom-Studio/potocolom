@@ -7,7 +7,7 @@
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { apiFetch } from '$lib/api';
 	import { account, type Account } from '$lib/account.svelte';
-	import { openViewFor, sectionNeeds } from '$lib/account-display';
+	import { openViewFor, presentedCapabilities, sectionNeeds } from '$lib/account-display';
 	import { probeAccount, type AccountProbeResult } from '$lib/account-probe';
 	import { accountCheckForcesLogin, loginSearchFor } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
@@ -72,7 +72,12 @@
 		const allowedTab = tab === 'fleet' || tab === 'models' ? tab : 'models';
 		studio.shellView = localAdmin
 			? 'admin'
-			: openViewFor(view, tab, account.current?.role ?? null, account.localModeConfirmed);
+			: openViewFor(
+					view,
+					tab,
+					presentedCapabilities(account.current, account.localModeConfirmed),
+					account.localModeConfirmed
+				);
 		if (localAdmin && tab !== allowedTab) {
 			const search = studioViewSearch(page.url.search, 'admin', allowedTab);
 			void goto(`${page.url.pathname}${search}`, {
@@ -414,7 +419,7 @@
 		{#if !landing}
 			<StudioGpuCard />
 		{/if}
-		{#if !landing && sectionNeeds('generate', account.current?.role ?? null) === null}
+		{#if !landing && sectionNeeds('generate', presentedCapabilities(account.current, account.localModeConfirmed)) === null}
 			<StudioTour />
 		{/if}
 		<!-- Undo offers and quick failures. Offsets clear the home indicator and

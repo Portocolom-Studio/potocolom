@@ -25,7 +25,8 @@ from starlette.responses import Response, StreamingResponse
 from app import audit, db, jobs, sessions
 from app.account_lock import hold_the_account
 from app.accounts import _clear
-from app.auth import current_principal, require_accounts_mode, require_role
+from app.auth import current_principal, require, require_accounts_mode
+from app.capabilities import Capability
 from app.tables import (
     Asset,
     AuthIdentity,
@@ -287,7 +288,7 @@ async def delete_account(
 @router.post("/api/v1/users/{user_id}/restore", status_code=204)
 async def restore(
     user_id: uuid.UUID,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """Back to where it was, once. An account that never left has nowhere to
     go, which is a conflict rather than a silent no-op: somebody asked for a

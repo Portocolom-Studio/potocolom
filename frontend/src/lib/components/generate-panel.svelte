@@ -17,6 +17,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { t } from '$lib/i18n.svelte';
+	import { mayAdministerAccounts } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Collapsible from '$lib/components/ui/collapsible';
@@ -213,7 +214,9 @@
 	);
 	const upscaleModels = $derived(filterUpscaleModels(studio.models));
 	const availableModels = $derived(mode === 'upscale' ? upscaleModels : diffusionModels);
-	const canManageModels = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+	const canManageModels = $derived(
+		mayAdministerAccounts(account.current, account.localModeConfirmed)
+	);
 	const noModelKey = $derived(
 		mode === 'image_to_image'
 			? 'app.image_to_image.no_model'

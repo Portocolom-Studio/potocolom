@@ -24,7 +24,7 @@ POST   /api/v1/shared          {"token": "..."}
 
 ## Create a share
 
-- The caller needs the `user` role. A `viewer` gets `403`.
+- The caller needs `edit_own_work`. A `viewer` gets `403`.
 - The asset must belong to the caller. Otherwise the answer is `404`.
 - `days` must be 1, 7 or 30. The share expires after that many days.
 - The answer has the share `id`, which you need to revoke it, and the `url` to send to the other person.

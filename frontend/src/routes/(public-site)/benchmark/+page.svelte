@@ -5,6 +5,7 @@
 	import ScrollToTop from '$lib/components/ScrollToTop.svelte';
 	import BenchmarkComparisons from '$lib/components/benchmark-comparisons.svelte';
 	import { onMount } from 'svelte';
+	import { parseAccount } from '$lib/account-display';
 	import { readCsrfToken } from '$lib/api';
 	import {
 		loadBenchmarkSessionReport,
@@ -37,14 +38,15 @@
 			const config = (await configResponse.json()) as { auth_methods?: string[] };
 			const authMethods = config.auth_methods ?? [];
 			const hasCsrf = readCsrfToken(document.cookie) !== null;
-			let role: string | null = null;
+			let capabilities: ReadonlySet<string> | null = null;
 			if (authMethods.length > 0 && hasCsrf) {
 				const accountResponse = await fetch('/api/v1/account');
 				if (!accountResponse.ok) return false;
-				const account = (await accountResponse.json()) as { role?: string };
-				role = account.role ?? null;
+				const account = parseAccount(await accountResponse.json());
+				if (!account) return false;
+				capabilities = account.capabilities;
 			}
-			return mayReadSessions({ authMethods, hasCsrf, role });
+			return mayReadSessions({ authMethods, hasCsrf, capabilities });
 		} catch {
 			return false;
 		}
