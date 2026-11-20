@@ -97,7 +97,7 @@
 		type GridVisitSnapshot
 	} from '$lib/images-grid-resume';
 	import { dragScroll } from '$lib/drag-scroll';
-	import { sectionNeeds } from '$lib/account-display';
+	import { presentedCapabilities, sectionNeeds } from '$lib/account-display';
 	import { collapsePromptDiff, paramDeltas, promptWordDiff } from '$lib/prompt-diff';
 	import {
 		lineageSearchMatchPositions,
@@ -1196,7 +1196,10 @@
 		selectedData !== null && !selectedData.entry.missing && selectedAsset !== null
 	);
 	// Every service a node opens creates a job, which a viewer cannot do.
-	const mayCreate = $derived(sectionNeeds('generate', account.current?.role ?? null) === null);
+	const mayCreate = $derived(
+		sectionNeeds('generate', presentedCapabilities(account.current, account.localModeConfirmed)) ===
+			null
+	);
 	const canGenerateFromPrompt = $derived(
 		mayCreate && selectedPrompt !== '' && textToImageModels.length > 0
 	);

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { tick, untrack } from 'svelte';
 	import { apiFetch } from '$lib/api';
+	import { accountRoleLabelKey, isKnownRole, mayAdministerAccounts } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
-	import { accountRoleLabelKey } from '$lib/account-display';
 	import FirstRunFrame from '$lib/components/first-run-frame.svelte';
 	import { getLocale, t } from '$lib/i18n.svelte';
 	import {
@@ -43,14 +43,14 @@
 	// Decided once, at mount, before the models answer: the tour waits on
 	// studio.gpuCardOpen, so the flag must already say so by then.
 	studio.gpuCardOpen = shouldShowGpuCard(
-		account.localModeConfirmed || account.current?.role === 'admin',
+		mayAdministerAccounts(account.current, account.localModeConfirmed),
 		() => localStorage
 	);
 
 	// Access can be lost while the card is open (the role is read again on window
 	// focus). The card closes without its flag, so it comes back if access does.
 	$effect(() => {
-		if (studio.gpuCardOpen && !(account.localModeConfirmed || account.current?.role === 'admin'))
+		if (studio.gpuCardOpen && !mayAdministerAccounts(account.current, account.localModeConfirmed))
 			studio.gpuCardOpen = false;
 	});
 
@@ -341,7 +341,9 @@
 	const accountValue = $derived(
 		account.localModeConfirmed || account.current === null
 			? t('app.gpu_card.account_local')
-			: `${account.current.email}, ${t(accountRoleLabelKey(account.current.role))}`
+			: isKnownRole(account.current.role)
+				? `${account.current.email}, ${t(accountRoleLabelKey(account.current.role))}`
+				: account.current.email
 	);
 
 	const headingText = $derived(

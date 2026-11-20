@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import db
 from app.admin import _seen
 from app.auth import current_user
+from app.capabilities import Capability, capabilities_of
 from app.manifests import StorableStr
 from app.storage import (
     UPLOAD_TOKEN_HEADER, LocalStorage, get_storage, validate_download_name,
@@ -150,7 +151,9 @@ async def asset(
     session: AsyncSession = Depends(db.get_session),
 ):
     row = await session.get(Asset, asset_id)
-    if row is None or (row.user_id != user.id and user.role != "admin"):
+    if row is None or (
+        row.user_id != user.id and Capability.ADMINISTER not in capabilities_of(user.role)
+    ):
         raise HTTPException(status_code=404, detail="no such asset")
     if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
         raise HTTPException(status_code=404, detail="no such asset")

@@ -1,11 +1,11 @@
-import { accountOwnerId, parseAccount, type Role } from './account-display';
+import { accountOwnerId, parseAccount, type ParsedAccount } from './account-display';
 import { apiFetch } from './api';
 
 export type AccountProbeResult =
-	| { kind: 'account'; current: { email: string; role: Role }; ownerId: string }
+	| { kind: 'account'; current: ParsedAccount; ownerId: string }
 	| { kind: 'local' }
 	| { kind: 'signed_out' }
-	| { kind: 'unknown'; current: { email: string; role: Role } | null }
+	| { kind: 'unknown'; current: ParsedAccount | null }
 	| { kind: 'failed' };
 
 const PROBE_TIMEOUT_MS = 5_000;

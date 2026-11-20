@@ -9,6 +9,7 @@
 	import SparklesIcon from '@lucide/svelte/icons/sparkles';
 	import TypeIcon from '@lucide/svelte/icons/type';
 	import ZapIcon from '@lucide/svelte/icons/zap';
+	import { mayAdministerAccounts } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { apiFetch } from '$lib/api';
 	import { Button } from '$lib/components/ui/button';
@@ -47,7 +48,7 @@
 	let query = $state('');
 	let filter = $state<Filter>('all');
 	let workerConnected = $state<boolean | null>(null);
-	const canInstall = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+	const canInstall = $derived(mayAdministerAccounts(account.current, account.localModeConfirmed));
 
 	$effect(() => {
 		if (!canInstall || studio.modelsStatus === 'loading' || studio.models.length !== 0) return;

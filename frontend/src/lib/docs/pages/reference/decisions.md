@@ -27,7 +27,7 @@ Some entries have a dated "Shipped status" note. The note says what is built tod
 
 ## Superseded entries
 
-When a decision changes, the old entry stays in the file. A note right under its heading says Superseded and names the newer entry. When only part of it changed, the note says Partly superseded, names what no longer holds, and what still stands. The newer entry opens with "Supersedes" and the old entry's name. The old text stays on purpose, so the record shows what was decided before and why it changed.
+When a decision changes, the old entry stays in the file. A note right under its heading says Superseded and names the newer entry. When only part of it changed, the note says Partly superseded, names what no longer holds, and what still stands. The newer entry opens with "Supersedes" and the old entry's name. The old text stays on purpose, so the record shows what was decided before and why it changed. Access is one example: the role column stays, and a later entry replaces the rank reading of that column with a fixed bundle per role.
 
 > [!NOTE]
 > Read an entry marked Superseded for history only. Its present-tense claims no longer apply. In a Partly superseded entry, only the parts its note names no longer apply.

@@ -18,7 +18,7 @@
 	import StarIcon from '@lucide/svelte/icons/star';
 	import UserIcon from '@lucide/svelte/icons/user';
 	import UsersIcon from '@lucide/svelte/icons/users';
-	import { sectionNeeds } from '$lib/account-display';
+	import { presentedCapabilities, sectionNeeds } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { getLocale, locales, setLocale, t, type Locale } from '$lib/i18n.svelte';
 	import {
@@ -55,8 +55,8 @@
 		run: () => void;
 	};
 
-	const role = $derived(account.current?.role ?? null);
-	const canCreate = $derived(sectionNeeds('generate', role) === null);
+	const access = $derived(presentedCapabilities(account.current, account.localModeConfirmed));
+	const canCreate = $derived(sectionNeeds('generate', access) === null);
 
 	const views = $derived.by<Entry[]>(() => {
 		const entries: Entry[] = [];
@@ -67,7 +67,7 @@
 			['realtime_canvas', PenToolIcon]
 		] as const;
 		for (const [view, icon] of create) {
-			if (sectionNeeds(view, role) !== null) continue;
+			if (sectionNeeds(view, access) !== null) continue;
 			entries.push({
 				id: `view-${view}`,
 				label: t(`app.service.${view}`),
@@ -105,7 +105,7 @@
 			['mine', 'metrics_mine', 'app.metrics.mine_tab']
 		] as const;
 		for (const [tab, section, key] of metricsTabs) {
-			if (sectionNeeds(section, role) !== null) continue;
+			if (sectionNeeds(section, access) !== null) continue;
 			entries.push({
 				id: `metrics-${tab}`,
 				label: `${t('app.shell.metrics')}: ${t(key)}`,
@@ -114,7 +114,7 @@
 				run: () => openMetrics(tab)
 			});
 		}
-		if (sectionNeeds('admin', role) === null) {
+		if (sectionNeeds('admin', access) === null) {
 			const labels = {
 				users: 'app.admin.users',
 				audit: 'app.admin.audit',

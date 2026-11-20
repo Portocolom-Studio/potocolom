@@ -24,6 +24,7 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import Undo2Icon from '@lucide/svelte/icons/undo-2';
+	import { mayAdministerAccounts } from '$lib/account-display';
 	import { account } from '$lib/account.svelte';
 	import { watchWorker, worker } from '$lib/studio-worker.svelte';
 	import { t } from '$lib/i18n.svelte';
@@ -226,7 +227,9 @@
 	// among the current entries.
 	let modelId = $state('');
 	const selectedModel = $derived(realtimeModels.find((model) => model.id === modelId));
-	const canManageModels = $derived(account.current?.role === 'admin' || account.localModeConfirmed);
+	const canManageModels = $derived(
+		mayAdministerAccounts(account.current, account.localModeConfirmed)
+	);
 	const realtimeModelsRegistered = $derived(
 		studio.models.some((model) => model.capabilities.includes('realtime'))
 	);

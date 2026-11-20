@@ -19,7 +19,8 @@ from sqlalchemy import func, select, update
 from starlette.responses import Response
 
 from app import audit, auth_mode, db, realtime, sessions
-from app.auth import current_principal, origin_listed, require_role
+from app.auth import current_principal, origin_listed, require
+from app.capabilities import Capability
 from app.manifests import StorableStr
 from app.rate_limit import charge_address
 from app.settings import get_settings
@@ -59,7 +60,7 @@ class CreateRequest(BaseModel):
 async def create_member(
     body: CreateRequest,
     http: Request,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> dict:
     if auth_mode.current() == auth_mode.ACCOUNTS:
         # Creating a member is a credential change, so it needs the same recent
@@ -105,7 +106,7 @@ def _state(row: FleetMember, now: datetime) -> str:
 
 
 @router.get("/api/v1/admin/fleet/members")
-async def list_members(_admin: User = Depends(require_role("admin"))) -> list[dict]:
+async def list_members(_admin: User = Depends(require(Capability.ADMINISTER))) -> list[dict]:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:
@@ -133,7 +134,7 @@ async def list_members(_admin: User = Depends(require_role("admin"))) -> list[di
 @router.delete("/api/v1/admin/fleet/members/{member_id}", status_code=204)
 async def revoke_member(
     member_id: uuid.UUID,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """The row stays as the record. A live socket of the member is closed here."""
     if db.session_factory is None:
@@ -182,7 +183,7 @@ class PauseRequest(BaseModel):
 async def set_member_paused(
     member_id: uuid.UUID,
     body: PauseRequest,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """A paused member keeps its socket and its current work. It is given no new job or session.
 

@@ -2,6 +2,7 @@ import asyncio
 import uuid
 
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from starlette.websockets import WebSocketDisconnect
@@ -111,6 +112,54 @@ def test_an_expired_or_forged_cookie_closes_unauthorized(accounts):
     assert message["type"] == "error"
     assert message["code"] == realtime.CLOSE_UNAUTHORIZED == 4401
     assert realtime.sessions == {}
+
+
+@pytest.mark.db
+def test_a_usage_only_bundle_on_the_user_role_cannot_generate_or_administer(
+    accounts, monkeypatch
+):
+    """A future finance role is incomparable with member. Patching the stored
+    user bundle is how that shape is proved before the role exists."""
+    from app.capabilities import ROLE_CAPABILITIES, Capability
+    from app.command_subjects import current_owner
+
+    monkeypatch.setitem(ROLE_CAPABILITIES, "user", frozenset({Capability.VIEW_OWN_USAGE}))
+    with TestClient(app) as client:
+        user, issued = _signed_in(client, "usage-only@example.com")
+        client.cookies.set("potocolom_csrf", issued.csrf)
+        usage = client.get("/api/v1/usage/me")
+        assert usage.status_code == 200
+        admin = client.get("/api/v1/studio/gpu")
+        assert admin.status_code == 403
+        assert admin.json()["detail"] == "insufficient role"
+        generated = client.post(
+            "/api/v1/generations",
+            headers={"Origin": ORIGIN, "X-CSRF-Token": issued.csrf},
+            json={},
+        )
+        assert generated.status_code == 403
+        assert generated.json()["detail"] == "insufficient role"
+        with client.websocket_connect("/api/v1/realtime") as ws:
+            message = ws.receive_json()
+        assert message["code"] == realtime.CLOSE_FORBIDDEN
+
+        async def still_owner() -> bool:
+            async with db.session_factory() as session:
+                return await current_owner(session, user.id)
+
+        assert client.portal.call(still_owner) is False
+
+    from app.auth import require
+
+    request = Request({
+        "type": "http", "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/v1/generations", "raw_path": b"/api/v1/generations", "query_string": b"",
+        "root_path": "", "headers": [], "server": ("testserver", 80), "client": None,
+    })
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(require(Capability.GENERATE)(request, user))
+    assert denied.value.status_code == 403
+    assert denied.value.detail == "insufficient role"
 
 
 @pytest.mark.db

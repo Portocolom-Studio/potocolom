@@ -236,22 +236,22 @@ export function categoryLineSeries(
 	return { categories, series };
 }
 
-// The sessions API is admin only. An empty auth_methods list is AUTH_MODE=none,
-// whose implicit local user is an admin; without a CSRF cookie nobody is signed
+// The sessions API needs administer. An empty auth_methods list is AUTH_MODE=none,
+// whose implicit local user holds it; without a CSRF cookie nobody is signed
 // in, so asking could only answer 401.
 export function mayReadSessions({
 	authMethods,
 	hasCsrf,
-	role
+	capabilities
 }: {
 	authMethods: string[] | null;
 	hasCsrf: boolean;
-	role: string | null;
+	capabilities: ReadonlySet<string> | null;
 }): boolean {
 	if (authMethods === null) return false;
 	if (authMethods.length === 0) return true;
 	if (!hasCsrf) return false;
-	return role === 'admin';
+	return capabilities?.has('administer') ?? false;
 }
 
 /** Names a benchmarked model from the models connected now, else its id. */

@@ -10,6 +10,7 @@ from starlette.responses import Response
 
 from app import db, factors, rate_limit, sessions
 from app.auth import UNAUTHENTICATED, check_origin, current_principal, require_accounts_mode
+from app.capabilities import effective_capabilities
 from app.manifests import StorableStr
 from app.passwords import ABSENT_ACCOUNT_HASH, verify_password
 from app.settings import get_settings
@@ -142,6 +143,7 @@ async def account(principal: sessions.Resolved = Depends(current_principal)) -> 
         "id": str(principal.user.id),
         "email": principal.user.email,
         "role": principal.user.role,
+        "capabilities": sorted(effective_capabilities(principal.user)),
         "state": principal.user.state,
         "mail_verified": principal.user.mail_verified,
         "recent_auth": sessions.is_recent(principal.session),

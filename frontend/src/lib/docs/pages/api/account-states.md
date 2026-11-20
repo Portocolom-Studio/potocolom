@@ -13,7 +13,7 @@ Every account has one state. The state decides whether the account can sign in, 
 
 | State              | Sign in        | Read its own work | Change anything              | Hold a GPU slot | Share links                                |
 | ------------------ | -------------- | ----------------- | ---------------------------- | --------------- | ------------------------------------------ |
-| `active`           | Yes            | Yes               | Yes, within its role         | Yes             | Resolve                                    |
+| `active`           | Yes            | Yes               | Yes, within its capabilities | Yes             | Resolve                                    |
 | `suspended`        | Yes, read only | Yes               | No. Any write answers `403`. | No              | Answer `404` until the account is restored |
 | `disabled`         | No             | No                | No                           | No              | Answer `404`                               |
 | `deletion_pending` | No             | No                | No                           | No              | Answer `404`                               |

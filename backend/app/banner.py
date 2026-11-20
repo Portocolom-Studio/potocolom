@@ -22,7 +22,8 @@ from sqlalchemy.dialects.postgresql import insert
 from starlette.responses import Response
 
 from app import db
-from app.auth import require_accounts_mode, require_role
+from app.auth import require, require_accounts_mode
+from app.capabilities import Capability
 from app.tables import StatusBanner, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
@@ -100,7 +101,7 @@ class BannerSet(BaseModel):
 @router.put("/api/v1/admin/banner", status_code=204)
 async def set_banner(
     change: BannerSet,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     """Set or replace the banner outright: there is one row, so there is
     nothing to merge with what was there before."""
@@ -130,7 +131,7 @@ async def set_banner(
 
 
 @router.delete("/api/v1/admin/banner", status_code=204)
-async def clear_banner(actor: User = Depends(require_role("admin"))) -> Response:
+async def clear_banner(actor: User = Depends(require(Capability.ADMINISTER))) -> Response:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     async with db.session_factory() as session:

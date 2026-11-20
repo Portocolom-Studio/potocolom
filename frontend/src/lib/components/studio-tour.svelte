@@ -2,7 +2,7 @@
 	import { onDestroy, tick, untrack } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { account } from '$lib/account.svelte';
-	import { openViewFor } from '$lib/account-display';
+	import { openViewFor, presentedCapabilities } from '$lib/account-display';
 	import { t } from '$lib/i18n.svelte';
 	import { openService, studio } from '$lib/studio.svelte';
 	import {
@@ -189,7 +189,13 @@
 	// Generate holds the steps. Show tour from another view opens Generate first,
 	// when the role may use it.
 	function canOpenGenerate(): boolean {
-		return openViewFor('generate', 'usage', account.current?.role ?? null) === 'generate';
+		return (
+			openViewFor(
+				'generate',
+				'usage',
+				presentedCapabilities(account.current, account.localModeConfirmed)
+			) === 'generate'
+		);
 	}
 
 	function focusIsOccupied(): boolean {

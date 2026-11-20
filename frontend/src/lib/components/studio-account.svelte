@@ -14,7 +14,7 @@
 	} from '$lib/account-logic';
 	import { account } from '$lib/account.svelte';
 	import { activateViewOwner } from '$lib/studio.svelte';
-	import { accountRoleLabelKey, type Role } from '$lib/account-display';
+	import { accountRoleLabelKey, isKnownRole, type Role } from '$lib/account-display';
 	import { adminErrorMessage, isRecentAuthenticationRequired } from '$lib/studio-admin-logic';
 	import LanguageToggle from '$lib/components/LanguageToggle.svelte';
 	import { t, formatDateTime, passwordLengthMessage } from '$lib/i18n.svelte';
@@ -758,7 +758,9 @@
 								</div>
 								<div>
 									<dt class="text-muted-foreground text-xs">{t('app.account.role')}</dt>
-									<dd class="mt-1 font-medium">{t(accountRoleLabelKey(detail.role))}</dd>
+									<dd class="mt-1 font-medium">
+										{isKnownRole(detail.role) ? t(accountRoleLabelKey(detail.role)) : ''}
+									</dd>
 								</div>
 							</dl>
 							<p class="text-muted-foreground text-sm">

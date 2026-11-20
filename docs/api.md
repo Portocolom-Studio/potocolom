@@ -9,11 +9,11 @@ Every call a customer's browser makes, from first page load to account deletion.
 - Base path `/api/v1`. JSON request and response bodies.
 - Authentication resolves requests to a principal. In none mode, the principal is one implicit local admin.
 - While the installation is unclaimed, every API route answers `503` with `{"detail": "setup_required"}` before it reads any data. The exceptions are `GET /api/v1/config`, `GET /api/v1/health`, `GET /api/v1/ready`, `POST /api/v1/auth/setup`, `POST /api/v1/auth/setup/status` and the fleet socket. A browser WebSocket is closed before it is accepted, so its handshake fails instead of answering `503`. The setup link decides the mode, so nothing else answers until it is spent (docs/self-hosting.md, First run).
-- Authorization is the `role` column on the user, ranked `viewer` < `user` < `admin`:
-  `admin` covers everything including install configuration, `user` creates and mutates
-  its own work, `viewer` is read-only. Write endpoints require `user` or `admin` and
-  answer 403 for a `viewer`. The code calls the `user` tier "member" in
-  `require_role("member")`; the stored value is `user`.
+- Authorization is the `role` column on the user. Each stored role holds a fixed
+  capability bundle, not a rank: `viewer` holds none, `user` holds `generate`,
+  `edit_own_work` and `view_own_usage`, and `admin` holds those plus `administer`.
+  An unknown role holds none. A route whose capability the caller lacks answers
+  403 `insufficient role`. The studio calls the stored `user` role "member".
 - A request string that PostgreSQL cannot store, one holding U+0000 or a lone surrogate,
   answers 422 before any other check, in a body field, a query or a path parameter. That
   comes ahead of every answer documented below, including login's 401 and reset's 202, and
@@ -104,7 +104,7 @@ Every call a customer's browser makes, from first page load to account deletion.
 | DELETE `/api/v1/account/identities/{provider}` | implemented | unlink a provider; refuses the last way in |
 | POST `/api/v1/account/password` | implemented | change or add a password; needs recent authentication |
 | POST `/api/v1/account/email` | implemented | change the primary address; resets mail assurance; saving the address the account already holds, only spelled differently, changes nothing and keeps the assurance it has |
-| GET `/api/v1/account` | implemented | this account, its live sessions, `totp` (true only when a second factor is confirmed) and `identities` (the account's providers, sorted) |
+| GET `/api/v1/account` | implemented | this account, its live sessions, `capabilities` (the effective bundle, sorted), `totp` (true only when a second factor is confirmed) and `identities` (the account's providers, sorted) |
 | DELETE `/api/v1/account/sessions/{id}` | implemented | revoke one of this account's own sessions |
 | GET `/api/v1/account/export` | implemented | everything this install holds about the account, as streamed JSON, with a link to each image |
 | DELETE `/api/v1/account` | implemented | stop the account now; the rows and objects go in 30 days |
@@ -341,7 +341,7 @@ GET /api/v1/generations/{id}/subtree  one canvas tree in one database query (#13
                                       asset row; an expired anchor answers 200 with `missing: true`.
 ```
 
-Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or admin role. A missing
+Asset URLs use `/api/v1/assets/{id}`. The API checks the asset owner or the `administer` capability. A missing
 or unauthorized asset returns 404. For an accessible asset, an unsafe `download` name returns 400.
 An administrator's read of another account's bytes records a `user.read` event with that account
 as the target, like every other admin read; the owner reading their own records nothing.
@@ -640,14 +640,14 @@ POST   /api/v1/shared          {"token": "..."}
 - The token is reusable until it is revoked or its 1, 7 or 30 days run out. Only its SHA-256 is stored, so a share cannot be read back out of the database and shown again.
 - The answer carries the picture and nothing about the account behind it: no address, no account id, no storage key. `url` is an address for the original asset that lasts 60 seconds, minted fresh on every resolve.
 - Every refusal is the same `404`, whether the token was never minted, was revoked, or expired.
-- Creating a share needs the owner's session at the `user` role, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
+- Creating a share needs `edit_own_work`, because minting a public link is a mutation. Revoking one stays open to a `viewer`, so an account demoted while a link was live can still take it down. Resolving needs nothing at all, which is what makes it a share.
 
 ### Account, export and deletion
 
 In `AUTH_MODE=none` every account route answers `404`: the routes are mounted in both modes and gated, which is what keeps a mode switch a configuration change rather than a different application.
 
 ```text
-GET    /api/v1/account            profile, plan (cloud), active sessions with created/last-used
+GET    /api/v1/account            profile, capabilities, active sessions with created/last-used
 DELETE /api/v1/account/sessions/2 204, that device is signed out instantly
 GET    /api/v1/account/export     200 application/json, streamed:
                                   {"account": {...}, "identities": [...],
@@ -659,6 +659,8 @@ POST   /api/v1/users/{id}/restore 204, admin only; idempotent; 409 for an accoun
                                   that was never waiting to be deleted, and for
                                   one that passed its 30 day window
 ```
+
+- `capabilities` is the effective bundle, sorted. While the account is `active` it is the role's bundle. While it is `suspended` it is that bundle without `generate` and `edit_own_work`. Any other state is an empty list. The `role` field stays, for display. In `none` mode this route answers `404`, so the field is absent and the studio treats the install as the local administrator.
 
 - The export is paged out of PostgreSQL and written as it goes, so a library of ten thousand generations never has to fit in memory, here or in the process that asked for it. The file holds the account's data, not its images: each asset carries a `url` to its image, and the image bytes are not copied into the stream. Each link needs a signed-in session of the account, so download the images before you delete the account. The `usage` rows hold the model, the action, the output category, GPU time and frame count of each event, and no prompt, image or network address. Days older than the 90 day raw window are in `usage_rollups` instead, one row per day and dimension, with counts and sums in place of single events. The stream outlives the request that authorised it, so it checks between pages that the account is still active and stops if it is not. It carries no secret of any kind: no password hash, no session hash, no TOTP secret, no recovery code. A file that leaves the building takes whatever is in it wherever it goes, and a password hash is an offline cracking target.
 - Deleting an account stops it immediately: the state becomes `deletion_pending`, every session is revoked, every outstanding link is spent, and the queued and running jobs are cancelled with reason `account deleted`, in one transaction. The realtime sockets close after that commit. A restore puts the account back and does not start a cancelled job again. Nothing is destroyed yet.

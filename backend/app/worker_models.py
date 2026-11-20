@@ -16,7 +16,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from starlette.websockets import WebSocketDisconnect
 
 from app import realtime
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.manifests import parse_manifests
 from app.realtime import ProtocolError, Worker
 from app.tables import User
@@ -255,13 +256,13 @@ async def _send(worker: Worker, kind: str, model_id: str) -> str:
 
 
 @router.get("/api/v1/admin/models")
-async def admin_models(_user: User = Depends(require_role("admin"))) -> list[dict]:
+async def admin_models(_user: User = Depends(require(Capability.ADMINISTER))) -> list[dict]:
     return [worker_view(worker) for worker in list(realtime.workers.values())]
 
 
 @router.post("/api/v1/admin/workers/{worker_id}/models/{model_id}/install", status_code=202)
 async def install_model(worker_id: str, model_id: str,
-                        _user: User = Depends(require_role("admin"))) -> dict:
+                        _user: User = Depends(require(Capability.ADMINISTER))) -> dict:
     worker, entry = _managed(worker_id, model_id)
     if entry["needs_token"]:
         raise HTTPException(status_code=409, detail="needs_token")
@@ -271,7 +272,7 @@ async def install_model(worker_id: str, model_id: str,
 
 @router.post("/api/v1/admin/workers/{worker_id}/models/{model_id}/cancel", status_code=202)
 async def cancel_install(worker_id: str, model_id: str,
-                         _user: User = Depends(require_role("admin"))) -> dict:
+                         _user: User = Depends(require(Capability.ADMINISTER))) -> dict:
     worker, _entry = _managed(worker_id, model_id)
     op_id = await _send(worker, "cancel_install", model_id)
     return {"op_id": op_id}
@@ -279,7 +280,7 @@ async def cancel_install(worker_id: str, model_id: str,
 
 @router.delete("/api/v1/admin/workers/{worker_id}/models/{model_id}", status_code=202)
 async def remove_model(worker_id: str, model_id: str,
-                       _user: User = Depends(require_role("admin"))) -> dict:
+                       _user: User = Depends(require(Capability.ADMINISTER))) -> dict:
     # The worker refuses a model that serves a live session or a running job; the
     # refusal arrives as a store_status entry with the reason "in_use".
     worker, _entry = _managed(worker_id, model_id)

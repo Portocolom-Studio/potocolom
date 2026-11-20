@@ -95,7 +95,11 @@ test('watchers share polling until the last stop, which resets state and aborts 
 test('non-admin roles cannot read worker state and a role change stops polling', async (context) => {
 	const { events, watch } = page(context);
 	context.mock.timers.enable({ apis: ['setInterval'] });
-	account.current = { email: 'user@example.com', role: 'user' };
+	account.current = {
+		email: 'user@example.com',
+		role: 'user',
+		capabilities: new Set(['generate', 'edit_own_work', 'view_own_usage'])
+	};
 	const signals: AbortSignal[] = [];
 	const fetcher = context.mock.method(
 		globalThis,
@@ -113,11 +117,19 @@ test('non-admin roles cannot read worker state and a role change stops polling',
 	assert.equal(fetcher.mock.callCount(), 0);
 	assert.equal(worker.online, null);
 
-	account.current = { email: 'admin@example.com', role: 'admin' };
+	account.current = {
+		email: 'admin@example.com',
+		role: 'admin',
+		capabilities: new Set(['administer', 'generate', 'edit_own_work', 'view_own_usage'])
+	};
 	await settle();
 	assert.equal(fetcher.mock.callCount(), 1);
 	assert.equal(worker.online, true);
-	account.current = { email: 'viewer@example.com', role: 'viewer' };
+	account.current = {
+		email: 'viewer@example.com',
+		role: 'viewer',
+		capabilities: new Set()
+	};
 	await settle();
 	assert.equal(signals.at(-1)?.aborted, true);
 	assert.equal(worker.online, null);

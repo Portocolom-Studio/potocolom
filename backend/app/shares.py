@@ -26,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
 from app import db, keyring
-from app.auth import current_user, require_role
+from app.auth import current_user, require
+from app.capabilities import Capability
 from app.manifests import StorableStr
 from app.settings import get_settings
 from app.tables import Asset, AssetShare, Job, User
@@ -133,10 +134,10 @@ class ResolveRequest(BaseModel):
 @router.post("/api/v1/shares", status_code=201)
 async def share(
     request: ShareRequest,
-    user: User = Depends(require_role("member")),
+    user: User = Depends(require(Capability.EDIT_OWN_WORK)),
     session: AsyncSession = Depends(db.get_session),
 ) -> dict:
-    """Minting a public link is a mutation, so it belongs to the user tier.
+    """Minting a public link is a mutation, so it needs edit_own_work.
 
     Revoking one stays open to a viewer: an account demoted while a link was
     live must still be able to take it down.

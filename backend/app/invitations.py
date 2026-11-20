@@ -19,7 +19,8 @@ from starlette.responses import Response
 from app import audit, db, mail, sessions
 from app.accounts import issue_session
 from app.enable import _checked_email
-from app.auth import check_origin, current_principal, require_accounts_mode, require_role
+from app.auth import check_origin, current_principal, require, require_accounts_mode
+from app.capabilities import Capability
 from app.manifests import StorableStr
 from app.passwords import PasswordRejected, hash_password
 from app.settings import get_settings
@@ -64,7 +65,7 @@ class InviteRequest(BaseModel):
 @router.post("/api/v1/invitations", status_code=201)
 async def invite(
     request: InviteRequest,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
     principal: sessions.Resolved = Depends(current_principal),
 ) -> dict:
     if request.role == "admin" and not sessions.is_recent(principal.session):
@@ -118,7 +119,7 @@ async def invite(
     return _minted(invitation_id, address, request.role, token, expires_at)
 
 
-@router.get("/api/v1/invitations", dependencies=[Depends(require_role("admin"))])
+@router.get("/api/v1/invitations", dependencies=[Depends(require(Capability.ADMINISTER))])
 async def open_invitations() -> list[dict]:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -143,7 +144,7 @@ async def open_invitations() -> list[dict]:
 @router.delete("/api/v1/invitations/{invitation_id}", status_code=204)
 async def revoke(
     invitation_id: uuid.UUID,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> Response:
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
@@ -170,7 +171,7 @@ async def revoke(
 @router.post("/api/v1/invitations/{invitation_id}/reveal")
 async def reveal(
     invitation_id: uuid.UUID,
-    admin: User = Depends(require_role("admin")),
+    admin: User = Depends(require(Capability.ADMINISTER)),
 ) -> dict:
     """Re-mints rather than shows: a link nobody can see may have leaked on the
     way, so the copy it replaces has to stop working."""

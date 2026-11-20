@@ -28,6 +28,7 @@ from fastapi import APIRouter, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from app.auth import origin_listed
+from app.capabilities import Capability, capabilities_of
 from app.manifests import (
     FRAME_P95_MAX_MS,
     Manifest,
@@ -96,9 +97,6 @@ FRAME_TOO_LARGE_INTERVAL_SECONDS = 1.0
 # and a principal without permission to spend a realtime slot closes 4403.
 CLOSE_UNAUTHORIZED = 4401
 CLOSE_FORBIDDEN = 4403
-# Only these may consume a slot. A viewer reads their own work; realtime is
-# not reading.
-REALTIME_ROLES = frozenset({"user", "admin"})
 # How long revocation waits for one socket to take its close. A wedged
 # transport must not hold the request that revoked it.
 CLOSE_TIMEOUT = 2.0
@@ -2490,7 +2488,10 @@ async def _handshake_principal(ws: WebSocket) -> Handshake | None:
         return Handshake(close_code=CLOSE_UNAUTHORIZED)
     if resolved is None:
         return Handshake(close_code=CLOSE_UNAUTHORIZED)
-    if resolved.user.role not in REALTIME_ROLES or resolved.user.state != "active":
+    if (
+        Capability.GENERATE not in capabilities_of(resolved.user.role)
+        or resolved.user.state != "active"
+    ):
         return Handshake(close_code=CLOSE_FORBIDDEN)
     return Handshake(user_id=resolved.user.id, auth_session_id=resolved.session.id)
 

@@ -10,7 +10,8 @@ from starlette.responses import Response
 
 from app import audit, db, sessions
 from app.account_lock import hold_the_account
-from app.auth import current_principal, require_accounts_mode, require_role
+from app.auth import current_principal, require, require_accounts_mode
+from app.capabilities import Capability, capabilities_of
 from app.tables import AuthToken, Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
@@ -39,7 +40,7 @@ async def _remaining_administrators(session, excluding: uuid.UUID) -> int:
 async def change_role(
     user_id: uuid.UUID,
     change: RoleChange,
-    actor: User = Depends(require_role("admin")),
+    actor: User = Depends(require(Capability.ADMINISTER)),
     principal: sessions.Resolved = Depends(current_principal),
 ) -> Response:
     if user_id == actor.id:
@@ -81,7 +82,8 @@ async def change_role(
             # A role that cannot generate ends the account's live jobs in this
             # same transaction. The user row is flushed first so its lock
             # precedes the job rows, which precede the journal and the lease.
-            if change.role not in {"user", "admin"} and target.role != change.role:
+            if (Capability.GENERATE not in capabilities_of(change.role)
+                    and target.role != change.role):
                 target.role = change.role
                 await session.flush()
                 await jobs.lock_owned_jobs(session, user_id)

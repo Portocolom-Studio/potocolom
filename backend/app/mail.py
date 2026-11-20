@@ -24,7 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import db
 from app.settings import Settings, get_settings
-from app.auth import require_role
+from app.auth import require
+from app.capabilities import Capability
 from app.tables import MailOutbox, SuppressedAddress, User
 
 logger = logging.getLogger("potocolom.mail")
@@ -263,7 +264,7 @@ router = APIRouter()
 
 
 @router.get("/api/v1/mail/status")
-async def mail_status(_admin: User = Depends(require_role("admin"))) -> dict:
+async def mail_status(_admin: User = Depends(require(Capability.ADMINISTER))) -> dict:
     """What the outbox is doing, for the operator who configured it.
 
     An install whose sends are quietly retrying looks exactly like one with
