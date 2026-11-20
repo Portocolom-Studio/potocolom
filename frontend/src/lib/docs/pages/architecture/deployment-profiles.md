@@ -4,7 +4,7 @@ subtitle: The self-hosted profile, and what changes when you scale it.
 tab: architecture
 group: System
 order: 4
-source: docs/deployment-profiles.md "The profile spectrum", "Enabling accounts on an install that ran without them", "Version migrations within any profile"; docs/architecture.md "Authentication by deployment mode"; docs/connection-handling.md "Connection establishment", "Model store"; docs/decisions.md "Database migrations: gated step in the cloud, automatic self-hosted", "SPA/API compatibility: N-1 through expand-contract", "Retiring something means removing it, and a dropped column does not come back", "First run is decided in the browser through a setup link"; deploy/compose/compose.yml
+source: docs/deployment-profiles.md "The profile spectrum", "Enabling accounts on an install that ran without them", "Version migrations within any profile"; docs/architecture.md "Authentication by deployment mode"; docs/connection-handling.md "Connection establishment", "Model store"; docs/decisions.md "Database migrations: gated step in the cloud, automatic self-hosted", "SPA/API compatibility: N-1 through expand-contract", "Retiring something means removing it, and a dropped column does not come back", "First run is decided in the browser through a setup link", "PostgreSQL decides every new authentication; no positive session cache yet"; deploy/compose/compose.yml
 ---
 
 One codebase builds every deployment. A deployment profile is a set of settings that picks how one install behaves. The self-hosted profile is the one that ships today. Each profile uses the same container images, so a change of profile is a change of settings, not of code.
@@ -68,6 +68,8 @@ The offline switch is `make auth-enable`. It writes the root key ring if it is m
 
 The backend reads no Redis setting and no quota service setting today. The API process keeps its queues and realtime sessions in memory, so run one API process.
 
+In accounts mode, every new request and every realtime admission reads the session in PostgreSQL. A successful lookup is not cached. Logout, a credential change, a role change, and a state change away from active are refused on the next request. An open canvas in this process closes after that change commits, except after a credential change, where the session that made the change keeps its canvas and only the other sessions' canvases close. A change this process did not make is noticed by a sweep about every 30 seconds. That sweep leaves an open canvas up when PostgreSQL cannot be reached. The record is "PostgreSQL decides every new authentication; no positive session cache yet" in [docs/decisions.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md).
+
 ## Upgrades and version rules
 
 ### One version for the whole install
@@ -99,7 +101,7 @@ Each API release tolerates the previous release's frontend build. A browser tab 
 
 ## Scaling a self-hosted install
 
-The shipped compose file runs one API process and one worker service. Adding API processes does not share queues or realtime sessions, because both live in memory in one process. Adding a Redis service does not change this either, because the backend does not read a Redis setting today. The mode is held per API process, so run one API process unless `AUTH_MODE` is pinned to the recorded choice, which a scaled deployment must do.
+The shipped compose file runs one API process and one worker service. Adding API processes does not share queues or realtime sessions, because both live in memory in one process. Adding a Redis service does not change this either, because the backend does not read a Redis setting today, and it does not add a session cache. Authentication stays a PostgreSQL read. A second API process is still refused at startup. The mode is held per API process, so run one API process unless `AUTH_MODE` is pinned to the recorded choice, which a scaled deployment must do.
 
 Scaling out is planned, and its design is in [docs/decisions.md](https://github.com/Portocolom-Studio/potocolom/blob/main/docs/decisions.md) under "Redis topology: one instance, split-ready namespaces". The scheduling and relay parts are on the [GPU scheduling](/docs/architecture/gpu-scheduling) and [realtime loop](/docs/architecture/realtime-loop) pages.
 

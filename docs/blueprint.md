@@ -57,11 +57,11 @@ async def config():
 
 One instance at launch. Every key belongs to exactly one concern, every concern gets its client from its own `REDIS_URL_*` setting, so splitting into multiple servers later is a configuration change. PostgreSQL is always the source of truth; every structure below can be rebuilt from it.
 
-> Shipped status (2026-07-30): **partially implemented.** Generation jobs use `InProcessQueues`, but the backend has no Redis dependency, Redis adapters, realtime admission queue, FrameBus, scheduler lease, shared session state, or invalidation channel. This section is the target governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" in [decisions.md](decisions.md) and the issue "Redis-optional Queues and FrameBus contracts".
+> Shipped status (2026-07-30): **partially implemented.** Generation jobs use `InProcessQueues`, but the backend has no Redis dependency, Redis adapters, realtime admission queue, FrameBus, scheduler lease, shared session state, or invalidation channel. `sessions:{token_hash}` and `invalidate:sessions` are not built. A positive session cache is governed by "PostgreSQL decides every new authentication; no positive session cache yet" in [decisions.md](decisions.md). The queue and relay target is governed by "Realtime and queue Redis seam: optional, behaviorally equivalent" and the issue "Redis-optional Queues and FrameBus contracts".
 
 | Key or channel | Type | TTL | Purpose |
 |---|---|---|---|
-| `sessions:{token_hash}` | hash | 300 s | cache of the session row; miss falls back to PostgreSQL |
+| `sessions:{token_hash}` | hash | 300 s | not built. A positive cache of the session row. Governed by "PostgreSQL decides every new authentication; no positive session cache yet" |
 | `rate:{bucket}:{subject}` | counter | window | rate limit windows per user id or IP |
 | `queue:jobs` | sorted set | none | job ids scored by tier priority then enqueue time |
 | `queue:admission` | sorted set | none | waiting realtime session requests, same scoring |
@@ -70,7 +70,7 @@ One instance at launch. Every key belongs to exactly one concern, every concern 
 | `worker:{worker_id}` | hash | 90 s | connected worker: incarnation, transport_owner_id, region, pool, lifecycle, models, loaded_models, calibrated_slots, slots_in_use, frame_p95_ms, protocol_version, last_seen |
 | `session:{session_id}` | hash | none | authorized realtime state: user_id, auth_session_id, role, quota_subject, model_id, state, tier, region, browser_transport_owner_id, worker_id, worker_incarnation, last_input_ms, enqueued_at_ms, control_generation |
 | `sched:leader` | string | 10 s | scheduler leader lease, value is the replica id |
-| `invalidate:sessions` | pub/sub | n/a | replicas drop cached sessions on logout or revocation |
+| `invalidate:sessions` | pub/sub | n/a | not built. Would tell replicas to drop a cached session. The same decision: pub/sub, when two socket owners exist (#191), only routes close notices and does not decide a request |
 
 `transport_owner_id` identifies the socket-owning API replica before gateway extraction and the socket-owning gateway afterward. This naming follows "Realtime relay: Go gateway required for the 1000-active-session target"; region and pool fields follow "Realtime fleet: regional, pool-partitioned, and warm" and issue #20, "Multi-Worker Scheduling".
 
@@ -204,11 +204,11 @@ resource "aws_lb_target_group" "api" {
 
 ## Authentication
 
-> Shipped status (2026-08-30): **partially implemented.** Sessions, password login, invitation-only registration, Google and GitHub, optional TOTP and the two-mode seam are real; `app/accounts.py`, `app/invitations.py`, `app/oauth.py` and `app/factors.py` are where to read them. The pseudocode below is the designed shape and not the shipped signatures. Absent: the Redis session cache and its invalidation channel, the new-sign-in notification, and the cloud-only age attestation. Different: the login rate limit is implemented, counts in PostgreSQL rather than Redis, which this deployment does not run, and refuses on the identifier bucket alone, because one address here can be a whole NAT (`app/rate_limit.py`, decisions.md); and every primary login, provider sign-ins included, answers a TOTP challenge rather than a session when that account has enrolled a factor.
+> Shipped status (2026-08-30): **partially implemented.** Sessions, password login, invitation-only registration, Google and GitHub, optional TOTP and the two-mode seam are real; `app/accounts.py`, `app/invitations.py`, `app/oauth.py` and `app/factors.py` are where to read them. The pseudocode below is the designed shape and not the shipped signatures. Absent, and not the authority until its acceptance passes: the Redis session cache and its invalidation channel, governed by "PostgreSQL decides every new authentication; no positive session cache yet". Also absent: the new-sign-in notification, and the cloud-only age attestation. Different: the login rate limit is implemented, counts in PostgreSQL rather than Redis, which this deployment does not run, and refuses on the identifier bucket alone, because one address here can be a whole NAT (`app/rate_limit.py`, decisions.md); and every primary login, provider sign-ins included, answers a TOTP challenge rather than a session when that account has enrolled a factor. Every accounts-mode request and every socket admission reads the session row in PostgreSQL.
 
 ### Session middleware
 
-Every request passes one middleware. Opaque token in an httpOnly cookie, hash stored server side, cache in front of PostgreSQL.
+Every accounts-mode request that presents a credential resolves it in PostgreSQL. The block below is the cache shape that was designed and is not built. It is not the authority. "PostgreSQL decides every new authentication; no positive session cache yet" governs it.
 
 ```python
 async def session_middleware(request, call_next):
@@ -226,7 +226,7 @@ async def session_middleware(request, call_next):
     return await call_next(request)
 ```
 
-Logout and revocation delete the row, delete the cache key and publish on `invalidate:sessions` so every replica drops its copy; the five minute cache TTL is only the backstop.
+Logout and revocation set `revoked_at` on the row. They do not delete a cache key, and they do not publish on `invalidate:sessions`. Those two steps belong to the cache shape above, which is not built. A five minute TTL is not a backstop: a missed invalidation would serve a revoked session until it expired.
 
 ### Registration and login
 
@@ -276,7 +276,7 @@ async def oauth_callback(provider, code, state):
 
 ### The mode seam
 
-There are two modes and no provider objects behind them, plus one state before either is chosen. The mode is recorded in PostgreSQL as `unclaimed`, `none` or `accounts`, and the process serves the copy it loaded at startup (`app/auth_mode.py`). `none` resolves every request to the implicit local administrator and `accounts` resolves a request to a session. `auth_mode.sign_in_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
+There are two modes and no provider objects behind them, plus one state before either is chosen. The mode is recorded in PostgreSQL as `unclaimed`, `none` or `accounts`, and the process serves the copy it loaded at startup (`app/auth_mode.py`). `none` resolves every request to the implicit local administrator, and has no session. `accounts` resolves a request to a session by reading the row in PostgreSQL. A successful lookup is not cached. `auth_mode.sign_in_methods` is the only thing that says what the login screen may offer. Password is always in that list under `accounts`; a provider joins it only when it is listed in `OAUTH_PROVIDERS` and its credentials are present, because a button that cannot complete is worse than no button.
 
 ```python
 AUTH_MODE = None         # unset: the database decides; a new install is unclaimed

@@ -152,7 +152,7 @@ flowchart TB
 
 ### The cloud profile in detail
 
-The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: Redis session cache, the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95). Cookie and bearer session resolution in `current_user` is shipped.
+The same picture opened one level: what runs inside the browser and inside each API replica, which Redis namespace serves which concern, and where the private-repo services attach. Every box inside the replica is shared code that also runs self-hosted; the cloud difference is which seam implementation is active. PostgreSQL is always the source of truth; losing Redis degrades features without losing data. This is the cloud target, so some boxes name work that is designed rather than running: the billing and fleet services behind their HTTP boundaries, and the CLIP category at `job_done` (issue #95). Cookie and bearer session resolution in `current_user` is shipped. Accounts mode reads PostgreSQL on every new authentication. A positive session cache is not part of this picture.
 
 ```mermaid
 flowchart TB
@@ -167,7 +167,7 @@ flowchart TB
         ALB["ALB: TLS and routing"]
     end
     subgraph API["API replica: FastAPI, stateless, N copies behind the ALB"]
-        AUTH["current_user dependency and role check<br>accounts modes: session cookie to<br>Redis cache, PostgreSQL on miss"]
+        AUTH["current_user dependency and role check<br>accounts mode: session cookie or bearer<br>resolved in PostgreSQL"]
         REST["REST routers: auth, models,<br>generations, metrics, studio"]
         RELAY["Realtime relay<br>browser WS to worker WS"]
         SCHED["Scheduler leader, Redis lease<br>admission, dispatch, preemption"]
@@ -177,7 +177,7 @@ flowchart TB
     end
     subgraph DATA["Data plane"]
         PG[("RDS PostgreSQL, source of truth:<br>users, sessions, jobs, assets,<br>models, usage_events, gpu_samples")]
-        RED[("ElastiCache Valkey, namespaced:<br>session cache, job and admission<br>queues, rt pub/sub, rate limits")]
+        RED[("ElastiCache Valkey, namespaced:<br>job and admission queues,<br>rt pub/sub, rate limits")]
         S3[("S3 private assets bucket<br>users/ and trial/ prefixes")]
     end
     subgraph POOL["GPU pool: rented machines, RunPod and vast.ai"]
@@ -196,7 +196,6 @@ flowchart TB
     CF -->|"origin fetch under origin access control:<br>the bucket accepts no public requests"| S3
     SPA <-->|"REST and WS, session cookie"| ALB
     ALB --> API
-    AUTH --> RED
     AUTH --> PG
     REST --> PG
     REST --> SES
@@ -222,7 +221,7 @@ In this cloud target, `AUTH` is the authentication seam (`none` short-circuits i
 
 The differences between the two modes are concentrated in four interfaces. Everything else is shared code. The full profile matrix and the migration paths these seams make possible (local to S3 storage, enabling accounts, scaling out with Redis, moving an install into or out of the cloud) are consolidated in [deployment-profiles.md](deployment-profiles.md).
 
-- Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL and cached in Redis in the cloud (the Redis cache is still designed). The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available.
+- Authentication mode: `none` (auto login as a single implicit local administrator) or `accounts` (password always, with Google and GitHub as options inside that mode rather than modes of their own). Logged in state is an opaque random token in an HttpOnly cookie, mapped to a session row in PostgreSQL. Accounts mode reads that row on every new authentication. A positive Redis cache is not built; see "PostgreSQL decides every new authentication; no positive session cache yet" in [decisions.md](decisions.md). The `auth_methods` field of `GET /api/v1/config` tells the frontend which methods are available.
 - Dispatch: work is handed to workers over their persistent connections. Generation jobs and realtime admission use process-local queues today. A Redis queue and shared session scheduler for a worker pool are designed for cloud scale (see GPU scheduling below).
 - Quota: the current backend allows generation without a quota service. A QuotaService interface with reserve, commit and refund operations, and its private billing-service HTTP implementation, are designed but not shipped. This service boundary is also the license boundary.
 - Storage: local filesystem or S3 compatible, behind one interface that yields URLs the frontend can load in both modes. In the cloud those URLs are short lived signed URLs, since assets are private by default (see Content safety and privacy).
@@ -520,9 +519,9 @@ sequenceDiagram
 
 ### Every request after login
 
-There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. Replicas are stateless, so any replica serves any request with one cached session lookup; concurrency scales by adding replicas, and revocation is deleting the session row. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
+There is no gateway or auth proxy: the gate is the `current_user` FastAPI dependency that every user-facing endpoint resolves. In accounts mode that dependency reads the session row in PostgreSQL. Revocation sets `revoked_at` on the row, which the next request sees. The example below is a state-changing call (starring a generation); reads follow the same path without the UPDATE.
 
-> Shipped status (2026-08-31): the dependency, the endpoint and the session half are all real. `AUTH_MODE=accounts` mints an opaque session held in a `__Host-` cookie and stored only as a hash. Revocation is a `revoked_at` on the row plus an explicit close of any realtime socket bound to it, and, since that close only reaches sockets the revoking process is holding, a periodic sweep asks the database which of this process's bound sessions are still live and closes the rest. The sign-in rate limit is implemented, in PostgreSQL rather than Redis: ten attempts per identifier and a queued wait per address, both counted against a digest rather than the value. What the diagram still describes ahead of the code is the Redis session cache, which arrives with the cloud profile.
+> Shipped status (2026-08-31): the dependency, the endpoint and the session half are all real. `AUTH_MODE=accounts` mints an opaque session held in a `__Host-` cookie and stored only as a hash. Revocation is a `revoked_at` on the row plus an explicit close of any realtime socket bound to it, and, since that close only reaches sockets the revoking process is holding, a periodic sweep asks the database which of this process's bound sessions are still live and closes the rest. The sign-in rate limit is implemented, in PostgreSQL rather than Redis: ten attempts per identifier and a queued wait per address, both counted against a digest rather than the value. What the diagram still describes ahead of the code is the Redis rate-limit counter. Session lookup is a PostgreSQL read on every new authentication, governed by "PostgreSQL decides every new authentication; no positive session cache yet".
 
 ```mermaid
 sequenceDiagram
@@ -534,18 +533,12 @@ sequenceDiagram
     B->>LB: POST /api/v1/generations/{id}/star<br>HttpOnly session cookie
     LB->>A: route to any replica, no sticky sessions
     A->>R: rate limit counter, per user<br>(with accounts, issue #5)
-    A->>R: session token lookup
-    alt cache hit
-        R-->>A: user id
-    else cache miss
-        A->>P: SELECT session row
-        P-->>A: user id
-        A->>R: re-cache session
-    end
+    A->>P: SELECT session row by token hash
+    P-->>A: user id, or no row
     A->>P: single row update of jobs.starred_at
     P-->>A: ok
     A-->>B: 204
-    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In accounts mode, an install without Redis<br>reads the session row from PostgreSQL every time.
+    note over A: With AUTH_MODE=none there is no session to look up:<br>every request acts as the single local user.<br>In accounts mode every authentication reads<br>the session row from PostgreSQL.
 ```
 
 ### Adding a new model

@@ -33,7 +33,7 @@ Promoting an account to `admin` needs recent authentication from the caller, and
 
 ## Sessions and cookies
 
-A session token is 32 random bytes. The server stores only its SHA-256 hash, so a copy of the database does not hand out live sessions.
+A session token is 32 random bytes. The server stores only its SHA-256 hash, so a copy of the database does not hand out live sessions. In accounts mode the API reads that row on every request and on every realtime admission. It does not keep a copy of a successful lookup. A revoked or expired token is refused on the next request.
 
 The browser holds two cookies. The names depend on the scheme:
 

@@ -62,6 +62,8 @@ Rejected alternative: a VPN overlay such as Tailscale or WireGuard between the V
 
 ## Sessions: opaque server-side tokens
 
+> **Partly superseded** by "PostgreSQL decides every new authentication; no positive session cache yet" below: the Redis cache of the session row no longer holds. Opaque server-side tokens and the PostgreSQL session row stand.
+
 Logged in state is a random token in an httpOnly cookie (invisible to page JavaScript, so a script injection cannot exfiltrate the session), mapped to a session row in PostgreSQL and cached in Redis in the cloud. This gives instant revocation and a real active-sessions list, which the session management in issue #5 needs; one Redis lookup per request is nothing at the target scale.
 
 Rejected alternative: JWTs. They remove the store lookup, but instant revocation then needs a denylist, which reintroduces the store while keeping the JWT complexity.
@@ -2484,3 +2486,25 @@ Partly supersedes "Unsafe requests in none mode must carry an allowed origin", w
 These four routes now need an `Origin` equal to `PUBLIC_URL` or one of `ALLOWED_ORIGINS`, and an absent one is refused, as on every other route. The check runs before the route body, so a refused request spends no link and charges no rate limit; the mode gates and a body that is not valid JSON still answer first. The minimum FastAPI version is 0.132.0, so the content type check stays as a second barrier. `POST /api/v1/auth/setup/status`, the reset ask and the reset completion hand out no session and are unchanged: a link still proves a capability for them, and they cannot sign a browser in.
 
 Rejected alternatives: relying on the JSON content type alone (a framework default, not a decision of this project, and absent in versions the range allowed); relying on `SameSite` (it is per site, and sibling hosts are the case the origin check exists for); a CSRF token on the sign-in form (a page with no session has nothing to bind it to, and the origin header already answers the question); checking only login (register and setup hand out a session for an account the sender controls just as well).
+
+## PostgreSQL decides every new authentication; no positive session cache yet
+
+Partly supersedes "Sessions: opaque server-side tokens": the opaque token and the PostgreSQL session row stand, and the Redis cache of a successful lookup does not. Deepens "Realtime authorization: bind once, invalidate explicitly" and "Explicit invalidation closes the sockets it can see, and a sweep closes the rest". Issue #1005.
+
+PostgreSQL decides every new authentication, in every profile. An accounts-mode request that presents a cookie or a bearer resolves it with `resolve` (`backend/app/sessions.py:115`), which reads the session row and returns nothing when the row is revoked or past its absolute or idle deadline (`backend/app/sessions.py:128`). `current_principal` calls that after `require_account_dependencies` (`backend/app/auth.py:91`). A socket admission does the same read (`backend/app/realtime.py:2484`). `AUTH_MODE=none` has no session: the HTTP path is the implicit local user (`backend/app/auth.py:122`), and the socket binds that user with no account-session id (`backend/app/realtime.py:2473`).
+
+There is no positive cache of a successful lookup. A shared pub/sub, the work in #191, only routes close notices to the process that holds a socket. It does not decide whether a credential is still valid.
+
+What holds today:
+
+Logout (`backend/app/accounts.py:115`), a role change (`backend/app/roles.py:99`), and a state change away from `active` (`backend/app/states.py:98`) set `revoked_at` in the same transaction as the change. The next request that presents that token is refused, because `resolve` sees the row. A return to `active` does not revoke sessions. A credential change revokes the account's other sessions and replaces the token on the session that made the change, which keeps its id (`backend/app/sessions.py:144`). The old token is refused. That session stays live, and `close_other_sockets` spares its sockets (`backend/app/sessions.py:242`).
+
+The process that committed the revocation closes the sockets it holds after the commit (`backend/app/sessions.py:287`, `backend/app/realtime.py:2801`). A role or state change does the same after its transaction (`backend/app/roles.py:108`, `backend/app/states.py:113`). A revocation this process did not perform, including a write in another process or straight in PostgreSQL, waits for the sweep. The sweep runs every 30 seconds (`backend/app/realtime.py:121`). It closes a revoked socket only after a liveness check succeeds (`backend/app/realtime.py:2868`). While PostgreSQL cannot answer, the sweep closes nothing, so sockets that were already admitted stay open (`backend/app/realtime.py:2870`). A new socket is the other way: the handshake refuses when it cannot resolve (`backend/app/realtime.py:2485`), and a socket about to take a slot is dropped when the second check cannot prove the session (`backend/app/realtime.py:2508`).
+
+One API process owns the sockets. A second process is refused at startup by `pg_try_advisory_lock` on key 184467 (`backend/app/db.py:381`). That guard stays until two owners have passed the acceptance below.
+
+Canvas frames do not look up the session. The frame path checks that the bytes belong to this socket (`backend/app/realtime.py:2620`). `resolve` and `live_among` run at admission (`backend/app/realtime.py:2484`, `backend/app/realtime.py:2600`) and on the sweep (`backend/app/realtime.py:2869`), not on a frame.
+
+A positive cache is not built. The acceptance that would have to pass first, on two owners in cloud-sim, is not built either. It has to show a missed invalidation, a fill that finishes after the revocation, PostgreSQL down (the next authentication answers 503, not 200), Redis down, a rotated session kept under its new token, and a session that was not revoked left alone. It also needs a measured reason: requests per second, p95 authorization time, and pool wait under an expected workload. When the engine or the session factory is missing, `require_account_dependencies` already answers 503 (`backend/app/db.py:235`) before a token is read. A query that fails after the factory exists is an unhandled 500 (`backend/app/security.py:49`), not a cached success. The 503 bar is the rule a future cache must meet. It is not a claim that every database error is already 503.
+
+Rejected alternatives: a 300 second Redis cache of `sessions:{token_hash}`, dropped by a publish on `invalidate:sessions` (a missed message, a subscriber that is down, or a fill that completes after the revocation would serve a revoked session until the TTL); a shorter TTL, which has the same hole on a shorter clock; and checking PostgreSQL on every canvas frame, which "Realtime authorization: bind once, invalidate explicitly" already rejects.
