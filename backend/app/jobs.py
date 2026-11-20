@@ -55,6 +55,9 @@ JOB_QUEUE = "queue:jobs"
 TIER_DEFAULT = 1  # 0 resuming, 1 paid, 2 trial; one tier until billing exists
 DISPATCH_INTERVAL = 0.1  # the scheduler step cadence (docs/blueprint.md)
 JOB_DISPATCH_DEPTH = 2  # queued jobs per worker; overlap encode/upload with denoise
+# The studio submits at most 8 images per action. Four of those bursts is
+# the backlog one account may hold while a worker is offline.
+MAX_OUTSTANDING_JOBS = 32
 
 TERMINAL_STATES = ("succeeded", "failed", "cancelled")
 THUMBNAIL_MAX_EDGE = 384  # thumbnail rendition size (issue #56)
@@ -472,6 +475,18 @@ async def create_generation(
         raise HTTPException(status_code=403, detail="account suspended")
     if principal["role"] not in {"user", "admin"}:
         raise HTTPException(status_code=403, detail="insufficient role")
+    outstanding = await session.scalar(
+        select(func.count()).select_from(Job).where(
+            Job.user_id == user.id,
+            Job.state.in_(("queued", "running")),
+        )
+    )
+    if int(outstanding or 0) >= MAX_OUTSTANDING_JOBS:
+        raise HTTPException(
+            status_code=429,
+            detail="too many generations waiting",
+            headers={"Retry-After": "5"},
+        )
     # In this request's own session: a second one per request lets a burst
     # fill the pool with requests that each wait for their second connection.
     await session.execute(registry.manifest_upsert([persisted]))

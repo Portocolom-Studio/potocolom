@@ -459,6 +459,10 @@
 			return null;
 		}
 		if (!response.ok) {
+			if (response.status === 429) {
+				errorText = t('app.gen.too_many_waiting');
+				return null;
+			}
 			const body: unknown = await response.json().catch(() => null);
 			errorText =
 				body !== null &&

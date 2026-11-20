@@ -2520,3 +2520,12 @@ Partly supersedes the queued-work sentence in "Realtime authorization: bind once
 Rejected alternatives:
 - Tie a job to the session that submitted it. Logout and a session revocation would cancel work the account is still allowed to run, and another session of the same account would not be able to see it.
 - Let a job finish after demotion or suspension. It would keep a worker and a queue place for an account that may no longer generate, and restoring access would not be what restarted it, because it would never have stopped.
+
+## Each account holds a bounded batch backlog
+
+A request-rate limit counts arrivals over a window. It does not stop one account from filling the queue while a GPU is offline, and the jobs ahead of everyone else at the same priority are then all theirs. `POST /api/v1/generations` counts that account's queued and running rows under the account gate, after the role and state check and before it writes. At `MAX_OUTSTANDING_JOBS` (32) it answers 429 `too many generations waiting` with `Retry-After: 5` and inserts nothing. The studio submits at most 8 images per action, so 32 is four of those bursts: enough for one person to keep a batch moving, and a short queue for the next account. A succeeded, failed or cancelled job frees a place. Requeue and recovery do not pass this check, so a retry of work that was already accepted takes no second place. None mode uses the same cap for the implicit user. The count uses the index `jobs_user_state` on `(user_id, state)`. `jobs_user_created` has no state, and an owner with a long history would otherwise be scanned in full while the gate is held. Queue order, the priority class and the two active-or-waiting realtime sockets stay as they are. This is a bound on one account's backlog, not a request rate and not weighted fairness across paid classes.
+
+Rejected alternatives:
+- A Redis counter. The self-hosted profile has no Redis, and the job rows are already the authority a restart has to read.
+- A cap per session. Two sessions of one account would then hold twice the backlog, which is the accumulation this bound exists to stop.
+- A request-rate limit and nothing else. Arrivals over time still leave a growing queue while no worker is taking jobs.

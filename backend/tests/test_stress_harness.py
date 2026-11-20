@@ -14,7 +14,7 @@ SPEC.loader.exec_module(stress)
 
 
 def arguments(**changes):
-    values = {"sessions": 48, "workers": 4, "slots": 8, "churn": 200}
+    values = {"sessions": 48, "workers": 4, "slots": 8, "churn": 200, "jobs": 100}
     values.update(changes)
     return argparse.Namespace(**values)
 
@@ -22,6 +22,9 @@ def arguments(**changes):
 def test_account_pool_covers_the_largest_concurrent_scenario():
     assert stress.accounts_needed(arguments()) == 48
     assert stress.accounts_needed(arguments(sessions=2, workers=2, slots=2, churn=200)) == 20
+    # rest-burst spreads its jobs so no account passes the per-account backlog.
+    burst = arguments(sessions=2, workers=2, slots=2, churn=2, jobs=1000)
+    assert stress.accounts_needed(burst) == stress.burst_accounts(burst) == 32
 
 
 def test_open_all_gives_each_concurrent_browser_a_distinct_account(monkeypatch):
