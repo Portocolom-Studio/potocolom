@@ -453,6 +453,44 @@ def test_offline_recovery_refuses_an_address_that_is_not_an_administrator(accoun
 
 
 @pytest.mark.db
+def test_a_reset_link_minted_for_a_member_refused_after_offline_promotion(accounts):
+    """Reset issuance is not gated; promotion must not leave a mailbox path to
+    an administrator password."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "race-reset@example.com")
+        was = client.portal.call(_hash_of, "race-reset@example.com")
+        token = client.portal.call(recovery.mint_reset, "race-reset@example.com")
+
+        async def promote() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET role = 'admin' WHERE lower(btrim(email)) = :email"),
+                    {"email": "race-reset@example.com"},
+                )
+                await session.commit()
+
+        client.portal.call(promote)
+        answered = client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                               json={"token": token, "password": NEW_PASSWORD})
+        assert answered.status_code == 403
+        assert answered.json()["detail"] == recovery.INVALID_LINK
+        assert client.portal.call(_hash_of, "race-reset@example.com") == was
+
+
+@pytest.mark.db
+def test_a_reset_link_inserted_after_promotion_is_refused(accounts):
+    with TestClient(app, base_url=ORIGIN) as client:
+        client.portal.call(_make, "late-reset@example.com", "admin")
+        was = client.portal.call(_hash_of, "late-reset@example.com")
+        token = client.portal.call(recovery.mint_reset, "late-reset@example.com")
+        answered = client.post("/api/v1/auth/reset/complete", headers={"Origin": ORIGIN},
+                               json={"token": token, "password": NEW_PASSWORD})
+        assert answered.status_code == 403
+        assert answered.json()["detail"] == recovery.INVALID_LINK
+        assert client.portal.call(_hash_of, "late-reset@example.com") == was
+
+
+@pytest.mark.db
 def test_an_admin_recovery_link_sets_a_password_and_returns_to_login(accounts):
     with TestClient(app, base_url=ORIGIN) as client:
         client.portal.call(_make, "boss4@example.com", "admin")

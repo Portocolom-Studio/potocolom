@@ -118,20 +118,47 @@ async def reclaim_restore(email: str) -> str:
     would fix it.
     """
     assert db.session_factory is not None
+    normalized = email.strip().lower()
+    async with db.session_factory() as session:
+        target_id = (await session.execute(
+            select(User.id).where(func.lower(func.btrim(User.email)) == normalized)
+        )).scalar_one_or_none()
+    if target_id is None:
+        raise LookupError(f"no account holds {email}")
     async with db.session_factory() as session:
         async with session.begin():
+            await hold_the_account(session, target_id, wait=True)
+            from app.roles import ROLE_CHANGE_LOCK
+
+            await session.execute(text("SELECT pg_advisory_xact_lock(:key)"),
+                                  {"key": ROLE_CHANGE_LOCK})
             target = (await session.execute(
-                select(User).where(func.lower(func.btrim(User.email)) == email.strip().lower())
+                select(User).where(User.id == target_id,
+                                   func.lower(func.btrim(User.email)) == normalized)
             )).scalar_one_or_none()
             if target is None:
                 raise LookupError(f"no account holds {email}")
             if target.state == "purging":
                 raise LookupError(f"{email} is being purged and cannot be restored")
             was = target.state
+            from app import command_store
+
+            await command_store.erase_realtime_commands(session, target_id)
+            await session.execute(
+                update(AuthToken)
+                .where(AuthToken.user_id == target_id,
+                       AuthToken.purpose.in_(("reset", "recovery", "challenge")),
+                       AuthToken.consumed_at.is_(None))
+                .values(consumed_at=func.now()))
+            await session.execute(
+                update(Session).where(Session.user_id == target_id,
+                                      Session.revoked_at.is_(None))
+                .values(revoked_at=func.now()))
             target.state = "active"
             target.role = "admin"
             target.prior_state = None
             target.deletion_requested_at = None
+    await sessions.close_sockets(target_id)
     return was
 
 
