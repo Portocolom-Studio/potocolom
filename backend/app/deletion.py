@@ -69,7 +69,12 @@ async def request(session: AsyncSession, user_id: uuid.UUID) -> bool:
         return False
     from app import command_store
 
+    # The user update above locked the row. Live jobs lock next, before the
+    # journal and the regional lease, and the cancellation is the same commit.
+    await jobs.lock_owned_jobs(session, user_id)
     await command_store.erase_account_commands(session, {user_id})
+    session.info["cancel_follow_ups"] = await jobs.cancel_owned_in(
+        session, user_id, "account deleted")
     # The mailed capabilities before the sessions, because that is the order
     # operator.collapse deletes them in and the other way round deadlocks
     # against a collapse running while the API serves.
@@ -263,17 +268,16 @@ async def delete_account(
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
     user_id = principal.user.id
+    follow_ups = []
     async with db.session_factory() as session:
         async with session.begin():
             asked = await request(session, user_id)
-            stopping = list((await session.execute(
-                select(Job.id).where(Job.user_id == user_id,
-                                     Job.state.in_(("queued", "running")))
-            )).scalars().all()) if asked else []
+            follow_ups = list(session.info.get("cancel_follow_ups", [])) if asked else []
     if asked:
-        await sessions.close_sockets(user_id)
-        for job_id in stopping:
-            await jobs.cancel(job_id, reason="account deleted")
+        try:
+            await sessions.close_sockets(user_id)
+        finally:
+            await jobs.after_cancel(follow_ups)
         await audit.record(DELETION_REQUESTED, actor=principal.user, target_user_id=user_id)
     response = Response(status_code=204)
     _clear(response)

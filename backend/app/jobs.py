@@ -40,7 +40,7 @@ from sqlalchemy.orm import aliased
 
 from app import audit, db, realtime, registry
 from app.account_lock import hold_the_account
-from app.auth import current_user, require_role
+from app.auth import CANNOT_SIGN_IN, current_user, require_role
 from app.estimates import estimate_gpu_ms
 from app.manifests import StorableStr, storable_text, validate_params
 from app.settings import get_settings
@@ -458,6 +458,20 @@ async def create_generation(
                 status_code=422,
                 detail="model does not support image_to_image or upscale",
             )
+    # Every check above is a read. The account gate is the first lock, and
+    # nothing is written before it: a demotion or a suspension that already
+    # holds the gate commits first, and this request then sees it.
+    await hold_the_account(session, user.id)
+    principal = (await session.execute(
+        text("SELECT role, state FROM users WHERE id = :id"),
+        {"id": user.id},
+    )).mappings().one_or_none()
+    if principal is None or principal["state"] in CANNOT_SIGN_IN:
+        raise HTTPException(status_code=401, detail="authentication required")
+    if principal["state"] == "suspended":
+        raise HTTPException(status_code=403, detail="account suspended")
+    if principal["role"] not in {"user", "admin"}:
+        raise HTTPException(status_code=403, detail="insufficient role")
     # In this request's own session: a second one per request lets a burst
     # fill the pool with requests that each wait for their second connection.
     await session.execute(registry.manifest_upsert([persisted]))
@@ -1432,7 +1446,6 @@ async def unstar_generation(
 async def cancel_generation(
     job_id: uuid.UUID,
     user: User = Depends(current_user),
-    session: AsyncSession = Depends(db.get_session),
 ) -> Response:
     """Stopping your own work needs no role: a viewer whose account was
     demoted mid-generation must still be able to call it off.
@@ -1440,8 +1453,11 @@ async def cancel_generation(
     Idempotent, because the answer to "stop it" and "it already stopped" is
     the same to whoever asked.
     """
-    owner = (await session.execute(
-        select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
+    if db.session_factory is None:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    async with db.session_factory() as session:
+        owner = (await session.execute(
+            select(Job.user_id).where(Job.id == job_id))).scalar_one_or_none()
     if owner is None or (owner != user.id and user.role != "admin"):
         raise HTTPException(status_code=404, detail="no such generation")
     cancelled = await cancel(job_id, reason="cancelled by the owner"
@@ -2458,6 +2474,79 @@ async def mark_failed(job_id: uuid.UUID, reason: str,
     return True
 
 
+@dataclass(frozen=True)
+class CancelFollowUp:
+    job_id: uuid.UUID
+    reason: str
+    fenced: tuple[str, uuid.UUID] | None
+
+
+async def lock_owned_jobs(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Lock this account's live jobs in id order.
+
+    The caller already holds the account gate and the user row. This runs
+    before erase_account_commands, which takes the worker journal and then
+    the regional lease, so a dispatch holding one of these rows waits here
+    and cannot sit behind that lease.
+    """
+    await session.execute(
+        text(
+            "SELECT id FROM jobs WHERE user_id = :user_id "
+            "AND state IN ('queued', 'running') ORDER BY id FOR UPDATE"
+        ),
+        {"user_id": user_id},
+    )
+
+
+async def cancel_owned_in(
+    session: AsyncSession, user_id: uuid.UUID, reason: str,
+) -> list[CancelFollowUp]:
+    """Cancel every live job of this account. The rows are already locked."""
+    rows = (await session.execute(
+        text(
+            "UPDATE jobs SET state = 'cancelled', failure_reason = :reason, "
+            "finished_at = now() WHERE user_id = :user_id "
+            "AND state IN ('queued', 'running') "
+            "RETURNING id, current_dispatch_sequence"
+        ),
+        {"reason": reason, "user_id": user_id},
+    )).mappings().all()
+    fenced: dict[uuid.UUID, tuple[str, uuid.UUID]] = {}
+    paired = [row for row in rows if row["current_dispatch_sequence"]]
+    if paired:
+        clauses = []
+        values: dict = {}
+        for index, row in enumerate(paired):
+            clauses.append(f"(job_id = :job_{index} AND dispatch_sequence = :seq_{index})")
+            values[f"job_{index}"] = row["id"]
+            values[f"seq_{index}"] = row["current_dispatch_sequence"]
+        attempts = (await session.execute(
+            text(
+                "SELECT job_id, worker_id, incarnation FROM job_attempts WHERE "
+                + " OR ".join(clauses)
+            ),
+            values,
+        )).mappings().all()
+        fenced = {
+            row["job_id"]: (row["worker_id"], row["incarnation"]) for row in attempts
+        }
+    return [
+        CancelFollowUp(
+            job_id=row["id"], reason=reason,
+            fenced=fenced.get(row["id"]) if row["current_dispatch_sequence"] else None,
+        )
+        for row in rows
+    ]
+
+
+def _ineligible_reason(principal) -> str:
+    if principal is None or principal["state"] in {"deletion_pending", "purging"}:
+        return "account deleted"
+    if principal["state"] != "active":
+        return "account suspended"
+    return "owner can no longer generate"
+
+
 async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
     """PostgreSQL first, the worker second.
 
@@ -2499,15 +2588,7 @@ async def cancel(job_id: uuid.UUID, reason: str = "cancelled") -> bool:
             job.state = "cancelled"
             job.failure_reason = reason
             job.finished_at = datetime.now(timezone.utc)
-    publish(job_id, {"state": "cancelled", "reason": reason})
-    logger.info("job %s cancelled: %s", job_id, reason)
-    if fenced_worker is not None:
-        from app import realtime
-
-        await realtime.close_fenced_worker(*fenced_worker)
-    entry = inflight.get(job_id)
-    if entry is not None:
-        await _ask_worker_to_stop(job_id, entry)
+    await after_cancel([CancelFollowUp(job_id, reason, fenced_worker)])
     return True
 
 
@@ -2540,6 +2621,40 @@ async def _ask_worker_to_stop(job_id: uuid.UUID, entry: InFlight) -> None:
             "job_id": str(job_id),
             "dispatch_token": entry.dispatch_token,
         })), realtime.CLOSE_TIMEOUT)
+
+
+async def _notify_cancel(work) -> None:
+    try:
+        await asyncio.wait_for(work, realtime.CLOSE_TIMEOUT)
+    except Exception:
+        logger.exception("cancel follow-up failed")
+
+
+async def after_cancel(follow_ups: list[CancelFollowUp]) -> None:
+    """Tell subscribers, then the workers. Never raises.
+
+    Every terminal event is published before any peer is awaited, so one
+    worker that does not close cannot hide another job's cancellation.
+    """
+    try:
+        for follow in follow_ups:
+            publish(follow.job_id, {"state": "cancelled", "reason": follow.reason})
+            logger.info("job %s cancelled: %s", follow.job_id, follow.reason)
+        pending = []
+        seen: set[tuple[str, uuid.UUID]] = set()
+        for follow in follow_ups:
+            if follow.fenced is not None and follow.fenced not in seen:
+                seen.add(follow.fenced)
+                pending.append(_notify_cancel(
+                    realtime.close_fenced_worker(*follow.fenced)))
+            entry = inflight.get(follow.job_id)
+            if entry is not None:
+                pending.append(_notify_cancel(
+                    _ask_worker_to_stop(follow.job_id, entry)))
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    except Exception:
+        logger.exception("cancel notification failed")
 
 
 async def requeue_or_fail(job_id: uuid.UUID, reason: str) -> None:
@@ -2792,20 +2907,78 @@ async def _recover_or_requeue(job_id: uuid.UUID) -> None:
     await requeue_or_fail(job_id, "restart while running")
 
 
+async def _cancel_ineligible_owners() -> None:
+    """End live work whose owner can no longer generate. Owners run in id order."""
+    from app import command_store, command_subjects
+
+    assert db.session_factory is not None
+    async with db.session_factory() as session:
+        owner_ids = list((await session.execute(
+            select(Job.user_id).join(User, User.id == Job.user_id)
+            .where(Job.state.in_(("queued", "running")),
+                   or_(User.role.not_in(("user", "admin")), User.state != "active"))
+            .distinct()
+        )).scalars().all())
+    for user_id in sorted(owner_ids):
+        follow_ups: list[CancelFollowUp] = []
+        async with db.session_factory() as session:
+            async with session.begin():
+                await hold_the_account(session, user_id, wait=True)
+                if await command_subjects.current_owner(session, user_id):
+                    continue
+                principal = (await session.execute(
+                    text("SELECT role, state FROM users WHERE id = :id"),
+                    {"id": user_id},
+                )).mappings().one_or_none()
+                await lock_owned_jobs(session, user_id)
+                await command_store.erase_account_commands(session, {user_id})
+                follow_ups = await cancel_owned_in(
+                    session, user_id, _ineligible_reason(principal))
+        if follow_ups:
+            await after_cancel(follow_ups)
+
+
 async def recover() -> None:
     """Rebuild the queue from job rows after a restart. A running job whose
-    terminal report was receipted is finished from that receipt; any other
-    running job lost its worker reply with the process and gets its retry."""
+    terminal report was receipted is finished from that receipt. Work whose
+    owner can no longer generate is cancelled instead of retried. What is
+    still running then gets the retry it had before receipts existed, and
+    only a row that is still queued is pushed as a hint."""
     assert db.session_factory is not None
     async with db.session_factory() as session:
         rows = await session.execute(
             select(Job).where(Job.state.in_(["queued", "running"])).order_by(Job.created_at)
         )
         pending = list(rows.scalars())
+    tried: set[uuid.UUID] = set()
     for job in pending:
-        if job.state == "running":
-            await _recover_or_requeue(job.id)
+        if job.state != "running":
+            continue
+        tried.add(job.id)
+        # Bounded, and a storage error stays here: the retry pass below is
+        # what turns that failure into a requeue. Requeue does not run yet,
+        # so an ineligible owner is not put back on the queue first.
+        try:
+            async with asyncio.timeout(PENDING_DELETE_TIMEOUT):
+                await _recover_receipted_attempt(job.id)
+        except Exception:
+            logger.exception(
+                "receipt recovery for job %s failed; leaving it for the retry pass",
+                job.id,
+            )
+    await _cancel_ineligible_owners()
+    async with db.session_factory() as session:
+        left = list((await session.execute(
+            select(Job.id, Job.state, Job.created_at)
+            .where(Job.state.in_(("queued", "running")))
+            .order_by(Job.created_at)
+        )).all())
+    for job_id, state, created_at in left:
+        if state == "running" and job_id in tried:
+            await requeue_or_fail(job_id, "restart while running")
+        elif state == "running":
+            await _recover_or_requeue(job_id)
         else:
             await queues.push(
-                JOB_QUEUE, QueueHint(TIER_DEFAULT, job.created_at, str(job.id))
+                JOB_QUEUE, QueueHint(TIER_DEFAULT, created_at, str(job_id))
             )

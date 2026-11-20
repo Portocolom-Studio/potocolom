@@ -16,7 +16,7 @@ from starlette.responses import Response
 from app import audit, db, jobs, sessions
 from app.account_lock import hold_the_account
 from app.auth import require_accounts_mode, require_role
-from app.tables import AuthToken, Job, Session, User
+from app.tables import AuthToken, Session, User
 
 router = APIRouter(dependencies=[Depends(require_accounts_mode)])
 
@@ -57,6 +57,7 @@ async def change_state(
                             detail="an administrator cannot change their own state")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    follow_ups = []
     async with db.session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id)
@@ -78,8 +79,16 @@ async def change_state(
             if change.state != "active":
                 from app import command_store
 
+                # The user row locks before the job rows, and those lock before
+                # the journal and the regional lease inside the erasure.
+                target.state = change.state
+                await session.flush()
+                await jobs.lock_owned_jobs(session, user_id)
                 await command_store.erase_account_commands(session, {user_id})
-            target.state = change.state
+                follow_ups = await jobs.cancel_owned_in(
+                    session, user_id, "account suspended")
+            else:
+                target.state = change.state
             if change.state != "active":
                 # The mailed capabilities before the sessions, because that is
                 # the order operator.collapse deletes them in and the other way
@@ -100,19 +109,15 @@ async def change_state(
                     .where(Session.user_id == user_id, Session.revoked_at.is_(None))
                     .values(revoked_at=func.now())
                 )
-                stopping = list((await session.execute(
-                    select(Job.id).where(Job.user_id == user_id,
-                                         Job.state.in_(("queued", "running")))
-                )).scalars().all())
-            else:
-                stopping = []
     if change.state != "active":
         # After the commit, and outside it. A socket binds its principal at
         # the handshake, and a worker cancellation is a message to somebody
         # else: neither belongs inside a transaction that can still roll back.
-        await sessions.close_sockets(user_id)
-        for job_id in stopping:
-            await jobs.cancel(job_id, reason="account suspended")
+        try:
+            await sessions.close_sockets(user_id)
+        finally:
+            if follow_ups:
+                await jobs.after_cancel(follow_ups)
     await audit.record(STATE_CHANGED, actor=actor, target_user_id=user_id,
                        object_ids=[change.state])
     return Response(status_code=204)

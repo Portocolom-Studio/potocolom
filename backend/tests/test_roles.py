@@ -1,13 +1,16 @@
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app import db, sessions
 from app.main import app
-from app.tables import User
+from app.tables import Job, Model, User
+from tests.test_account_deletion import library
 from tests.test_invitations import _account, _admin, _sign_in, accounts
 
-__all__ = ["accounts"]
+__all__ = ["accounts", "library"]
 
 
 async def _role_of(email: str) -> str:
@@ -233,3 +236,93 @@ def test_a_promotion_on_verified_mail_is_not_marked_attested(accounts):
         rows = client.portal.call(_audit)
     promoted = [row for row in rows if row["action"] == "user.role"]
     assert promoted[0]["object_ids"] == ["admin"]
+
+
+async def _seed_live(owner_id: uuid.UUID, other_id: uuid.UUID):
+    async with db.session_factory() as session:
+        if await session.get(Model, "sd-test") is None:
+            session.add(Model(
+                id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                parameters_schema={"type": "object"}, min_vram_gb=0,
+            ))
+            await session.flush()
+        queued, running, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        for job_id, user_id, state in (
+            (queued, owner_id, "queued"),
+            (running, owner_id, "running"),
+            (other, other_id, "queued"),
+        ):
+            session.add(Job(
+                id=job_id, user_id=user_id, model_id="sd-test",
+                params={"prompt": state}, state=state, attempt=1,
+            ))
+        await session.commit()
+    return queued, running, other
+
+
+@pytest.mark.db
+def test_demotion_to_viewer_cancels_owned_work_before_the_sockets_close(library, monkeypatch):
+    """The role and the cancellations commit together. A close that fails
+    after that commit still finds both jobs cancelled, and nobody else's."""
+    seen: dict = {}
+
+    async def spy(user_id):
+        async with db.session_factory() as session:
+            seen["role"] = await session.scalar(
+                text("SELECT role FROM users WHERE id = :id"), {"id": user_id})
+            seen["jobs"] = list((await session.execute(
+                text("SELECT state, failure_reason FROM jobs WHERE user_id = :id"),
+                {"id": user_id},
+            )).all())
+            seen["other"] = await session.scalar(
+                text("SELECT state FROM jobs WHERE id = :id"), {"id": seen["other_id"]})
+        raise RuntimeError("sockets")
+
+    monkeypatch.setattr(sessions, "close_sockets", spy)
+    with TestClient(app) as client:
+        owner = client.portal.call(_make_member, "demoted-owner@example.com")
+        other = client.portal.call(_make_member, "demoted-other@example.com")
+        _ids = client.portal.call(_seed_live, owner, other)
+        seen["other_id"] = _ids[2]
+        headers = _admin(accounts, client)
+        with pytest.raises(RuntimeError, match="sockets"):
+            _change(client, headers, owner, role="viewer")
+    assert seen["role"] == "viewer"
+    assert len(seen["jobs"]) == 2
+    assert {row[0] for row in seen["jobs"]} == {"cancelled"}
+    assert {row[1] for row in seen["jobs"]} == {"owner can no longer generate"}
+    assert seen["other"] == "queued"
+
+
+async def _make_member(email: str) -> uuid.UUID:
+    from tests.test_totp_flow import _make
+    user = await _make(email)
+    return user.id
+
+
+@pytest.mark.db
+def test_promotion_logout_and_repeating_a_role_keep_queued_work(library):
+    """A job belongs to the account. Logout, a promotion between roles that
+    can both generate, and setting the same role again leave it queued."""
+    with TestClient(app) as client:
+        owner = client.portal.call(_make_member, "kept-owner@example.com")
+        other = client.portal.call(_make_member, "kept-other@example.com")
+        queued, _running, _other = client.portal.call(_seed_live, owner, other)
+        member = _sign_in(client, "kept-owner@example.com")
+        assert client.post("/api/v1/auth/logout", headers=member).status_code == 204
+        assert client.portal.call(_one_state, queued) == "queued"
+
+        headers = _admin(accounts, client, email="kept-admin@example.com")
+        assert _change(client, headers, owner, role="admin", attested=True).status_code == 204
+        assert client.portal.call(_one_state, queued) == "queued"
+        assert _change(client, headers, owner, role="admin", attested=True).status_code == 204
+        assert client.portal.call(_one_state, queued) == "queued"
+        assert _change(client, headers, owner, role="viewer").status_code == 204
+        assert client.portal.call(_one_state, queued) == "cancelled"
+        assert _change(client, headers, owner, role="user").status_code == 204
+        assert client.portal.call(_one_state, queued) == "cancelled"
+
+
+async def _one_state(job_id: uuid.UUID) -> str:
+    async with db.session_factory() as session:
+        return await session.scalar(text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})

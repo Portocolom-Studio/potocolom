@@ -13,12 +13,17 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from sqlalchemy import text
+
 from app import db, jobs, realtime
 from app.main import app
 from app.tables import Asset, Job, UsageEvent
+from tests.test_account_deletion import accounts, library
 from tests.test_jobs import (
     FLEET_HEADERS, fleet_hello, png_bytes, poll_until, put_upload,
 )
+
+__all__ = ["accounts", "library"]
 
 
 @contextmanager
@@ -264,3 +269,66 @@ def test_the_charge_lands_before_the_attempt_is_let_go(monkeypatch):
             while time.monotonic() < deadline and not seen:
                 time.sleep(0.05)
     assert seen == [True]
+
+
+@pytest.mark.db
+def test_a_demoted_owners_late_completion_stores_no_asset_and_keeps_the_charge(library):
+    """Protocol 5: one job is running with its output already uploaded, one is
+    still queued. Demotion cancels both. The running attempt's completion
+    adds no asset, and the GPU time it already spent stays on the row."""
+    from tests.test_account_states import _admin
+    from tests.test_totp_flow import ORIGIN, _csrf, _login, _make
+
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        owner = client.portal.call(_make, "late-owner@example.com")
+        assert _login(client, "late-owner@example.com").status_code == 204
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-demote-late")
+            created = client.post(
+                "/api/v1/generations", headers=_csrf(client),
+                json={"model_id": "sd-test", "params": {"prompt": "running"}},
+            )
+            assert created.status_code == 202, created.text
+            running_id = created.json()["job_id"]
+            dispatch = _wait_dispatch(worker)
+            poll_until(client, running_id, "running")
+            assert put_upload(client, dispatch["upload"], png_bytes(64, 64)).status_code == 200
+            jobs.bump_dispatch_epoch()
+            jobs.wait_dispatch_idle()
+            try:
+                queued = client.post(
+                    "/api/v1/generations", headers=_csrf(client),
+                    json={"model_id": "sd-test", "params": {"prompt": "queued"}},
+                )
+                assert queued.status_code == 202, queued.text
+                queued_id = queued.json()["job_id"]
+                assert client.get(f"/api/v1/generations/{queued_id}",
+                                  headers=_csrf(client)).json()["state"] == "queued"
+                _admin(client, "late-admin@example.com")
+                changed = client.post(
+                    f"/api/v1/users/{owner.id}/role", headers=_csrf(client),
+                    json={"role": "viewer"},
+                )
+                assert changed.status_code == 204, changed.text
+                worker.send_json({
+                    "type": "job_done", "job_id": running_id,
+                    "dispatch_token": dispatch["dispatch_token"],
+                    "gpu_ms": 850, "width": 64, "height": 64,
+                })
+
+                async def charged() -> int | None:
+                    async with db.session_factory() as session:
+                        return await session.scalar(
+                            text("SELECT gpu_ms FROM jobs WHERE id = :id"),
+                            {"id": uuid.UUID(running_id)},
+                        )
+
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and client.portal.call(charged) != 850:
+                    time.sleep(0.05)
+            finally:
+                jobs.resume_dispatch()
+        assert client.portal.call(_assets, running_id) == []
+        assert client.portal.call(charged) == 850
+        assert client.portal.call(_job, running_id).state == "cancelled"
+        assert client.portal.call(_job, queued_id).state == "cancelled"

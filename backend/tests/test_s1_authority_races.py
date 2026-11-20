@@ -19,9 +19,11 @@ from contextlib import ExitStack
 
 import asyncpg
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
 from app import command_store, db, jobs, realtime, sessions as account_sessions, worker_authority
+from app.main import app
 from app.protocol6 import canonical_bytes, validate_message
 from app.settings import get_settings
 from app.tables import User
@@ -35,10 +37,11 @@ from test_fleet_protocol6 import (
     seed_queued_job,
 )
 from test_receipt_recovery import job_failed_from_dispatch
+from test_account_deletion import library
 from test_totp_flow import accounts
 from test_v6_sessions import open_live_session
 
-__all__ = ["accounts"]
+__all__ = ["accounts", "library"]
 
 _EXPIRY = "2.5 seconds"
 
@@ -495,3 +498,133 @@ def test_terminal_report_and_obsolete_ack_finish_in_one_lock_order(monkeypatch):
                 "the floor must still block on the unresolved erased head")
             assert attempt_report == report["report_sequence"], (
                 "the report measurement must be preserved")
+
+
+def _cookie_jar(client) -> dict[str, str]:
+    return {cookie.name: cookie.value for cookie in client.cookies.jar}
+
+
+def _worn(jar: dict[str, str]) -> dict[str, str]:
+    from test_totp_flow import _csrf_for
+    return {**_csrf_for(jar), "Cookie": "; ".join(f"{name}={value}" for name, value in jar.items())}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("event", ["demotion", "suspension"])
+@pytest.mark.parametrize("order", ["before", "after"])
+def test_a_submission_rechecks_authority_under_the_account_gate(
+        library, monkeypatch, event, order):
+    """Both commit orders. Before the gate, the role or state change wins and
+    the submission leaves no row. After admission, the job is created and the
+    change, which waited on the same gate, cancels it."""
+    from test_jobs import FLEET_HEADERS, fleet_hello
+    from test_totp_flow import ORIGIN, _caller, _login, _make
+
+    member_email = f"submit-{event}-{order}@example.com"
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        member = client.portal.call(_make, member_email)
+        client.portal.call(_make, f"admin-{event}-{order}@example.com", "admin")
+        assert _login(client, member_email).status_code == 204
+        member_jar = _cookie_jar(client)
+        # A second login on this client would present the member's cookie and
+        # retire that session. The member's token has to stay live.
+        client.cookies.clear()
+        assert _login(client, f"admin-{event}-{order}@example.com").status_code == 204
+        admin_jar = _cookie_jar(client)
+        arrived = asyncio.Event()
+        release = asyncio.Event()
+        holder: dict = {}
+        real_hold = jobs.hold_the_account
+
+        async def parked(session, user_id, *args, **kwargs):
+            if user_id != member.id or holder.get("used"):
+                return await real_hold(session, user_id, *args, **kwargs)
+            holder["used"] = True
+            if order == "before":
+                arrived.set()
+                await release.wait()
+                return await real_hold(session, user_id, *args, **kwargs)
+            await real_hold(session, user_id, *args, **kwargs)
+            holder["backend"] = await session.scalar(text("SELECT pg_backend_pid()"))
+            arrived.set()
+            await release.wait()
+
+        monkeypatch.setattr(jobs, "hold_the_account", parked)
+        jobs.bump_dispatch_epoch()
+        jobs.wait_dispatch_idle()
+        try:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, f"w-race-{event}-{order}")
+
+                async def submit():
+                    async with _caller() as caller:
+                        return await caller.post(
+                            "/api/v1/generations", headers=_worn(member_jar),
+                            json={"model_id": "sd-test",
+                                  "params": {"prompt": "a race"}},
+                        )
+
+                async def change():
+                    path = (f"/api/v1/users/{member.id}/role" if event == "demotion"
+                            else f"/api/v1/users/{member.id}/state")
+                    body = ({"role": "viewer"} if event == "demotion"
+                            else {"state": "suspended"})
+                    async with _caller() as caller:
+                        return await caller.post(path, headers=_worn(admin_jar), json=body)
+
+                async def race():
+                    submission = asyncio.create_task(submit())
+                    try:
+                        await asyncio.wait_for(arrived.wait(), 3)
+                    except TimeoutError:
+                        response = await submission
+                        raise AssertionError(
+                            "submission finished before the account gate: "
+                            f"{response.status_code} {response.text}"
+                        )
+                    started = None
+                    try:
+                        if order == "before":
+                            changed = await change()
+                            release.set()
+                            response = await submission
+                            return response, changed
+                        started = asyncio.create_task(change())
+                        assert await _wait_holder_blocked(holder, 10)
+                        release.set()
+                        response = await submission
+                        changed = await started
+                        return response, changed
+                    finally:
+                        # A failed assertion must not leave the submission
+                        # parked inside the account gate.
+                        release.set()
+                        await asyncio.gather(
+                            *(task for task in (submission, started) if task is not None),
+                            return_exceptions=True)
+
+                response, changed = client.portal.call(race)
+        finally:
+            jobs.resume_dispatch()
+
+        async def rows():
+            async with db.session_factory() as session:
+                return list((await session.execute(
+                    text("SELECT state, failure_reason FROM jobs WHERE user_id = :id"),
+                    {"id": member.id},
+                )).all())
+
+        stored = client.portal.call(rows)
+    assert changed.status_code == 204, changed.text
+    if order == "before":
+        detail = "insufficient role" if event == "demotion" else "account suspended"
+        assert response.status_code == 403, response.text
+        assert response.json()["detail"] == detail
+        assert stored == []
+    else:
+        reason = ("owner can no longer generate" if event == "demotion"
+                  else "account suspended")
+        assert response.status_code == 202, response.text
+        assert len(stored) == 1
+        assert stored[0][0] == "cancelled"
+        assert stored[0][1] == reason
