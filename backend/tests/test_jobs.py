@@ -3,6 +3,7 @@ real fleet WebSocket. Real inference is the worker's side (worker/tests)."""
 
 import asyncio
 import base64
+import contextvars
 import logging
 import struct
 import threading
@@ -24,6 +25,10 @@ from app.main import app
 from app.manifests import Manifest
 from app.realtime import PROTOCOL_VERSION
 from app.tables import Asset, Job, Model, PendingDelete, UsageEvent, User
+from test_account_deletion import library
+from test_totp_flow import accounts
+
+__all__ = ["accounts", "library"]
 
 FLEET_HEADERS = {"x-fleet-token": "test-fleet-token"}
 
@@ -5446,3 +5451,242 @@ def test_a_sweep_retries_only_rows_that_are_due():
         assert storage.path(future_key).exists(), "a key that was not due got deleted"
         assert client.portal.call(_pending_delete, due_key) is None
         assert client.portal.call(_pending_delete, future_key) is not None
+
+
+def _pause_dispatch():
+    jobs.bump_dispatch_epoch()
+    jobs.wait_dispatch_idle()
+
+
+def _outstanding(user_id) -> int:
+    async def count() -> int:
+        assert db.session_factory is not None
+        async with db.session_factory() as session:
+            found = await session.scalar(
+                select(func.count()).select_from(Job).where(
+                    Job.user_id == user_id,
+                    Job.state.in_(("queued", "running")),
+                )
+            )
+        return int(found or 0)
+
+    return count
+
+
+async def _seed_outstanding(user_id, states: tuple[str, ...]) -> list[uuid.UUID]:
+    """Queued and running rows for one account, and no others left outstanding."""
+    assert db.session_factory is not None
+    ids = [uuid.uuid4() for _ in states]
+    async with db.session_factory() as session:
+        await session.execute(delete(Job).where(Job.state.in_(("queued", "running"))))
+        if await session.get(Model, "sd-test") is None:
+            session.add(Model(
+                id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+            ))
+            await session.flush()
+        for job_id, state in zip(ids, states, strict=True):
+            session.add(Job(
+                id=job_id, user_id=user_id, model_id="sd-test",
+                params={"prompt": state}, state=state, attempt=1,
+            ))
+        await session.commit()
+    return ids
+
+
+def _jar_with_token(jar: dict[str, str], token: str) -> dict[str, str]:
+    copy = dict(jar)
+    name = next(key for key in copy if key.endswith("potocolom_session"))
+    copy[name] = token
+    return copy
+
+
+@pytest.mark.db
+def test_two_sessions_race_for_the_last_place_in_the_batch_backlog(library, monkeypatch):
+    """One account, two sessions, one place left. The second waits on the gate
+    and is refused; another account still gets a place."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql.dml import Insert
+
+    from app import sessions as account_sessions
+    from test_s1_transaction_races import _wait_for_blocker
+    from test_totp_flow import ORIGIN, _caller, _login, _make
+
+    monkeypatch.setattr(jobs, "MAX_OUTSTANDING_JOBS", 2, raising=False)
+    other_manifest = {**MANIFEST, "id": "sd-other", "name": "SD Other"}
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        member = client.portal.call(_make, "backlog-owner@example.com")
+        other = client.portal.call(_make, "backlog-other@example.com")
+        assert _login(client, "backlog-owner@example.com").status_code == 204
+        owner_jar = {cookie.name: cookie.value for cookie in client.cookies.jar}
+        client.cookies.clear()
+        assert _login(client, "backlog-other@example.com").status_code == 204
+        other_jar = {cookie.name: cookie.value for cookie in client.cookies.jar}
+
+        async def mint_second(user_id):
+            async with db.session_factory() as session:
+                user = await session.get(User, user_id)
+                issued = account_sessions.mint_in(session, user, False, True)
+                await session.commit()
+                return issued
+
+        second = client.portal.call(mint_second, member.id)
+        second_jar = _jar_with_token(owner_jar, second.token)
+        arrived = asyncio.Event()
+        release = asyncio.Event()
+        holder: dict = {}
+        real_execute = AsyncSession.execute
+        # Only the first submission parks: the worker's own manifest upsert
+        # after its hello is the same statement and would otherwise park in
+        # its place, outside the account gate.
+        parks = contextvars.ContextVar("parks", default=False)
+
+        async def parked_execute(self, statement, *args, **kwargs):
+            # The count runs before the manifest upsert, so the first session
+            # is parked still holding the account gate and before its insert.
+            if (parks.get() and not holder.get("parked") and isinstance(statement, Insert)
+                    and getattr(statement, "table", None) is not None
+                    and statement.table.name == "models"):
+                holder["parked"] = True
+                holder["backend"] = (
+                    await real_execute(self, text("SELECT pg_backend_pid()"))
+                ).scalar_one()
+                arrived.set()
+                await release.wait()
+            return await real_execute(self, statement, *args, **kwargs)
+
+        _pause_dispatch()
+        try:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello_models(worker, "w-backlog", [MANIFEST, other_manifest])
+                client.portal.call(_seed_outstanding, member.id, ("queued",))
+                monkeypatch.setattr(AsyncSession, "execute", parked_execute)
+
+                async def submit(jar, model_id, park=False):
+                    from test_s1_authority_races import _worn
+                    parks.set(park)
+                    async with _caller() as caller:
+                        return await caller.post(
+                            "/api/v1/generations", headers=_worn(jar),
+                            json={"model_id": model_id, "params": {"prompt": model_id}},
+                        )
+
+                async def race():
+                    first_task = asyncio.create_task(submit(owner_jar, "sd-test", park=True))
+                    second_task = None
+                    try:
+                        try:
+                            await asyncio.wait_for(arrived.wait(), 3)
+                        except TimeoutError:
+                            release.set()
+                            finished = await first_task
+                            raise AssertionError(
+                                "the first submission finished before the backlog count: "
+                                f"{finished.status_code} {finished.text}"
+                            )
+                        second_task = asyncio.create_task(submit(second_jar, "sd-other"))
+                        witnessed = await _wait_for_blocker(holder["backend"])
+                        release.set()
+                        return await first_task, await second_task, witnessed
+                    finally:
+                        release.set()
+                        pending = [first_task]
+                        if second_task is not None:
+                            pending.append(second_task)
+                        await asyncio.gather(*pending, return_exceptions=True)
+
+                first, second_response, witnessed = client.portal.call(race)
+                assert witnessed, (
+                    "the second session did not wait on the account gate: "
+                    f"{second_response.status_code} {second_response.text}"
+                )
+                assert first.status_code == 202, first.text
+                assert second_response.status_code == 429, second_response.text
+                assert second_response.json()["detail"] == "too many generations waiting"
+                assert second_response.headers["retry-after"] == "5"
+                assert client.portal.call(_outstanding(member.id)) == 2
+
+                async def other_post():
+                    from test_s1_authority_races import _worn
+                    async with _caller() as caller:
+                        return await caller.post(
+                            "/api/v1/generations", headers=_worn(other_jar),
+                            json={"model_id": "sd-test", "params": {"prompt": "other"}},
+                        )
+
+                admitted = client.portal.call(other_post)
+                assert admitted.status_code == 202, admitted.text
+                assert client.portal.call(_outstanding(other.id)) == 1
+                assert client.portal.call(_outstanding(member.id)) == 2
+        finally:
+            jobs.resume_dispatch()
+
+
+@pytest.mark.db
+def test_queued_and_running_jobs_count_together_and_a_cancel_frees_a_place(monkeypatch):
+    monkeypatch.setattr(jobs, "MAX_OUTSTANDING_JOBS", 2, raising=False)
+    _pause_dispatch()
+    try:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-backlog-states")
+                queued_id, running_id = client.portal.call(
+                    _seed_outstanding, db.local_user_id, ("queued", "running"))
+                refused = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "over"}},
+                )
+                assert refused.status_code == 429, refused.text
+                assert refused.json()["detail"] == "too many generations waiting"
+                assert refused.headers["retry-after"] == "5"
+                assert client.portal.call(_outstanding(db.local_user_id)) == 2
+                cancelled = client.post(f"/api/v1/generations/{queued_id}/cancel")
+                assert cancelled.status_code == 204, cancelled.text
+                assert client.portal.call(_outstanding(db.local_user_id)) == 1
+                admitted = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "after"}},
+                )
+                assert admitted.status_code == 202, admitted.text
+                assert client.portal.call(_outstanding(db.local_user_id)) == 2
+                assert running_id is not None
+    finally:
+        jobs.resume_dispatch()
+
+
+@pytest.mark.db
+def test_a_restart_in_none_mode_keeps_the_implicit_users_backlog(monkeypatch):
+    """The cap is the rows, so a new process still refuses and a cancel frees one."""
+    monkeypatch.setattr(jobs, "MAX_OUTSTANDING_JOBS", 2, raising=False)
+
+    async def prepare():
+        if not await db.connect():
+            pytest.skip("database unavailable")
+        ids = await _seed_recover_jobs()
+        await db.dispose()
+        return ids
+
+    queued_id, _running_id = run_on_test_loop(prepare())
+    _pause_dispatch()
+    try:
+        with TestClient(app, headers=FLEET_HEADERS) as client:
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                fleet_hello(worker, "w-backlog-restart")
+                assert client.portal.call(_outstanding(db.local_user_id)) == 2
+                refused = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "still full"}},
+                )
+                assert refused.status_code == 429, refused.text
+                assert refused.json()["detail"] == "too many generations waiting"
+                assert refused.headers["retry-after"] == "5"
+                assert client.portal.call(_outstanding(db.local_user_id)) == 2
+                cancelled = client.post(f"/api/v1/generations/{queued_id}/cancel")
+                assert cancelled.status_code == 204, cancelled.text
+                admitted = client.post(
+                    "/api/v1/generations",
+                    json={"model_id": "sd-test", "params": {"prompt": "a place opened"}},
+                )
+                assert admitted.status_code == 202, admitted.text
+    finally:
+        jobs.resume_dispatch()

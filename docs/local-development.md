@@ -203,7 +203,8 @@ It runs six scenarios, or the ones you name with `--scenario`: `sessions`
 (more browsers than slots), `throughput` (every slot live), `worker-churn`
 (workers die and reconnect mid-session), `conn-churn` (sockets that open and
 close fast), `slow-consumer` (a browser that stops reading) and `rest-burst`
-(concurrent `POST /api/v1/generations`). `--seed`, the counts and the
+(concurrent `POST /api/v1/generations`, spread over enough accounts that none
+holds more than its 32-job backlog). `--seed`, the counts and the
 durations fix the schedule, so two runs send the same messages in the same
 order; only timings, send stamps and server-minted ids differ. It prints one
 table and exits 1 if a threshold fails. It measures its API process's resident

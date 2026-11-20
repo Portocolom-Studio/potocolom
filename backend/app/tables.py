@@ -270,6 +270,9 @@ class Model(Base):
 
 class Job(Base):
     __tablename__ = "jobs"
+    # jobs_user_created is (user_id, created_at) and has no state, so the
+    # outstanding count would read an owner's whole history under the gate.
+    __table_args__ = (Index("jobs_user_state", "user_id", "state"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))

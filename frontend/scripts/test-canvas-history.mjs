@@ -10043,6 +10043,92 @@ test('Generate keeps the selected image and its metadata reachable on phones', a
 	}
 });
 
+test('a multi-image generate stops after 429 and keeps the accepted job', async () => {
+	const acceptedId = 'accepted-backlog-1';
+	const message = JSON.parse(
+		await readFile(new URL('../src/lib/i18n/en.json', import.meta.url), 'utf8')
+	)['app.gen.too_many_waiting'];
+	let posts = 0;
+	const accepted = {
+		id: acceptedId,
+		model_id: MODEL.id,
+		source_asset_id: null,
+		params: { prompt: 'a lighthouse at dusk' },
+		state: 'queued',
+		progress: null,
+		gpu_ms: null,
+		input_fetch_ms: null,
+		load_ms: null,
+		postprocess_ms: null,
+		failure_reason: null,
+		created_at: '2026-11-20T12:00:00Z',
+		dispatched_at: null,
+		finished_at: null,
+		starred_at: null,
+		expired_favorite: false,
+		assets: []
+	};
+	const answers = {
+		...stripFixtures(),
+		'/api/v1/generations': {
+			body: (_url, request) => {
+				if (request.method === 'POST') {
+					posts += 1;
+					return posts === 1 ? { job_id: acceptedId } : { detail: 'too many generations waiting' };
+				}
+				return posts > 0 ? [accepted, ...STRIP_HISTORY] : STRIP_HISTORY;
+			},
+			status: (_url, request) => (request.method === 'POST' ? (posts === 1 ? 202 : 429) : 200)
+		},
+		[`/api/v1/generations/${acceptedId}`]: { body: accepted }
+	};
+	const harness = await launchStudio(
+		'en',
+		() => {
+			window.EventSource = class {
+				constructor() {
+					this.readyState = 1;
+				}
+				close() {}
+				addEventListener() {}
+				removeEventListener() {}
+			};
+		},
+		answers,
+		'domcontentloaded'
+	);
+	try {
+		const { page } = harness;
+		await page.waitForSelector('#gen-prompt', { timeout: WAIT_MS });
+		await page.waitForSelector('button[data-strip-thumb="0"]', { timeout: WAIT_MS });
+		await page.type('#gen-prompt', 'a lighthouse at dusk');
+		await page.$eval('#gen-count', (input) => {
+			input.value = '3';
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+		});
+		await page.waitForFunction(
+			() => {
+				const button = document.querySelector('button[type="submit"]');
+				return Boolean(button && !button.disabled && button.textContent.includes('3'));
+			},
+			{ timeout: WAIT_MS }
+		);
+		await page.click('button[type="submit"]');
+		await page.waitForFunction(
+			(expected) => document.querySelector('[role="alert"]')?.textContent === expected,
+			{ timeout: WAIT_MS },
+			message
+		);
+		await page.waitForFunction(
+			() => document.body.innerText.includes('1 in the queue or rendering'),
+			{ timeout: WAIT_MS }
+		);
+		assert.equal(posts, 2, 'the batch stops after the 429 and does not send the third image');
+	} finally {
+		await harness.close();
+	}
+});
+
 // A full first page leaves the strip's Older button showing. The older-page
 // request is answered by `olderAnswer`, a per-path fixture.
 async function openOlderPageFailure(olderAnswer) {

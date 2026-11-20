@@ -1462,6 +1462,7 @@
 	"app.gen.status_queued": "In queue",
 	"app.gen.status_rendering": "Rendering",
 	"app.gen.submit_failed": "The request could not be sent. Try again.",
+	"app.gen.too_many_waiting": "Too many generations are waiting. Try again in a few seconds.",
 	"app.upscale.output_size": "Output {width} x {height}",
 	"strokes.title": "Your strokes are the prompt.",
 	"strokes.body": "Paint rough shapes and say what they are. The model repaints the whole frame while your pen is still moving, so the picture follows your hand and not a queue.",

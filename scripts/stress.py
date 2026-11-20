@@ -27,7 +27,7 @@ import tempfile
 import time
 import uuid
 import zlib
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -35,6 +35,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import websockets
 
+from app.jobs import MAX_OUTSTANDING_JOBS
 from app.realtime import (
     CANVAS_FRAME,
     CLOSE_NO_CAPACITY,
@@ -77,7 +78,13 @@ class Account:
 
 def accounts_needed(args: argparse.Namespace) -> int:
     return max(args.sessions, args.workers * args.slots,
-               min(args.churn, CONNECTION_CONCURRENCY), 2)
+               min(args.churn, CONNECTION_CONCURRENCY), 2, burst_accounts(args))
+
+
+def burst_accounts(args: argparse.Namespace) -> int:
+    # One account may hold MAX_OUTSTANDING_JOBS queued or running jobs, so
+    # the burst is spread over enough accounts to stay under that bound.
+    return max(1, math.ceil(args.jobs / MAX_OUTSTANDING_JOBS))
 
 
 def generated_database_url(base_url: str) -> tuple[str, str]:
@@ -715,15 +722,17 @@ async def slow_consumer(args, rng, report: Report) -> None:
 
 async def rest_burst(args, rng, report: Report) -> None:
     prompts = [f"stress {rng.randrange(10**6)}" for _ in range(args.jobs)]
-    account = args.accounts[0]
-    async with fleet(args, args.workers, args.slots), \
-            httpx.AsyncClient(base_url=args.api, timeout=60,
-                              cookies=account.cookies,
-                              headers={"Origin": args.api,
-                                       "X-CSRF-Token": account.csrf}) as client:
+    async with fleet(args, args.workers, args.slots), AsyncExitStack() as stack:
+        clients = [
+            await stack.enter_async_context(httpx.AsyncClient(
+                base_url=args.api, timeout=60, cookies=account.cookies,
+                headers={"Origin": args.api, "X-CSRF-Token": account.csrf}))
+            for account in args.accounts[:burst_accounts(args)]
+        ]
         started = time.monotonic()
 
-        async def one(prompt: str) -> tuple[int, str, float]:
+        async def one(index: int, prompt: str) -> tuple[int, str, float]:
+            client = clients[index % len(clients)]
             response = await client.post("/api/v1/generations", json={
                 "model_id": MODEL_ID, "params": {"prompt": prompt}})
             if response.status_code != 202:
@@ -737,7 +746,7 @@ async def rest_burst(args, rng, report: Report) -> None:
                     return 202, state, time.monotonic() - started
             return 202, "timeout", 60.0
 
-        results = await asyncio.gather(*(one(prompt) for prompt in prompts))
+        results = await asyncio.gather(*(one(index, prompt) for index, prompt in enumerate(prompts)))
     accepted = sum(status == 202 for status, _, _ in results)
     succeeded = [seconds for _, state, seconds in results if state == "succeeded"]
     report.add("accepted_202", accepted, accepted == args.jobs, f"== {args.jobs}")

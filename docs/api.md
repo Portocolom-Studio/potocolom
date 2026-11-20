@@ -224,6 +224,11 @@ POST /api/v1/generations     user or admin; viewer receives 403
                              exclusive with the diffusion capabilities. A thumbnail cannot be
                              used as source_asset_id and returns 422.
                              202 {"job_id": "..."}
+                             429 "too many generations waiting", with Retry-After: 5, when
+                             this account already holds 32 queued or running jobs.
+                             A succeeded, failed or cancelled job frees a place. The
+                             same cap applies in none mode, to the implicit user.
+                             Requeue and recovery do not take a second place.
                              422 when params fail the model's schema.
                              422 "params: model parameter schema is invalid" when the
                              model's own parameter schema cannot be compiled or

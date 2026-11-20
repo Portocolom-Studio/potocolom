@@ -31,19 +31,19 @@ The fleet socket also carries the worker model store. The API sends `"model_stor
 
 ## Models and generations
 
-| Method | Path                               | Purpose                                                                               |
-| ------ | ---------------------------------- | ------------------------------------------------------------------------------------- |
-| GET    | `/api/v1/models`                   | Registered models, with parameter schemas and GPU-time estimates.                     |
-| POST   | `/api/v1/generations`              | Queue a job: text to image, image to image or upscale. Answers `202` with the job ID. |
-| GET    | `/api/v1/generations`              | The caller's generation history, with cursor paging and filters.                      |
-| GET    | `/api/v1/generations/models`       | Model IDs used by the caller's saved images.                                          |
-| GET    | `/api/v1/generations/{id}`         | One job's state, timings and result asset.                                            |
-| GET    | `/api/v1/generations/{id}/events`  | Server-sent events with job progress, until a final state.                            |
-| POST   | `/api/v1/generations/{id}/cancel`  | Stop a queued or running job. The owner or an admin may call it.                      |
-| POST   | `/api/v1/generations/{id}/star`    | Star one of the caller's generations. Idempotent.                                     |
-| DELETE | `/api/v1/generations/{id}/star`    | Remove the star. Idempotent.                                                          |
-| GET    | `/api/v1/generations/{id}/lineage` | Ancestors, direct children and subtree size of one generation.                        |
-| GET    | `/api/v1/generations/{id}/subtree` | Bounded descendants and render data for one canvas tree.                              |
+| Method | Path                               | Purpose                                                                                                                                                                            |
+| ------ | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/v1/models`                   | Registered models, with parameter schemas and GPU-time estimates.                                                                                                                  |
+| POST   | `/api/v1/generations`              | Queue a job: text to image, image to image or upscale. Answers `202` with the job ID. Answers `429` with `Retry-After: 5` when that account already has 32 queued or running jobs. |
+| GET    | `/api/v1/generations`              | The caller's generation history, with cursor paging and filters.                                                                                                                   |
+| GET    | `/api/v1/generations/models`       | Model IDs used by the caller's saved images.                                                                                                                                       |
+| GET    | `/api/v1/generations/{id}`         | One job's state, timings and result asset.                                                                                                                                         |
+| GET    | `/api/v1/generations/{id}/events`  | Server-sent events with job progress, until a final state.                                                                                                                         |
+| POST   | `/api/v1/generations/{id}/cancel`  | Stop a queued or running job. The owner or an admin may call it.                                                                                                                   |
+| POST   | `/api/v1/generations/{id}/star`    | Star one of the caller's generations. Idempotent.                                                                                                                                  |
+| DELETE | `/api/v1/generations/{id}/star`    | Remove the star. Idempotent.                                                                                                                                                       |
+| GET    | `/api/v1/generations/{id}/lineage` | Ancestors, direct children and subtree size of one generation.                                                                                                                     |
+| GET    | `/api/v1/generations/{id}/subtree` | Bounded descendants and render data for one canvas tree.                                                                                                                           |
 
 ## Assets and files
 

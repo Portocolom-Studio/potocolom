@@ -1462,6 +1462,7 @@
 	"app.gen.status_queued": "En cola",
 	"app.gen.status_rendering": "Creando imagen",
 	"app.gen.submit_failed": "No se ha podido enviar la solicitud. Vuelve a intentarlo.",
+	"app.gen.too_many_waiting": "Hay demasiadas generaciones en espera. Vuelve a intentarlo dentro de unos segundos.",
 	"app.upscale.output_size": "Salida {width} x {height}",
 	"strokes.title": "Tus trazos son el prompt.",
 	"strokes.body": "Dibuja formas a grandes rasgos y di qué son. El modelo repinta el fotograma entero mientras sigues trazando, así que la imagen sigue a tu mano y no a una cola de espera.",
