@@ -1145,6 +1145,7 @@
 	"auth.error.busy": "Sign-in is busy. Try again shortly.",
 	"auth.error.busy_seconds": "Sign-in is busy. Try again in {seconds} seconds.",
 	"auth.error.challenge_ended": "Too many wrong codes. Sign in with your password again.",
+	"auth.error.origin_not_allowed": "This address is not this install's public address. Open potocolom at its PUBLIC_URL, or add this address to ALLOWED_ORIGINS.",
 	"auth.login.forgot": "Forgot your password?",
 	"auth.login.reset_done": "Your password was reset. You can now sign in.",
 	"auth.reset.title": "Reset password",

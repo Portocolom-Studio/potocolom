@@ -70,7 +70,9 @@
 					return;
 				}
 				const parsed = await parseAuthError(response);
-				if (parsed.kind === 'policy') {
+				if (parsed.kind === 'origin_not_allowed') {
+					error = t('auth.error.origin_not_allowed');
+				} else if (parsed.kind === 'policy') {
 					error = t('auth.join.policy');
 				} else if (parsed.kind === 'invalid') {
 					error = t('auth.join.invalid');

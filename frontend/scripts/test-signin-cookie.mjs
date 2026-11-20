@@ -7,7 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
-import { launchChrome } from './browser-kit.mjs';
+import { launchChrome, serveBuild } from './browser-kit.mjs';
 import { newStudioPage } from './studio-test-page.mjs';
 
 const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', import.meta.url)));
@@ -30,6 +30,30 @@ const PASSWORD = 'a real password for the sign-in test 12345';
 const messages = JSON.parse(
 	await readFile(new URL('../src/lib/i18n/en.json', import.meta.url), 'utf8')
 );
+const studioConfig = {
+	auth_methods: ['password'],
+	setup_required: false,
+	billing_enabled: false,
+	languages: ['en', 'es'],
+	banner: null
+};
+
+async function serveMockAuth(handler) {
+	return serveBuild(build, {
+		fallback: 'index.html',
+		api: async (request, response) => {
+			const url = new URL(request.url, 'http://localhost');
+			if (!url.pathname.startsWith('/api/')) return false;
+			const answer = handler(request.method, url.pathname);
+			response.writeHead(answer.status, {
+				'Content-Type': 'application/json',
+				'Cache-Control': 'no-store'
+			});
+			response.end(JSON.stringify(answer.body ?? {}));
+			return true;
+		}
+	});
+}
 
 const pause = (milliseconds) =>
 	new Promise((resolvePause) => setTimeout(resolvePause, milliseconds));
@@ -656,6 +680,134 @@ test('a second-factor request that fails at the network level shows the generic 
 		}
 	} finally {
 		await server.stop();
+	}
+});
+
+test('a password sign-in refused for the origin names PUBLIC_URL and ALLOWED_ORIGINS', async () => {
+	const { server } = await serveMockAuth((method, path) => {
+		if (method === 'GET' && path === '/api/v1/config') return { status: 200, body: studioConfig };
+		if (method === 'POST' && path === '/api/v1/auth/login') {
+			return { status: 403, body: { detail: 'origin not allowed' } };
+		}
+		return { status: 404, body: { detail: 'Not Found' } };
+	});
+	const browser = await launchBrowser();
+	try {
+		const page = await newStudioPage(browser);
+		page.setDefaultTimeout(WAIT_MS);
+		const { port } = server.address();
+		await page.goto(`http://127.0.0.1:${port}/login`, { waitUntil: 'domcontentloaded' });
+		await page.waitForSelector('#login-email');
+		await page.type('#login-email', EMAIL);
+		await page.type('#login-password', PASSWORD);
+		await page.click('button[type="submit"]');
+		await page.waitForFunction(
+			(text) => document.body.innerText.includes(text),
+			{},
+			messages['auth.error.origin_not_allowed']
+		);
+		assert.equal(new URL(page.url()).pathname, '/login');
+	} finally {
+		await browser.close();
+		await new Promise((resolveClose) => server.close(resolveClose));
+	}
+});
+
+test('an origin refusal on the second-factor step does not count as a wrong code', async () => {
+	let totpCalls = 0;
+	const { server } = await serveMockAuth((method, path) => {
+		if (method === 'GET' && path === '/api/v1/config') return { status: 200, body: studioConfig };
+		if (method === 'POST' && path === '/api/v1/auth/login') {
+			return { status: 200, body: { totp_required: true } };
+		}
+		if (method === 'POST' && path === '/api/v1/auth/totp') {
+			totpCalls += 1;
+			if (totpCalls === 10) {
+				return { status: 403, body: { detail: 'origin not allowed' } };
+			}
+			return { status: 403, body: { detail: 'that code is not valid' } };
+		}
+		return { status: 404, body: { detail: 'Not Found' } };
+	});
+	const browser = await launchBrowser();
+	try {
+		const page = await newStudioPage(browser);
+		page.setDefaultTimeout(WAIT_MS);
+		const { port } = server.address();
+		await page.goto(`http://127.0.0.1:${port}/login`, { waitUntil: 'domcontentloaded' });
+		await page.waitForSelector('#login-email');
+		await page.type('#login-email', EMAIL);
+		await page.type('#login-password', PASSWORD);
+		await page.click('button[type="submit"]');
+		await page.waitForSelector('#totp-code');
+		for (let attempt = 0; attempt < 9; attempt += 1) {
+			await page.$eval('#totp-code', (input) => {
+				input.value = '';
+			});
+			await page.type('#totp-code', '000000');
+			await clickButtonText(page, 'Verify');
+			await page.waitForFunction(
+				(text) => document.querySelector('[role="alert"]')?.textContent?.includes(text),
+				{},
+				messages['auth.challenge.invalid']
+			);
+		}
+		await page.$eval('#totp-code', (input) => {
+			input.value = '';
+		});
+		await page.type('#totp-code', '000000');
+		await clickButtonText(page, 'Verify');
+		await page.waitForFunction(
+			(text) => document.body.innerText.includes(text),
+			{},
+			messages['auth.error.origin_not_allowed']
+		);
+		assert.ok(await page.$('#totp-code'), 'the challenge must stay open after an origin refusal');
+		await page.$eval('#totp-code', (input) => {
+			input.value = '';
+		});
+		await page.type('#totp-code', '000000');
+		await clickButtonText(page, 'Verify');
+		await page.waitForFunction(
+			(text) => document.body.innerText.includes(text),
+			{},
+			messages['auth.error.challenge_ended']
+		);
+		assert.equal(await page.$('#totp-code'), null, 'the tenth wrong code ends the challenge');
+	} finally {
+		await browser.close();
+		await new Promise((resolveClose) => server.close(resolveClose));
+	}
+});
+
+test('a join refused for the origin names PUBLIC_URL and ALLOWED_ORIGINS', async () => {
+	const { server } = await serveMockAuth((method, path) => {
+		if (method === 'POST' && path === '/api/v1/auth/register') {
+			return { status: 403, body: { detail: 'origin not allowed' } };
+		}
+		return { status: 404, body: { detail: 'Not Found' } };
+	});
+	const browser = await launchBrowser();
+	try {
+		const page = await newStudioPage(browser);
+		page.setDefaultTimeout(WAIT_MS);
+		const { port } = server.address();
+		await page.goto(`http://127.0.0.1:${port}/join#network-failure-check`, {
+			waitUntil: 'domcontentloaded'
+		});
+		await page.waitForSelector('#join-password');
+		await page.type('#join-password', PASSWORD);
+		await page.type('#join-confirm', PASSWORD);
+		await page.click('button[type="submit"]');
+		await page.waitForFunction(
+			(text) => document.body.innerText.includes(text),
+			{},
+			messages['auth.error.origin_not_allowed']
+		);
+		assert.equal(new URL(page.url()).pathname, '/join');
+	} finally {
+		await browser.close();
+		await new Promise((resolveClose) => server.close(resolveClose));
 	}
 });
 

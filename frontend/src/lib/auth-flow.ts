@@ -75,7 +75,10 @@ export function createSubmitGuard() {
 	};
 }
 
-export type AuthErrorKind = 'invalid' | 'rate_limited' | 'busy' | 'policy' | 'unknown';
+export type AuthErrorKind =
+	'invalid' | 'rate_limited' | 'busy' | 'policy' | 'origin_not_allowed' | 'unknown';
+
+export const ORIGIN_NOT_ALLOWED_DETAIL = 'origin not allowed';
 
 export type AuthError = {
 	kind: AuthErrorKind;
@@ -107,6 +110,9 @@ export async function parseAuthError(response: Response): Promise<AuthError> {
 			message: detail || 'sign-in is busy, try again shortly',
 			retryAfterSeconds
 		};
+	}
+	if (response.status === 403 && detail === ORIGIN_NOT_ALLOWED_DETAIL) {
+		return { kind: 'origin_not_allowed', message: detail };
 	}
 	if (response.status === 403 && detail === 'that code is not valid') {
 		return { kind: 'invalid', message: detail };

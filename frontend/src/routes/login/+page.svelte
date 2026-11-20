@@ -140,6 +140,10 @@
 					return;
 				}
 				const parsed = await parseAuthError(response);
+				if (parsed.kind === 'origin_not_allowed') {
+					error = t('auth.error.origin_not_allowed');
+					return;
+				}
 				if (response.status === 403) {
 					challengeAttempts += 1;
 					if (challengeAttempts >= 10) {
@@ -164,6 +168,7 @@
 	}
 
 	function messageFor(parsed: Awaited<ReturnType<typeof parseAuthError>>): string {
+		if (parsed.kind === 'origin_not_allowed') return t('auth.error.origin_not_allowed');
 		if (parsed.kind === 'rate_limited') {
 			const seconds = parsed.retryAfterSeconds;
 			return seconds
