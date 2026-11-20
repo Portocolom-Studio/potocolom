@@ -625,3 +625,84 @@ def test_an_export_stops_when_the_account_it_belongs_to_does(library):
         # The check before the first generations page is the one that must stop
         # the stream, so the owned job must never have been written out.
         assert str(asset.job_id) not in "".join(produced)
+
+
+async def _seed_live_jobs(owner_id: uuid.UUID, other_id: uuid.UUID):
+    from app.tables import Model
+
+    async with db.session_factory() as session:
+        if await session.get(Model, "sd-test") is None:
+            session.add(Model(
+                id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                parameters_schema={"type": "object"}, min_vram_gb=0,
+            ))
+            await session.flush()
+        ids = []
+        for user_id, state in (
+            (owner_id, "queued"), (owner_id, "running"), (other_id, "queued"),
+        ):
+            job_id = uuid.uuid4()
+            ids.append(job_id)
+            session.add(Job(
+                id=job_id, user_id=user_id, model_id="sd-test",
+                params={"prompt": state}, state=state, attempt=1,
+            ))
+        await session.commit()
+    return ids
+
+
+@pytest.mark.db
+def test_deletion_cancels_owned_work_before_the_sockets_close(library, monkeypatch):
+    """The account stops and its jobs become cancelled in one commit."""
+    from app import sessions
+
+    seen: dict = {}
+
+    async def spy(user_id):
+        async with db.session_factory() as session:
+            seen["state"] = await session.scalar(
+                text("SELECT state FROM users WHERE id = :id"), {"id": user_id})
+            seen["jobs"] = list((await session.execute(
+                text("SELECT state, failure_reason FROM jobs WHERE user_id = :id"),
+                {"id": user_id},
+            )).all())
+            seen["other"] = await session.scalar(
+                text("SELECT state FROM jobs WHERE id = :id"), {"id": seen["other_id"]})
+        raise RuntimeError("sockets")
+
+    monkeypatch.setattr(sessions, "close_sockets", spy)
+    with TestClient(app, base_url=ORIGIN) as client:
+        owner = client.portal.call(_make, "delete-owner@example.com")
+        other = client.portal.call(_make, "delete-other@example.com")
+        seen["other_id"] = client.portal.call(_seed_live_jobs, owner.id, other.id)[2]
+        assert _login(client, "delete-owner@example.com").status_code == 204
+        with pytest.raises(RuntimeError, match="sockets"):
+            client.delete("/api/v1/account", headers=_csrf(client))
+    assert seen["state"] == "deletion_pending"
+    assert len(seen["jobs"]) == 2
+    assert {row[0] for row in seen["jobs"]} == {"cancelled"}
+    assert {row[1] for row in seen["jobs"]} == {"account deleted"}
+    assert seen["other"] == "queued"
+
+
+@pytest.mark.db
+def test_restoring_an_account_does_not_restart_its_cancelled_work(library):
+    with TestClient(app, base_url=ORIGIN) as client:
+        owner = client.portal.call(_make, "restore-owner@example.com")
+        other = client.portal.call(_make, "restore-other@example.com")
+        queued, running, _other = client.portal.call(_seed_live_jobs, owner.id, other.id)
+        assert _login(client, "restore-owner@example.com").status_code == 204
+        assert client.delete("/api/v1/account", headers=_csrf(client)).status_code == 204
+        _admin(client, "restore-admin@example.com")
+        assert client.post(f"/api/v1/users/{owner.id}/restore",
+                           headers=_csrf(client)).status_code == 204
+
+        async def states():
+            async with db.session_factory() as session:
+                return list((await session.execute(
+                    text("SELECT state FROM jobs WHERE id = :queued OR id = :running"),
+                    {"queued": queued, "running": running},
+                )).scalars().all())
+
+        rows = client.portal.call(states)
+    assert set(rows) == {"cancelled"}

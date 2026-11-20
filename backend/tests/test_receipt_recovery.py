@@ -213,6 +213,69 @@ def test_recover_receipted_job_done_succeeds(monkeypatch):
 
 
 @pytest.mark.db
+def test_recover_finishes_a_receipt_and_cancels_a_viewers_queue(monkeypatch):
+    """A committed receipt still finishes the running job. A queued job of an
+    owner who can no longer generate is cancelled and gets no hint."""
+    uploaded = png_bytes(320, 240)
+
+    def before_report(client, command):
+        assert put_upload(client, command["upload"], uploaded).status_code == 200
+
+    def send_report(worker, command, grant):
+        worker.send_json(job_done_from_dispatch(command, grant["grant_nonce"]))
+        receive_report_ack(worker, command["worker_id"], uuid.UUID(command["incarnation"]))
+
+    worker_id = f"viewer-receipt-{uuid.uuid4()}"
+    root_keys(monkeypatch)
+    incarnation = uuid.uuid4()
+    model_id = f"viewer-receipt-model-{uuid.uuid4()}"
+
+    async def noop(_worker, _control):
+        return None
+
+    monkeypatch.setattr(jobs, "on_worker_message", noop)
+    with protocol6_client(worker_id) as client:
+        client.portal.call(worker_authority_acquire)
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            worker.send_json(hello(worker_id, [manifest(model_id)], incarnation=incarnation))
+            worker.receive_json()
+            grant = request_work_grant(worker, worker_id, incarnation)
+            job_id, command = dispatch_acknowledged(
+                client, worker, worker_id, incarnation, model_id)
+            client.portal.call(remove_queue_hint, job_id)
+            before_report(client, command)
+            send_report(worker, command, grant)
+            client.portal.call(wait_for_attempt_state, job_id, "completed")
+
+            async def demote_and_recover():
+                queued_id = uuid.uuid4()
+                async with db.session_factory() as session:
+                    await session.execute(
+                        text("UPDATE users SET role = 'viewer' WHERE id = :id"),
+                        {"id": db.local_user_id},
+                    )
+                    session.add(jobs.Job(
+                        id=queued_id, user_id=db.local_user_id, model_id=model_id,
+                        params={"prompt": "queued"}, state="queued", attempt=1,
+                    ))
+                    await session.commit()
+                await remove_queue_hint(job_id)
+                await jobs.recover()
+                await await_blob_cleanup()
+                return queued_id
+
+            queued_id = client.portal.call(demote_and_recover)
+        finished = client.get(f"/api/v1/generations/{job_id}").json()
+        waiting = client.get(f"/api/v1/generations/{queued_id}").json()
+        assert finished["state"] == "succeeded"
+        assert finished["assets"]
+        assert waiting["state"] == "cancelled"
+        assert waiting["failure_reason"] == "owner can no longer generate"
+        assert client.portal.call(queue_contains_job, queued_id) is False
+        assert client.portal.call(queue_contains_job, job_id) is False
+
+
+@pytest.mark.db
 def test_recover_receipted_job_failed(monkeypatch):
     def send_report(worker, command, grant):
         worker.send_json(job_failed_from_dispatch(command, grant["grant_nonce"]))

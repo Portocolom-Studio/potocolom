@@ -23,6 +23,7 @@ SITES = {
     "states.py": 1,
     "oauth.py": 1,
     "operator.py": 3,
+    "jobs.py": 7,
 }
 
 

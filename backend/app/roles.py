@@ -49,6 +49,7 @@ async def change_role(
         raise HTTPException(status_code=403, detail="an administrator cannot change their own role")
     if db.session_factory is None:
         raise HTTPException(status_code=503, detail="database unavailable")
+    follow_ups = []
     async with db.session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id)
@@ -75,10 +76,21 @@ async def change_role(
                 # offline, so nothing here may produce one.
                 raise HTTPException(status_code=403,
                                     detail="the last administrator cannot be demoted")
-            from app import command_store
+            from app import command_store, jobs
 
-            await command_store.erase_realtime_commands(session, user_id)
-            target.role = change.role
+            # A role that cannot generate ends the account's live jobs in this
+            # same transaction. The user row is flushed first so its lock
+            # precedes the job rows, which precede the journal and the lease.
+            if change.role not in {"user", "admin"} and target.role != change.role:
+                target.role = change.role
+                await session.flush()
+                await jobs.lock_owned_jobs(session, user_id)
+                await command_store.erase_account_commands(session, {user_id})
+                follow_ups = await jobs.cancel_owned_in(
+                    session, user_id, "owner can no longer generate")
+            else:
+                await command_store.erase_realtime_commands(session, user_id)
+                target.role = change.role
             # The mailed capabilities first, then the sessions, because that is
             # the order operator.collapse deletes them in and the other way
             # round deadlocks against a collapse running while the API serves.
@@ -105,7 +117,12 @@ async def change_role(
     # sessions.revoke_all, so the sockets it revoked have to be closed here.
     # They bind their principal once, so a demoted account would otherwise
     # keep drawing on the slot the demotion was performed to take away.
-    await sessions.close_sockets(user_id)
+    try:
+        await sessions.close_sockets(user_id)
+    finally:
+        if follow_ups:
+            from app import jobs
+            await jobs.after_cancel(follow_ups)
     # The attestation is the only evidence a no-mail install has, so the row
     # has to say whether the promotion rested on it or on a verified address.
     await audit.record(ROLE_CHANGED, actor=actor, target_user_id=user_id,

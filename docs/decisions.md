@@ -836,6 +836,8 @@ Rejected alternatives: retaining one region and a shared realtime/batch pool unt
 
 ## Realtime authorization: bind once, invalidate explicitly
 
+> Partly superseded by "Accepted jobs belong to the account and end when it can no longer generate": logout, revocation of one session, and a role change between roles that can both generate do not cancel queued work. Leaving `active`, deletion, and a role that cannot generate do.
+
 Deepens "Sessions: opaque server-side tokens" and "Roles: three tiers on the user row" by applying their identity and role decisions to realtime connections.
 
 Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind user id, account-session id, role, and quota subject from the server-side opaque session. User and admin may create and control realtime sessions; viewer is read-only and cannot consume a slot. Image frames are authorized against the bound connection and session, not by repeating a session-store lookup per frame. Logout, revocation, user disable, deletion, or role change cancels queued work and closes indexed live connections. A gateway validates only short-lived API-minted tickets; the API remains the authority.
@@ -2506,3 +2508,15 @@ Canvas frames do not look up the session. The frame path checks that the bytes b
 A positive cache is not built. The acceptance that would have to pass first, on two owners in cloud-sim, is not built either. It has to show that a revoked token answers 401 after a missed invalidation and after a fill that finishes after the revocation, PostgreSQL down (the next authentication answers 503, not 200), Redis down, a rotated session kept under its new token, and a session that was not revoked left alone. It also needs a measured reason: requests per second, p95 authorization time, and pool wait under an expected workload. When the engine or the session factory is missing, `require_account_dependencies` already answers 503 (`backend/app/db.py:235`) before a token is read. A query that fails after the factory exists is an unhandled 500 (`backend/app/security.py:49`), not a cached success. The 503 bar is the rule a future cache must meet. It is not a claim that every database error is already 503.
 
 Rejected alternatives: a 300 second Redis cache of `sessions:{token_hash}`, dropped by a publish on `invalidate:sessions` (a missed message, a subscriber that is down, or a fill that completes after the revocation would serve a revoked session until the TTL); a shorter TTL, which has the same hole on a shorter clock; and checking PostgreSQL on every canvas frame, which "Realtime authorization: bind once, invalidate explicitly" already rejects.
+
+## Accepted jobs belong to the account and end when it can no longer generate
+
+A generation belongs to the account that submitted it. Logout, revoking one session, rotating a credential, and a role change between `user` and `admin` (or setting the same role again) leave its queued and running jobs in place. A change to a role that cannot generate (`viewer`), an administrator moving the account out of `active`, and a self-service deletion cancel those jobs in the same transaction as the change. The recorded reasons are `owner can no longer generate`, `account suspended`, and `account deleted`. Restoring the role or the account does not start a cancelled job again.
+
+The submission re-reads the role and state under the account gate, after its read-only checks and before it writes, and refuses with the same 401 and 403 the dependencies give. The cancellation locks that account's queued and running jobs in id order before it erases pending commands, so a dispatch that already holds one of those rows waits there and does not sit behind the regional lease. The terminal state and the fence commit together. Workers are told after the commit. A late completion of a cancelled attempt publishes nothing, and on protocol 4 and 5 workers GPU time already spent stays charged. On restart a running job with a committed receipt is finished from that receipt, live work whose owner can no longer generate is cancelled, and only a row that is still queued is pushed as a hint.
+
+Partly supersedes the queued-work sentence in "Realtime authorization: bind once, invalidate explicitly".
+
+Rejected alternatives:
+- Tie a job to the session that submitted it. Logout and a session revocation would cancel work the account is still allowed to run, and another session of the same account would not be able to see it.
+- Let a job finish after demotion or suspension. It would keep a worker and a queue place for an account that may no longer generate, and restoring access would not be what restarted it, because it would never have stopped.

@@ -155,24 +155,24 @@ These routes are for the benchmark script. Every route needs an admin. The sessi
 | POST   | `/api/v1/account/identities/{provider}` | Start linking a provider. Needs recent authentication.                                                   |
 | DELETE | `/api/v1/account/identities/{provider}` | Unlink a provider. Refused when it is the last way in.                                                   |
 | GET    | `/api/v1/account/export`                | Everything the install holds about the account, as streamed JSON, with a link to each image. No secrets. |
-| DELETE | `/api/v1/account`                       | Stop the account now. Its data is purged after 30 days.                                                  |
+| DELETE | `/api/v1/account`                       | Stop the account now and cancel its queued and running jobs. Its data is purged after 30 days.           |
 
 ## Invitations and users
 
 These routes are for admins.
 
-| Method | Path                              | Purpose                                                                     |
-| ------ | --------------------------------- | --------------------------------------------------------------------------- |
-| POST   | `/api/v1/invitations`             | Invite an address to a role. The link is returned once.                     |
-| GET    | `/api/v1/invitations`             | Open invitations, without their links.                                      |
-| DELETE | `/api/v1/invitations/{id}`        | Revoke an open invitation.                                                  |
-| POST   | `/api/v1/invitations/{id}/reveal` | Make a new link and retire the previous one.                                |
-| GET    | `/api/v1/users`                   | Accounts with their role and state. Cursor paging and an email search.      |
-| GET    | `/api/v1/users/{id}`              | One account. The read is audited.                                           |
-| GET    | `/api/v1/users/{id}/generations`  | One account's generations, newest first. Cursor is the last id; empty ends. |
-| POST   | `/api/v1/users/{id}/role`         | Change an account's role.                                                   |
-| POST   | `/api/v1/users/{id}/state`        | Suspend, disable, reactivate or mark an account for deletion.               |
-| POST   | `/api/v1/users/{id}/restore`      | Put back an account that is waiting for deletion, inside its 30-day window. |
+| Method | Path                              | Purpose                                                                                                         |
+| ------ | --------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| POST   | `/api/v1/invitations`             | Invite an address to a role. The link is returned once.                                                         |
+| GET    | `/api/v1/invitations`             | Open invitations, without their links.                                                                          |
+| DELETE | `/api/v1/invitations/{id}`        | Revoke an open invitation.                                                                                      |
+| POST   | `/api/v1/invitations/{id}/reveal` | Make a new link and retire the previous one.                                                                    |
+| GET    | `/api/v1/users`                   | Accounts with their role and state. Cursor paging and an email search.                                          |
+| GET    | `/api/v1/users/{id}`              | One account. The read is audited.                                                                               |
+| GET    | `/api/v1/users/{id}/generations`  | One account's generations, newest first. Cursor is the last id; empty ends.                                     |
+| POST   | `/api/v1/users/{id}/role`         | Change an account's role. A change to `viewer` cancels that account's queued and running jobs.                  |
+| POST   | `/api/v1/users/{id}/state`        | Suspend, disable, reactivate or mark an account for deletion. Leaving `active` cancels queued and running jobs. |
+| POST   | `/api/v1/users/{id}/restore`      | Put back an account that is waiting for deletion, inside its 30-day window.                                     |
 
 ## Audit
 

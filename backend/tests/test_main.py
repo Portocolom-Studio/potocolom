@@ -876,6 +876,12 @@ def test_startup_cancellation_waits_for_receipt_close_before_timeout_fallback(mo
                     mappings=lambda: SimpleNamespace(one_or_none=lambda: None)
                 )
             if self.number == 3:
+                events.append("ineligible-owner-read")
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+            if self.number == 4:
+                events.append("recover-reread")
+                return SimpleNamespace(all=lambda: [(job_id, "running", None)])
+            if self.number == 5:
                 events.append("timeout-fallback-job-read")
                 return SimpleNamespace(
                     scalar_one_or_none=lambda: SimpleNamespace(state="failed")
@@ -940,7 +946,7 @@ def test_startup_cancellation_waits_for_receipt_close_before_timeout_fallback(mo
             assert events.index("timeout-fallback-job-read") < events.index("blob-drained")
             assert events.index("blob-drained") < events.index("engine-disposed")
             assert events.index("engine-disposed") < events.index("guard-released")
-            assert sessions_opened == 3
+            assert sessions_opened == 5
         finally:
             finish_close.set()
             lifespan.cancel()

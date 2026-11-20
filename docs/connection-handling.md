@@ -157,7 +157,7 @@ A protocol 6 hello is a closed shape (`docs/protocol6-vectors.json` is the froze
 
 ### Browser authentication and authorization
 
-Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized. A viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal. They create no admission or worker state. They send an error before closing. Logout, revocation, disable, deletion, or role change closes indexed live connections. Designed: it would also cancel queued work. After gateway extraction, the browser presents a short-lived API-minted ticket. The gateway validates transport admission without taking API authority.
+Authenticate and authorize a browser realtime connection before queueing, reserving quota, or assigning a GPU. Bind the server-derived user, account session, role, and quota subject to the connection. A missing or expired principal is unauthorized. A viewer or other principal without permission to consume a realtime slot is forbidden. Both outcomes are terminal. They create no admission or worker state. They send an error before closing. Logout, revocation, disable, deletion, or role change closes indexed live connections. A demotion to a role that cannot generate, a state change away from active, or a deletion request also cancels the account's queued and running jobs in the same transaction; logout, one revoked session and a change between user and admin keep them. After gateway extraction, the browser presents a short-lived API-minted ticket. The gateway validates transport admission without taking API authority.
 
 > Shipped status: **authentication, authorization, open/ready/frames, update_params, idle release with transparent resume, the per-account session cap, SessionManager, and the studio WebSocket client are implemented.**
 >
@@ -171,6 +171,8 @@ Authenticate and authorize a browser realtime connection before queueing, reserv
 > Logout, disable, deletion, and a role change revoke the account session.
 > That revocation closes the live socket with `4401`.
 > Logout does **not** cancel queued jobs.
+> Leaving `active`, deleting the account, and a demotion to a role that cannot generate cancel queued and running jobs in the same transaction as the change.
+> A role change between roles that can both generate does not.
 > That close walks a socket index inside the process that holds the socket.
 > A revocation in another process reaches nothing.
 > The owning process asks PostgreSQL every thirty seconds which bound account sessions are still live.

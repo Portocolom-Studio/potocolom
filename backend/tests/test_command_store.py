@@ -14,7 +14,7 @@ from app import command_store, db, jobs, worker_authority
 from app.main import app
 from app.protocol6 import canonical_bytes, decode_control, validate_message
 from app.tables import Job, Model
-from test_jobs import put_upload
+from test_account_deletion import library
 from test_fleet_protocol6 import (
     FLEET_HEADERS,
     hello,
@@ -24,6 +24,10 @@ from test_fleet_protocol6 import (
     root_keys,
     seed_queued_job,
 )
+from test_jobs import put_upload
+from test_totp_flow import accounts
+
+__all__ = ["accounts", "library"]
 
 
 @pytest.fixture(autouse=True)
@@ -690,3 +694,329 @@ def test_protocol6_a_claim_whose_outcome_cannot_be_read_keeps_its_entry(monkeypa
             assert job_id in jobs.inflight
             assert job_id not in jobs.lost_jobs
             jobs.inflight.pop(job_id)
+
+
+def _job_manifest(model_id: str) -> dict:
+    return {
+        "id": model_id,
+        "name": model_id,
+        "capabilities": ["text_to_image"],
+        "parameters": {
+            "type": "object",
+            "properties": {"prompt": {"type": "string"}},
+            "required": ["prompt"],
+        },
+        "min_vram_gb": 0,
+    }
+
+
+@pytest.mark.db
+def test_demotion_erases_a_members_protocol6_dispatch(library, monkeypatch):
+    """Demotion fences the attempt: the pending body is gone, the connection
+    is closed, and a late ack publishes nothing."""
+    from app import keyring
+    from test_account_states import _admin
+    from test_fleet_protocol6 import drop_worker_rows
+    from test_totp_flow import ORIGIN, _csrf, _login, _make
+
+    root_keys(monkeypatch)
+    keyring.get_key_ring.cache_clear()
+    worker_id = f"demote-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    model_id = f"demote-model-{uuid.uuid4()}"
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        try:
+            member = client.portal.call(_make, f"{worker_id}@example.com")
+            assert _login(client, f"{worker_id}@example.com").status_code == 204
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as worker:
+                worker.send_json(hello(
+                    worker_id, [_job_manifest(model_id)], incarnation=incarnation))
+                worker.receive_json()
+                request_work_grant(worker, worker_id, incarnation)
+                created = client.post(
+                    "/api/v1/generations", headers=_csrf(client),
+                    json={"model_id": model_id, "params": {"prompt": "a fence"}},
+                )
+                assert created.status_code == 202, created.text
+                job_id = uuid.UUID(created.json()["job_id"])
+                assert client.portal.call(jobs.dispatch, job_id) is True
+                command = worker.receive_json()
+                _admin(client, f"admin-{worker_id}@example.com")
+                changed = client.post(
+                    f"/api/v1/users/{member.id}/role", headers=_csrf(client),
+                    json={"role": "viewer"},
+                )
+                assert changed.status_code == 204, changed.text
+
+                async def inspect():
+                    async with db.session_factory() as session:
+                        row = (await session.execute(
+                            text(
+                                "SELECT state, encrypted_body, key_version, complete_bytes "
+                                "FROM worker_commands WHERE worker_id = :worker_id "
+                                "AND incarnation = :incarnation AND command_sequence = :sequence"
+                            ),
+                            {"worker_id": worker_id, "incarnation": incarnation,
+                             "sequence": command["command_sequence"]},
+                        )).mappings().one()
+                        connection = (await session.execute(
+                            text(
+                                "SELECT closed_at FROM worker_connections "
+                                "WHERE worker_id = :worker_id AND incarnation = :incarnation"
+                            ),
+                            {"worker_id": worker_id, "incarnation": incarnation},
+                        )).mappings().one()
+                        state = await session.scalar(
+                            text("SELECT state FROM jobs WHERE id = :id"), {"id": job_id})
+                        return row, connection, state
+
+                erased, connection, state = client.portal.call(inspect)
+                assert state == "cancelled"
+                assert erased["state"] == "erased"
+                assert erased["encrypted_body"] is None
+                assert erased["key_version"] is None
+                assert erased["complete_bytes"] == 0
+                assert connection["closed_at"] is not None
+                ack = {**command_ack_fields(command), "type": "command_ack",
+                       "status": "accepted"}
+                result = client.portal.call(acknowledge_bound, ack, worker_id, incarnation)
+                assert result.recorded is True
+                assert result.publication is None
+        finally:
+            client.portal.call(drop_worker_rows, worker_id)
+
+
+@pytest.mark.db
+def test_a_stalled_fence_still_publishes_the_other_cancellation(library, monkeypatch):
+    """The first fenced worker never closes. Both jobs' subscribers still
+    receive cancelled, because every terminal event is published first."""
+    import asyncio
+
+    from app import keyring, realtime
+    from test_fleet_protocol6 import drop_worker_rows
+    from test_totp_flow import ORIGIN, _csrf_for, _login, _make, _caller
+
+    root_keys(monkeypatch)
+    keyring.get_key_ring.cache_clear()
+    monkeypatch.setattr(realtime, "CLOSE_TIMEOUT", 30)
+    release = asyncio.Event()
+    real_close = realtime.close_fenced_worker
+
+    async def hang_first(worker_id, incarnation):
+        if not hang_first.hung.is_set():
+            hang_first.hung.set()
+            await release.wait()
+            return
+        await real_close(worker_id, incarnation)
+
+    hang_first.hung = asyncio.Event()
+    monkeypatch.setattr(realtime, "close_fenced_worker", hang_first)
+    stamp = uuid.uuid4().hex[:8]
+    model_id = f"stall-model-{stamp}"
+    left = (f"stall-a-{stamp}", uuid.uuid4())
+    right = (f"stall-b-{stamp}", uuid.uuid4())
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        try:
+            member = client.portal.call(_make, f"stall-{stamp}@example.com")
+            assert _login(client, f"stall-{stamp}@example.com").status_code == 204
+            member_jar = {cookie.name: cookie.value for cookie in client.cookies.jar}
+            client.cookies.clear()
+            client.portal.call(_make, f"stall-admin-{stamp}@example.com", "admin")
+            assert _login(client, f"stall-admin-{stamp}@example.com").status_code == 204
+            admin_jar = {cookie.name: cookie.value for cookie in client.cookies.jar}
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as first, \
+                    client.websocket_connect("/api/v1/fleet") as second:
+                for sock, (worker_id, incarnation) in (
+                    (first, left), (second, right),
+                ):
+                    sock.send_json(hello(
+                        worker_id, [_job_manifest(model_id)], incarnation=incarnation))
+                    sock.receive_json()
+                    request_work_grant(sock, worker_id, incarnation)
+                client.cookies.clear()
+                for name, value in member_jar.items():
+                    client.cookies.set(name, value)
+                job_ids = []
+                for prompt in ("one", "two"):
+                    response = client.post(
+                        "/api/v1/generations", headers=_csrf_for(member_jar),
+                        json={"model_id": model_id, "params": {"prompt": prompt}},
+                    )
+                    assert response.status_code == 202, response.text
+                    job_id = uuid.UUID(response.json()["job_id"])
+                    assert client.portal.call(jobs.dispatch, job_id) is True
+                    job_ids.append(job_id)
+                first.receive_json()
+                second.receive_json()
+
+                async def observe():
+                    queues = []
+                    for job_id in job_ids:
+                        queue = asyncio.Queue(maxsize=1)
+                        jobs.subscribers.setdefault(job_id, []).append(queue)
+                        queues.append(queue)
+
+                    async def demote():
+                        async with _caller() as caller:
+                            return await caller.post(
+                                f"/api/v1/users/{member.id}/role",
+                                headers={**_csrf_for(admin_jar),
+                                         "Cookie": _cookie_header(admin_jar)},
+                                json={"role": "viewer"},
+                            )
+
+                    task = asyncio.create_task(demote())
+                    try:
+                        events = [await asyncio.wait_for(queue.get(), 2) for queue in queues]
+                    finally:
+                        release.set()
+                    response = await task
+                    return response, events
+
+                response, events = client.portal.call(observe)
+            assert response.status_code == 204, response.text
+            assert [event["state"] for event in events] == ["cancelled", "cancelled"]
+            assert hang_first.hung.is_set()
+        finally:
+            for worker_id, _incarnation in (left, right):
+                client.portal.call(drop_worker_rows, worker_id)
+
+
+def _cookie_header(jar: dict[str, str]) -> str:
+    return "; ".join(f"{name}={value}" for name, value in jar.items())
+
+
+@pytest.mark.db
+def test_demotion_waits_for_the_job_row_before_the_regional_lease(library, monkeypatch):
+    """A command for another account in the same region finishes while demotion
+    is still waiting on the job row it has to lock first."""
+    import asyncio
+    import os
+
+    import asyncpg
+
+    from app import keyring
+    from test_fleet_protocol6 import drop_worker_rows
+    from test_s1_authority_races import _wait_holder_blocked
+    from test_totp_flow import ORIGIN, _caller, _csrf_for, _login, _make
+
+    root_keys(monkeypatch)
+    keyring.get_key_ring.cache_clear()
+    stamp = uuid.uuid4().hex[:8]
+    model_id = f"cross-model-{stamp}"
+    worker_a = (f"cross-a-{stamp}", uuid.uuid4())
+    worker_b = (f"cross-b-{stamp}", uuid.uuid4())
+    with TestClient(app, base_url=ORIGIN, headers=FLEET_HEADERS) as client:
+        try:
+            member_a = client.portal.call(_make, f"cross-a-{stamp}@example.com")
+            client.portal.call(_make, f"cross-b-{stamp}@example.com")
+            client.portal.call(_make, f"cross-admin-{stamp}@example.com", "admin")
+            assert _login(client, f"cross-admin-{stamp}@example.com").status_code == 204
+            admin_jar = {cookie.name: cookie.value for cookie in client.cookies.jar}
+            client.cookies.clear()
+            assert _login(client, f"cross-b-{stamp}@example.com").status_code == 204
+            jar_b = {cookie.name: cookie.value for cookie in client.cookies.jar}
+            client.cookies.clear()
+            assert _login(client, f"cross-a-{stamp}@example.com").status_code == 204
+            for name, value in {cookie.name: cookie.value for cookie in client.cookies.jar}.items():
+                client.cookies.set(name, value)
+            client.portal.call(worker_authority.acquire_scheduler_lease)
+            with client.websocket_connect("/api/v1/fleet") as first, \
+                    client.websocket_connect("/api/v1/fleet") as second:
+                for sock, (worker_id, incarnation) in (
+                    (first, worker_a), (second, worker_b),
+                ):
+                    sock.send_json(hello(
+                        worker_id, [_job_manifest(model_id)], incarnation=incarnation))
+                    sock.receive_json()
+                    request_work_grant(sock, worker_id, incarnation)
+                owned = client.post(
+                    "/api/v1/generations", headers=_csrf_for(
+                        {cookie.name: cookie.value for cookie in client.cookies.jar}),
+                    json={"model_id": model_id, "params": {"prompt": "held"}},
+                )
+                assert owned.status_code == 202, owned.text
+                job_a = uuid.UUID(owned.json()["job_id"])
+                assert client.portal.call(jobs.dispatch, job_a) is True
+                took_a = jobs.inflight[job_a].worker.id == worker_a[0]
+                (first if took_a else second).receive_json()
+                queued = client.post(
+                    "/api/v1/generations", headers=_csrf_for(
+                        {cookie.name: cookie.value for cookie in client.cookies.jar}),
+                    json={"model_id": model_id, "params": {"prompt": "queued"}},
+                )
+                assert queued.status_code == 202, queued.text
+                job_queued = uuid.UUID(queued.json()["job_id"])
+                client.cookies.clear()
+                for name, value in jar_b.items():
+                    client.cookies.set(name, value)
+                other = client.post(
+                    "/api/v1/generations", headers=_csrf_for(jar_b),
+                    json={"model_id": model_id, "params": {"prompt": "other"}},
+                )
+                assert other.status_code == 202, other.text
+                job_b = uuid.UUID(other.json()["job_id"])
+
+                async def overlap():
+                    holder = {}
+                    held = asyncio.Event()
+                    release = asyncio.Event()
+                    connection = await asyncpg.connect(os.environ["DATABASE_URL"])
+
+                    async def keep():
+                        try:
+                            holder["backend"] = await connection.fetchval(
+                                "SELECT pg_backend_pid()")
+                            async with connection.transaction():
+                                await connection.fetch(
+                                    "SELECT id FROM jobs WHERE id = $1 FOR UPDATE", job_queued)
+                                held.set()
+                                await release.wait()
+                        finally:
+                            await connection.close()
+
+                    async def demote():
+                        async with _caller() as caller:
+                            return await caller.post(
+                                f"/api/v1/users/{member_a.id}/role",
+                                headers={**_csrf_for(admin_jar),
+                                         "Cookie": _cookie_header(admin_jar)},
+                                json={"role": "viewer"},
+                            )
+
+                    held_task = asyncio.create_task(keep())
+                    demote_task = None
+                    try:
+                        await held.wait()
+                        demote_task = asyncio.create_task(demote())
+                        assert await _wait_holder_blocked(holder, 10)
+                        dispatched = await asyncio.wait_for(jobs.dispatch(job_b), 5)
+                        assert dispatched is True
+                        assert not demote_task.done()
+                        release.set()
+                        response = await demote_task
+                        await held_task
+                        return response
+                    finally:
+                        # A failed assertion must not leave the row holder's
+                        # transaction open or the demotion unjoined.
+                        release.set()
+                        await asyncio.gather(
+                            *(task for task in (held_task, demote_task) if task is not None),
+                            return_exceptions=True)
+
+                response = client.portal.call(overlap)
+                (second if took_a else first).receive_json()
+            assert response.status_code == 204, response.text
+
+            async def state():
+                async with db.session_factory() as session:
+                    return await session.scalar(
+                        text("SELECT state FROM jobs WHERE id = :id"), {"id": job_a})
+
+            assert client.portal.call(state) == "cancelled"
+        finally:
+            for worker_id, _incarnation in (worker_a, worker_b):
+                client.portal.call(drop_worker_rows, worker_id)

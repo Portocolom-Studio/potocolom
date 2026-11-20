@@ -50,13 +50,13 @@ Any other move answers `409`.
 
 - The check and the write happen in one transaction. Setting an account to the state it already has answers `204` and changes nothing, so a retry after a timeout is not a second event.
 - The request cannot set `purging`. The deletion sweep sets it, and only after 30 days.
-- When an account leaves `active`, the server revokes every session it holds, closes its realtime sockets, spends its outstanding reset and recovery links, ends any sign-in still waiting for its second factor, and cancels its queued and running jobs.
+- When an account leaves `active`, the server revokes every session it holds, spends its outstanding reset and recovery links, ends any sign-in still waiting for its second factor, and cancels its queued and running jobs with reason `account suspended`. That cancellation is in the same transaction as the state change. The realtime sockets close after the commit. Restoring the account does not start a cancelled job again.
 - An administrator cannot change their own state, and the last active administrator cannot be suspended. An install with no administrator can only be recovered offline.
 - A suspended account keeps its own work and account settings, and can read them. It cannot change anything, and it cannot hold a GPU slot.
 
 ## Deleting an account
 
-A person deletes their own account with `DELETE /api/v1/account`. That call answers `204` and moves the account to `deletion_pending` at once. The server revokes every session, spends every outstanding link, closes the realtime sockets and cancels the queued and running jobs. Nothing is destroyed yet.
+A person deletes their own account with `DELETE /api/v1/account`. That call answers `204` and moves the account to `deletion_pending` at once. The server revokes every session, spends every outstanding link, and cancels the queued and running jobs with reason `account deleted`, in that same transaction. The realtime sockets close after the commit. Nothing is destroyed yet. A restore does not start a cancelled job again.
 
 The account remembers the state it was in, one level deep. `POST /api/v1/users/{id}/restore` puts it back there and answers `204`. An account that was suspended when it asked for deletion comes back suspended. A restore answers `409` for an account that was never waiting for deletion, and for one that is past its 30-day window.
 

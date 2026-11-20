@@ -10,9 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 
-from app import db
+from app import db, sessions
 from app.main import app
-from app.tables import AssetShare, Session, User
+from app.tables import AssetShare, Job, Model, Session, User
 from tests.test_totp_flow import ORIGIN, _begin, _challenges, _csrf, _login, _make, accounts
 
 __all__ = ["accounts"]
@@ -281,3 +281,67 @@ def test_one_account_cannot_call_off_another_ones_work(accounts):
                 await session.commit()
 
         client.portal.call(clear)
+
+
+async def _clear_jobs() -> None:
+    async with db.session_factory() as session:
+        await session.execute(text("DELETE FROM jobs"))
+        await session.commit()
+
+
+async def _seed_live_jobs(owner_id: uuid.UUID, other_id: uuid.UUID):
+    async with db.session_factory() as session:
+        if await session.get(Model, "sd-test") is None:
+            session.add(Model(
+                id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                parameters_schema={"type": "object"}, min_vram_gb=0,
+            ))
+            await session.flush()
+        ids = []
+        for user_id, state in (
+            (owner_id, "queued"), (owner_id, "running"), (other_id, "queued"),
+        ):
+            job_id = uuid.uuid4()
+            ids.append(job_id)
+            session.add(Job(
+                id=job_id, user_id=user_id, model_id="sd-test",
+                params={"prompt": state}, state=state, attempt=1,
+            ))
+        await session.commit()
+    return ids
+
+
+@pytest.mark.db
+def test_leaving_active_cancels_owned_work_before_the_sockets_close(accounts, monkeypatch):
+    """Suspension and the cancellations commit together. The other account's
+    job is not in that transaction."""
+    seen: dict = {}
+
+    async def spy(user_id):
+        async with db.session_factory() as session:
+            seen["state"] = await session.scalar(
+                text("SELECT state FROM users WHERE id = :id"), {"id": user_id})
+            seen["jobs"] = list((await session.execute(
+                text("SELECT state, failure_reason FROM jobs WHERE user_id = :id"),
+                {"id": user_id},
+            )).all())
+            seen["other"] = await session.scalar(
+                text("SELECT state FROM jobs WHERE id = :id"), {"id": seen["other_id"]})
+        raise RuntimeError("sockets")
+
+    monkeypatch.setattr(sessions, "close_sockets", spy)
+    with TestClient(app, base_url=ORIGIN) as client:
+        try:
+            owner = client.portal.call(_make, "suspended-owner@example.com")
+            other = client.portal.call(_make, "suspended-other@example.com")
+            seen["other_id"] = client.portal.call(_seed_live_jobs, owner.id, other.id)[2]
+            _admin(client)
+            with pytest.raises(RuntimeError, match="sockets"):
+                _set_state(client, owner.id, "suspended")
+        finally:
+            client.portal.call(_clear_jobs)
+    assert seen["state"] == "suspended"
+    assert len(seen["jobs"]) == 2
+    assert {row[0] for row in seen["jobs"]} == {"cancelled"}
+    assert {row[1] for row in seen["jobs"]} == {"account suspended"}
+    assert seen["other"] == "queued"

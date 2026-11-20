@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from conftest import run_on_test_loop
-from sqlalchemy import delete, event, func, select
+from sqlalchemy import delete, event, func, select, text
 from fastapi.testclient import TestClient
 
 from app import db, jobs, realtime, registry
@@ -2488,6 +2488,75 @@ def test_recover_requeues_running_and_dispatches_queued():
             assert second["type"] == "dispatch_job"
             second_id = second["job_id"]
             assert {first_id, second_id} == {str(queued_id), str(running_id)}
+
+
+@pytest.mark.db
+def test_recover_cancels_a_viewers_queued_and_running_jobs():
+    """A restart must not dispatch work whose owner can no longer generate."""
+    async def prepare() -> tuple[uuid.UUID, uuid.UUID]:
+        if not await db.connect():
+            pytest.skip("database unavailable")
+        assert db.session_factory is not None
+        queued_id = uuid.uuid4()
+        running_id = uuid.uuid4()
+        viewer_id = uuid.uuid4()
+        async with db.session_factory() as session:
+            await session.execute(delete(Job).where(Job.state.in_(("queued", "running"))))
+            if await session.get(Model, "sd-test") is None:
+                session.add(Model(
+                    id="sd-test", name="SD Test", capabilities=["text_to_image"],
+                    parameters_schema=MANIFEST["parameters"], min_vram_gb=0,
+                ))
+                await session.flush()
+            session.add(User(
+                id=viewer_id, email=f"viewer-{viewer_id}@example.com",
+                role="viewer", state="active",
+            ))
+            await session.flush()
+            session.add(Job(
+                id=queued_id, user_id=viewer_id, model_id="sd-test",
+                params={"prompt": "queued"}, state="queued", attempt=1,
+            ))
+            session.add(Job(
+                id=running_id, user_id=viewer_id, model_id="sd-test",
+                params={"prompt": "running"}, state="running", attempt=1,
+            ))
+            await session.commit()
+        await db.dispose()
+        return queued_id, running_id
+
+    queued_id, running_id = run_on_test_loop(prepare())
+    with TestClient(app, headers=FLEET_HEADERS) as client:
+        async def states():
+            async with db.session_factory() as session:
+                return {
+                    row[0]: row[1]
+                    for row in (await session.execute(
+                        text("SELECT id, state FROM jobs WHERE id = :queued OR id = :running"),
+                        {"queued": queued_id, "running": running_id},
+                    )).all()
+                }
+
+        found = client.portal.call(states)
+        assert found == {queued_id: "cancelled", running_id: "cancelled"}
+        assert client.portal.call(queue_contains, queued_id) is False
+        assert client.portal.call(queue_contains, running_id) is False
+        with client.websocket_connect("/api/v1/fleet") as worker:
+            fleet_hello(worker, "w-viewer-recover")
+            jobs.bump_dispatch_epoch()
+            jobs.wait_dispatch_idle()
+            jobs.resume_dispatch()
+        assert str(queued_id) not in {
+            hint.id for hint in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+        }
+        assert str(running_id) not in {
+            hint.id for hint in jobs.queues._heaps.get(jobs.JOB_QUEUE, [])
+        }
+
+
+async def queue_contains(job_id: uuid.UUID) -> bool:
+    heap = getattr(jobs.queues, "_heaps", {}).get(jobs.JOB_QUEUE, [])
+    return any(hint.id == str(job_id) for hint in heap)
 
 
 @pytest.mark.db
