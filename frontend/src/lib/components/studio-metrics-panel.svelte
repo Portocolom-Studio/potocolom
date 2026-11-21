@@ -41,6 +41,7 @@
 	import StudioGpuTimelineChart from '$lib/components/studio-gpu-timeline-chart.svelte';
 	import StudioJobStatusChart from '$lib/components/studio-job-status-chart.svelte';
 	import StudioMetricsMine from '$lib/components/studio-metrics-mine.svelte';
+	import StudioMetricsSubject from '$lib/components/studio-metrics-subject.svelte';
 	import StudioSessionModelChart from '$lib/components/studio-session-model-chart.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Skeleton } from '$lib/components/ui/skeleton';
@@ -564,6 +565,8 @@
 		</section>
 	{:else if studio.metricsTab === 'mine'}
 		<StudioMetricsMine />
+	{:else if studio.metricsTab === 'subject'}
+		<StudioMetricsSubject />
 	{:else if sessionsLoading && selectedSession === null}
 		{@render loadingBlock(t('app.metrics.benchmark_loading'), 5)}
 	{:else if sessions.length === 0}

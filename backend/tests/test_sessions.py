@@ -244,3 +244,53 @@ def test_a_stale_session_still_slides_before_it_idles_out(connected, monkeypatch
     now += timedelta(minutes=20)
     assert connected(sessions.resolve(issued.token)) is not None
     assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
+
+
+@pytest.mark.db
+def test_a_billing_session_uses_the_administrator_window(connected, monkeypatch):
+    """Mint, the idle slide, and a rotation all keep the short window.
+
+    Asking to be remembered does not stick, and a row that was remembered
+    anyway is put back on the short window when it rotates.
+    """
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(sessions, "_now", lambda: now)
+    billing = _user(connected, role="billing")
+    issued = connected(sessions.mint(billing, remember_me=True, authenticated=True))
+    row = connected(_row(issued.token))
+    assert row.remember_me is False
+    assert row.absolute_expires_at == now + sessions.ABSOLUTE
+    assert row.idle_expires_at == now + sessions.ADMIN_IDLE
+    assert row.recent_auth_at == now
+    now += timedelta(minutes=25)
+    resolved = connected(sessions.resolve(issued.token))
+    assert resolved is not None and resolved.user.id == billing.id
+    assert connected(_row(issued.token)).idle_expires_at == now + sessions.ADMIN_IDLE
+
+    async def remembered_then_rotated():
+        async with db.session_factory() as session:
+            await session.execute(
+                text("UPDATE sessions SET remember_me = true, "
+                     "idle_expires_at = :idle, absolute_expires_at = :absolute "
+                     "WHERE token_hash = :token"),
+                {"idle": now + sessions.REMEMBER_IDLE,
+                 "absolute": now + sessions.REMEMBER_ABSOLUTE,
+                 "token": sessions.token_hash(issued.token)},
+            )
+            await session.commit()
+        async with db.session_factory() as session:
+            async with session.begin():
+                found = (await session.execute(
+                    select(Session, User)
+                    .join(User, User.id == Session.user_id)
+                    .where(Session.token_hash == sessions.token_hash(issued.token))
+                )).one()
+                return await sessions.rotate_and_revoke_others(
+                    session, sessions.Resolved(session=found[0], user=found[1]))
+
+    rotated_issue = connected(remembered_then_rotated())
+    assert rotated_issue.max_age is None
+    rotated = connected(_row(rotated_issue.token))
+    assert rotated.remember_me is False
+    assert rotated.absolute_expires_at == now + sessions.ABSOLUTE
+    assert rotated.idle_expires_at == now + sessions.ADMIN_IDLE

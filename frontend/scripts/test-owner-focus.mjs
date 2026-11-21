@@ -429,7 +429,7 @@ async function main() {
 				id: '550e8400-e29b-41d4-a716-446655440043',
 				email: 'restricted@example.com',
 				role: 'billing',
-				capabilities: []
+				capabilities: ['view_subject_usage']
 			}
 		};
 		fixture.config = { status: 200, body: { auth_methods: ['password'] } };
@@ -437,7 +437,7 @@ async function main() {
 		const restrictedStart = requests.length;
 		const restricted = await newPage(browser, server, { path: '/app?view=generate' });
 		await restricted.page.waitForFunction(
-			() => document.querySelector('[aria-current="page"]')?.textContent?.trim() === 'Images',
+			() => document.body.textContent.includes('Totals for the one account this one may review'),
 			{ timeout: timeoutMs }
 		);
 		const restrictedRequests = requests.slice(restrictedStart);
@@ -450,8 +450,12 @@ async function main() {
 		assert.equal(restrictedFocus[0], '/api/v1/account');
 		assert.equal(
 			await restricted.page.$eval('[aria-current="page"]', (element) => element.textContent.trim()),
-			'Images',
-			'a direct Generate URL stays on images for an empty capability list'
+			'Metrics',
+			'a direct Generate URL opens Metrics for a billing account'
+		);
+		assert.match(
+			await restricted.page.$eval('body', (element) => element.textContent ?? ''),
+			/Totals for the one account this one may review/
 		);
 		assert.deepEqual(restricted.errors, []);
 		await restricted.page.close();

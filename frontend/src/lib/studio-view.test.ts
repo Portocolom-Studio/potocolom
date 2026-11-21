@@ -120,7 +120,7 @@ test('every view and tab round trips through the URL', () => {
 			view === 'admin'
 				? [...ADMIN_TABS]
 				: view === 'metrics'
-					? ['usage', 'benchmarks', 'mine']
+					? ['usage', 'benchmarks', 'mine', 'subject']
 					: ['usage'];
 		for (const tab of tabs) {
 			const read = readStudioView(at(studioViewSearch('', view, tab)));

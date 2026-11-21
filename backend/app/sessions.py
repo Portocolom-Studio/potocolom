@@ -1,7 +1,7 @@
 """Browser sessions. The row keeps the SHA-256 of the token and nothing else.
 
-An administrator session is the most valuable thing in the install, so it takes
-the short idle window and never the remember-me convenience.
+An administrator session and a billing session take the short idle window
+and never the remember-me convenience.
 """
 
 import hashlib
@@ -23,6 +23,7 @@ REMEMBER_ABSOLUTE = timedelta(days=30)
 REMEMBER_IDLE = timedelta(days=7)
 ADMIN_IDLE = timedelta(minutes=30)
 RECENT_AUTH = timedelta(minutes=30)
+_SHORT_IDLE_ROLES = frozenset({"admin", "billing"})
 TOKEN_BYTES = 32
 TOUCH_INTERVAL = timedelta(minutes=1)
 
@@ -65,6 +66,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _bounds(role: str, remember_me: bool) -> tuple[bool, timedelta | None]:
+    if role in _SHORT_IDLE_ROLES:
+        return False, ADMIN_IDLE
+    if remember_me:
+        return True, REMEMBER_IDLE
+    return False, None
+
+
 def _issued(remembered: bool) -> Issued:
     return Issued(
         token=secrets.token_urlsafe(TOKEN_BYTES),
@@ -82,12 +91,7 @@ def mint_in(db_session: AsyncSession, user: User, remember_me: bool,
     in between, and the revocation that change runs cannot reach a row that is
     not there yet (issue #435).
     """
-    if user.role == "admin":
-        remembered, idle = False, ADMIN_IDLE
-    elif remember_me:
-        remembered, idle = True, REMEMBER_IDLE
-    else:
-        remembered, idle = False, None
+    remembered, idle = _bounds(user.role, remember_me)
     now = _now()
     issued = _issued(remembered)
     db_session.add(Session(
@@ -135,7 +139,7 @@ async def resolve(token: str) -> Resolved | None:
             # move a window that is measured in minutes.
             if row.idle_expires_at is not None:
                 row.idle_expires_at = now + (
-                    ADMIN_IDLE if user.role == "admin" else REMEMBER_IDLE)
+                    ADMIN_IDLE if user.role in _SHORT_IDLE_ROLES else REMEMBER_IDLE)
             row.last_seen_at = now
             await session.commit()
         return Resolved(session=row, user=user)
@@ -212,13 +216,23 @@ async def rotate_and_revoke_others(db_session: AsyncSession, resolved: "Resolved
                Session.revoked_at.is_(None))
         .values(revoked_at=func.now())
     )
-    issued = _issued(resolved.session.remember_me)
+    short = resolved.user.role in _SHORT_IDLE_ROLES
+    remembered = resolved.session.remember_me and not short
+    issued = _issued(remembered)
+    values: dict = {"token_hash": token_hash(issued.token)}
+    # A billing or administrator row that was remembered, or that has no idle
+    # window, is put back on the short policy as the token turns over.
+    if short and (resolved.session.remember_me or resolved.session.idle_expires_at is None):
+        now = _now()
+        values["remember_me"] = False
+        values["absolute_expires_at"] = now + ABSOLUTE
+        values["idle_expires_at"] = now + ADMIN_IDLE
     swapped = (await db_session.execute(
         update(Session)
         .where(Session.id == resolved.session.id,
                Session.token_hash == resolved.session.token_hash,
                Session.revoked_at.is_(None))
-        .values(token_hash=token_hash(issued.token))
+        .values(**values)
         .returning(Session.id)
     )).first()
     if swapped is None:

@@ -7,7 +7,12 @@
 	import { PUBLIC_SITE_MODE } from '$env/static/public';
 	import { apiFetch } from '$lib/api';
 	import { account, type Account } from '$lib/account.svelte';
-	import { openViewFor, presentedCapabilities, sectionNeeds } from '$lib/account-display';
+	import {
+		metricsTabFor,
+		openViewFor,
+		presentedCapabilities,
+		sectionNeeds
+	} from '$lib/account-display';
 	import { probeAccount, type AccountProbeResult } from '$lib/account-probe';
 	import { accountCheckForcesLogin, loginSearchFor } from '$lib/auth-flow';
 	import AppSidebar from '$lib/components/app-sidebar.svelte';
@@ -70,14 +75,10 @@
 		// Fleet and Models only, and its account view is the turn-on card.
 		const localAdmin = account.localModeConfirmed && view === 'admin';
 		const allowedTab = tab === 'fleet' || tab === 'models' ? tab : 'models';
+		const access = presentedCapabilities(account.current, account.localModeConfirmed);
 		studio.shellView = localAdmin
 			? 'admin'
-			: openViewFor(
-					view,
-					tab,
-					presentedCapabilities(account.current, account.localModeConfirmed),
-					account.localModeConfirmed
-				);
+			: openViewFor(view, tab, access, account.localModeConfirmed);
 		if (localAdmin && tab !== allowedTab) {
 			const search = studioViewSearch(page.url.search, 'admin', allowedTab);
 			void goto(`${page.url.pathname}${search}`, {
@@ -88,11 +89,8 @@
 		}
 		// Only the active tabbed view applies its URL tab, and only when it was
 		// not refused, so other views keep their last tab open.
-		if (
-			studio.shellView === 'metrics' &&
-			(tab === 'usage' || tab === 'benchmarks' || tab === 'mine')
-		) {
-			studio.metricsTab = tab;
+		if (studio.shellView === 'metrics') {
+			studio.metricsTab = metricsTabFor(tab, access);
 		}
 		if (
 			studio.shellView === 'admin' &&

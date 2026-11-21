@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select, tuple_, update
+from sqlalchemy import delete, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from starlette.responses import Response, StreamingResponse
@@ -31,6 +31,7 @@ from app.tables import (
     Asset,
     AuthIdentity,
     AuthToken,
+    BillingBinding,
     Job,
     Session,
     UsageEvent,
@@ -137,6 +138,33 @@ async def _export_document(user: User) -> AsyncIterator[str]:
             {"provider": provider, "subject": subject,
              "created_at": created.isoformat() if created else None}
             for provider, subject, created in identities
+        ])
+        bindings = (await session.execute(
+            select(BillingBinding.delegate_user_id, BillingBinding.subject_user_id,
+                   BillingBinding.created_at)
+            .where(or_(BillingBinding.delegate_user_id == user.id,
+                       BillingBinding.subject_user_id == user.id))
+            .order_by(BillingBinding.created_at, BillingBinding.delegate_user_id)
+        )).all()
+        # Ids and the time only. The other account's usage and images stay
+        # in that account's own export.
+        yield ',"billing_bindings":' + json.dumps([
+            {"delegate_user_id": str(delegate), "subject_user_id": str(subject),
+             "created_at": created.isoformat() if created else None}
+            for delegate, subject, created in bindings
+        ])
+        # The bindings this account granted as an administrator: granted_by
+        # names it, so they are its data too. Ids and the time only.
+        grants = (await session.execute(
+            select(BillingBinding.delegate_user_id, BillingBinding.subject_user_id,
+                   BillingBinding.created_at)
+            .where(BillingBinding.granted_by == user.id)
+            .order_by(BillingBinding.created_at, BillingBinding.delegate_user_id)
+        )).all()
+        yield ',"billing_grants":' + json.dumps([
+            {"delegate_user_id": str(delegate), "subject_user_id": str(subject),
+             "created_at": created.isoformat() if created else None}
+            for delegate, subject, created in grants
         ])
         yield ',"usage":['
         first = True
@@ -398,7 +426,9 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
             await session.execute(delete(Job).where(Job.user_id == user_id))
             # Everything else this account owns is ON DELETE CASCADE, and what
             # is not is ON DELETE SET NULL: an invitation it sent outlives it
-            # without naming it. Audit rows carry plain ids with no foreign
+            # without naming it, and a billing binding it granted keeps the
+            # row with granted_by cleared. A binding on either endpoint goes
+            # with that account. Audit rows carry plain ids with no foreign
             # key, so what an administrator did survives the account.
             await session.execute(delete(User).where(User.id == user_id))
     logger.info("purged account %s and the %d objects it owned", user_id, len(keys))

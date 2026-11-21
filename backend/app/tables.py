@@ -19,7 +19,7 @@ class Base(DeclarativeBase):
     type_annotation_map = {datetime: DateTime(timezone=True)}  # timestamptz everywhere
 
 
-ROLES = ("viewer", "user", "admin")
+ROLES = ("viewer", "user", "admin", "billing")
 ACCOUNT_STATES = ("active", "suspended", "disabled", "deletion_pending", "purging")
 INSTALLATION_AUTH_MODES = ("unclaimed", "none", "accounts")
 IDENTITY_PROVIDERS = ("password", "google", "github")
@@ -193,6 +193,30 @@ class Invitation(Base):
     expires_at: Mapped[datetime]
     accepted_at: Mapped[datetime | None]
     revoked_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class BillingBinding(Base):
+    """One billing account reviews one named account.
+
+    The delegate holds the billing role. The subject is a member or an
+    administrator. Either of those accounts going away takes the row with
+    it. The grantor's id clears when only that administrator is purged.
+    """
+
+    __tablename__ = "billing_bindings"
+    __table_args__ = (
+        CheckConstraint("delegate_user_id <> subject_user_id",
+                        name="billing_bindings_distinct"),
+        UniqueConstraint("subject_user_id", name="billing_bindings_one_subject"),
+    )
+
+    delegate_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    subject_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"))
+    granted_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 

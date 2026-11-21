@@ -706,3 +706,107 @@ def test_restoring_an_account_does_not_restart_its_cancelled_work(library):
 
         rows = client.portal.call(states)
     assert set(rows) == {"cancelled"}
+
+
+@pytest.mark.db
+def test_an_export_lists_only_that_accounts_billing_binding(library):
+    from tests.test_roles import _change, _subject
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        delegate = client.portal.call(_make, "export-delegate@example.com", "user")
+        subject = client.portal.call(_make, "export-subject@example.com", "user")
+        stranger = client.portal.call(_make, "export-stranger@example.com", "user")
+        client.portal.call(_usage, subject.id, "subject-usage-model")
+        client.portal.call(_usage, delegate.id, "delegate-usage-model")
+        _admin(client)
+        headers = _csrf(client)
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+        # A second binding must not leak into either export.
+        other = client.portal.call(_make, "export-other-delegate@example.com", "billing")
+        other_subject = client.portal.call(_make, "export-other-subject@example.com", "user")
+        assert _subject(client, headers, other.id, other_subject.id).status_code == 200
+        grantor_body = client.get("/api/v1/account/export").json()
+        assert [(row["delegate_user_id"], row["subject_user_id"])
+                for row in grantor_body["billing_grants"]] == [
+            (str(delegate.id), str(subject.id)), (str(other.id), str(other_subject.id))]
+        assert grantor_body["billing_bindings"] == []
+
+        assert _login(client, "export-delegate@example.com").status_code == 204
+        delegate_body = client.get("/api/v1/account/export").json()
+        assert _login(client, "export-subject@example.com").status_code == 204
+        subject_body = client.get("/api/v1/account/export").json()
+
+    link = {"delegate_user_id": str(delegate.id), "subject_user_id": str(subject.id)}
+    assert len(delegate_body["billing_bindings"]) == 1
+    assert delegate_body["billing_grants"] == subject_body["billing_grants"] == []
+    assert len(subject_body["billing_bindings"]) == 1
+    for body in (delegate_body, subject_body):
+        row = body["billing_bindings"][0]
+        assert row["delegate_user_id"] == link["delegate_user_id"]
+        assert row["subject_user_id"] == link["subject_user_id"]
+        assert "created_at" in row
+        assert set(row) == {"delegate_user_id", "subject_user_id", "created_at"}
+    assert [item["model_id"] for item in delegate_body["usage"]] == ["delegate-usage-model"]
+    assert [item["model_id"] for item in subject_body["usage"]] == ["subject-usage-model"]
+    assert stranger.email not in str(delegate_body)
+    assert str(stranger.id) not in str(delegate_body)
+    assert "subject-usage-model" not in str(delegate_body)
+    assert "delegate-usage-model" not in str(subject_body)
+    assert str(other.id) not in str(delegate_body)
+    assert str(other.id) not in str(subject_body)
+
+
+@pytest.mark.db
+def test_purging_either_end_drops_the_binding_and_the_grantor_does_not(library):
+    from app import deletion
+    from app.tables import BillingBinding
+    from tests.test_roles import _change, _subject
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        delegate = client.portal.call(_make, "purge-delegate@example.com", "user")
+        subject = client.portal.call(_make, "purge-subject@example.com", "user")
+        _admin(client, email="grantor@example.com")
+        headers = _csrf(client)
+        grantor_id = client.get("/api/v1/account").json()["id"]
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+
+        async def granted_by():
+            async with db.session_factory() as session:
+                row = await session.get(BillingBinding, delegate.id)
+                if row is None:
+                    return "missing"
+                return None if row.granted_by is None else str(row.granted_by)
+
+        assert client.portal.call(granted_by) == grantor_id
+
+        async def request_and_age(user_id):
+            async with db.session_factory() as session:
+                await deletion.request(session, uuid.UUID(user_id) if isinstance(user_id, str)
+                                       else user_id)
+                await session.commit()
+            await _age_request(uuid.UUID(user_id) if isinstance(user_id, str) else user_id,
+                               deletion.RESTORE_WINDOW_DAYS + 1)
+
+        client.portal.call(request_and_age, grantor_id)
+        client.portal.call(deletion.purge_due)
+        assert client.portal.call(_user, uuid.UUID(grantor_id)) is None
+        assert client.portal.call(granted_by) is None
+
+        client.portal.call(request_and_age, delegate.id)
+        client.portal.call(deletion.purge_due)
+        assert client.portal.call(granted_by) == "missing"
+
+        other = client.portal.call(_make, "purge-delegate-2@example.com", "billing")
+        _admin(client, email="purge-boss@example.com")
+        headers = _csrf(client)
+        assert _subject(client, headers, other.id, subject.id).status_code == 200
+        client.portal.call(request_and_age, subject.id)
+        client.portal.call(deletion.purge_due)
+
+        async def other_binding():
+            async with db.session_factory() as session:
+                return await session.get(BillingBinding, other.id)
+
+        assert client.portal.call(other_binding) is None

@@ -58,6 +58,8 @@ The installer prints a one-use setup link. The link lasts one hour and works onc
 
 A bad link gets the same `403` as any other bad link. The recorded choice is stored in PostgreSQL, and each API process loads it at startup.
 
+In accounts mode an administrator can appoint one billing account to one member or administrator. That appointment reads usage totals and does not require billing to be enabled. An install with no accounts has nobody to appoint.
+
 Scripted installs and CI can skip the browser. A value of `none` or `accounts` in `AUTH_MODE` decides an unclaimed install at startup. On a decided install, the value must match the recorded choice. If it does not, startup refuses and names the variable.
 
 ### Turning on accounts later

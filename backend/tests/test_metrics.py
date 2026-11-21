@@ -12,8 +12,11 @@ from conftest import run_on_test_loop
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, text
 from tests.test_auth import _set_local_role
+from tests.test_invitations import _account, _admin, _sign_in, accounts
 
 from app import db, gpu_samples
+
+__all__ = ["accounts"]
 from app.main import app
 from app.realtime import PROTOCOL_VERSION
 from app.tables import (
@@ -458,12 +461,15 @@ def test_usage_me_window_defaults_to_thirty_days_and_refuses_bad_ones():
             "from": "2020-01-01T00:00:00",
             "to": "2020-01-02T00:00:00",
         })
+        # No default window fits before year 1.
+        year_one = client.get(USAGE_ME, params={"to": "0001-01-01T00:00:00Z"})
 
     assert same.status_code == 422
     assert inverted.status_code == 422
     assert widest.status_code == 200
     assert wider.status_code == 422
     assert naive.status_code == 422
+    assert year_one.status_code == 422
 
 
 @pytest.mark.db
@@ -1242,3 +1248,119 @@ def test_gpu_sample_schedulers_hold_their_tasks_until_done(monkeypatch):
             await asyncio.sleep(0.01)
 
     run_on_test_loop(exercise())
+
+
+def _window(at: datetime) -> dict[str, str]:
+    return {
+        "from": (at - timedelta(hours=1)).isoformat(),
+        "to": (at + timedelta(hours=1)).isoformat(),
+    }
+
+
+@pytest.mark.db
+def test_subject_usage_is_the_bound_accounts_totals_only(accounts):
+    """D reads A's totals, then B's after the binding moves, and nothing else."""
+    # Recent: raw usage older than 90 days is rolled up and deleted by the
+    # maintenance sweep the lifespan starts, which would empty the window.
+    at = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
+    delegate = _account(accounts, "usage-delegate@example.com", role="user")
+    subject_a = _account(accounts, "usage-a@example.com", role="user")
+    subject_b = _account(accounts, "usage-b@example.com", role="user")
+    admin_subject = _account(accounts, "usage-admin@example.com", role="admin",
+                             mail_verified=True)
+
+    async def seed() -> None:
+        async with db.session_factory() as session:
+            session.add_all([
+                _usage_event(subject_a.id, at, "model-a", "art", 100, 10, 2),
+                _usage_event(subject_a.id, at, "model-a", "photo_edit", 50, 10, 3),
+                _usage_event(subject_a.id, at - timedelta(days=10), "model-a", "art", 999, 10, 9),
+                _usage_event(subject_b.id, at, "model-b", "design", 700, 10, 9),
+                _usage_event(admin_subject.id, at, "model-admin", "other", 40, 10, 4),
+            ])
+            await session.commit()
+
+    with TestClient(app) as client:
+        client.portal.call(seed)
+        headers = _admin(accounts, client)
+        from tests.test_roles import _change, _subject
+
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject_a.id).status_code == 200
+        delegate_headers = _sign_in(client, "usage-delegate@example.com")
+        params = _window(at)
+        params["user_id"] = str(subject_b.id)
+        params["subject_user_id"] = str(uuid.uuid4())
+        first = client.get("/api/v1/usage/subject", headers=delegate_headers, params=params)
+        assert first.status_code == 200, first.text
+        assert set(first.json()) == {"from", "to", "totals"}
+        assert first.json()["totals"] == {"events": 2, "gpu_ms": 150, "frames": 5}
+        assert "art" not in first.text
+        assert "model-a" not in first.text
+        assert "photo_edit" not in first.text
+
+        headers = _sign_in(client, "boss@example.com")
+        assert _subject(client, headers, delegate.id, subject_b.id).status_code == 200
+        _sign_in(client, "usage-delegate@example.com")
+        second = client.get("/api/v1/usage/subject", params=_window(at))
+        assert second.status_code == 200, second.text
+        assert second.json()["totals"] == {"events": 1, "gpu_ms": 700, "frames": 9}
+
+        headers = _sign_in(client, "boss@example.com")
+        assert client.delete(f"/api/v1/users/{delegate.id}/billing-subject",
+                             headers=headers).status_code == 204
+        _sign_in(client, "usage-delegate@example.com")
+        revoked = client.get("/api/v1/usage/subject", params=_window(at))
+        assert revoked.status_code == 404
+        assert revoked.json()["detail"] == "Not Found"
+
+        headers = _sign_in(client, "boss@example.com")
+        assert _subject(client, headers, delegate.id, subject_a.id).status_code == 200
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                    {"id": subject_a.id})
+                await session.commit()
+
+        client.portal.call(suspend)
+        _sign_in(client, "usage-delegate@example.com")
+        suspended = client.get("/api/v1/usage/subject", params=_window(at))
+        assert suspended.status_code == 404
+        assert suspended.json() == revoked.json()
+
+        headers = _sign_in(client, "boss@example.com")
+        assert _subject(client, headers, delegate.id, admin_subject.id).status_code == 200
+        _sign_in(client, "usage-delegate@example.com")
+        admin_totals = client.get("/api/v1/usage/subject", params=_window(at))
+        assert admin_totals.status_code == 200
+        assert admin_totals.json()["totals"] == {"events": 1, "gpu_ms": 40, "frames": 4}
+
+
+@pytest.mark.db
+def test_a_suspended_billing_account_cannot_read_subject_usage(accounts):
+    # Recent: raw usage older than 90 days is rolled up and deleted by the
+    # maintenance sweep the lifespan starts, which would empty the window.
+    at = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=2)
+    delegate = _account(accounts, "paused-delegate@example.com", role="user")
+    subject = _account(accounts, "paused-subject@example.com", role="user")
+    with TestClient(app) as client:
+        headers = _admin(accounts, client)
+        from tests.test_roles import _change, _subject
+
+        assert _change(client, headers, delegate.id, role="billing").status_code == 204
+        assert _subject(client, headers, delegate.id, subject.id).status_code == 200
+
+        async def suspend() -> None:
+            async with db.session_factory() as session:
+                await session.execute(
+                    text("UPDATE users SET state = 'suspended' WHERE id = :id"),
+                    {"id": delegate.id})
+                await session.commit()
+
+        client.portal.call(suspend)
+        _sign_in(client, "paused-delegate@example.com")
+        refused = client.get("/api/v1/usage/subject", params=_window(at))
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "account suspended"

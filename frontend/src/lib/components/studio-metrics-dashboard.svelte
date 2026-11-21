@@ -19,23 +19,34 @@
 			: t('app.gen.members_only');
 	}
 
-	const tabs = $derived([
-		{
-			value: 'usage',
-			label: t('app.metrics.tab_usage'),
-			locked: lockReason(sectionNeeds('metrics_usage', access))
-		},
-		{
-			value: 'benchmarks',
-			label: t('app.metrics.tab_benchmarks'),
-			locked: lockReason(sectionNeeds('metrics_benchmarks', access))
-		},
-		{
-			value: 'mine',
-			label: t('app.metrics.mine_tab'),
-			locked: lockReason(sectionNeeds('metrics_mine', access))
-		}
-	]);
+	const subjectOpen = $derived(sectionNeeds('metrics_subject', access) === null);
+	const tabs = $derived(
+		subjectOpen
+			? [
+					{
+						value: 'subject',
+						label: t('app.metrics.subject_tab'),
+						locked: null
+					}
+				]
+			: [
+					{
+						value: 'usage',
+						label: t('app.metrics.tab_usage'),
+						locked: lockReason(sectionNeeds('metrics_usage', access))
+					},
+					{
+						value: 'benchmarks',
+						label: t('app.metrics.tab_benchmarks'),
+						locked: lockReason(sectionNeeds('metrics_benchmarks', access))
+					},
+					{
+						value: 'mine',
+						label: t('app.metrics.mine_tab'),
+						locked: lockReason(sectionNeeds('metrics_mine', access))
+					}
+				]
+	);
 
 	const title = $derived(tabs.find((tab) => tab.value === studio.metricsTab)?.label ?? '');
 

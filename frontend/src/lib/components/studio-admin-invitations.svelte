@@ -51,9 +51,14 @@
 
 	function roleLabelKey(
 		value: Role
-	): 'app.admin.role_admin' | 'app.admin.role_viewer' | 'app.admin.role_user' {
+	):
+		| 'app.admin.role_admin'
+		| 'app.admin.role_viewer'
+		| 'app.admin.role_user'
+		| 'app.admin.role_billing' {
 		if (value === 'admin') return 'app.admin.role_admin';
 		if (value === 'viewer') return 'app.admin.role_viewer';
+		if (value === 'billing') return 'app.admin.role_billing';
 		return 'app.admin.role_user';
 	}
 
@@ -258,6 +263,7 @@
 					>
 						<option value="viewer">{t('app.admin.role_viewer')}</option>
 						<option value="user">{t('app.admin.role_user')}</option>
+						<option value="billing">{t('app.admin.role_billing')}</option>
 						<option value="admin">{t('app.admin.role_admin')}</option>
 					</select>
 				</label>

@@ -17,6 +17,7 @@ from starlette.types import Scope
 
 from app import access_log, auth_mode, db, jobs
 from app.benchmark import router as benchmark_router
+from app.billing import router as billing_router
 from app.benchmark_sessions import router as benchmark_sessions_router
 from app.files import router as files_router
 from app.gpu_samples import maintain_loop
@@ -212,6 +213,7 @@ app.include_router(invitations_router)
 app.include_router(oauth_router)
 app.include_router(recovery_router)
 app.include_router(roles_router)
+app.include_router(billing_router)
 app.include_router(worker_models_router)
 app.include_router(fleet_members_router)
 app.include_router(states_router)

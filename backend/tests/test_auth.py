@@ -40,14 +40,22 @@ def _request(method: str = "GET", path: str = "/api/v1/probe") -> Request:
         ("viewer", Capability.GENERATE, False),
         ("viewer", Capability.EDIT_OWN_WORK, False),
         ("viewer", Capability.VIEW_OWN_USAGE, False),
+        ("viewer", Capability.VIEW_SUBJECT_USAGE, False),
         ("viewer", Capability.ADMINISTER, False),
         ("user", Capability.GENERATE, True),
         ("user", Capability.EDIT_OWN_WORK, True),
         ("user", Capability.VIEW_OWN_USAGE, True),
+        ("user", Capability.VIEW_SUBJECT_USAGE, False),
         ("user", Capability.ADMINISTER, False),
+        ("billing", Capability.GENERATE, False),
+        ("billing", Capability.EDIT_OWN_WORK, False),
+        ("billing", Capability.VIEW_OWN_USAGE, False),
+        ("billing", Capability.VIEW_SUBJECT_USAGE, True),
+        ("billing", Capability.ADMINISTER, False),
         ("admin", Capability.GENERATE, True),
         ("admin", Capability.EDIT_OWN_WORK, True),
         ("admin", Capability.VIEW_OWN_USAGE, True),
+        ("admin", Capability.VIEW_SUBJECT_USAGE, True),
         ("admin", Capability.ADMINISTER, True),
     ),
 )
@@ -64,7 +72,7 @@ def test_a_role_holds_only_its_capability_bundle(role, capability, allowed):
 
 
 def test_an_unknown_role_holds_no_capability():
-    stranger = User(email="stranger@example.test", role="billing")
+    stranger = User(email="stranger@example.test", role="cashier")
     request = _request()
     for capability in Capability:
         dependency = require(capability)
@@ -154,8 +162,12 @@ def test_none_mode_refuses_an_unsafe_request_with_no_origin():
         ("viewer", "suspended", []),
         ("user", "active", ["edit_own_work", "generate", "view_own_usage"]),
         ("user", "suspended", ["view_own_usage"]),
-        ("admin", "active", ["administer", "edit_own_work", "generate", "view_own_usage"]),
+        ("admin", "active", [
+            "administer", "edit_own_work", "generate", "view_own_usage", "view_subject_usage",
+        ]),
         ("admin", "suspended", ["administer", "view_own_usage"]),
+        ("billing", "active", ["view_subject_usage"]),
+        ("billing", "suspended", []),
     ),
 )
 def test_account_reports_effective_capabilities(accounts, role, state, expected):

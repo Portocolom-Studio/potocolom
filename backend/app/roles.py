@@ -23,7 +23,7 @@ ROLE_CHANGE_LOCK = 184468
 
 
 class RoleChange(BaseModel):
-    role: Literal["viewer", "user", "admin"]
+    role: Literal["viewer", "user", "admin", "billing"]
     # A no-mail install cannot prove an address, so the administrator says on
     # the record that they know who this is.
     attested: bool = False
@@ -79,6 +79,7 @@ async def change_role(
                                     detail="the last administrator cannot be demoted")
             from app import command_store, jobs
 
+            previous = target.role
             # A role that cannot generate ends the account's live jobs in this
             # same transaction. The user row is flushed first so its lock
             # precedes the job rows, which precede the journal and the lease.
@@ -93,6 +94,12 @@ async def change_role(
             else:
                 await command_store.erase_realtime_commands(session, user_id)
                 target.role = change.role
+            # In this transaction, with the account gate already held: a
+            # binding that survived the commit would start working again the
+            # moment the account was promoted back.
+            from app.billing import drop_invalid_bindings
+
+            await drop_invalid_bindings(session, user_id, previous, change.role)
             # The mailed capabilities first, then the sessions, because that is
             # the order operator.collapse deletes them in and the other way
             # round deadlocks against a collapse running while the API serves.
