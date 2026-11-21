@@ -9,6 +9,7 @@
 	import { account } from '$lib/account.svelte';
 	import { t } from '$lib/i18n.svelte';
 	import { studio } from '$lib/studio.svelte';
+	import { deviceLabel } from '$lib/gpu-setup-card';
 	import { watchWorker, worker } from '$lib/studio-worker.svelte';
 
 	// AUTH_MODE=none has no account and runs as the local admin. The static
@@ -61,8 +62,8 @@
 		</div>
 		{#if mayReadGpu && gpu !== null}
 			<div class="text-dim mt-2 flex justify-between gap-2 text-xs">
-				<span class="truncate" title={gpu.device}
-					>{gpu.device}{vramGb !== null ? ` · ${vramGb} GB` : ''}</span
+				<span class="truncate" title={deviceLabel(gpu.device)}
+					>{deviceLabel(gpu.device)}{vramGb !== null ? ` · ${vramGb} GB` : ''}</span
 				>
 				{#if util !== null}
 					<span class="shrink-0 tabular-nums">GPU {util}%</span>

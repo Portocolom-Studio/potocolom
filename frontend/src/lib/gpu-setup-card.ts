@@ -93,6 +93,13 @@ export type AdminWorker = {
 
 export const DEVICE_LABELS: Record<Device, string> = { cuda: 'CUDA', rocm: 'ROCm', cpu: 'CPU' };
 
+// The sidebar and the first-run card share these names. Anything else, such as
+// a future device string, is shown as the API sent it.
+export function deviceLabel(device: string): string {
+	if (device === 'cuda' || device === 'rocm' || device === 'cpu') return DEVICE_LABELS[device];
+	return device;
+}
+
 // The name step 2 shows for a worker, or null while a GPU has not reported
 // hardware yet. A CPU worker has no GPU readout to wait for: the device is the
 // name, and the card stops asking.
