@@ -12,6 +12,9 @@ const build = resolve(process.argv[2] ?? fileURLToPath(new URL('../build', impor
 // The self-hosted runners share one machine with other work, and 5 s failed
 // under load on checks that pass on rerun (issue #670).
 const WAIT_MS = 20000;
+// Same-origin thumbnail bytes, keyed by the path stripThumbnail hands the page.
+// The studio CSP allows img-src 'self' and refuses data: images.
+const stripImages = new Map();
 // The frame header this build writes on the canvas socket: one kind byte, the
 // 16 byte session id and a 4 byte big endian revision, then the image.
 const FRAME_HEADER_BYTES = 21;
@@ -85,6 +88,15 @@ function serveCanvasBuild(apiAnswers = {}) {
 		api: async (request, response) => {
 			const url = new URL(request.url, 'http://localhost');
 			const path = url.pathname;
+			const stripImage = stripImages.get(path);
+			if (stripImage) {
+				response.writeHead(200, {
+					'Content-Type': 'image/svg+xml',
+					'Cache-Control': 'no-store'
+				});
+				response.end(stripImage);
+				return true;
+			}
 			if (!path.startsWith('/api/')) return false;
 			const key = `${path}${url.search}`;
 			const answer =
@@ -233,6 +245,12 @@ async function launchStudio(
 			}
 		}, locale);
 		await installSocketAdapter(page);
+		await page.evaluateOnNewDocument(() => {
+			window.__cspViolations = [];
+			document.addEventListener('securitypolicyviolation', (event) => {
+				window.__cspViolations.push(`${event.violatedDirective} ${event.blockedURI.slice(0, 96)}`);
+			});
+		});
 		if (setup) await page.evaluateOnNewDocument(setup, ...setupArgs);
 		await page.goto(`http://127.0.0.1:${server.address().port}${appPath}`, { waitUntil });
 		return {
@@ -240,9 +258,18 @@ async function launchStudio(
 			browser,
 			server,
 			async close(verifyErrors = true) {
+				let violations = [];
+				if (verifyErrors) {
+					violations = await page
+						.evaluate(() => window.__cspViolations ?? [])
+						.catch(() => ['csp check failed']);
+				}
 				await browser.close();
 				await new Promise((resolveServer) => server.close(resolveServer));
-				if (verifyErrors) assert.deepEqual(errors, [], 'no uncaught browser errors');
+				if (verifyErrors) {
+					assert.deepEqual(violations, [], 'no CSP violations');
+					assert.deepEqual(errors, [], 'no uncaught browser errors');
+				}
 			}
 		};
 	} catch (error) {
@@ -252,40 +279,47 @@ async function launchStudio(
 	}
 }
 
+// The shell hides its navigation until the account check finishes, and the
+// drawing surface is ready when its paper pixel is painted. Canvas pixels are
+// not DOM mutations, and a starved animation frame must not hide a surface
+// that is already painted. The deadline stays a ceiling.
+async function waitForCanvasSurface(page, locale) {
+	const tab = locale === 'es' ? 'Lienzo en tiempo real' : 'Realtime canvas';
+	await page.waitForSelector('[data-studio-shell]', { timeout: WAIT_MS });
+	await page.waitForFunction(
+		(name) =>
+			[...document.querySelectorAll('button')].some(
+				(button) => button.textContent?.trim() === name && !button.disabled
+			),
+		{ timeout: WAIT_MS, polling: 'mutation' },
+		tab
+	);
+	await page.evaluate(
+		(name) =>
+			[...document.querySelectorAll('button')]
+				.find((button) => button.textContent?.trim() === name)
+				?.click(),
+		tab
+	);
+	await page.waitForSelector('canvas[aria-label]', { timeout: WAIT_MS });
+	await page.waitForFunction(
+		() => {
+			const canvas = document.querySelector('canvas[aria-label]');
+			const pixel = canvas?.getContext('2d')?.getImageData(256, 256, 1, 1).data;
+			return pixel?.[0] === 255 && pixel[1] === 255 && pixel[2] === 255 && pixel[3] === 255;
+		},
+		{ timeout: WAIT_MS, polling: 50 }
+	);
+}
+
 async function openCanvas(
 	locale = 'en',
 	setup,
-	{ apiAnswers = {}, waitUntil = 'networkidle0' } = {}
+	{ apiAnswers = {}, waitUntil = 'domcontentloaded' } = {}
 ) {
 	const harness = await launchStudio(locale, setup, apiAnswers, waitUntil);
 	try {
-		const { page } = harness;
-		const tab = locale === 'es' ? 'Lienzo en tiempo real' : 'Realtime canvas';
-		await page.waitForFunction(
-			(name) =>
-				[...document.querySelectorAll('button')].some(
-					(button) => button.textContent?.trim() === name
-				),
-			{ timeout: WAIT_MS, polling: 'mutation' },
-			tab
-		);
-		await page.evaluate(
-			(name) =>
-				[...document.querySelectorAll('button')]
-					.find((button) => button.textContent?.trim() === name)
-					?.click(),
-			tab
-		);
-		await page.waitForSelector('canvas[aria-label]', { timeout: WAIT_MS });
-		await page.waitForFunction(
-			() => {
-				const canvas = document.querySelector('canvas[aria-label]');
-				if (!canvas) return false;
-				const pixel = canvas.getContext('2d')?.getImageData(256, 256, 1, 1).data;
-				return pixel?.[0] === 255 && pixel[1] === 255 && pixel[2] === 255 && pixel[3] === 255;
-			},
-			{ timeout: WAIT_MS }
-		);
+		await waitForCanvasSurface(harness.page, locale);
 		return harness;
 	} catch (error) {
 		await harness.close(false);
@@ -295,6 +329,29 @@ async function openCanvas(
 
 // Opens /app on the generate view with per-path API fixtures and waits for the
 // history strip thumbnails, so a keyboard test never has to visit the canvas.
+async function assertStripThumbnailDecodes(page) {
+	await page.waitForFunction(
+		() => {
+			const image = document.querySelector('button[data-strip-thumb] img');
+			return Boolean(image && (image.complete || image.naturalWidth > 0));
+		},
+		{ timeout: WAIT_MS }
+	);
+	const decoded = await page.evaluate(() => {
+		const image = document.querySelector('button[data-strip-thumb] img');
+		return {
+			src: image?.getAttribute('src') ?? '',
+			width: image?.naturalWidth ?? 0,
+			height: image?.naturalHeight ?? 0,
+			violations: window.__cspViolations ?? []
+		};
+	});
+	assert.ok(decoded.src.startsWith('/strip-thumbs/'), 'the thumbnail is a same-origin image');
+	assert.equal(decoded.width, 96, 'a history thumbnail must decode');
+	assert.equal(decoded.height, 96, 'a history thumbnail must decode');
+	assert.deepEqual(decoded.violations, [], 'no CSP violation');
+}
+
 async function openStudio(apiAnswers = {}) {
 	const harness = await launchStudio('en', undefined, apiAnswers, 'domcontentloaded');
 	try {
@@ -302,6 +359,7 @@ async function openStudio(apiAnswers = {}) {
 			() => document.querySelectorAll('button[data-strip-thumb]').length > 0,
 			{ timeout: WAIT_MS }
 		);
+		await assertStripThumbnailDecodes(harness.page);
 		return harness;
 	} catch (error) {
 		await harness.close(false);
@@ -625,6 +683,13 @@ async function selectRegion(page, points) {
 
 async function connect(page) {
 	await page.type('#realtime-prompt', 'Canvas history test');
+	await page.waitForFunction(
+		() =>
+			[...document.querySelectorAll('button')].some(
+				(candidate) => candidate.textContent?.trim() === 'Connect' && !candidate.disabled
+			),
+		{ timeout: WAIT_MS, polling: 'mutation' }
+	);
 	await page.evaluate(() =>
 		[...document.querySelectorAll('button')]
 			.find((candidate) => candidate.textContent?.trim() === 'Connect')
@@ -1617,47 +1682,151 @@ test('erase-region files gate on version and on their own three keys', async () 
 	}
 });
 
+// Holds the capture loop's arm intervals (250 ms fast, 500 ms slow) so one
+// publish opportunity can be released at a time. Delay 0 stays on the real
+// timer: the socket stub opens on it, and a committed stroke arms no new
+// timer while one is already held. The gate holds idle ticks only. After a sent
+// frame the loop arms nextDelayMs(cost), which this gate does not hold, so a
+// test must not expect a second held release right after a publish.
+function installPublishGate() {
+	const nativeSetTimeout = window.setTimeout.bind(window);
+	const nativeClearTimeout = window.clearTimeout.bind(window);
+	const held = new Map();
+	let nextId = 1000000000;
+	let holding = false;
+	const captureDelays = new Set([250, 500]);
+	window.__publishGate = {
+		hold() {
+			holding = true;
+		},
+		pending() {
+			return [...held.values()].map((entry) => entry.delay);
+		},
+		releaseOne() {
+			const first = held.keys().next().value;
+			if (first === undefined) return false;
+			const entry = held.get(first);
+			held.delete(first);
+			entry.run();
+			return true;
+		}
+	};
+	window.setTimeout = (callback, delay, ...args) => {
+		const ms = Number(delay ?? 0);
+		const run = () => {
+			if (typeof callback === 'function') callback(...args);
+		};
+		if (holding && captureDelays.has(ms)) {
+			const id = nextId;
+			nextId += 1;
+			held.set(id, { delay: ms, run });
+			return id;
+		}
+		return nativeSetTimeout(run, ms);
+	};
+	window.clearTimeout = (id) => {
+		if (held.has(id)) {
+			held.delete(id);
+			return;
+		}
+		nativeClearTimeout(id);
+	};
+}
+
+// Releases the one armed capture interval and waits until that tick has either
+// re-armed or queued a frame. An idle tick does both synchronously.
+async function releasePublishOpportunity(page) {
+	const before = await page.evaluate(() => ({
+		frames: window.__historySockets[0]?.frames.length ?? 0,
+		pending: window.__publishGate.pending()
+	}));
+	assert.deepEqual(before.pending, [250], 'one capture interval is armed');
+	assert.equal(await page.evaluate(() => window.__publishGate.releaseOne()), true);
+	await page.waitForFunction(
+		(frameCount) => {
+			const pending = window.__publishGate.pending();
+			const frames = window.__historySockets[0]?.frames.length ?? 0;
+			return pending.length > 0 || frames > frameCount;
+		},
+		{ timeout: WAIT_MS },
+		before.frames
+	);
+	return page.evaluate(() => ({
+		frames: window.__historySockets[0]?.frames.length ?? 0,
+		pending: window.__publishGate.pending()
+	}));
+}
+
 test('shape selection is silent and a connected shape publishes an opaque 512px WebP', async () => {
-	const harness = await openCanvas();
+	const harness = await openCanvas('en', installPublishGate);
 	try {
 		const { page } = harness;
-		await connect(page);
-		await pause(700);
-		const before = await page.evaluate(() => window.__historySockets[0].frames.length);
-		await selectTool(page, 'rectangle');
-		await pause(700);
-		assert.equal(await page.evaluate(() => window.__historySockets[0].frames.length), before);
-		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
+		await page.type('#realtime-prompt', 'Canvas history test');
 		await page.waitForFunction(
-			(minimum) => window.__historySockets[0].frames.length > minimum,
-			{ timeout: WAIT_MS },
-			before
+			() =>
+				[...document.querySelectorAll('button')].some(
+					(candidate) => candidate.textContent?.trim() === 'Connect' && !candidate.disabled
+				),
+			{ timeout: WAIT_MS, polling: 'mutation' }
 		);
-		const decoded = await page.evaluate(async (header) => {
-			const frame = window.__historySockets[0].frames.at(-1);
-			const image = await createImageBitmap(
-				new Blob([frame.slice(header)], { type: 'image/webp' })
-			);
-			const surface = document.createElement('canvas');
-			surface.width = image.width;
-			surface.height = image.height;
-			const context = surface.getContext('2d');
-			context.drawImage(image, 0, 0);
-			const alphaOpaque = [];
-			const pixels = context.getImageData(0, 0, image.width, image.height).data;
-			for (let index = 3; index < pixels.length; index += 4)
-				alphaOpaque.push(pixels[index] === 255);
-			const edge = [...context.getImageData(256, 102, 1, 1).data];
-			const result = {
-				kind: frame[0],
-				width: image.width,
-				height: image.height,
-				alphaOpaque: alphaOpaque.every(Boolean),
-				edge
-			};
-			image.close();
-			return result;
-		}, FRAME_HEADER_BYTES);
+		await page.evaluate(() => window.__publishGate.hold());
+		await page.evaluate(() =>
+			[...document.querySelectorAll('button')]
+				.find((candidate) => candidate.textContent?.trim() === 'Connect')
+				?.click()
+		);
+		await page.waitForFunction(() => document.body.innerText.includes('Active'), {
+			timeout: WAIT_MS
+		});
+		const initial = await releasePublishOpportunity(page);
+		assert.equal(initial.frames, 0, 'the initial publish of a blank canvas sends nothing');
+		assert.deepEqual(initial.pending, [250], 'the loop armed the next publish');
+		await selectTool(page, 'rectangle');
+		const selected = await releasePublishOpportunity(page);
+		assert.equal(selected.frames, 0, 'tool selection publishes nothing');
+		assert.deepEqual(selected.pending, [250], 'selection leaves the next publish armed');
+		await stroke(page, [0.2, 0.2], [0.8, 0.8], 8);
+		const commitIndex = await page.evaluate(() => window.__historySockets[0].frames.length);
+		assert.deepEqual(
+			await page.evaluate(() => window.__publishGate.pending()),
+			[250],
+			'the commit publish is the armed interval'
+		);
+		assert.equal(await page.evaluate(() => window.__publishGate.releaseOne()), true);
+		await page.waitForFunction(
+			(index) => (window.__historySockets[0]?.frames.length ?? 0) > index,
+			{ timeout: WAIT_MS },
+			commitIndex
+		);
+		const decoded = await page.evaluate(
+			async (header, index) => {
+				const frame = window.__historySockets[0].frames[index];
+				const image = await createImageBitmap(
+					new Blob([frame.slice(header)], { type: 'image/webp' })
+				);
+				const surface = document.createElement('canvas');
+				surface.width = image.width;
+				surface.height = image.height;
+				const context = surface.getContext('2d');
+				context.drawImage(image, 0, 0);
+				const alphaOpaque = [];
+				const pixels = context.getImageData(0, 0, image.width, image.height).data;
+				for (let index = 3; index < pixels.length; index += 4)
+					alphaOpaque.push(pixels[index] === 255);
+				const edge = [...context.getImageData(256, 102, 1, 1).data];
+				const result = {
+					kind: frame[0],
+					width: image.width,
+					height: image.height,
+					alphaOpaque: alphaOpaque.every(Boolean),
+					edge
+				};
+				image.close();
+				return result;
+			},
+			FRAME_HEADER_BYTES,
+			commitIndex
+		);
 		assert.deepEqual(decoded.kind, 1);
 		assert.deepEqual([decoded.width, decoded.height], [512, 512]);
 		assert.equal(decoded.alphaOpaque, true);
@@ -1677,7 +1846,6 @@ test('leaving the canvas while a shape preview is active drops the preview befor
 		const { page } = harness;
 		const blank = await bitmap(page);
 		await connect(page);
-		await pause(700);
 		await selectTool(page, 'rectangle');
 		const rect = await canvasRect(page);
 		await page.mouse.move(rect.x + rect.width * 0.2, rect.y + rect.height * 0.2);
@@ -1725,24 +1893,9 @@ test('saved drawing reopens with exact pixels and undo redo history', async () =
 			unloadWarning = dialog.type();
 			void dialog.accept();
 		});
-		await page.reload({ waitUntil: 'networkidle0' });
+		await page.reload({ waitUntil: 'domcontentloaded' });
 		assert.equal(unloadWarning, 'beforeunload', 'leaving a drawn canvas must warn first');
-		await page.waitForFunction(
-			(name) =>
-				[...document.querySelectorAll('button')].some(
-					(button) => button.textContent?.trim() === name
-				),
-			{ timeout: WAIT_MS },
-			'Realtime canvas'
-		);
-		await page.evaluate(
-			(name) =>
-				[...document.querySelectorAll('button')]
-					.find((button) => button.textContent?.trim() === name)
-					?.click(),
-			'Realtime canvas'
-		);
-		await page.waitForSelector('canvas[aria-label="Drawing surface"]', { timeout: WAIT_MS });
+		await waitForCanvasSurface(page, 'en');
 		await waitForBitmap(page, blank.hash);
 		await openDrawingFile(page, savedPath);
 		await waitForBitmap(page, first.hash);
@@ -2095,27 +2248,37 @@ test('saving is silent and opening a blank drawing sends a complete white WebP',
 		blankPath,
 		JSON.stringify({ version: 1, width: 512, height: 512, operations: [], cursor: 0 })
 	);
-	const harness = await openCanvas('en', () => {
-		const toBlob = HTMLCanvasElement.prototype.toBlob;
-		window.__webpEncodes = 0;
-		HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
-			if (type === 'image/webp') window.__webpEncodes += 1;
-			return toBlob.call(this, callback, type, quality);
-		};
-	});
+	const harness = await openCanvas('en', installPublishGate);
 	try {
 		const { page } = harness;
+		await page.evaluate(() => {
+			const toBlob = HTMLCanvasElement.prototype.toBlob;
+			window.__webpEncodes = 0;
+			HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+				if (type === 'image/webp') window.__webpEncodes += 1;
+				return toBlob.call(this, callback, type, quality);
+			};
+		});
 		const blank = await bitmap(page);
 		await tap(page);
 		await openDrawingFile(page, blankPath);
 		await waitForBitmap(page, blank.hash);
 		assert.equal(await page.evaluate(() => window.__historySockets.length), 0);
+		await page.evaluate(() => window.__publishGate.hold());
 		await connect(page);
+		const idle = await releasePublishOpportunity(page);
+		assert.equal(idle.frames, 0, 'the initial publish of a blank canvas sends nothing');
 		await selectColor(page, 'Blue');
 		await setBrushSize(page, 32);
 		await tap(page);
+		const stroked = await releasePublishOpportunity(page);
+		assert.equal(stroked.frames, 1, 'the armed tick publishes the stroke');
+		await page.waitForFunction(() => window.__publishGate.pending().length > 0, {
+			timeout: WAIT_MS
+		});
+		const settled = await releasePublishOpportunity(page);
+		assert.equal(settled.frames, 1, 'the idle tick after the publish sends nothing');
 		await expectOutput(page, [37, 99, 235]);
-		await pause(700);
 		const counts = () =>
 			page.evaluate(() => ({
 				frames: window.__historySockets[0].frames.length,
@@ -2134,6 +2297,7 @@ test('saving is silent and opening a blank drawing sends a complete white WebP',
 		assert.deepEqual(await counts(), before, 'save must not encode or send a frame');
 		await openDrawingFile(page, blankPath);
 		await waitForBitmap(page, blank.hash);
+		await releasePublishOpportunity(page);
 		await page.waitForFunction(
 			(minimum) => window.__historySockets[0].frames.length > minimum,
 			{},
@@ -2608,7 +2772,6 @@ test('paint controls are silent while drawing edits publish real WebP frames', a
 	try {
 		const { page } = harness;
 		await connect(page);
-		await pause(700);
 		const before = await page.evaluate(() => ({
 			frames: window.__historySockets[0]?.frames.length ?? 0,
 			sent: window.__historySockets[0]?.sent.length ?? 0
@@ -3129,27 +3292,34 @@ for (const tool of ['erase', 'rectangle'])
 	});
 
 test('finishing a checkpoint does not publish an extra live frame', async () => {
-	const harness = await openCanvas('en', () => {
-		const decode = window.createImageBitmap;
-		window.createImageBitmap = async (...args) => {
-			const image = await decode(...args);
-			if (args[0] instanceof Blob && args[0].type === 'image/png') {
-				await new Promise((resolve) => {
-					window.__releaseLiveCheckpoint = resolve;
-				});
-				window.__liveCheckpointFinished = true;
-			}
-			return image;
-		};
-	});
+	const harness = await openCanvas('en', installPublishGate);
 	try {
 		const { page } = harness;
+		await page.evaluate(() => {
+			const decode = window.createImageBitmap;
+			window.createImageBitmap = async (...args) => {
+				const image = await decode(...args);
+				if (args[0] instanceof Blob && args[0].type === 'image/png') {
+					await new Promise((resolve) => {
+						window.__releaseLiveCheckpoint = resolve;
+					});
+					window.__liveCheckpointFinished = true;
+				}
+				return image;
+			};
+		});
+		await page.evaluate(() => window.__publishGate.hold());
 		await connect(page);
+		await releasePublishOpportunity(page);
 		await setBrushSize(page, 20);
 		for (let index = 0; index < 16; index += 1) await tap(page);
+		await releasePublishOpportunity(page);
 		await page.waitForFunction(() => !!window.__releaseLiveCheckpoint);
 		await expectOutput(page, [17, 24, 39]);
-		await pause(700);
+		await page.waitForFunction(() => window.__publishGate.pending().length > 0, {
+			timeout: WAIT_MS
+		});
+		await releasePublishOpportunity(page);
 		const before = await page.evaluate(() => ({
 			frames: window.__historySockets[0].frames.length,
 			controls: window.__historySockets[0].sent.length
@@ -3169,8 +3339,9 @@ test('finishing a checkpoint does not publish an extra live frame', async () => 
 	}
 });
 
-// Six succeeded history generations, each with its own prompt and an inline
-// SVG data: URI thumbnail, plus two starred ones a test can load late.
+// Six succeeded history generations, each with its own prompt and a
+// same-origin thumbnail, plus two starred ones a test can load late.
+// Distinct label or color means a distinct URL, which is the thumbnail identity.
 const STRIP_COLORS = ['dc2626', 'ea580c', 'ca8a04', '16a34a', '2563eb', '9333ea'];
 
 function stripThumbnail(label, color) {
@@ -3180,7 +3351,9 @@ function stripThumbnail(label, color) {
 		`<rect x="6" y="6" width="84" height="84" fill="none" stroke="#ffffff" stroke-width="4"/>` +
 		`<text x="48" y="58" font-family="sans-serif" font-size="28" fill="#ffffff" ` +
 		`text-anchor="middle">${label}</text></svg>`;
-	return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+	const path = `/strip-thumbs/${color}-${encodeURIComponent(label)}.svg`;
+	stripImages.set(decodeURIComponent(path), Buffer.from(svg));
+	return path;
 }
 
 function stripGeneration(id, prompt, label, color) {
