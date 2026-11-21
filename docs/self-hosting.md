@@ -377,12 +377,14 @@ operators who follow compose do not hit this.
 
 ## Accounts
 
-An account can take everything this install holds about it with `GET /api/v1/account/export`.
-The export is one JSON file with a link to each image; the image files themselves are not in it. Each link needs a signed-in session of the account, so download the images before you delete the account.
+An account can take everything this install holds about it, except realtime session parameters, which are transient canvas state, with `GET /api/v1/account/export`.
+The export is one JSON file with a link to each image; the image files themselves are not in it, and neither are realtime session parameters. Each link needs a signed-in session of the account, so download the images before you delete the account.
 An account can also ask to be deleted with `DELETE /api/v1/account`. Deleting stops the account
 immediately and destroys nothing for 30 days: an administrator restores it with
 `POST /api/v1/users/{id}/restore` until the sweep runs. After that the objects, the rows
-that named them and the user row are gone, in that order.
+that named them and the user row are gone, in that order. The purge also removes realtime
+session parameters. A session row that a retained attempt still needs
+keeps its id, state and generation, with the prompt and the auth-session binding cleared.
 
 ### First run
 
@@ -833,6 +835,7 @@ Notes for the upgrade:
 - The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. The data is intact: fix the cause, then run the script again. The rerun takes a backup first, because the failed run may already have migrated the database.
 - An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](#first-run-1).
 - The API runs as uid 10001. An existing local `assets` volume stays root-owned until the next start. The one-shot `assets-init` service then gives that volume to uid 10001. That is the one-time ownership change. An install that stores assets in S3-compatible storage does not use the volume, and on an empty volume the step changes nothing the API reads.
+- Upgrading removes leftover canvas parameters of accounts purged by older releases.
 
 ### Upgrade a source checkout
 

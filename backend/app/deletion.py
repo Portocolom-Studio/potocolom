@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, or_, select, tuple_, update
+from sqlalchemy import delete, func, or_, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from starlette.responses import Response, StreamingResponse
@@ -50,6 +50,9 @@ ACCOUNT_RESTORED = "account.restore"
 RESTORE_WINDOW_DAYS = 30
 PURGE_INTERVAL = 3600.0  # seconds
 PURGE_BATCH = 20
+# browser_owner_id is NOT NULL (migration 0032). The nil UUID matches no
+# browser, so a claim that still holds the old owner is refused.
+_NIL_BROWSER_OWNER = uuid.UUID(int=0)
 
 
 async def request(session: AsyncSession, user_id: uuid.UUID) -> bool:
@@ -383,6 +386,75 @@ async def purge_due() -> None:
             logger.exception("could not purge account %s", user_id)
 
 
+async def _clear_realtime_session_content(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Remove canvas content while this account's gate is still held.
+
+    realtime_sessions.user_id is ON DELETE SET NULL (migration 0032).
+    realtime_session_attempts.session_id and worker_physical_ranges.subject_id
+    and account_user_id are bare uuids with no foreign key (migrations 0032
+    and 0034), and a receipt is deleted only when its range is. Deleting the
+    user would keep the prompt. A retained attempt still names the session
+    id, so that row keeps its id, state and generation. Every other session
+    row of the account is deleted.
+    """
+    rows = list((await session.execute(
+        text(
+            "SELECT id FROM realtime_sessions WHERE user_id = :user_id "
+            "ORDER BY id FOR UPDATE"
+        ),
+        {"user_id": user_id},
+    )).scalars().all())
+    if not rows:
+        return
+    attempts = (await session.execute(
+        text(
+            "SELECT session_id, range_id FROM realtime_session_attempts "
+            "WHERE session_id = ANY(CAST(:ids AS uuid[])) "
+            "ORDER BY session_id, control_generation FOR UPDATE"
+        ),
+        {"ids": rows},
+    )).mappings().all()
+    range_ids = [row["range_id"] for row in attempts if row["range_id"] is not None]
+    if range_ids:
+        # Locks the ranges that the attempts name. A claim or report that
+        # writes one of them waits here.
+        await session.execute(
+            text(
+                "SELECT range_id FROM worker_physical_ranges "
+                "WHERE range_id = ANY(CAST(:range_ids AS uuid[])) "
+                "ORDER BY range_id FOR UPDATE"
+            ),
+            {"range_ids": range_ids},
+        )
+    needed = {row["session_id"] for row in attempts}
+    await session.execute(
+        text(
+            "UPDATE realtime_sessions SET state = 'ended', "
+            "ended_at = coalesce(ended_at, clock_timestamp()), "
+            "terminal_reason = coalesce(terminal_reason, 'account deleted') "
+            "WHERE user_id = :user_id AND state <> 'ended'"
+        ),
+        {"user_id": user_id},
+    )
+    drop = [session_id for session_id in rows if session_id not in needed]
+    if drop:
+        await session.execute(
+            text("DELETE FROM realtime_sessions WHERE id = ANY(CAST(:ids AS uuid[]))"),
+            {"ids": drop},
+        )
+    keep = [session_id for session_id in rows if session_id in needed]
+    if keep:
+        await session.execute(
+            text(
+                "UPDATE realtime_sessions SET desired_params = NULL, "
+                "effective_params = NULL, auth_session_id = NULL, "
+                "browser_owner_id = :browser_owner_id "
+                "WHERE id = ANY(CAST(:ids AS uuid[]))"
+            ),
+            {"ids": keep, "browser_owner_id": _NIL_BROWSER_OWNER},
+        )
+
+
 async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
     assert db.session_factory is not None
     async with db.session_factory() as session:
@@ -416,6 +488,15 @@ async def _purge(user_id: uuid.UUID, cutoff: datetime) -> None:
     async with db.session_factory() as session:
         async with session.begin():
             await hold_the_account(session, user_id)
+            await session.execute(
+                text("SELECT id FROM users WHERE id = :user_id FOR UPDATE"),
+                {"user_id": user_id},
+            )
+            # Before the journal. A claim can commit in the gap between the two
+            # purge transactions, while the stored objects are purged with no
+            # transaction open. It writes desired_params on a row this clears,
+            # so the content is cleared here and not only in the first one.
+            await _clear_realtime_session_content(session, user_id)
             from app import command_store
 
             await command_store.erase_account_commands(session, {user_id})
