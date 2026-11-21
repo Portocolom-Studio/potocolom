@@ -43,6 +43,32 @@ export function clearImageFilters(): ImageFilters {
 	return { models: [], sizes: [], range: 'all', from: '', through: '' };
 }
 
+export type GridEmptyKey =
+	| 'app.images.search_failed'
+	| 'app.images.loading'
+	| 'app.images.no_filter_matches'
+	| 'app.images.no_starred_roots'
+	| 'app.gen.result_hint';
+
+// A search that removed every tile is not an empty library. "Your image appears
+// here" is only for a library that has no images yet.
+export function gridEmptyMessageKey(input: {
+	starredOnly: boolean;
+	filtersActive: boolean;
+	searchQuery: string;
+	searchPending: boolean;
+	searchFailed: boolean;
+}): GridEmptyKey {
+	if (input.searchQuery !== '') {
+		if (input.searchFailed) return 'app.images.search_failed';
+		if (input.searchPending) return 'app.images.loading';
+		return 'app.images.no_filter_matches';
+	}
+	if (input.filtersActive) return 'app.images.no_filter_matches';
+	if (input.starredOnly) return 'app.images.no_starred_roots';
+	return 'app.gen.result_hint';
+}
+
 /** The library is narrowed when any filter differs from the default. */
 export function imageFiltersActive(filters: ImageFilters): boolean {
 	return filters.models.length > 0 || filters.sizes.length > 0 || filters.range !== 'all';

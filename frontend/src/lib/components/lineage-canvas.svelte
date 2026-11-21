@@ -37,6 +37,7 @@
 	import {
 		defaultImageFilters,
 		generationMatchesImageFilters,
+		gridEmptyMessageKey,
 		imageFiltersActive,
 		imageFiltersEqual,
 		withImageFilters,
@@ -2808,11 +2809,15 @@
 				</p>
 			{:else if gridItems.length === 0 && !gridLoading}
 				<p class="text-muted-foreground grid h-40 place-items-center text-sm">
-					{starredOnly
-						? t('app.images.no_starred_roots')
-						: imageFiltersActive(imageFilters)
-							? t('app.images.no_filter_matches')
-							: t('app.gen.result_hint')}
+					{t(
+						gridEmptyMessageKey({
+							starredOnly,
+							filtersActive: imageFiltersActive(imageFilters),
+							searchQuery,
+							searchPending: searchQuery !== '' && searchMatchIds === null && !searchFailed,
+							searchFailed
+						})
+					)}
 				</p>
 			{:else if gridItems.length > 0}
 				<ul class="image-grid" aria-label={t('app.images.title')} aria-busy={gridLoading}>

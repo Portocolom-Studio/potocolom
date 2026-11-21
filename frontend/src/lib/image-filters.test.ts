@@ -7,6 +7,7 @@ import {
 	customRangeReversed,
 	defaultImageFilters,
 	generationMatchesImageFilters,
+	gridEmptyMessageKey,
 	imageFiltersActive,
 	imageFiltersEqual,
 	localDayStart,
@@ -20,6 +21,49 @@ import type { ImageSizeBin } from './image-filters.ts';
 // DST spring forward (2026-03-29) and a fall back (2026-10-25), so a fixed
 // offset zone would hide exactly the bugs these tests exist to catch.
 process.env.TZ = 'Europe/Madrid';
+
+test('a search with no hits is not an empty library', () => {
+	assert.equal(
+		gridEmptyMessageKey({
+			starredOnly: false,
+			filtersActive: false,
+			searchQuery: 'zzzz',
+			searchPending: false,
+			searchFailed: false
+		}),
+		'app.images.no_filter_matches'
+	);
+	assert.equal(
+		gridEmptyMessageKey({
+			starredOnly: false,
+			filtersActive: false,
+			searchQuery: 'zzzz',
+			searchPending: true,
+			searchFailed: false
+		}),
+		'app.images.loading'
+	);
+	assert.equal(
+		gridEmptyMessageKey({
+			starredOnly: false,
+			filtersActive: false,
+			searchQuery: '',
+			searchPending: false,
+			searchFailed: false
+		}),
+		'app.gen.result_hint'
+	);
+	assert.equal(
+		gridEmptyMessageKey({
+			starredOnly: true,
+			filtersActive: false,
+			searchQuery: '',
+			searchPending: false,
+			searchFailed: false
+		}),
+		'app.images.no_starred_roots'
+	);
+});
 
 function filters(overrides: Partial<typeof defaultImageFilters> = {}) {
 	return { ...defaultImageFilters, ...overrides };
