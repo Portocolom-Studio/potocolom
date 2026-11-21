@@ -1,4 +1,5 @@
-FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime
+# pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime (application/vnd.docker.distribution.manifest.v2+json, platforms: linux/amd64)
+FROM pytorch/pytorch:2.9.0-cuda12.8-cudnn9-runtime@sha256:f0ca81b440e252399d9954a45b616ee2540959466aacf3dfc3f856691eee66e8
 
 # Vendor GPU base images lag their distribution's security updates, and the
 # release scan blocks any HIGH or CRITICAL finding that has a fix.

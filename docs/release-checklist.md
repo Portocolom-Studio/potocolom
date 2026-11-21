@@ -95,3 +95,10 @@ self-hosted runner. Both GPU base images are large; check free disk space
 before creating the tag. Pull request jobs use simulated or CPU workers.
 The release installer gate requires the AMD GPU, `/dev/kfd`, `/dev/dri`, and
 free host port 8080. It runs only on a version tag.
+
+Moving a base image digest: each `FROM` in `deploy/docker/Dockerfile.*` names
+the registry digest of that tag's top-level descriptor, and the comment above
+it keeps the tag, the media type and the platforms. `python:3.11-slim` is one
+digest in `Dockerfile.api`, `Dockerfile.worker-rocm` and `Dockerfile.worker-sim`;
+move those three references together. The digests a release attaches to the
+images it publishes name those built images, not the bases they started from.
