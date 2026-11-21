@@ -39,6 +39,7 @@ Notes for the upgrade:
 - The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. The data is intact: fix the cause, then run the script again. The rerun takes a backup first, because the failed run may already have migrated the database.
 - An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](/docs/self-hosting/first-run).
 - The API runs as uid 10001. An existing local `assets` volume stays root-owned until the next start. The one-shot `assets-init` service then gives that volume to uid 10001. That is the one-time ownership change. An install that stores assets in S3-compatible storage does not use the volume, and on an empty volume the step changes nothing the API reads.
+- Upgrading removes leftover canvas parameters of accounts purged by older releases.
 
 ## Upgrade a source checkout
 

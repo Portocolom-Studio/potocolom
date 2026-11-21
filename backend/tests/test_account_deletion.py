@@ -6,6 +6,7 @@ a purge leaves no user row at all.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -810,3 +811,418 @@ def test_purging_either_end_drops_the_binding_and_the_grantor_does_not(library):
                 return await session.get(BillingBinding, other.id)
 
         assert client.portal.call(other_binding) is None
+
+LIVE_PROMPT = "live-canvas-private-prompt-9918"
+ENDED_PROMPT = "ended-canvas-private-prompt-9918"
+CLAIM_PROMPT = "claim-rewritten-private-prompt-9918"
+NEIGHBOUR_PROMPT = "neighbour-canvas-private-prompt-9918"
+EXPORT_PROMPT = "export-canvas-private-prompt-9918"
+NIL_BROWSER = uuid.UUID(int=0)
+
+
+async def _text_hits(needle: str) -> list[str]:
+    """Columns whose text form contains needle. Table names come from the catalog."""
+    async with db.session_factory() as session:
+        columns = (
+            await session.execute(
+                text(
+                    "SELECT table_name, column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND data_type IN "
+                    "('text', 'character varying', 'uuid', 'jsonb', 'json') "
+                    "ORDER BY table_name, column_name"
+                )
+            )
+        ).all()
+        hits = []
+        for table, column in columns:
+            count = await session.scalar(
+                text(f'SELECT count(*) FROM "{table}" WHERE "{column}"::text LIKE :needle'),
+                {"needle": f"%{needle}%"},
+            )
+            if count:
+                hits.append(f"{table}.{column}")
+        return hits
+
+
+async def _seed_canvas(
+    user_id: uuid.UUID,
+    browser_owner_id: uuid.UUID,
+    live_prompt: str = LIVE_PROMPT,
+    ended_prompt: str = ENDED_PROMPT,
+) -> dict:
+    """An ended session with nothing retaining it, and a live one a range still names."""
+    ended_id = uuid.uuid4()
+    live_id = uuid.uuid4()
+    ended_auth = uuid.uuid4()
+    live_auth = uuid.uuid4()
+    attempt_id = uuid.uuid4()
+    range_id = uuid.uuid4()
+    incarnation = uuid.uuid4()
+    worker_id = f"purge-canvas-{uuid.uuid4()}"
+    async with db.session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO realtime_sessions "
+                "(id, user_id, auth_session_id, browser_owner_id, region, model_id, "
+                "effective_params, desired_params, state, control_generation, ended_at) "
+                "VALUES (:id, :user_id, :auth_session_id, :browser_owner_id, 'local', "
+                "'sd-sim', CAST(:params AS jsonb), CAST(:params AS jsonb), 'ended', 1, "
+                "clock_timestamp())"
+            ),
+            {
+                "id": ended_id,
+                "user_id": user_id,
+                "auth_session_id": ended_auth,
+                "browser_owner_id": browser_owner_id,
+                "params": json.dumps({"prompt": ended_prompt}),
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO realtime_sessions "
+                "(id, user_id, auth_session_id, browser_owner_id, region, model_id, "
+                "effective_params, desired_params, state, control_generation, started_at) "
+                "VALUES (:id, :user_id, :auth_session_id, :browser_owner_id, 'local', "
+                "'sd-sim', CAST(:params AS jsonb), CAST(:params AS jsonb), 'live', 1, "
+                "clock_timestamp())"
+            ),
+            {
+                "id": live_id,
+                "user_id": user_id,
+                "auth_session_id": live_auth,
+                "browser_owner_id": browser_owner_id,
+                "params": json.dumps({"prompt": live_prompt}),
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO realtime_session_attempts "
+                "(session_id, control_generation, worker_id, incarnation, owner_epoch, "
+                "attempt_id, state, range_id) VALUES (:session_id, 1, :worker_id, "
+                ":incarnation, 1, :attempt_id, 'running', :range_id)"
+            ),
+            {
+                "session_id": live_id,
+                "worker_id": worker_id,
+                "incarnation": incarnation,
+                "attempt_id": attempt_id,
+                "range_id": range_id,
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO worker_physical_ranges "
+                "(range_id, worker_id, incarnation, region, owner_epoch, account_user_id, "
+                "kind, subject_id, attempt_id, control_generation, state, report_sequence, "
+                "report_hash, gpu_ms, frames, duration_ms) VALUES (:range_id, :worker_id, "
+                ":incarnation, 'local', 1, :account_user_id, 'session', :subject_id, "
+                ":attempt_id, 1, 'outstanding', 1, :report_hash, 4, 2, 9)"
+            ),
+            {
+                "range_id": range_id,
+                "worker_id": worker_id,
+                "incarnation": incarnation,
+                "account_user_id": user_id,
+                "subject_id": live_id,
+                "attempt_id": attempt_id,
+                "report_hash": "ab" * 32,
+            },
+        )
+        await session.execute(
+            text(
+                "INSERT INTO worker_report_receipts "
+                "(range_id, report_sequence, report_hash, gpu_ms, frames, duration_ms, "
+                "ack_body) VALUES (:range_id, 1, :report_hash, 4, 2, 9, :ack_body)"
+            ),
+            {"range_id": range_id, "report_hash": "ab" * 32, "ack_body": b"kept-receipt"},
+        )
+        await session.commit()
+    return {
+        "ended_id": ended_id,
+        "live_id": live_id,
+        "ended_auth": ended_auth,
+        "live_auth": live_auth,
+        "range_id": range_id,
+        "attempt_id": attempt_id,
+        "worker_id": worker_id,
+        "incarnation": incarnation,
+    }
+
+
+async def _range_snapshot(range_id: uuid.UUID) -> dict:
+    async with db.session_factory() as session:
+        range_row = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT worker_id, incarnation, region, owner_epoch, account_user_id, kind, "
+                        "subject_id, attempt_id, control_generation, dispatch_sequence, state, "
+                        "report_sequence, report_floor, report_hash, gpu_ms, frames, duration_ms, "
+                        "accounting_retired_at FROM worker_physical_ranges WHERE range_id = :id"
+                    ),
+                    {"id": range_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        receipt = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT report_sequence, report_hash, gpu_ms, frames, duration_ms, ack_body "
+                        "FROM worker_report_receipts WHERE range_id = :id"
+                    ),
+                    {"id": range_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+        return {"range": dict(range_row), "receipt": dict(receipt)}
+
+
+async def _session_row(session_id: uuid.UUID):
+    async with db.session_factory() as session:
+        return (
+            (
+                await session.execute(
+                    text(
+                        "SELECT user_id, auth_session_id, browser_owner_id, state, control_generation, "
+                        "desired_params, effective_params FROM realtime_sessions WHERE id = :id"
+                    ),
+                    {"id": session_id},
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+
+
+async def _request_and_age(user_id: uuid.UUID) -> None:
+    from app import deletion
+
+    async with db.session_factory() as session:
+        await deletion.request(session, user_id)
+        await session.commit()
+    await _age_request(user_id, deletion.RESTORE_WINDOW_DAYS + 1)
+
+
+@pytest.mark.db
+def test_an_export_omits_realtime_session_parameters(library):
+    """Canvas parameters are transient. The export does not read them."""
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "canvas-export@example.com")
+        client.portal.call(
+            _seed_canvas,
+            user.id,
+            uuid.uuid4(),
+            EXPORT_PROMPT,
+            EXPORT_PROMPT,
+        )
+        assert _login(client, "canvas-export@example.com").status_code == 204
+        exported = client.get("/api/v1/account/export")
+    assert exported.status_code == 200
+    assert exported.json()["account"]["id"] == str(user.id)
+    body = exported.text
+    assert EXPORT_PROMPT not in body
+    assert "desired_params" not in body
+    assert "effective_params" not in body
+
+
+@pytest.mark.db
+def test_a_purge_removes_realtime_session_content(library):
+    """The prompt and the auth binding do not survive the real purge.
+
+    The ended row has no attempt and no range, so nothing retained needs it.
+    The live row's range still names the session, so the row stays without
+    its content. The range and its receipt are the proved identity.
+    """
+    from app import deletion
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "canvas-purge@example.com")
+        neighbour = client.portal.call(_make, "canvas-neighbour@example.com")
+        browser = uuid.uuid4()
+        owned = client.portal.call(_seed_canvas, user.id, browser)
+        other = client.portal.call(
+            _seed_canvas,
+            neighbour.id,
+            browser,
+            NEIGHBOUR_PROMPT,
+            NEIGHBOUR_PROMPT,
+        )
+        before = client.portal.call(_range_snapshot, owned["range_id"])
+        client.portal.call(_request_and_age, user.id)
+        client.portal.call(deletion.purge_due)
+
+        assert client.portal.call(_user, user.id) is None
+        assert client.portal.call(_session_row, owned["ended_id"]) is None
+        kept = client.portal.call(_session_row, owned["live_id"])
+        assert kept is not None
+        assert kept["state"] == "ended"
+        assert kept["control_generation"] == 1
+        assert kept["user_id"] is None
+        assert kept["auth_session_id"] is None
+        assert kept["browser_owner_id"] == NIL_BROWSER
+        assert kept["desired_params"] is None
+        assert kept["effective_params"] is None
+        assert client.portal.call(_range_snapshot, owned["range_id"]) == before
+        for needle in (
+            LIVE_PROMPT,
+            ENDED_PROMPT,
+            str(owned["live_auth"]),
+            str(owned["ended_auth"]),
+        ):
+            assert client.portal.call(_text_hits, needle) == [], needle
+        other_row = client.portal.call(_session_row, other["live_id"])
+        assert other_row["desired_params"]["prompt"] == NEIGHBOUR_PROMPT
+        assert other_row["auth_session_id"] == other["live_auth"]
+        assert other_row["state"] == "live"
+
+
+@pytest.mark.db
+def test_a_claim_committed_between_the_purge_transactions_is_scrubbed(library, monkeypatch):
+    """A real claim commits in the gap between the two purge transactions.
+
+    The first transaction claims the account and erases its commands. The
+    stored objects are then purged with no transaction open. A real
+    open_session claim lands in that gap: control generation 2, a new attempt
+    and range on the live session, and CLAIM_PROMPT as its desired parameters.
+    The second transaction must scrub what the claim wrote.
+    """
+    from app import command_store, deletion, jobs, worker_authority
+
+    worker_id = f"purge-claim-{uuid.uuid4()}"
+    incarnation = uuid.uuid4()
+    grant_nonce = uuid.uuid4()
+    claimed = {}
+
+    with TestClient(app, base_url=ORIGIN) as client:
+        user = client.portal.call(_make, "canvas-race@example.com")
+        owned = client.portal.call(
+            _seed_canvas,
+            user.id,
+            worker_authority.TRANSPORT_OWNER_ID,
+        )
+        client.portal.call(worker_authority.acquire_scheduler_lease)
+
+        async def seed_worker():
+            async with db.session_factory() as session:
+                lease = (
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT owner_epoch, lease_id, expires_at FROM scheduler_leases "
+                                "WHERE region = :region"
+                            ),
+                            {"region": worker_authority.REGION},
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO worker_connections "
+                        "(worker_id, incarnation, transport_owner_id, region, owner_epoch, "
+                        "lease_id, lease_expires_at, grant_nonce, grant_expires_at, grant_ready, "
+                        "protocol_version, realtime_slots, capabilities, manifests, device, "
+                        "memory_mode, execution_envelope, envelope_revision, lifecycle, "
+                        "last_seen_at, expires_at, next_command_sequence, acknowledged_floor) "
+                        "VALUES (:worker_id, :incarnation, :transport_owner_id, :region, "
+                        ":owner_epoch, :lease_id, :lease_expires_at, :grant_nonce, "
+                        "clock_timestamp() + interval '120 seconds', true, 6, 1, '[]'::jsonb, "
+                        "'[]'::jsonb, 'cpu-test', 'offload', '{}'::jsonb, 1, 'ready', "
+                        "clock_timestamp(), clock_timestamp() + interval '120 seconds', 1, 0)"
+                    ),
+                    {
+                        "worker_id": worker_id,
+                        "incarnation": incarnation,
+                        "transport_owner_id": worker_authority.TRANSPORT_OWNER_ID,
+                        "region": worker_authority.REGION,
+                        "owner_epoch": lease["owner_epoch"],
+                        "lease_id": lease["lease_id"],
+                        "lease_expires_at": lease["expires_at"],
+                        "grant_nonce": grant_nonce,
+                    },
+                )
+                await session.commit()
+
+        client.portal.call(seed_worker)
+
+        async def claim():
+            attempt_id = uuid.uuid4()
+            range_id = uuid.uuid4()
+            await command_store.commit_command(
+                worker_id,
+                incarnation,
+                "open_session",
+                {
+                    "session_id": str(owned["live_id"]),
+                    "attempt_id": str(attempt_id),
+                    "control_generation": 2,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": CLAIM_PROMPT},
+                    "work_budget": {
+                        "gpu_ms_limit": None,
+                        "range_id": str(range_id),
+                        "remaining_wall_ms": None,
+                        "start_gpu_ms": 0,
+                    },
+                },
+                grant_nonce=grant_nonce,
+                transport_owner_id=worker_authority.TRANSPORT_OWNER_ID,
+                account_user_id=user.id,
+                session_context={
+                    "auth_session_id": owned["live_auth"],
+                    "browser_owner_id": worker_authority.TRANSPORT_OWNER_ID,
+                    "model_id": "sd-sim",
+                    "params": {"prompt": CLAIM_PROMPT},
+                    "attempt_id": attempt_id,
+                    "control_generation": 2,
+                    "desired_revision": 1,
+                },
+            )
+
+        original_purge_keys = jobs.purge_keys
+
+        async def purge_keys_after_a_claim(keys, *args, **kwargs):
+            try:
+                await claim()
+            except command_store.CommandRefused as refused:
+                claimed["refused"] = str(refused)
+            claimed["row"] = await _session_row(owned["live_id"])
+            await original_purge_keys(keys, *args, **kwargs)
+
+        monkeypatch.setattr(jobs, "purge_keys", purge_keys_after_a_claim)
+        try:
+            client.portal.call(_request_and_age, user.id)
+            client.portal.call(deletion.purge_due)
+
+            assert "refused" not in claimed, claimed.get("refused")
+            assert claimed["row"]["control_generation"] == 2
+            assert claimed["row"]["desired_params"] == {"prompt": CLAIM_PROMPT}
+            assert client.portal.call(_user, user.id) is None
+            kept = client.portal.call(_session_row, owned["live_id"])
+            assert kept["desired_params"] is None
+            assert kept["effective_params"] is None
+            assert kept["auth_session_id"] is None
+            assert kept["browser_owner_id"] == NIL_BROWSER
+            assert kept["state"] == "ended"
+            for needle in (LIVE_PROMPT, ENDED_PROMPT, CLAIM_PROMPT, str(owned["live_auth"])):
+                assert client.portal.call(_text_hits, needle) == [], needle
+        finally:
+            async def drop_worker():
+                async with db.session_factory() as session:
+                    await session.execute(
+                        text("DELETE FROM worker_commands WHERE worker_id = :worker_id"),
+                        {"worker_id": worker_id},
+                    )
+                    await session.execute(
+                        text("DELETE FROM worker_connections WHERE worker_id = :worker_id"),
+                        {"worker_id": worker_id},
+                    )
+                    await session.commit()
+
+            client.portal.call(drop_worker)

@@ -61,6 +61,6 @@ A person deletes their own account with `DELETE /api/v1/account`. That call answ
 The account remembers the state it was in, one level deep. `POST /api/v1/users/{id}/restore` puts it back there and answers `204`. An account that was suspended when it asked for deletion comes back suspended. A restore answers `409` for an account that was never waiting for deletion, and for one that is past its 30-day window.
 
 > [!WARNING]
-> After 30 days a sweep purges the account. It removes the stored objects first, then the assets, then the jobs, and then the user row. A purged account cannot be restored. Audit rows keep plain IDs with no foreign key, so what an administrator did survives the account.
+> After 30 days a sweep purges the account. It removes the stored objects first, then the assets, then the jobs, and then the user row. The same transaction removes realtime session content. A session row that a retained attempt still needs keeps its id, state and generation. Its prompt and auth-session binding are cleared, and its browser binding becomes the nil UUID because that column cannot be null. Every other session row is deleted. The physical range and its receipts stay. A purged account cannot be restored. Audit rows keep plain IDs with no foreign key, so what an administrator did survives the account.
 
 The last administrator may delete their own account. An install with no administrator can be recovered only offline.
