@@ -80,6 +80,18 @@ export type AuthErrorKind =
 
 export const ORIGIN_NOT_ALLOWED_DETAIL = 'origin not allowed';
 
+// A studio form shows the explanation instead of the raw detail. Other details
+// stay as the API sent them; a missing detail falls back to the status text.
+export function explainedApiDetail(
+	detail: unknown,
+	statusText: string,
+	originMessage: string
+): string {
+	if (detail === ORIGIN_NOT_ALLOWED_DETAIL) return originMessage;
+	if (typeof detail === 'string' && detail !== '') return detail;
+	return statusText;
+}
+
 export type AuthError = {
 	kind: AuthErrorKind;
 	message: string;
