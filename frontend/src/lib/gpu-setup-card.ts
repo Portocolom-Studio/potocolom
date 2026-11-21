@@ -93,6 +93,15 @@ export type AdminWorker = {
 
 export const DEVICE_LABELS: Record<Device, string> = { cuda: 'CUDA', rocm: 'ROCm', cpu: 'CPU' };
 
+// The name step 2 shows for a worker, or null while a GPU has not reported
+// hardware yet. A CPU worker has no GPU readout to wait for: the device is the
+// name, and the card stops asking.
+export function workerGpuName(worker: Pick<AdminWorker, 'hardware' | 'device'>): string | null {
+	if (worker.hardware !== null) return worker.hardware.gpu_name;
+	if (worker.device === 'cpu') return DEVICE_LABELS.cpu;
+	return null;
+}
+
 // The order of the uses on step 3. A model suggested for two uses is offered once,
 // under the first of them.
 export const USE_ORDER: readonly UseClass[] = ['text_to_image', 'realtime', 'upscale'];

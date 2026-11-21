@@ -19,6 +19,7 @@
 		setupWorker,
 		shouldShowGpuCard,
 		skipsModelStep,
+		workerGpuName,
 		type AdminWorker,
 		type CardKey,
 		type FirstOption,
@@ -150,11 +151,12 @@
 	const rowStates = $derived(rows.map((row) => row.download?.state ?? ''));
 
 	// Milliseconds until the card asks the list again, or null when nothing on this
-	// step waits on the worker: hardware not reported yet (step 2), sizes not known
-	// yet (step 3), a download running (step 4).
+	// step waits on the worker: a GPU that has not reported hardware yet (step 2),
+	// sizes not known yet (step 3), a download running (step 4). A CPU worker has
+	// no readout to wait for.
 	const delay = $derived.by(() => {
 		if (workers === null || !studio.gpuCardOpen) return null;
-		if (step === 2) return list.some((worker) => worker.hardware === null) ? 2000 : null;
+		if (step === 2) return list.some((worker) => workerGpuName(worker) === null) ? 2000 : null;
 		if (step === 3) {
 			// Sizes still unknown, or another install still running: either can change
 			// whether the free-space rule allows the download.
@@ -334,8 +336,9 @@
 	const gpuValue = $derived.by(() => {
 		if (gpuWorker === null)
 			return setupId === null ? t('app.gpu_card.no_gpu') : t('app.gpu_card.gpu_gone');
-		if (gpuWorker.hardware === null) return t('app.gpu_card.reading_gpu');
-		return `${gpuWorker.hardware.gpu_name}, ${memoryText(gpuWorker.hardware.vram_total_bytes)}`;
+		const name = workerGpuName(gpuWorker);
+		if (name === null) return t('app.gpu_card.reading_gpu');
+		return `${name}, ${memoryText(gpuWorker.hardware?.vram_total_bytes ?? null)}`;
 	});
 
 	const accountValue = $derived(
@@ -428,9 +431,7 @@
 											></span>
 											<span class="sr-only">{t('app.gpu_card.online')}</span>
 											<span class="break-all">
-												{worker.hardware === null
-													? t('app.gpu_card.reading_gpu')
-													: worker.hardware.gpu_name}
+												{workerGpuName(worker) ?? t('app.gpu_card.reading_gpu')}
 											</span>
 										</span>
 										<span class="text-muted-foreground pl-4 text-xs">

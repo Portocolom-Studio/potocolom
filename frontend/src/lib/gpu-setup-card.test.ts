@@ -7,6 +7,7 @@ import {
 	defaultGpuOption,
 	failureKey,
 	firstModels,
+	workerGpuName,
 	GPU_CARD_DONE_KEY,
 	gpuCardOpensFleet,
 	markGpuCardDone,
@@ -167,6 +168,21 @@ test('setupWorker picks the manageable worker with the most video memory', () =>
 	});
 	assert.equal(setupWorker([small, large])?.worker_id, 'large');
 	assert.equal(setupWorker([large, small])?.worker_id, 'large');
+});
+
+test('a CPU worker with no hardware readout is named CPU, not left unread', () => {
+	const cpu = worker({ worker_id: 'sim', device: 'cpu', hardware: null, manageable: false });
+	assert.equal(workerGpuName(cpu), 'CPU');
+	assert.equal(workerGpuName(worker({ worker_id: 'named', device: 'cpu' })), 'Test GPU');
+});
+
+test('a GPU that has not reported hardware yet stays unread', () => {
+	assert.equal(
+		workerGpuName(worker({ worker_id: 'booting', device: 'cuda', hardware: null })),
+		null
+	);
+	assert.equal(workerGpuName(worker({ worker_id: 'unknown', device: null, hardware: null })), null);
+	assert.equal(workerGpuName(worker({ worker_id: 'ready' })), 'Test GPU');
 });
 
 test('setupWorker skips workers that cannot be managed or have no hardware yet', () => {
