@@ -51,6 +51,7 @@
 	import { withViewTransition } from '$lib/view-transition';
 	import { estimatePromptTokens } from '$lib/prompt-tokens';
 	import { readStored, writeStored } from '$lib/safe-storage';
+	import { connectNeedsPrompt } from '$lib/realtime-connect-hint';
 	import { useStudioHeader, useViewCommands } from '$lib/studio-chrome.svelte';
 	import {
 		DrawingDocument,
@@ -256,6 +257,8 @@
 			selectedModel !== undefined &&
 			prompt.trim() !== ''
 	);
+	const showConnect = $derived(!busy && !unavailable);
+	const needsPrompt = $derived(connectNeedsPrompt({ showConnect, canConnect, prompt }));
 	// The prompt differs from the last one the API confirmed; whitespace around
 	// it does not count, because openMessage and updateParamsMessage both trim.
 	const promptDirty = $derived(connected && prompt.trim() !== appliedPrompt);
@@ -1061,6 +1064,7 @@
 				size="sm"
 				class="gap-1 px-2 sm:px-3"
 				disabled={!canConnect}
+				aria-describedby={needsPrompt ? 'realtime-prompt-required' : undefined}
 				onclick={connect}
 			>
 				<PowerIcon />
@@ -1360,6 +1364,11 @@
 	>
 		<div class="stage relative flex min-w-0 flex-col lg:min-h-0 lg:flex-1">
 			<div class="stage-body">
+				{#if needsPrompt}
+					<p class="text-muted-foreground text-xs leading-snug lg:hidden">
+						{t('app.realtime_canvas.prompt_required')}
+					</p>
+				{/if}
 				<div class="rail-slot">{@render toolRail()}</div>
 				<div class="panes">
 					<section class="pane pane-sketch" aria-label={t('app.realtime_canvas.input_title')}>
@@ -1577,6 +1586,7 @@
 							<Button
 								variant={canConnect ? 'brand' : 'outline'}
 								disabled={!canConnect}
+								aria-describedby={needsPrompt ? 'realtime-prompt-required' : undefined}
 								onclick={connect}
 							>
 								{t('app.realtime_canvas.connect')}
