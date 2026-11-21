@@ -43,7 +43,7 @@ if [[ "$rc" -eq 0 && "$config" != *'CUDA_VISIBLE_DEVICES: ""'* && "$config" != *
 docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile rocm config >"$tmp/unset-rocm-config" 2>&1
 if ! grep -E 'HIP_VISIBLE_DEVICES:' "$tmp/unset-rocm-config" | grep -Eqv ': null$'; then printf 'ok absent-rocm-mask\n'; else fail_case absent-rocm-mask; fi
 if ! grep -E 'CUDA_VISIBLE_DEVICES:' <<<"$config" | grep -Eqv ': null$'; then printf 'ok absent-cuda-mask\n'; else fail_case absent-cuda-mask; fi
-images="$(docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile api config --images)"
+images="$(docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile api config --images | sort -u)"
 if [[ "$(wc -l <<<"$images")" -eq 2 && "$images" == *'postgres:16'* && "$images" == *'potocolom-api:'* && "$images" != *'potocolom-worker'* ]]; then printf 'ok api-profile-has-no-worker-image\n'; else fail_case api-profile-has-no-worker-image; fi
 if grep -Eq 'INTERNAL_URL: http://api:8080' <<<"$config"; then printf 'ok default-internal-url\n'; else fail_case default-internal-url; fi
 CUDA_VISIBLE_DEVICES= docker compose --env-file "$env_file" -f "$repo/deploy/compose/compose.yml" --profile gpu config >"$tmp/empty-cuda-config" 2>&1

@@ -48,8 +48,8 @@ COMPOSE_PROJECT_NAME=potocolom-restored scripts/restore.sh /backups/potocolom-20
 The script then:
 
 1. Starts PostgreSQL alone and restores the dump.
-2. Unpacks `assets.tar` into the new `assets` volume.
-3. Starts the stack with the backup's env file. That file carries `AUTH_MODE`, `ROOT_KEYS` and every other setting.
+2. Unpacks `assets.tar` into the new `assets` volume. Files from a backup taken before the API ran as uid 10001 come back root-owned.
+3. Starts the stack with the backup's env file. That file carries `AUTH_MODE`, `ROOT_KEYS` and every other setting. The start runs `assets-init`, which gives the volume to uid 10001 before the API opens it.
 
 Two steps stay with you:
 

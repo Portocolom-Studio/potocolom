@@ -754,7 +754,9 @@ already has any volume the compose file declares (for example `pgdata`,
 `assets`, `models` or `hf-cache`), then starts PostgreSQL alone,
 restores the dump, unpacks `assets.tar` into the new `assets` volume, and
 starts the stack with the backup's env file, which carries `AUTH_MODE`,
-`ROOT_KEYS` and every other setting. The target project is
+`ROOT_KEYS` and every other setting. Files from a backup taken before the API ran as uid 10001 come back root-owned.
+The next start runs `assets-init`, which gives the volume to uid 10001
+before the API opens it. The target project is
 `COMPOSE_PROJECT_NAME` when it is set, else the name recorded in the backup's
 env file, else the name of the compose file's directory (as Docker Compose
 picks it), so a restore onto a machine whose installation is gone replaces it
@@ -830,6 +832,7 @@ Notes for the upgrade:
 - Run the upgrade as the same OS user that made the install. A second install or preflight under the same user fails with a retry message while a lock is held.
 - The installer waits up to 120 seconds for the local API and store to pass `/api/v1/ready`. This check does not wait for GPU warmup or model downloads. If the API does not become ready, the script returns an error and prints a logs command. The data is intact: fix the cause, then run the script again. The rerun takes a backup first, because the failed run may already have migrated the database.
 - An install that already exists keeps its choice. It keeps accounts if it had them, and it runs without accounts if it holds any user or work, so an upgrade does not show the setup page. See [First run](#first-run-1).
+- The API runs as uid 10001. An existing local `assets` volume stays root-owned until the next start. The one-shot `assets-init` service then gives that volume to uid 10001. That is the one-time ownership change. An install that stores assets in S3-compatible storage does not use the volume, and on an empty volume the step changes nothing the API reads.
 
 ### Upgrade a source checkout
 

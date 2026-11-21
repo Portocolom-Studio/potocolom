@@ -29,6 +29,15 @@ ENV FRONTEND_DIST=/app/static
 ARG POTOCOLOM_VERSION=dev
 ENV POTOCOLOM_VERSION=$POTOCOLOM_VERSION
 
+# uid 10001 can bind 8080. The assets volume is not this directory: an existing
+# volume hides it, and assets-init gives that volume to the same user.
+RUN groupadd --system --gid 10001 potocolom \
+	&& useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin potocolom \
+	&& mkdir -p /data/assets \
+	&& chown 10001:10001 /data /data/assets
+
 EXPOSE 8080
+
+USER 10001:10001
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--ws-max-size", "2097152"]

@@ -8,20 +8,38 @@ x-logging: &default-logging
     max-size: "10m"
     max-file: "5"
 
+x-api-image: &api-image ghcr.io/portocolom-studio/potocolom-api:${POTOCOLOM_VERSION:-dev}
+x-api-build: &api-build
+  context: ../..
+  dockerfile: deploy/docker/Dockerfile.api
+  args:
+    POTOCOLOM_VERSION: ${POTOCOLOM_VERSION:-dev}
+
 services:
+  # One-shot, before the API. Existing local installs keep root-owned asset
+  # files until this gives the volume to uid 10001. No database, key, OAuth or
+  # fleet secret: the only mount is the assets volume, and it has no network.
+  # S3-compatible storage does not use the volume; an empty one is a no-op.
+  assets-init:
+    logging: *default-logging
+    image: *api-image
+    build: *api-build
+    user: "0:0"
+    network_mode: none
+    restart: "no"
+    volumes:
+      - assets:/data/assets
+    command: ["sh", "-c", "find /data/assets -xdev ! -user 10001 -exec chown -h 10001:10001 {} +"]
+
   api:
     logging: *default-logging
     restart: unless-stopped
-    image: ghcr.io/portocolom-studio/potocolom-api:${POTOCOLOM_VERSION:-dev}
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.api
-      # Baked into the image as POTOCOLOM_VERSION, so the API names the worker
-      # image of its own tag for a GPU on another machine (docs/api.md "Fleet
-      # members"). Not set in environment below: that would replace the tag a
-      # release image carries with this default.
-      args:
-        POTOCOLOM_VERSION: ${POTOCOLOM_VERSION:-dev}
+    image: *api-image
+    # POTOCOLOM_VERSION is baked into the image, so the API names the worker
+    # image of its own tag for a GPU on another machine (docs/api.md "Fleet
+    # members"). Not set in environment below: that would replace the tag a
+    # release image carries with this default.
+    build: *api-build
     ports:
       - "8080:8080"
     environment:
@@ -53,6 +71,8 @@ services:
     volumes:
       - assets:/data/assets
     depends_on:
+      assets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
 

@@ -17,7 +17,8 @@ A self-hosted install is one Docker Compose stack on one machine, with one GPU. 
 
 The stack is defined in `deploy/compose/compose.yml`.
 
-- `api`: the API server. It also serves the frontend build.
+- `api`: the API server. It also serves the frontend build. The image runs as uid 10001.
+- `assets-init`: a one-shot service that gives an existing local `assets` volume to uid 10001 before the API starts. It is the one-time ownership change for an upgrade. S3-compatible storage does not use the volume.
 - `postgres`: PostgreSQL 16.
 - `worker`: the NVIDIA worker. It starts with the `gpu` profile.
 - `worker-rocm`: the AMD worker. It starts with the `rocm` profile.
