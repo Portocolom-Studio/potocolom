@@ -135,6 +135,12 @@ gets the canonical ports and the bare `potocolom` database unless you export
 `API_PORT`, `WEB_PORT` and `DATABASE_URL` yourself. Set `API_PORT` or `WEB_PORT`
 to override. Only the main worktree gets the canonical `8000` and `5173` above.
 
+The dev API allows the studio at both `http://localhost:<web port>` and
+`http://127.0.0.1:<web port>`. The server binds to 127.0.0.1 and the printed
+address is localhost, and a browser treats those as different origins. A write
+from any other origin is still refused. The studio then names `PUBLIC_URL` and
+`ALLOWED_ORIGINS`.
+
 `make worktree NAME=x` creates `.local/worktrees/x` on a new branch from `origin/main`. It links `backend/.venv`, `worker/.venv` and `frontend/node_modules` from the main checkout, so the new worktree needs no second install. `make verify-backend` and `make verify-worker` in it test that worktree's code, not the main checkout's.
 
 The test suite goes further and takes a database per **run**, not per checkout,

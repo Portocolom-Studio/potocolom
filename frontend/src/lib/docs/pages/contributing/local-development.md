@@ -115,7 +115,7 @@ npm install
 npm run dev
 ```
 
-The studio runs at http://localhost:5173 and sends `/api/v1` requests to the API.
+The studio runs at http://localhost:5173 and sends `/api/v1` requests to the API. The dev API also allows http://127.0.0.1:5173, because the server binds to 127.0.0.1 and a browser treats that as a different origin from localhost. A write from any other origin is refused, and the studio names `PUBLIC_URL` and `ALLOWED_ORIGINS`.
 
 `make web-landing` runs the studio dev server in landing mode. `/` shows the marketing page, and `/app` shows the studio preview instead of the studio.
 

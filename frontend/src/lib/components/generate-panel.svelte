@@ -45,6 +45,7 @@
 	import { countError, seedError } from '$lib/generate-validation';
 	import { isCancellable } from '$lib/generation-state';
 	import { apiFetch } from '$lib/api';
+	import { explainedApiDetail } from '$lib/auth-flow';
 	import { shortcutLabel } from '$lib/platform.svelte';
 	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { toggleStarWithUndo } from '$lib/studio-toasts';
@@ -467,13 +468,13 @@
 				return null;
 			}
 			const body: unknown = await response.json().catch(() => null);
-			errorText =
-				body !== null &&
-				typeof body === 'object' &&
-				'detail' in body &&
-				typeof body.detail === 'string'
-					? body.detail
-					: response.statusText;
+			const detail =
+				body !== null && typeof body === 'object' && 'detail' in body ? body.detail : undefined;
+			errorText = explainedApiDetail(
+				detail,
+				response.statusText,
+				t('auth.error.origin_not_allowed')
+			);
 			return null;
 		}
 		const body: unknown = await response.json().catch(() => null);

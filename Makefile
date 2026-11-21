@@ -518,7 +518,7 @@ api: dev-db ## API server on the configured port; assets under ./data (make deps
 	if [ -f "$(CURDIR)/deploy/compose/.env" ]; then . "$(CURDIR)/deploy/compose/.env"; fi; \
 	set +a; \
 	cd backend && STORAGE_LOCAL_PATH=$(CURDIR)/data \
-		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT) \
+		ALLOWED_ORIGINS=http://localhost:$(WEB_PORT),http://127.0.0.1:$(WEB_PORT) \
 		PUBLIC_URL=http://localhost:$(API_PORT) \
 		FLEET_TOKEN_KEY="$${FLEET_TOKEN_KEY:-$$FLEET_SECRET}" \
 		AUTH_MODE=$(if $(FIRST_RUN),,"$${AUTH_MODE:-none}") BENCHMARK_API=1 TELEMETRY=false .venv/bin/uvicorn app.main:app --port $(API_PORT) --ws-max-size 2097152

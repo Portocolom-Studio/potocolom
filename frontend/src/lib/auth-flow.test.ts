@@ -10,6 +10,7 @@ import {
 	createSubmitGuard,
 	initialAuthView,
 	loginSearchFor,
+	explainedApiDetail,
 	ORIGIN_NOT_ALLOWED_DETAIL,
 	parseAuthError,
 	readInviteTokenFromHash,
@@ -32,6 +33,14 @@ function mockResponse(
 
 const here = dirname(fileURLToPath(import.meta.url));
 const joinSource = readFileSync(join(here, '../routes/join/+page.svelte'), 'utf8');
+
+test('a studio write explains an origin refusal and keeps every other detail', () => {
+	const explained = 'Open the install at its public address.';
+	assert.equal(explainedApiDetail(ORIGIN_NOT_ALLOWED_DETAIL, 'Forbidden', explained), explained);
+	assert.equal(explainedApiDetail('unknown model', 'Forbidden', explained), 'unknown model');
+	assert.equal(explainedApiDetail('', 'Forbidden', explained), 'Forbidden');
+	assert.equal(explainedApiDetail(['not a string'], 'Forbidden', explained), 'Forbidden');
+});
 
 test('parseAuthError classifies an origin refusal before other 403 answers', async () => {
 	const parsed = await parseAuthError(mockResponse(403, ORIGIN_NOT_ALLOWED_DETAIL));
