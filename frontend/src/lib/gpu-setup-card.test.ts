@@ -5,6 +5,7 @@ import en from './i18n/en.json';
 import es from './i18n/es.json';
 import {
 	defaultGpuOption,
+	deviceLabel,
 	failureKey,
 	firstModels,
 	workerGpuName,
@@ -168,6 +169,13 @@ test('setupWorker picks the manageable worker with the most video memory', () =>
 	});
 	assert.equal(setupWorker([small, large])?.worker_id, 'large');
 	assert.equal(setupWorker([large, small])?.worker_id, 'large');
+});
+
+test('known devices use the shared label and an unknown device is left as sent', () => {
+	assert.equal(deviceLabel('cpu'), 'CPU');
+	assert.equal(deviceLabel('cuda'), 'CUDA');
+	assert.equal(deviceLabel('rocm'), 'ROCm');
+	assert.equal(deviceLabel('test-gpu'), 'test-gpu');
 });
 
 test('a CPU worker with no hardware readout is named CPU, not left unread', () => {
