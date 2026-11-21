@@ -14,6 +14,8 @@ is missing or does not match, refuses a project that already has any volume
 the compose file declares, then starts PostgreSQL alone, restores the dump,
 unpacks assets.tar into the new assets volume, and starts the stack with the
 backup's env file (which carries AUTH_MODE, ROOT_KEYS and every other setting).
+The unpack runs as root. The next `up` runs assets-init, which gives that
+volume to uid 10001 before the API starts.
 
 The target project is COMPOSE_PROJECT_NAME when it is set, else the project
 name recorded in the backup's env file.
@@ -133,6 +135,8 @@ echo "unpacking the asset files"
 docker run --rm --mount "type=volume,src=${PROJECT}_assets,dst=/data" \
 	--mount "type=bind,src=$BACKUP,dst=/in,readonly" \
 	postgres:16 tar -C /data -xf /in/assets.tar
+# Files from a backup older than the uid 10001 image come back root-owned. assets-init, on the up below, is the ownership step:
+# find confined to the assets mount, no symlink follow, no other filesystem.
 DATA_DONE=1
 
 echo "starting the stack"

@@ -1,7 +1,23 @@
 # Standalone stack for scripts/compose-smoke.sh (simulated worker, no GPU).
 # Uses an alternate host port so it does not collide with a dev API on :8080.
 services:
+  # Same image as the API, started as root only for this chown. No secrets and
+  # no network: the API image's USER is 10001, so the override is what makes
+  # the one-shot root. An empty volume has nothing to change.
+  assets-init:
+    image: ${COMPOSE_SMOKE_API_IMAGE:-${COMPOSE_PROJECT_NAME}-api}
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    user: "0:0"
+    network_mode: none
+    restart: "no"
+    volumes:
+      - assets:/data/assets
+    command: ["sh", "-c", "find /data/assets -xdev ! -user 10001 -exec chown -h 10001:10001 {} +"]
+
   api:
+    image: ${COMPOSE_SMOKE_API_IMAGE:-${COMPOSE_PROJECT_NAME}-api}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api
@@ -21,6 +37,8 @@ services:
     volumes:
       - assets:/data/assets
     depends_on:
+      assets-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
 

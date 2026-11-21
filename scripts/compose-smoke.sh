@@ -69,6 +69,23 @@ fi
 export COMPOSE_SMOKE_PORT="$PORT"
 base="http://localhost:${PORT}"
 
+# Default tag in compose.smoke.yml when COMPOSE_SMOKE_API_IMAGE is unset: one per
+# project, so concurrent runs on one Docker daemon never share an image.
+SMOKE_API_IMAGE="${COMPOSE_SMOKE_API_IMAGE:-${PROJECT}-api}"
+
+# A root-owned file from an older image. assets-init has to make it readable
+# by uid 10001, and the second start must leave it alone.
+seed_assets() {
+  local volume="${PROJECT}_assets"
+  # Create the volume with Compose's labels, and do not start the API until
+  # the root-owned file is in place. assets-init then runs on the up below.
+  "${COMPOSE[@]}" up --no-start "${BUILD[@]}" --remove-orphans
+  docker run --rm --network none --user 0:0 \
+    --mount "type=volume,src=${volume},dst=/data/assets" \
+    "$SMOKE_API_IMAGE" \
+    sh -c 'mkdir -p /data/assets/nested/old && printf old > /data/assets/nested/old/file && chmod 700 /data/assets/nested /data/assets/nested/old && chmod 600 /data/assets/nested/old/file && chown root:root /data/assets/nested /data/assets/nested/old /data/assets/nested/old/file'
+}
+
 cleanup() {
   if [[ -n "$REALTIME_PID" ]] && kill -0 "$REALTIME_PID" 2>/dev/null; then
     kill "$REALTIME_PID" || true
@@ -85,6 +102,7 @@ trap cleanup EXIT
 # was a reservation. PUBLIC_URL has to be settled before the API starts,
 # because it reads it at boot, so the port cannot simply be left to Docker.
 for attempt in 1 2 3; do
+  seed_assets
   if "${COMPOSE[@]}" up -d "${BUILD[@]}" --remove-orphans; then
     break
   fi
@@ -113,6 +131,34 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 curl -sf "${base}/api/v1/health"
+
+# The API image must be running as the unprivileged user. A root process
+# still passes health, so this is the check that fails on an image with no USER.
+api_uid="$("${COMPOSE[@]}" exec -T api id -u | tr -d '\r')"
+if [[ ! "$api_uid" =~ ^[0-9]+$ || "$api_uid" == "0" ]]; then
+  echo "api user id must be a non-zero number, got '${api_uid}'" >&2
+  exit 1
+fi
+
+if ! "${COMPOSE[@]}" exec -T api sh -c 'test "$(cat /data/assets/nested/old/file)" = old'; then
+  echo "the pre-existing asset file is not readable by the api user" >&2
+  exit 1
+fi
+
+# Second start. Compose may run the one-shot again; with every file already
+# owned by 10001 the find matches nothing, so the file's owner and ctime stay.
+stamp_before="$("${COMPOSE[@]}" exec -T api stat -c '%u %Z' /data/assets/nested/old/file | tr -d '\r')"
+"${COMPOSE[@]}" up -d --no-build --pull never
+stamp_after="$("${COMPOSE[@]}" exec -T api stat -c '%u %Z' /data/assets/nested/old/file | tr -d '\r')"
+if [[ "$stamp_before" != "$stamp_after" ]]; then
+  echo "second startup changed the existing asset file (${stamp_before} -> ${stamp_after})" >&2
+  exit 1
+fi
+api_uid_again="$("${COMPOSE[@]}" exec -T api id -u | tr -d '\r')"
+if [[ "$api_uid_again" != "$api_uid" ]]; then
+  echo "api user id changed on the second start (${api_uid} -> ${api_uid_again})" >&2
+  exit 1
+fi
 
 # The stack runs keyed, so an unauthenticated upgrade must be refused. Without
 # this the smoke run only proves that a matching secret works, and a check that
